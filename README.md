@@ -52,7 +52,7 @@ export ANTHROPIC_API_KEY=...   # each person uses their own key (add to ~/.zshrc
 cd ~/any/project && gearbox    # the current directory is the workspace
 ```
 
-Update later with `git pull && bun install`. If `gearbox` isn't found, add Bun's bin dir to PATH: `export PATH="$HOME/.bun/bin:$PATH"`.
+**Upgrade** later with one command — `gearbox upgrade` (pulls latest + reinstalls deps). Equivalent to `git pull && bun install` in the repo. If `gearbox` isn't found, add Bun's bin dir to PATH: `export PATH="$HOME/.bun/bin:$PATH"`.
 
 **Standalone binary** (no clone/install on the target, same OS/arch):
 
