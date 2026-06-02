@@ -8,6 +8,7 @@ import { CommandPalette } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { Working } from "./components/Working.tsx";
+import { MascotSplash, MascotMini } from "./components/Mascot.tsx";
 import { nextVerb } from "./character.ts";
 import { color, glyph } from "./theme.ts";
 import type { Item } from "./types.ts";
@@ -330,16 +331,19 @@ export function App({ selector: initialSelector, demo, runner }: AppProps) {
       <Banner model={modelLabel} width={width} />
 
       {items.length === 0 ? (
-        <Box flexDirection="column" paddingX={1} marginTop={1}>
-          <Text color={color.text}>Ready when you are.</Text>
-          <Box>
-            <Text color={color.dim}>Tell me what to build or fix — talk or type. </Text>
-            <Text color={color.accentDim}>/</Text>
-            <Text color={color.dim}> commands </Text>
-            <Text color={color.accentDim}>@</Text>
-            <Text color={color.dim}> files </Text>
-            <Text color={color.accentDim}>!</Text>
-            <Text color={color.dim}>shell</Text>
+        <Box flexDirection="column" marginTop={1}>
+          <MascotSplash />
+          <Box flexDirection="column" paddingX={1} marginTop={1}>
+            <Text color={color.text}>Ready when you are.</Text>
+            <Box>
+              <Text color={color.dim}>Tell me what to build or fix — talk or type. </Text>
+              <Text color={color.accentDim}>/</Text>
+              <Text color={color.dim}> commands </Text>
+              <Text color={color.accentDim}>@</Text>
+              <Text color={color.dim}> files </Text>
+              <Text color={color.accentDim}>!</Text>
+              <Text color={color.dim}>shell</Text>
+            </Box>
           </Box>
         </Box>
       ) : (
@@ -358,6 +362,7 @@ export function App({ selector: initialSelector, demo, runner }: AppProps) {
         </Box>
       ) : null}
 
+      <MascotMini busy={busy} />
       <Composer value={edit.value} cursor={edit.cursor} placeholder={mode === "plan" ? "describe what to plan…" : "ask gearbox, or / for commands"} busy={busy} width={width} />
 
       <Box paddingX={1}>
