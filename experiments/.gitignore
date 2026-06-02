@@ -1,0 +1,8 @@
+.env.local
+node_modules/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+ledger.*
+*.events
+*.events-*

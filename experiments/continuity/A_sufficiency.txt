@@ -1,0 +1,10 @@
+You are taking over an in-progress coding task from another agent (a different model). You never saw the earlier conversation — only this curated handoff. Answer in ONE sentence: what is the single next action you would take, and which file does it concern?
+
+SYSTEM: Coding agent in a TypeScript repo; verify against test output.
+TASK: Fix failing auth tests so an expired session returns null and requireSession redirects to /login.
+KNOWN FACTS:
+- auth.test.ts has 3 failing tests, all about expired sessions.
+- parseToken returns exp in SECONDS (epoch), by design.
+- Root bug: auth.ts compared token.exp (seconds) against Date.now() (ms); fixed by multiplying exp by 1000.
+RECENT ACTIONS:
+- Edited auth.ts:11 -> "token.exp * 1000 < Date.now()".

@@ -1,0 +1,51 @@
+import { test, expect } from "bun:test";
+import { matchCommands, helpText, formatModelList, resolveModelSwitch, COMMANDS } from "../src/commands.ts";
+
+test("matchCommands filters by prefix", () => {
+  expect(matchCommands("/mo").map((c) => c.name)).toEqual(["/model"]);
+  expect(matchCommands("/").length).toBe(COMMANDS.length);
+  expect(matchCommands("hello").length).toBe(0);
+});
+
+test("helpText lists every command", () => {
+  const h = helpText();
+  for (const c of COMMANDS) expect(h).toContain(c.usage);
+});
+
+test("formatModelList marks current and lists labels", () => {
+  const out = formatModelList("claude-sonnet-4-6");
+  expect(out).toContain("sonnet-4.6");
+  expect(out).toContain("gpt-5.4");
+  expect(out).toContain("●");
+});
+
+test("resolveModelSwitch is fuzzy: substring, no-match, no-key, ambiguous, exact", () => {
+  const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "DEEPSEEK_API_KEY"];
+  const saved: Record<string, string | undefined> = {};
+  for (const k of KEYS) {
+    saved[k] = process.env[k];
+    delete process.env[k];
+  }
+  try {
+    process.env.ANTHROPIC_API_KEY = "x";
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "x";
+
+    // no model contains "opus" yet
+    expect(resolveModelSwitch("opus").ok).toBe(false);
+    // "haiku" → the one haiku model (anthropic key present)
+    expect(resolveModelSwitch("haiku")).toMatchObject({ ok: true, modelId: "claude-haiku-4-5" });
+    // "gemini" matches two available google models → ambiguous
+    const g = resolveModelSwitch("gemini");
+    expect(g.ok).toBe(false);
+    expect(g.message).toContain("be more specific");
+    // exact label resolves even when it's a substring of another
+    expect(resolveModelSwitch("gemini-flash")).toMatchObject({ ok: true, modelId: "gemini-2.5-flash" });
+    // matches a model whose provider has no key
+    expect(resolveModelSwitch("gpt").ok).toBe(false);
+  } finally {
+    for (const k of KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+});

@@ -1,0 +1,81 @@
+# ⚙ gearbox
+
+A beautiful, simple coding harness for the terminal. It reads, edits, and runs your code through one clean agent loop, talking to any provider (Anthropic, OpenAI, Google, DeepSeek).
+
+> **What it's becoming:** the point of Gearbox is *intelligent per-task model routing* — automatically using the right model for each task across every provider and account you pay for, cheaply and transparently. **v0.1 is the harness only.** Routing lands on top of this, behind a seam that's already in place. See [`DESIGN.md`](./DESIGN.md).
+
+```
+ ⚙   gearbox
+     coding harness · sonnet-4.6
+ ──────────────────────────────────────────────────────────
+
+ › add a --json flag to the CLI and cover it with a test
+
+ ⏺  I'll see how args are parsed, add the flag, then test it.
+
+   ✓ read_file  src/cli.tsx
+     renders the Ink app · 18 lines
+   ✓ edit_file  src/cli.tsx
+   ✓ run_shell  bun test
+     9 pass · 0 fail
+
+ ⏺  Done — flag added with a passing test.
+
+ ╭──────────────────────────────────────────────────────────╮
+ │ › ask gearbox to build or fix something                  │
+ ╰──────────────────────────────────────────────────────────╯
+  gearbox · sonnet-4.6 · 18,432 tok · ⏎ send  ctrl+c quit
+```
+
+## Run
+
+```bash
+bun install
+export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / DEEPSEEK_API_KEY
+bun start                      # or: bun run src/cli.tsx
+bun start -- --model gemini-flash   # pick a model
+```
+
+No key? It launches in demo mode so you can see the interface. Preview the look without running anything:
+
+```bash
+bun run scripts/preview.tsx
+```
+
+## Install for internal use (the `gearbox` command, anywhere)
+
+Requires [Bun](https://bun.sh). Clone the repo, then:
+
+```bash
+./install.sh          # bun install + bun link  → 'gearbox' on your PATH
+export ANTHROPIC_API_KEY=...   # each person uses their own key (add to ~/.zshrc)
+cd ~/any/project && gearbox    # the current directory is the workspace
+```
+
+Update later with `git pull && bun install`. If `gearbox` isn't found, add Bun's bin dir to PATH: `export PATH="$HOME/.bun/bin:$PATH"`.
+
+**Standalone binary** (no clone/install on the target, same OS/arch):
+
+```bash
+bun run build         # → dist/gearbox  (single ~64MB executable)
+cp dist/gearbox ~/.bun/bin/    # or anywhere on PATH; share the file directly
+```
+
+> ⚠ **Before running on real code:** there is no permission/confirm gate yet — `write_file`, `edit_file`, `run_shell`, and the `!` prefix execute without asking. Fine for trusted internal use on your own repos; do not point it at anything you don't want modified. A confirm-gate is the next thing to land.
+
+## Develop
+
+```bash
+bun test            # render + agent tests (no API key needed)
+bun run typecheck
+```
+
+## Principles
+
+- **Open + free.** MIT. No paid dependencies, no hosted backend, no telemetry. The only cost is your own model calls on your own keys.
+- **Beautiful + calm.** One accent color, generous spacing, consistent glyphs. The whole look lives in `src/ui/theme.ts`.
+- **Routing-ready.** Model choice happens in exactly one place (`src/model/selector.ts`); the router drops in there later with no changes upstream. See [`CLAUDE.md`](./CLAUDE.md).
+
+## Status
+
+v0.1 — the harness: streaming agent loop, real file + shell tools, a polished Ink TUI, multi-provider support, and the routing seam. Intelligent routing is next (`DESIGN.md`).
