@@ -1,26 +1,38 @@
-// ── MASCOT STUB ───────────────────────────────────────────────────────────
-// The hand-drawn ASCII mascot was crude. The real mascot comes from Claude
-// Design (the prompt asks for idle / thinking / done / oops poses as small,
-// monospace-aligned Unicode art + color tokens).
-//
-// To wire it in, render the art here, e.g.:
-//   import { Box, Text } from "ink";
-//   import { color } from "../theme.ts";
-//   const SPLASH = ["…line1…", "…line2…", …];     // big entry pose
-//   const MINI = { idle: "…", busy: "…" };          // tiny input pose
-//   export function MascotSplash() { return <Box flexDirection="column">…</Box>; }
-//
-// Until then both render nothing — clean: the Banner gives the wordmark, the
-// rotating verbs give the personality. These stay wired in App, so dropping in
-// the designed art is a one-file change. Keep every pose box-drawing + 1-cell
-// glyphs so it stays aligned in the terminal.
+import React from "react";
+import { Box, Text } from "ink";
+import { color } from "../theme.ts";
 
-/** Big splash on the entry screen. (Awaiting Claude Design art.) */
+// Gearbox's mascot: a flexing gear-guy, built kaomoji-style (text faces are
+// terminal-safe — they never reshape like emoji). Gear eyes ⚙ tie it to the
+// brand; ᕙ ᕗ are the classic flexing arms; the grin ᗜ shows up while it works.
+export const FACE = {
+  idle: "(⚙‿⚙)",
+  busy: "(⚙ᗜ⚙)",
+  done: "(⚙ᴗ⚙)",
+  oops: "(⚙_⚙;)",
+} as const;
+
+const HERO = "ᕙ(⚙‿⚙)ᕗ";
+
+/** Big splash for the entry screen — centered hero pose + tagline. */
 export function MascotSplash() {
-  return null;
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box justifyContent="center">
+        <Text color={color.accent}>{HERO}</Text>
+      </Box>
+      <Box justifyContent="center">
+        <Text color={color.dim}>one gearbox · every model</Text>
+      </Box>
+    </Box>
+  );
 }
 
-/** Tiny mascot perched on the input box. (Awaiting Claude Design art.) */
-export function MascotMini(_props: { busy: boolean }) {
-  return null;
+/** Tiny mascot perched on the input box; grins while working. */
+export function MascotMini({ busy }: { busy: boolean }) {
+  return (
+    <Box paddingLeft={2}>
+      <Text color={color.accent}>{busy ? FACE.busy : FACE.idle}</Text>
+    </Box>
+  );
 }

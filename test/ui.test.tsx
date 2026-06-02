@@ -46,6 +46,6 @@ test("app initial render: banner, demo label, empty-state hint, input", () => {
   const f = lastFrame() ?? "";
   expect(f).toContain("gearbox");
   expect(f).toContain("demo · no key");
-  expect(f).toContain("Ready when you are");
+  expect(f).toContain("every model");
   expect(f).toContain("ask gearbox");
 });

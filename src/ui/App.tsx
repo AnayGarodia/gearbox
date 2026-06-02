@@ -333,17 +333,14 @@ export function App({ selector: initialSelector, demo, runner }: AppProps) {
       {items.length === 0 ? (
         <Box flexDirection="column" marginTop={1}>
           <MascotSplash />
-          <Box flexDirection="column" paddingX={1} marginTop={1}>
-            <Text color={color.text}>Ready when you are.</Text>
-            <Box>
-              <Text color={color.dim}>Tell me what to build or fix — talk or type. </Text>
-              <Text color={color.accentDim}>/</Text>
-              <Text color={color.dim}> commands </Text>
-              <Text color={color.accentDim}>@</Text>
-              <Text color={color.dim}> files </Text>
-              <Text color={color.accentDim}>!</Text>
-              <Text color={color.dim}>shell</Text>
-            </Box>
+          <Box justifyContent="center" marginTop={1}>
+            <Text color={color.dim}>ready when you are · talk or type · </Text>
+            <Text color={color.accentDim}>/</Text>
+            <Text color={color.dim}> commands </Text>
+            <Text color={color.accentDim}>@</Text>
+            <Text color={color.dim}> files </Text>
+            <Text color={color.accentDim}>!</Text>
+            <Text color={color.dim}>shell</Text>
           </Box>
         </Box>
       ) : (
