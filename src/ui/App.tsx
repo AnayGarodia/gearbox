@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdin } from "ink";
-import { Spinner } from "@inkjs/ui";
 import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
 import { Transcript } from "./components/Transcript.tsx";
@@ -8,6 +7,8 @@ import { StatusBar } from "./components/StatusBar.tsx";
 import { CommandPalette } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer } from "./components/Composer.tsx";
+import { Working } from "./components/Working.tsx";
+import { nextVerb } from "./character.ts";
 import { color, glyph } from "./theme.ts";
 import type { Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
@@ -53,6 +54,7 @@ export function App({ selector: initialSelector, demo, runner }: AppProps) {
   const [selector, setSelector] = useState<ModelSelector>(initialSelector);
   const [mode, setMode] = useState<"normal" | "plan">("normal");
   const [elapsed, setElapsed] = useState(0);
+  const [verb, setVerb] = useState("Spinning up");
 
   // live "working · Ns" timer so the harness visibly stays alive
   useEffect(() => {
@@ -127,6 +129,7 @@ export function App({ selector: initialSelector, demo, runner }: AppProps) {
     async (prompt: string) => {
       echo(prompt);
       lastPromptRef.current = prompt;
+      setVerb(nextVerb());
       const { text: modelPrompt, attached } = expandMentions(prompt);
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
       setBusy(true);
@@ -327,20 +330,23 @@ export function App({ selector: initialSelector, demo, runner }: AppProps) {
       <Banner model={modelLabel} width={width} />
 
       {items.length === 0 ? (
-        <Box paddingX={1} marginTop={1}>
-          <Text color={color.dim}>Ask me to build something or fix a bug. Type </Text>
-          <Text color={color.accentDim}>/</Text>
-          <Text color={color.dim}> for commands.</Text>
+        <Box flexDirection="column" paddingX={1} marginTop={1}>
+          <Text color={color.text}>Ready when you are.</Text>
+          <Box>
+            <Text color={color.dim}>Tell me what to build or fix — talk or type. </Text>
+            <Text color={color.accentDim}>/</Text>
+            <Text color={color.dim}> commands </Text>
+            <Text color={color.accentDim}>@</Text>
+            <Text color={color.dim}> files </Text>
+            <Text color={color.accentDim}>!</Text>
+            <Text color={color.dim}>shell</Text>
+          </Box>
         </Box>
       ) : (
         <Transcript items={items} width={width} />
       )}
 
-      {busy ? (
-        <Box paddingX={1} marginTop={1}>
-          <Spinner label={`working · ${elapsed}s · esc to interrupt`} />
-        </Box>
-      ) : null}
+      {busy ? <Working elapsed={elapsed} verb={verb} /> : null}
 
       <CommandPalette draft={edit.value} />
       <FilePalette matches={fileMatches} />
