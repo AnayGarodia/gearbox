@@ -16,6 +16,7 @@ export type KeyAction =
   | { type: "submit" }
   | { type: "history"; dir: "up" | "down" }
   | { type: "interrupt" }
+  | { type: "vim"; to: "insert" | "normal"; state?: Edit } // switch vim sub-mode (+ optional cursor move)
   | { type: "none" };
 
 const NL = "\n";
@@ -60,7 +61,55 @@ function lineEndOf(value: string, cursor: number): number {
   return nl === -1 ? value.length : nl;
 }
 
-export function applyKey(s: Edit, input: string, key: Key): KeyAction {
+// Vim NORMAL-mode reducer: movement + a handful of edit/insert commands. Returns
+// a normal `edit`/`submit`/`history` action, or a `vim` action to switch to
+// insert (optionally moving the cursor first). Pure + tested.
+export function vimNormal(s: Edit, input: string, key: Key): KeyAction {
+  const { lineStart } = caretPos(s.value, s.cursor);
+  const end = lineEndOf(s.value, s.cursor);
+  if (key.return) return { type: "submit" };
+  if (key.upArrow || input === "k") return up(s);
+  if (key.downArrow || input === "j") return down(s);
+  switch (input) {
+    case "i": return { type: "vim", to: "insert" };
+    case "a": return { type: "vim", to: "insert", state: { value: s.value, cursor: Math.min(s.value.length, s.cursor + 1) } };
+    case "A": return { type: "vim", to: "insert", state: { value: s.value, cursor: end } };
+    case "I": return { type: "vim", to: "insert", state: { value: s.value, cursor: lineStart } };
+    case "o": return { type: "vim", to: "insert", state: { value: s.value.slice(0, end) + NL + s.value.slice(end), cursor: end + 1 } };
+    case "h": return at(s.value, Math.max(0, s.cursor - 1));
+    case "l": return at(s.value, Math.min(s.value.length, s.cursor + 1));
+    case "0": return at(s.value, lineStart);
+    case "$": return at(s.value, end);
+    case "w": {
+      let p = wordRight(s.value, s.cursor);
+      while (p < s.value.length && /\s/.test(s.value[p]!)) p++; // vim w → next word start
+      return at(s.value, p);
+    }
+    case "b": return at(s.value, wordLeft(s.value, s.cursor));
+    case "x": return { type: "edit", state: { value: s.value.slice(0, s.cursor) + s.value.slice(s.cursor + 1), cursor: Math.min(s.cursor, Math.max(0, s.value.length - 1)) } };
+    case "D": return { type: "edit", state: { value: s.value.slice(0, s.cursor) + s.value.slice(end), cursor: s.cursor } };
+    case "C": return { type: "vim", to: "insert", state: { value: s.value.slice(0, s.cursor) + s.value.slice(end), cursor: s.cursor } };
+    default: return { type: "none" };
+  }
+}
+
+function up(s: Edit): KeyAction {
+  const { lineIdx, col } = caretPos(s.value, s.cursor);
+  if (lineIdx > 0) return at(s.value, offsetAt(s.value, lineIdx - 1, col));
+  return { type: "history", dir: "up" };
+}
+function down(s: Edit): KeyAction {
+  const lines = s.value.split(NL);
+  const { lineIdx, col } = caretPos(s.value, s.cursor);
+  if (lineIdx < lines.length - 1) return at(s.value, offsetAt(s.value, lineIdx + 1, col));
+  return { type: "history", dir: "down" };
+}
+
+export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boolean }): KeyAction {
+  if (vim) {
+    if (vim.normal) return vimNormal(s, input, key);
+    if (key.escape) return { type: "vim", to: "normal" }; // insert → normal
+  }
   // Newline: modifier+Enter or ⌃J. Checked before plain Enter (submit).
   if ((key.return && (key.shift || key.meta)) || (key.ctrl && input === "j")) return insert(s, NL);
   if (key.return) return { type: "submit" };

@@ -25,9 +25,10 @@ import { findModel, estimateCost, type ModelSpec } from "../providers.ts";
 import { runTask } from "../agent/run.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount } from "../accounts/store.ts";
-import { importableEnvCreds, importEnvCred } from "../accounts/detect.ts";
-import { addApiKeyAccount, addByPastedKey, testAccount } from "../accounts/onboard.ts";
+import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
+import { addApiKeyAccount, addByPastedKey, testAccount, addCliAccount } from "../accounts/onboard.ts";
 import { detectProviderByKey } from "../accounts/catalog.ts";
+import { runCliTask } from "../agent/cli-backend.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
@@ -123,6 +124,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const ctrlCRef = useRef(0); // timestamp of the last bare ⌃C (for "press again to quit")
   const escRef = useRef(0); // timestamp of the last bare esc (for double-esc rewind)
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
+  const firstRunRef = useRef(!loadPrefs().onboarded); // show the one-time onboarding tips
   // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
   // text is kept here and expanded back in on submit.
   const pasteStoreRef = useRef<Map<string, string>>(new Map());
@@ -139,6 +141,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     searchRef.current = s;
     setSearchState(s);
   };
+  const [vim, setVimState] = useState<"off" | "insert" | "normal">(loadPrefs().vim ? "insert" : "off"); // composer vim mode
+  const vimRef = useRef(vim);
+  const setVim = (v: "off" | "insert" | "normal") => {
+    vimRef.current = v;
+    setVimState(v);
+  };
   const atBottomRef = useRef(true); // follow the live tail unless the user scrolled up
 
   // live "working · Ns" timer so the harness visibly stays alive
@@ -151,6 +159,11 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 500);
     return () => clearInterval(t);
   }, [busy]);
+
+  // First-run onboarding shows once, then we mark it seen.
+  useEffect(() => {
+    if (firstRunRef.current) updatePrefs({ onboarded: true });
+  }, []);
 
   // Reflect status in the terminal window/tab title (OSC 2).
   useEffect(() => {
@@ -182,6 +195,11 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const histIdxRef = useRef<number | null>(null);
   const lastPromptRef = useRef<string | null>(null);
   const routedRef = useRef<{ model: ModelSpec; reason: string } | null>(null); // the real per-turn pick
+  // Active CLI-backed subscription account (claude/codex). When set, turns run
+  // through the vendor binary (its own loop/tools/permissions), not the in-loop
+  // path. cliSessionRef keeps the binary's session id for resume.
+  const activeCliRef = useRef<{ id: string; binary: string } | null>(null);
+  const cliSessionRef = useRef<string | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
   const ghostSkinRef = useRef<GhostSkin>("base");
@@ -332,6 +350,16 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const defaultRunner: Runner = useCallback(
     async ({ prompt, messages, onEvent, selector: sel, signal }) => {
       if (demo) return runTaskMock({ prompt, messages, onEvent, signal });
+      // Active CLI subscription account: delegate the whole turn to the vendor
+      // binary (account-first; the model selector doesn't apply). Plain-text
+      // transcript carries across; the binary self-governs tools/permissions.
+      const cli = activeCliRef.current;
+      if (cli) {
+        routedRef.current = null;
+        const r = await runCliTask({ binary: cli.binary, prompt, messages, onEvent, signal, sessionId: cliSessionRef.current, autoApprove: isYolo() });
+        cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
+        return { messages: r.messages, usage: r.usage };
+      }
       const plan = modeRef.current === "plan";
       const choice = sel.select({ prompt: prompt, kind: plan ? "plan" : undefined });
       // Record the ACTUAL pick (routing varies it per task) for the status line
@@ -644,6 +672,14 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           echo(text);
           notice(KEYS_HELP);
           return;
+        case "vim": {
+          echo(text);
+          const on = vimRef.current === "off";
+          setVim(on ? "insert" : "off");
+          updatePrefs({ vim: on });
+          notice(on ? "vim mode on — esc for normal, i to insert" : "vim mode off");
+          return;
+        }
         case "theme": {
           echo(text);
           const name = arg.toLowerCase();
@@ -776,13 +812,16 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           const argId = rest.join(" ").trim();
           if (sub === "import") {
             void (async () => {
-              const cands = importableEnvCreds();
-              if (!cands.length) {
-                notice("nothing to import — no new provider keys in your environment");
+              const keys = importableEnvCreds();
+              const cloud = importableCloudCreds();
+              if (!keys.length && !cloud.length) {
+                notice("nothing to import — no new provider keys or cloud creds found");
                 return;
               }
-              for (const c of cands) await importEnvCred(c);
-              notice(`imported ${cands.length} account${cands.length > 1 ? "s" : ""}: ${cands.map((c) => c.provider).join(", ")}`);
+              for (const c of keys) await importEnvCred(c);
+              for (const c of cloud) await importCloudCred(c);
+              const names = [...keys.map((c) => c.provider), ...cloud.map((c) => c.provider)];
+              notice(`imported ${names.length} account${names.length > 1 ? "s" : ""}: ${names.join(", ")}`);
             })();
             return;
           }
@@ -1073,7 +1112,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         return;
       }
     }
-    const action = applyKey(editRef.current, input, key);
+    const action = applyKey(editRef.current, input, key, vimRef.current === "off" ? undefined : { normal: vimRef.current === "normal" });
     if (busyRef.current) {
       if (action.type === "interrupt") {
         interruptedRef.current = true;
@@ -1107,6 +1146,10 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         }
         break;
       }
+      case "vim":
+        if (action.state) setEdit(action.state);
+        setVim(action.to);
+        break;
       case "none":
         break;
     }
@@ -1160,6 +1203,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         <Text color={color.accentDim}>!</Text>
         <Text color={color.dim}>shell</Text>
       </Box>
+      {firstRunRef.current ? (
+        <Box marginTop={1} flexDirection="column" alignItems="center">
+          <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
+          <Text color={color.faint}>{demo ? "set ANTHROPIC_API_KEY (or another provider) to start — running in demo mode" : "/theme to restyle · /config inline for native scroll + copy"}</Text>
+        </Box>
+      ) : null}
     </Box>
   );
 
@@ -1191,7 +1240,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       {perm ? (
         <PermissionPrompt req={perm} width={width} />
       ) : (
-        <Composer value={edit.value} cursor={edit.cursor} placeholder={mode === "plan" ? "describe what to plan…" : "ask anything"} busy={busy} width={width} />
+        <Composer value={edit.value} cursor={edit.cursor} placeholder={mode === "plan" ? "describe what to plan…" : "ask anything"} busy={busy} width={width} vim={vim} />
       )}
       <StatusBar model={modelLabel} branch={branch} routing={routing} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={effort} />
     </>

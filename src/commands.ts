@@ -24,6 +24,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/keys", usage: "/keys", desc: "show keyboard shortcuts" },
   { name: "/theme", usage: "/theme [dark|light|mono|solarized]", desc: "switch the color theme" },
   { name: "/config", usage: "/config [key value]", desc: "show or set saved prefs (theme, effort, inline, notify)" },
+  { name: "/vim", usage: "/vim", desc: "toggle vim keybindings in the composer" },
   { name: "/init", usage: "/init", desc: "survey the repo and write GEARBOX.md" },
   { name: "/memory", usage: "/memory [note]", desc: "show remembered facts, or add one (also: #note)" },
   { name: "/context", usage: "/context", desc: "show the working-set breakdown (tokens per section)" },

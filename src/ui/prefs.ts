@@ -12,6 +12,7 @@ export interface Prefs {
   fullscreen?: boolean; // false → inline mode (native scroll + select-to-copy)
   ghost?: string; // mascot skin
   onboarded?: boolean; // first-run screen shown
+  vim?: boolean; // composer vim keybindings
 }
 
 function file(): string {

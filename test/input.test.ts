@@ -80,3 +80,20 @@ test("kill bindings respect line boundaries in multi-line input", () => {
   // ⌃U on line 1 (cursor after 'beta ') deletes only to that line's start
   expect(applyKey({ value: v, cursor: 11 }, "u", K({ ctrl: true }))).toEqual({ type: "edit", state: { value: "alpha\ngamma", cursor: 6 } });
 })
+
+test("vim: insert-mode esc switches to normal; normal-mode i/a/A/I switch back", () => {
+  expect(applyKey({ value: "ab", cursor: 1 }, "", K({ escape: true }), { normal: false })).toEqual({ type: "vim", to: "normal" });
+  expect(applyKey({ value: "ab", cursor: 1 }, "i", K(), { normal: true })).toEqual({ type: "vim", to: "insert" });
+  expect(applyKey({ value: "ab", cursor: 0 }, "a", K(), { normal: true })).toEqual({ type: "vim", to: "insert", state: { value: "ab", cursor: 1 } });
+  expect(applyKey({ value: "ab", cursor: 0 }, "A", K(), { normal: true })).toEqual({ type: "vim", to: "insert", state: { value: "ab", cursor: 2 } });
+});
+
+test("vim normal: hjwbx movement + edits", () => {
+  expect(applyKey({ value: "foo bar", cursor: 7 }, "b", K(), { normal: true })).toEqual({ type: "edit", state: { value: "foo bar", cursor: 4 } });
+  expect(applyKey({ value: "foo bar", cursor: 0 }, "w", K(), { normal: true })).toEqual({ type: "edit", state: { value: "foo bar", cursor: 4 } });
+  expect(applyKey({ value: "abc", cursor: 1 }, "x", K(), { normal: true })).toEqual({ type: "edit", state: { value: "ac", cursor: 1 } });
+  expect(applyKey({ value: "hello world", cursor: 5 }, "D", K(), { normal: true })).toEqual({ type: "edit", state: { value: "hello", cursor: 5 } });
+  expect(applyKey({ value: "x", cursor: 0 }, "$", K(), { normal: true })).toEqual({ type: "edit", state: { value: "x", cursor: 1 } });
+  // ⏎ still submits from normal mode
+  expect(applyKey({ value: "x", cursor: 1 }, "", K({ return: true }), { normal: true }).type).toBe("submit");
+})

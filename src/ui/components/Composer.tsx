@@ -12,12 +12,14 @@ export function Composer({
   placeholder,
   busy,
   width,
+  vim = "off",
 }: {
   value: string;
   cursor: number;
   placeholder: string;
   busy: boolean;
   width: number;
+  vim?: "off" | "insert" | "normal";
 }) {
   const lines = value.split("\n");
   const { lineIdx: curLine, col: curCol } = caretPos(value, cursor);
@@ -26,7 +28,14 @@ export function Composer({
   return (
     <Box flexDirection="column" width={width} marginTop={1}>
       <Box paddingX={1}>
-        <Text color={color.faint}>{glyph.rule.repeat(Math.max(width - 2, 8))}</Text>
+        {vim !== "off" ? (
+          <>
+            <Text color={vim === "normal" ? color.accent : color.dim} bold>{vim === "normal" ? " NORMAL " : " INSERT "}</Text>
+            <Text color={color.faint}>{glyph.rule.repeat(Math.max(width - 11, 4))}</Text>
+          </>
+        ) : (
+          <Text color={color.faint}>{glyph.rule.repeat(Math.max(width - 2, 8))}</Text>
+        )}
       </Box>
       {busy ? (
         <Box paddingX={1}>
