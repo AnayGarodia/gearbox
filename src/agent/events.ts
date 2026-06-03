@@ -11,7 +11,8 @@ export type DiffLine = { sign: "+" | "-"; text: string };
 
 export type AgentEvent =
   | { type: "text"; text: string } // a chunk of assistant prose
-  | { type: "tool-start"; id: string; name: string; arg: string } // tool call began
+  | { type: "tool-start"; id: string; name: string; arg: string } // tool call began (fires as input starts streaming)
+  | { type: "tool-stream"; id: string; arg?: string; delta?: string } // tool input streaming: `arg` updates the head, `delta` appends streamed content (e.g. a file being written)
   | { type: "tool-end"; id: string; ok: boolean; summary: string; diff?: DiffLine[] } // tool call finished
   | { type: "done"; usage: Usage } // turn complete
   | { type: "error"; message: string };

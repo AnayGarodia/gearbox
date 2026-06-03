@@ -1,7 +1,13 @@
 import React from "react";
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach } from "bun:test";
 import { render } from "ink-testing-library";
 import { Transcript } from "../src/ui/components/Transcript.tsx";
+
+// Pin the mascot to half-blocks so render assertions are deterministic regardless
+// of which terminal runs the tests (kitty/Ghostty would emit image placeholders).
+beforeEach(() => {
+  process.env.GEARBOX_GHOST = "blocks";
+});
 import { Banner } from "../src/ui/components/Banner.tsx";
 import { App } from "../src/ui/App.tsx";
 import { FixedSelector } from "../src/model/selector.ts";
@@ -31,8 +37,10 @@ test("transcript renders user, assistant, tools, error with the right glyphs", (
   expect(f).toContain("42 lines");
   expect(f).toContain("run_shell");
   expect(f).toContain("rate limited");
-  expect(f).toContain("✓");
-  expect(f).toContain("✗");
+  expect(f).toContain("▎"); // user spine
+  expect(f).toContain("⏺"); // tool call marker
+  expect(f).toContain("⎿"); // tool result connector
+  expect(f).toContain("▲"); // error marker
 });
 
 test("app initial render: banner, demo label, empty-state hint, input", () => {
@@ -47,5 +55,5 @@ test("app initial render: banner, demo label, empty-state hint, input", () => {
   expect(f).toContain("gearbox");
   expect(f).toContain("demo · no key");
   expect(f).toContain("every model");
-  expect(f).toContain("ask gearbox");
+  expect(f).toContain("ask anything");
 });

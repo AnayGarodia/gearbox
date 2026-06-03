@@ -1,11 +1,13 @@
 // Provider layer: maps a friendly model id to an AI SDK model instance.
 // Multi-provider from day one so routing (later) just scores over MODELS.
 // This is the ONLY file that touches a concrete provider SDK.
-import { anthropic } from "@ai-sdk/anthropic";
-import { openai } from "@ai-sdk/openai";
-import { google } from "@ai-sdk/google";
-import { deepseek } from "@ai-sdk/deepseek";
+import { anthropic, createAnthropic } from "@ai-sdk/anthropic";
+import { openai, createOpenAI } from "@ai-sdk/openai";
+import { google, createGoogleGenerativeAI } from "@ai-sdk/google";
+import { deepseek, createDeepSeek } from "@ai-sdk/deepseek";
 import type { LanguageModel } from "ai";
+import { accountsForProvider } from "./accounts/store.ts";
+import type { ResolvedCreds } from "./accounts/types.ts";
 
 export type ProviderId = "anthropic" | "openai" | "google" | "deepseek";
 
@@ -15,6 +17,11 @@ export interface ModelSpec {
   sdkId: string; // the provider's own model string
   label: string; // short display name, e.g. "sonnet-4.6"
   contextWindow: number; // approx tokens; used for the context indicator
+  // Routing hints (seeded; the full corpus lives in src/model/profiles.ts).
+  // Optional + additive so nothing breaks; the router will read these later.
+  cost?: { inUSDPerMtok: number; outUSDPerMtok: number };
+  speed?: { ttftMs: number; tps: number };
+  quality?: number; // 0–1, e.g. SWE-bench Verified
 }
 
 // The registry. Adding a model is data, not code. Routing will score over this list.
@@ -35,23 +42,33 @@ const ENV_KEY: Record<ProviderId, string> = {
   deepseek: "DEEPSEEK_API_KEY",
 };
 
+// Available if a stored account exists for it OR a key is in the env (back-compat
+// + the zero-config demo path). Accounts are the durable path; env is the fallback.
 export function providerAvailable(p: ProviderId): boolean {
-  return Boolean(process.env[ENV_KEY[p]]);
+  return accountsForProvider(p).length > 0 || Boolean(process.env[ENV_KEY[p]]);
 }
 
 export function findModel(idOrLabel: string): ModelSpec | undefined {
   return MODELS.find((m) => m.id === idOrLabel || m.label === idOrLabel);
 }
 
-export function resolveModel(spec: ModelSpec): LanguageModel {
+// Build the AI SDK model instance. With `creds` (from an account) we configure
+// the provider explicitly; without them we use the env-default instances
+// (back-compat + demo). Any `creds.baseURL` routes through the OpenAI wire
+// protocol — that one path covers every openai-compat provider, gateway, and
+// local server, so adding those is data (a catalog row), not code here.
+export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageModel {
+  if (creds?.baseURL) {
+    return createOpenAI({ baseURL: creds.baseURL, apiKey: creds.apiKey, headers: creds.headers })(spec.sdkId);
+  }
   switch (spec.provider) {
     case "anthropic":
-      return anthropic(spec.sdkId);
+      return creds?.apiKey ? createAnthropic({ apiKey: creds.apiKey })(spec.sdkId) : anthropic(spec.sdkId);
     case "openai":
-      return openai(spec.sdkId);
+      return creds?.apiKey ? createOpenAI({ apiKey: creds.apiKey })(spec.sdkId) : openai(spec.sdkId);
     case "google":
-      return google(spec.sdkId);
+      return creds?.apiKey ? createGoogleGenerativeAI({ apiKey: creds.apiKey })(spec.sdkId) : google(spec.sdkId);
     case "deepseek":
-      return deepseek(spec.sdkId);
+      return creds?.apiKey ? createDeepSeek({ apiKey: creds.apiKey })(spec.sdkId) : deepseek(spec.sdkId);
   }
 }

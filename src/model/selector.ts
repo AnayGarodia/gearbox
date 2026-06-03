@@ -10,7 +10,11 @@ export interface Task {
   prompt: string;
   // Future routing inputs live here (classified type, touched files, history
   // size, latency class). Adding them must not change the interface shape for
-  // callers — they always just hand over a Task.
+  // callers — they always just hand over a Task. All optional; FixedSelector
+  // ignores them, so the seam stays intact until the router reads them.
+  kind?: "code" | "search" | "summarize" | "classify" | "plan" | "chat";
+  estTokens?: number; // estimated working-set size for this turn
+  touchedFiles?: string[]; // files in play, for locality-aware routing
 }
 
 export interface ModelChoice {

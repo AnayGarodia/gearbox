@@ -8,3 +8,4 @@ dist/
 *.sqlite-wal
 *.sqlite-shm
 # experiments keep their own gitignore
+.gstack/

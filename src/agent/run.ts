@@ -3,22 +3,17 @@
 // silently break text/tool rendering.
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
+import type { ResolvedCreds } from "../accounts/types.ts";
 import { tools, readOnlyTools } from "../tools.ts";
 import { config } from "../config.ts";
+import { BASE_SYSTEM, PLAN_ADDENDUM } from "../context/builder.ts";
 import type { OnEvent, Usage } from "./events.ts";
 
-const PLAN_ADDENDUM = `
-
-# PLAN MODE (read-only)
-You are in read-only plan mode. Investigate using read-only tools only, then
-produce a concise, numbered plan for the change. DO NOT modify files or run
-commands. End by noting you're ready to implement once the user approves.`;
-
-const SYSTEM = `You are Gearbox, a precise terminal coding agent.
-Work in small, verifiable steps. Use the tools to read before you write, and
-run tests or commands to check your work rather than assuming. Prefer the
-smallest change that solves the problem. Be concise in prose; let the diffs and
-test output speak. When done, say briefly what you changed and how you verified it.`;
+// Fallback prompt when the caller doesn't pass a prebuilt `system`. The Context
+// Engine (src/context/builder.ts) normally assembles the system prompt (base +
+// plan + project memory + repo map + retrieved code); these are the same base
+// pieces so a bare runTask call still behaves correctly.
+const SYSTEM = BASE_SYSTEM;
 
 const argSummary = (name: string, input: any): string => {
   if (!input || typeof input !== "object") return "";
@@ -26,6 +21,95 @@ const argSummary = (name: string, input: any): string => {
   if ("path" in input) return String(input.path);
   return Object.values(input).map(String).join(" ").slice(0, 60);
 };
+
+// Which JSON field of each tool's input is worth STREAMING as content (so the
+// user watches a file get written instead of seeing it dumped at once). The
+// "head" field is the short label shown next to the tool (path / command).
+const CONTENT_FIELD: Record<string, string> = { write_file: "content", edit_file: "replace" };
+const HEAD_FIELD: Record<string, string> = { run_shell: "command" }; // default: "path"
+
+// Incrementally decodes ONE JSON string field out of a partial JSON buffer as it
+// streams in (the SDK hands us raw `inputTextDelta` chunks of the tool input).
+// Stateful so we only decode newly-arrived bytes — returns the freshly decoded
+// characters each call, and never advances past an incomplete trailing escape.
+export class FieldStreamer {
+  private buf = "";
+  private pos = 0;
+  private started = false;
+  private done = false;
+  constructor(private field: string) {}
+  push(chunk: string): string {
+    this.buf += chunk;
+    if (this.done) return "";
+    if (!this.started) {
+      const k = this.buf.indexOf(`"${this.field}"`);
+      if (k < 0) return "";
+      let i = k + this.field.length + 2;
+      while (i < this.buf.length && /\s/.test(this.buf[i]!)) i++;
+      if (this.buf[i] !== ":") return "";
+      i++;
+      while (i < this.buf.length && /\s/.test(this.buf[i]!)) i++;
+      if (this.buf[i] === undefined) return "";
+      if (this.buf[i] !== '"') return ""; // value isn't a string / not here yet
+      this.started = true;
+      this.pos = i + 1;
+    }
+    const ESC: Record<string, string> = { n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", '"': '"', "\\": "\\", "/": "/" };
+    let out = "";
+    let i = this.pos;
+    while (i < this.buf.length) {
+      const c = this.buf[i]!;
+      if (c === '"') { this.done = true; i++; break; } // closing quote
+      if (c === "\\") {
+        const n = this.buf[i + 1];
+        if (n === undefined) break; // incomplete escape — wait for more
+        if (n === "u") {
+          if (i + 6 > this.buf.length) break; // incomplete \uXXXX — wait
+          out += String.fromCharCode(parseInt(this.buf.slice(i + 2, i + 6), 16));
+          i += 6;
+          continue;
+        }
+        out += ESC[n] ?? n;
+        i += 2;
+        continue;
+      }
+      out += c;
+      i++;
+    }
+    this.pos = i;
+    return out;
+  }
+}
+
+// Decode a short string field in full from a (possibly partial) JSON buffer —
+// used for the head label (path/command), which is short and arrives early.
+export function readField(buf: string, field: string): string | null {
+  const k = buf.indexOf(`"${field}"`);
+  if (k < 0) return null;
+  let i = k + field.length + 2;
+  while (i < buf.length && /\s/.test(buf[i]!)) i++;
+  if (buf[i] !== ":") return null;
+  i++;
+  while (i < buf.length && /\s/.test(buf[i]!)) i++;
+  if (buf[i] !== '"') return null;
+  i++;
+  let out = "";
+  while (i < buf.length) {
+    const c = buf[i]!;
+    if (c === '"') break;
+    if (c === "\\") {
+      const n = buf[i + 1];
+      if (n === undefined) break;
+      const ESC: Record<string, string> = { n: "\n", t: "\t", r: "\r", '"': '"', "\\": "\\", "/": "/" };
+      out += ESC[n] ?? n;
+      i += 2;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
 
 const resultSummary = (out: any): string => {
   const s = typeof out === "string" ? out : JSON.stringify(out);
@@ -40,33 +124,115 @@ export async function runTask(opts: {
   onEvent: OnEvent;
   signal?: AbortSignal;
   plan?: boolean;
+  system?: string; // prebuilt by the Context Engine; falls back to SYSTEM
+  _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
 }): Promise<{ messages: ModelMessage[]; usage: Usage }> {
   const { model, messages, onEvent, signal, plan } = opts;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
 
-  const result = streamText({
-    model: resolveModel(model),
-    system: plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM,
-    messages,
-    tools: plan ? readOnlyTools : tools,
-    stopWhen: stepCountIs(config.maxSteps),
-    abortSignal: signal,
-  });
+  const result = opts._stream
+    ? null
+    : streamText({
+        model: resolveModel(model),
+        system: opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM),
+        messages,
+        tools: plan ? readOnlyTools : tools,
+        stopWhen: stepCountIs(config.maxSteps),
+        abortSignal: signal,
+      });
+  const parts: AsyncIterable<any> = opts._stream ?? (result!.fullStream as AsyncIterable<any>);
 
   const names = new Map<string, string>();
+  // Per-tool-call streaming state: the head label (path/command) is read in full
+  // from the growing buffer; the content field (file body) is decoded incrementally.
+  type ToolStream = { name: string; rawBuf: string; headField: string; lastHead: string; content: FieldStreamer | null; pending: string };
+  const streams = new Map<string, ToolStream>();
+  const started = new Set<string>();
+  const openStream = (id: string, name: string): ToolStream => {
+    const st: ToolStream = {
+      name,
+      rawBuf: "",
+      headField: HEAD_FIELD[name] ?? "path",
+      lastHead: "",
+      content: CONTENT_FIELD[name] ? new FieldStreamer(CONTENT_FIELD[name]!) : null,
+      pending: "",
+    };
+    streams.set(id, st);
+    return st;
+  };
+  // Flush whole completed lines (coalesce per line, not per token — fewer UI
+  // updates). `final` flushes whatever's left when the input ends. Returns true
+  // if anything was emitted.
+  const flush = (id: string, st: ToolStream, final: boolean): boolean => {
+    const cut = final ? st.pending.length : st.pending.lastIndexOf("\n") + 1;
+    if (cut <= 0) return false;
+    onEvent({ type: "tool-stream", id, delta: st.pending.slice(0, cut) });
+    st.pending = st.pending.slice(cut);
+    return true;
+  };
+
+  // The model delivers text/tool-input in NETWORK BURSTS — dozens of deltas can
+  // land in a few milliseconds, processed back-to-back here on microtasks. Ink
+  // (the renderer) only repaints when the event loop gets a macrotask turn, so
+  // without yielding it paints once per burst and streaming looks like one dump.
+  // Yield at most ~60fps so the UI actually shows content arriving live. Skipped
+  // for the injected test stream (no terminal to paint).
+  let lastPaint = 0;
+  const maybePaint = async () => {
+    if (opts._stream) return;
+    const now = Date.now();
+    if (now - lastPaint < 16) return;
+    lastPaint = now;
+    await new Promise((r) => setTimeout(r, 0));
+  };
   try {
-    for await (const part of result.fullStream as AsyncIterable<any>) {
+    for await (const part of parts) {
       switch (part.type) {
         case "text-delta": {
           const t = part.text ?? part.textDelta ?? "";
-          if (t) onEvent({ type: "text", text: t });
+          if (t) { onEvent({ type: "text", text: t }); await maybePaint(); }
+          break;
+        }
+        case "tool-input-start": {
+          const id = part.toolCallId ?? part.id ?? String(names.size);
+          const name = part.toolName ?? part.name ?? "tool";
+          names.set(id, name);
+          started.add(id);
+          openStream(id, name);
+          onEvent({ type: "tool-start", id, name, arg: "" });
+          break;
+        }
+        case "tool-input-delta": {
+          const id = part.toolCallId ?? part.id ?? "";
+          const chunk = part.inputTextDelta ?? part.delta ?? "";
+          if (!chunk) break;
+          const st = streams.get(id) ?? openStream(id, names.get(id) ?? "tool");
+          if (!started.has(id)) { started.add(id); onEvent({ type: "tool-start", id, name: st.name, arg: "" }); }
+          st.rawBuf += chunk;
+          const head = readField(st.rawBuf, st.headField);
+          if (head != null && head !== st.lastHead) { st.lastHead = head; onEvent({ type: "tool-stream", id, arg: head }); }
+          if (st.content) {
+            st.pending += st.content.push(chunk);
+            if (flush(id, st, false)) await maybePaint(); // emit completed lines, let the UI paint
+          }
           break;
         }
         case "tool-call": {
           const id = part.toolCallId ?? part.id ?? String(names.size);
           const name = part.toolName ?? part.name ?? "tool";
           names.set(id, name);
-          onEvent({ type: "tool-start", id, name, arg: argSummary(name, part.input ?? part.args) });
+          const arg = argSummary(name, part.input ?? part.args);
+          // If the input streamed, the head is already set — just finalize it and
+          // flush any trailing partial line. If it didn't (provider sent only the
+          // final call), create the item now.
+          const st = streams.get(id);
+          if (started.has(id)) {
+            if (st) flush(id, st, true);
+            onEvent({ type: "tool-stream", id, arg });
+          } else {
+            started.add(id);
+            onEvent({ type: "tool-start", id, name, arg });
+          }
           break;
         }
         case "tool-result": {
@@ -102,11 +268,13 @@ export async function runTask(opts: {
   }
 
   let next = messages;
-  try {
-    const resp = await result.response;
-    next = [...messages, ...(resp.messages as ModelMessage[])];
-  } catch {
-    /* keep prior messages; multi-turn still works from input history */
+  if (result) {
+    try {
+      const resp = await result.response;
+      next = [...messages, ...(resp.messages as ModelMessage[])];
+    } catch {
+      /* keep prior messages; multi-turn still works from input history */
+    }
   }
   onEvent({ type: "done", usage });
   return { messages: next, usage };

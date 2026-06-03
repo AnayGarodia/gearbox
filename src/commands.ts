@@ -11,9 +11,16 @@ export interface CommandMeta {
 
 export const COMMANDS: CommandMeta[] = [
   { name: "/help", usage: "/help", desc: "show commands" },
-  { name: "/model", usage: "/model [name]", desc: "show or switch the model" },
+  { name: "/model", usage: "/model [name|auto]", desc: "show models, pin one, or /model auto to route per task" },
   { name: "/plan", usage: "/plan", desc: "toggle read-only plan mode (or shift+tab)" },
-  { name: "/clear", usage: "/clear", desc: "clear the conversation" },
+  { name: "/init", usage: "/init", desc: "survey the repo and write GEARBOX.md" },
+  { name: "/memory", usage: "/memory [note]", desc: "show remembered facts, or add one (also: #note)" },
+  { name: "/context", usage: "/context", desc: "show the working-set breakdown (tokens per section)" },
+  { name: "/compact", usage: "/compact", desc: "summarize older turns now to free up context" },
+  { name: "/ghost", usage: "/ghost [mood]", desc: "change Boo's mood (base/mint/pink/golden/shades)" },
+  { name: "/yolo", usage: "/yolo", desc: "toggle yolo mode (run writes/edits/shell without asking)" },
+  { name: "/clear", usage: "/clear", desc: "clear the conversation (starts a new session)" },
+  { name: "/resume", usage: "/resume [n]", desc: "list saved sessions, or resume one" },
   { name: "/retry", usage: "/retry", desc: "re-run your last prompt" },
   { name: "/cwd", usage: "/cwd", desc: "show the working directory" },
   { name: "/exit", usage: "/exit", desc: "quit gearbox" },
@@ -30,6 +37,15 @@ export function matchCommands(draft: string): CommandMeta[] {
 export function helpText(): string {
   const rows = COMMANDS.map((c) => `  ${c.usage.padEnd(16)} ${c.desc}`);
   return ["commands", ...rows].join("\n");
+}
+
+/** Render the Context Engine's working-set breakdown (one row per section). */
+export function formatContextBreakdown(sections: { name: string; tokens: number }[], contextWindow?: number): string {
+  const total = sections.reduce((s, x) => s + x.tokens, 0);
+  const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  const rows = sections.map((s) => `  ${s.name.padEnd(10)} ${fmt(s.tokens).padStart(8)}`);
+  const pct = contextWindow ? `  (${Math.round((total / contextWindow) * 100)}% of ${fmt(contextWindow)} window)` : "";
+  return ["context · working set sent this turn", ...rows, `  ${"total".padEnd(10)} ${fmt(total).padStart(8)}${pct}`].join("\n");
 }
 
 const ENV_LABEL: Record<ProviderId, string> = {

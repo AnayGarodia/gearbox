@@ -13,6 +13,20 @@ async function stream(text: string, onEvent: OnEvent, chunk = 3, delay = 8) {
   }
 }
 
+// Stream a file write the way the real loop does (tool-start → streamed content →
+// tool-end with the diff), so demo mode shows off live file streaming with no key.
+async function streamWrite(id: string, path: string, content: string, onEvent: OnEvent, stop: () => boolean) {
+  onEvent({ type: "tool-start", id, name: "write_file", arg: "" });
+  onEvent({ type: "tool-stream", id, arg: path });
+  for (let i = 0; i < content.length; i += 8) {
+    if (stop()) return;
+    onEvent({ type: "tool-stream", id, delta: content.slice(i, i + 8) });
+    await sleep(16);
+  }
+  const diff = content.replace(/\n$/, "").split("\n").map((text) => ({ sign: "+" as const, text }));
+  onEvent({ type: "tool-end", id, ok: true, summary: `wrote ${path} (+${diff.length} −0)`, diff });
+}
+
 export async function runTaskMock(opts: {
   prompt: string;
   messages: ModelMessage[];
@@ -33,6 +47,12 @@ export async function runTaskMock(opts: {
   await sleep(220);
   if (stop()) return done(messages, onEvent);
   onEvent({ type: "tool-end", id: "2", ok: true, summary: "renders the Ink app · 38 lines" });
+
+  await stream(`\nHere's a quick file — watch it stream in:\n`, onEvent);
+  if (stop()) return done(messages, onEvent);
+  const demoFile = `# hello.py — written live in demo mode\n\ndef greet(name: str) -> str:\n    return f"Hello, {name}!"\n\nif __name__ == "__main__":\n    for who in ("world", "gearbox", "Boo"):\n        print(greet(who))\n`;
+  await streamWrite("3", "hello.py", demoFile, onEvent, stop);
+  if (stop()) return done(messages, onEvent);
 
   await stream(`\nThis is demo mode — no API key is set, so I'm not calling a real model. ` +
     `Set ANTHROPIC_API_KEY (or OPENAI / GOOGLE / DEEPSEEK) and I'll actually work on: "${prompt}".\n`, onEvent);
