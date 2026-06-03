@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdin } from "ink";
 import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
@@ -15,7 +15,8 @@ import { itemsToLines } from "./lines.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb } from "./character.ts";
-import { color, glyph } from "./theme.ts";
+import { color, glyph, setTheme, THEME_NAMES } from "./theme.ts";
+import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
@@ -121,6 +122,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const [queued, setQueued] = useState<string[]>([]);
   const ctrlCRef = useRef(0); // timestamp of the last bare ⌃C (for "press again to quit")
   const escRef = useRef(0); // timestamp of the last bare esc (for double-esc rewind)
+  const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
   // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
   // text is kept here and expanded back in on submit.
   const pasteStoreRef = useRef<Map<string, string>>(new Map());
@@ -131,6 +133,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const [scrollTop, setScrollTop] = useState(0);
   const [expandAll, setExpandAll] = useState(false); // ⌃O: show full diffs/tool output
   const [search, setSearchState] = useState<{ q: string; idx: number } | null>(null); // ⌃R reverse-i-search
+  const [, bumpTheme] = useReducer((x: number) => x + 1, 0); // forces a re-render after setTheme mutates `color`
   const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const setSearch = (s: { q: string; idx: number } | null) => {
     searchRef.current = s;
@@ -541,7 +544,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           if (lingerRef.current) clearTimeout(lingerRef.current);
           lingerRef.current = setTimeout(() => setLinger(false), 1500);
           // Nudge the user back for long turns (likely stepped away): bell + notify.
-          if (Date.now() - turnStart > 8000) {
+          if (Date.now() - turnStart > 8000 && notifyRef.current) {
             bell();
             notify("gearbox", hadError ? "turn finished with an error" : "turn finished");
           }
@@ -641,6 +644,50 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           echo(text);
           notice(KEYS_HELP);
           return;
+        case "theme": {
+          echo(text);
+          const name = arg.toLowerCase();
+          if (!name) {
+            notice(`themes: ${THEME_NAMES.join(" · ")} — /theme <name>`);
+          } else if (setTheme(name)) {
+            updatePrefs({ theme: name });
+            bumpTheme();
+            notice(`theme: ${name}`);
+          } else {
+            notice(`unknown theme "${name}" — try: ${THEME_NAMES.join(" · ")}`);
+          }
+          return;
+        }
+        case "config": {
+          echo(text);
+          const [key, val] = arg.split(/\s+/);
+          const p = loadPrefs();
+          if (!key) {
+            notice(
+              `config (saved in ~/.gearbox/prefs.json):\n` +
+                `  theme   ${p.theme ?? "dark"}\n` +
+                `  inline  ${p.fullscreen === false ? "on" : "off"} (native scroll + select-to-copy; restart to apply)\n` +
+                `  notify  ${p.notify === false ? "off" : "on"}\n` +
+                `  use: /config <theme|inline|notify> <value>`,
+            );
+            return;
+          }
+          const on = /^(on|true|yes|1)$/i.test(val ?? "");
+          if (key === "theme") {
+            if (val && setTheme(val)) { updatePrefs({ theme: val }); bumpTheme(); notice(`theme: ${val}`); }
+            else notice(`themes: ${THEME_NAMES.join(" · ")}`);
+          } else if (key === "inline") {
+            updatePrefs({ fullscreen: !on });
+            notice(`inline mode ${on ? "on" : "off"} — restart gearbox to apply`);
+          } else if (key === "notify") {
+            notifyRef.current = on;
+            updatePrefs({ notify: on });
+            notice(`notifications ${on ? "on" : "off"}`);
+          } else {
+            notice("config keys: theme · inline · notify");
+          }
+          return;
+        }
         case "yolo": {
           echo(text);
           const next = !isYolo();

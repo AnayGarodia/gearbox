@@ -10,6 +10,8 @@ import { RoutingSelector } from "./model/router.ts";
 import { anyProviderAvailable } from "./config.ts";
 import { MODELS } from "./providers.ts";
 import { detectImageMode, setImageMode, transmitAll } from "./ui/image.ts";
+import { loadPrefs } from "./ui/prefs.ts";
+import { setTheme } from "./ui/theme.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 
@@ -65,6 +67,46 @@ if (args.includes("--version") || args.includes("-v")) {
   process.exit(0);
 }
 
+// `gearbox auth …` — headless account/credential management (no TUI). Mirrors
+// the in-app /accounts command so you can set up keys from a script or SSH.
+if (args[0] === "auth") {
+  const { listAccounts, loadAccounts, removeAccount } = await import("./accounts/store.ts");
+  const { importableEnvCreds, importEnvCred } = await import("./accounts/detect.ts");
+  const { addApiKeyAccount, addByPastedKey, testAccount, addableProviders } = await import("./accounts/onboard.ts");
+  const { detectProviderByKey } = await import("./accounts/catalog.ts");
+  const sub = args[1];
+  const rest = args.slice(2);
+  if (sub === "list" || !sub) {
+    const f = loadAccounts();
+    if (!f.accounts.length) console.log("No accounts yet. Add one:  gearbox auth add <key>   (or)   gearbox auth import");
+    for (const a of f.accounts) console.log(`${f.defaults[a.provider] === a.id ? "*" : " "} ${a.id.padEnd(22)} ${a.label}${a.exec === "cli" ? " · cli" : ""}`);
+    const imp = importableEnvCreds();
+    if (imp.length) console.log(`\nImportable from your env (gearbox auth import): ${imp.map((c) => c.envVar).join(", ")}`);
+  } else if (sub === "import") {
+    const cands = importableEnvCreds();
+    for (const c of cands) await importEnvCred(c);
+    console.log(cands.length ? `Imported ${cands.length}: ${cands.map((c) => c.provider).join(", ")}` : "Nothing to import.");
+  } else if (sub === "add") {
+    const res = rest[0] && !rest[1] && detectProviderByKey(rest[0]) ? await addByPastedKey(rest[0]) : rest[0] && rest[1] ? await addApiKeyAccount(rest[0], rest[1]) : { ok: false, message: "usage: gearbox auth add <key>   |   gearbox auth add <provider> <key>" };
+    console.log(res.message);
+    if (res.ok && res.account) {
+      const t = await testAccount(res.account);
+      console.log(t.ok ? "  test: ✓ " + t.message : "  test: ✗ " + t.message + " (stored anyway)");
+    }
+  } else if (sub === "test" && rest[0]) {
+    const a = listAccounts().find((x) => x.id === rest[0]);
+    console.log(a ? `${rest[0]}: ${(await testAccount(a)).message}` : `no account ${rest[0]}`);
+  } else if (sub === "rm" && rest[0]) {
+    await removeAccount(rest[0]);
+    console.log(`removed ${rest[0]}`);
+  } else if (sub === "providers") {
+    for (const p of addableProviders()) console.log(`${p.id.padEnd(16)} ${p.label} (${p.group})`);
+  } else {
+    console.log("gearbox auth [list|import|add <key>|add <provider> <key>|test <id>|rm <id>|providers]");
+  }
+  process.exit(0);
+}
+
 const mi = args.indexOf("--model");
 const preferred = mi >= 0 ? args[mi + 1] : undefined;
 const demo = !anyProviderAvailable();
@@ -88,7 +130,11 @@ if (process.stdout.isTTY && imageMode === "kitty") process.stdout.write(transmit
 // is pinned to the bottom, and the transcript is a virtualized scroll region (it
 // renders only the visible lines, so the frame never exceeds the screen). Restore
 // the main screen on every exit path. GEARBOX_INLINE=1 forces plain inline flow.
-const fullscreen = Boolean(process.stdout.isTTY) && process.env.GEARBOX_INLINE !== "1";
+// Inline mode (no alt-screen / no mouse grab) lets the terminal do native
+// scrollback + select-to-copy. Opt in with GEARBOX_INLINE=1 or `/config inline`.
+const uiPrefs = loadPrefs();
+if (uiPrefs.theme) setTheme(uiPrefs.theme); // apply before first render
+const fullscreen = Boolean(process.stdout.isTTY) && process.env.GEARBOX_INLINE !== "1" && uiPrefs.fullscreen !== false;
 const restore = () => {
   if (!process.stdout.isTTY) return;
   process.stdout.write("\x1b[?2004l"); // bracketed paste off

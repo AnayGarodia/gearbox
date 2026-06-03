@@ -1,8 +1,12 @@
 // Slash commands: metadata (for /help + the live palette) and pure helpers
 // (for model list/switch) kept testable and separate from the UI.
 import { MODELS, providerAvailable, findModel, type ProviderId } from "./providers.ts";
+import { catalogProvider } from "./accounts/catalog.ts";
 import { glyph } from "./ui/theme.ts";
 import { fuzzyRank } from "./ui/fuzzy.ts";
+
+// The env var (or generic hint) to set for a provider, for "no key" messages.
+const envHint = (p: string): string => ENV_LABEL[p] ?? catalogProvider(p)?.envVars[0] ?? "an API key";
 
 export interface CommandMeta {
   name: string;
@@ -18,11 +22,13 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard" },
   { name: "/export", usage: "/export [file]", desc: "write the transcript to a file" },
   { name: "/keys", usage: "/keys", desc: "show keyboard shortcuts" },
+  { name: "/theme", usage: "/theme [dark|light|mono|solarized]", desc: "switch the color theme" },
+  { name: "/config", usage: "/config [key value]", desc: "show or set saved prefs (theme, effort, inline, notify)" },
   { name: "/init", usage: "/init", desc: "survey the repo and write GEARBOX.md" },
   { name: "/memory", usage: "/memory [note]", desc: "show remembered facts, or add one (also: #note)" },
   { name: "/context", usage: "/context", desc: "show the working-set breakdown (tokens per section)" },
   { name: "/compact", usage: "/compact", desc: "summarize older turns now to free up context" },
-  { name: "/accounts", usage: "/accounts [import|use <id>|rm <id>]", desc: "manage provider accounts & credentials" },
+  { name: "/accounts", usage: "/accounts [add <key>|import|use <id>|test <id>|rm <id>]", desc: "manage provider accounts & credentials" },
   { name: "/ghost", usage: "/ghost [mood]", desc: "change Boo's mood (base/mint/pink/golden/shades)" },
   { name: "/yolo", usage: "/yolo", desc: "toggle yolo mode (run writes/edits/shell without asking)" },
   { name: "/clear", usage: "/clear", desc: "clear the conversation (starts a new session)" },
@@ -115,12 +121,12 @@ export function resolveModelSwitch(query: string): SwitchResult {
   const available = matches.filter((m) => providerAvailable(m.provider));
 
   if (exact) {
-    if (!providerAvailable(exact.provider)) return { ok: false, message: `${exact.label}: no key for ${exact.provider} — set ${ENV_LABEL[exact.provider]}` };
+    if (!providerAvailable(exact.provider)) return { ok: false, message: `${exact.label}: no account for ${exact.provider} — /accounts add ${exact.provider} <key> or set ${envHint(exact.provider)}` };
     return { ok: true, modelId: exact.id, message: `model → ${exact.label}` };
   }
   if (available.length === 0) {
     const m = matches[0]!;
-    return { ok: false, message: `“${query}” matches ${m.label} but no key for ${m.provider} — set ${ENV_LABEL[m.provider]}` };
+    return { ok: false, message: `“${query}” matches ${m.label} but no account for ${m.provider} — /accounts add ${m.provider} <key> or set ${envHint(m.provider)}` };
   }
   if (available.length > 1) {
     return { ok: false, message: `“${query}” matches ${available.map((m) => m.label).join(", ")} — be more specific` };
