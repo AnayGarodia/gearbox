@@ -25,6 +25,8 @@ import { runTask } from "../agent/run.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount } from "../accounts/store.ts";
 import { importableEnvCreds, importEnvCred } from "../accounts/detect.ts";
+import { addApiKeyAccount, addByPastedKey, testAccount } from "../accounts/onboard.ts";
+import { detectProviderByKey } from "../accounts/catalog.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
@@ -34,7 +36,7 @@ import { helpText, formatModelList, resolveModelSwitch, matchCommands, formatCon
 import { applyKey, type Edit } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
-import { navHistory } from "./history.ts";
+import { navHistory, searchHistory } from "./history.ts";
 import { currentMention, matchFiles, completeMention } from "./mention.ts";
 import { listProjectFiles, expandMentions } from "./files.ts";
 import { useTerminalSize } from "./useTerminalSize.ts";
@@ -118,13 +120,22 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const queueRef = useRef<string[]>([]);
   const [queued, setQueued] = useState<string[]>([]);
   const ctrlCRef = useRef(0); // timestamp of the last bare ⌃C (for "press again to quit")
+  const escRef = useRef(0); // timestamp of the last bare esc (for double-esc rewind)
   // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
   // text is kept here and expanded back in on submit.
   const pasteStoreRef = useRef<Map<string, string>>(new Map());
   const pasteIdRef = useRef(0);
+  const outCharsRef = useRef(0); // streamed output chars this turn (for a live tok/s estimate)
   const [yolo, setYoloState] = useState(isYolo());
   const [perm, setPermState] = useState<PermRequest | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  const [expandAll, setExpandAll] = useState(false); // ⌃O: show full diffs/tool output
+  const [search, setSearchState] = useState<{ q: string; idx: number } | null>(null); // ⌃R reverse-i-search
+  const searchRef = useRef<{ q: string; idx: number } | null>(null);
+  const setSearch = (s: { q: string; idx: number } | null) => {
+    searchRef.current = s;
+    setSearchState(s);
+  };
   const atBottomRef = useRef(true); // follow the live tail unless the user scrolled up
 
   // live "working · Ns" timer so the harness visibly stays alive
@@ -410,6 +421,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
       setBusy(true);
       const turnStart = Date.now();
+      outCharsRef.current = 0;
       if (lingerRef.current) clearTimeout(lingerRef.current);
       setLinger(false);
       setMascotState("thinking");
@@ -424,6 +436,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       const onEvent: OnEvent = (e) => {
         if (e.type === "text") {
           setMascotState("streaming");
+          outCharsRef.current += e.text.length;
           if (curAsstRef.current === null) {
             const id = idRef.current++;
             curAsstRef.current = id;
@@ -740,6 +753,37 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             void removeAccount(argId).then(() => notice(`removed ${argId}`));
             return;
           }
+          if (sub === "add") {
+            // `/accounts add <key>` (paste-detect) or `/accounts add <provider> <key>`.
+            const first = rest[0] ?? "";
+            const second = rest.slice(1).join(" ").trim();
+            void (async () => {
+              let res;
+              if (first && !second && detectProviderByKey(first)) res = await addByPastedKey(first);
+              else if (first && second) res = await addApiKeyAccount(first, second);
+              else {
+                notice("usage: /accounts add <key>  (auto-detects)  ·  or  /accounts add <provider> <key>");
+                return;
+              }
+              if (!res.ok || !res.account) {
+                notice(res.message);
+                return;
+              }
+              notice(`${res.message} — testing…`);
+              const t = await testAccount(res.account);
+              notice(t.ok ? `${res.account!.id}: ${t.message} ✓` : `${res.account!.id} stored, but test failed: ${t.message}`);
+            })();
+            return;
+          }
+          if (sub === "test" && argId) {
+            const a = getAccount(argId);
+            if (!a) {
+              notice(`no account "${argId}" — /accounts to list`);
+              return;
+            }
+            void testAccount(a).then((t) => notice(`${argId}: ${t.ok ? t.message + " ✓" : "failed — " + t.message}`));
+            return;
+          }
           notice(formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()));
           return;
         }
@@ -843,6 +887,27 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     if (next) void runTurn(next);
   }, [busy, runTurn]);
 
+  // Rewind the last user turn back into the composer for editing, dropping that
+  // turn's transcript items + model messages.
+  const rewindLastTurn = () => {
+    const its = itemsRef.current;
+    let ui = -1;
+    for (let i = its.length - 1; i >= 0; i--) if (its[i]!.kind === "user") { ui = i; break; }
+    if (ui < 0) {
+      notice("nothing to rewind");
+      return;
+    }
+    const userText = (its[ui] as Extract<Item, { kind: "user" }>).text;
+    setItems(its.slice(0, ui));
+    const ms = msgRef.current;
+    let mi = -1;
+    for (let i = ms.length - 1; i >= 0; i--) if (ms[i]!.role === "user") { mi = i; break; }
+    if (mi >= 0) msgRef.current = ms.slice(0, mi);
+    curAsstRef.current = null;
+    setEdit({ value: userText, cursor: userText.length });
+    notice("rewound the last turn — edit and resend");
+  };
+
   useInput((input, key) => {
     // Swallow any stray mouse-report bytes so they never land in the composer
     // (the wheel is handled by the raw stdin listener above).
@@ -875,9 +940,46 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       notice("press ⌃C again to quit");
       return;
     }
+    // Reverse-i-search (⌃R): ⌃R opens / steps to the next older match; type to
+    // filter; ⏎ accepts into the composer; esc cancels.
+    if (key.ctrl && input === "r") {
+      const cur = searchRef.current;
+      setSearch(cur ? { q: cur.q, idx: cur.idx + 1 } : { q: "", idx: 0 });
+      return;
+    }
+    if (searchRef.current) {
+      const s = searchRef.current;
+      const match = searchHistory(historyRef.current, s.q, s.idx);
+      if (key.escape) {
+        setSearch(null);
+        return;
+      }
+      if (key.return) {
+        setSearch(null);
+        if (match) setEdit({ value: match, cursor: match.length });
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setSearch({ q: s.q.slice(0, -1), idx: 0 });
+        return;
+      }
+      if (input && !key.ctrl && !key.meta && !key.tab) {
+        setSearch({ q: s.q + input, idx: 0 });
+        return;
+      }
+      return; // swallow everything else while searching
+    }
     // ? on an empty composer → shortcuts cheatsheet (still typeable mid-text).
     if (input === "?" && !editRef.current.value && !busyRef.current && !key.ctrl && !key.meta) {
       notice(KEYS_HELP);
+      return;
+    }
+    // ⌃O — toggle full diffs / tool output (un-truncate the 16-line cap).
+    if (key.ctrl && input === "o") {
+      setExpandAll((x) => {
+        notice(x ? "collapsed long output" : "expanded full diffs & output");
+        return !x;
+      });
       return;
     }
     // ⌃Y — copy the last assistant reply to the clipboard (OSC 52; works over SSH).
@@ -945,9 +1047,19 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         setEdit({ value: r.value, cursor: r.value.length });
         break;
       }
-      case "interrupt":
-        setEdit({ value: "", cursor: 0 });
+      case "interrupt": {
+        // esc clears the composer; esc-esc on an empty composer rewinds the last
+        // turn back into the composer for editing (Claude Code's rewind).
+        const now = Date.now();
+        if (!editRef.current.value && now - escRef.current < 1000) {
+          escRef.current = 0;
+          rewindLastTurn();
+        } else {
+          escRef.current = now;
+          setEdit({ value: "", cursor: 0 });
+        }
         break;
+      }
       case "none":
         break;
     }
@@ -962,7 +1074,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
 
   // The transcript as a flat styled-line buffer, wrapped to the full content width.
   const lineWidth = Math.max(width - 3, 20);
-  const lines = useMemo(() => itemsToLines(items, lineWidth), [items, lineWidth]);
+  const lines = useMemo(() => itemsToLines(items, lineWidth, expandAll), [items, lineWidth, expandAll]);
 
   // Footer height — over-estimated so the fullscreen frame never exceeds the
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
@@ -972,6 +1084,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   if (busy || linger) footer += STATE_GHOST_ROWS + 1; // the fixed-height ghost line (+ marginTop)
   if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
+  if (search) footer += 1;
   if (cmdMatches.length) footer += cmdMatches.length + 1;
   if (shownFiles.length) footer += shownFiles.length + 2;
   const HEADER = 3;
@@ -1005,7 +1118,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
 
   const footerJsx = (
     <>
-      {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} /> : null}
+      {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} tps={elapsed > 0 ? Math.round(outCharsRef.current / 4 / elapsed) : 0} linger={linger && !busy} width={width} /> : null}
       <CommandPalette draft={edit.value} />
       <FilePalette matches={shownFiles} />
       {queued.length ? (
@@ -1019,6 +1132,13 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         <Box paddingX={1} marginTop={1}>
           <Text color={color.accent}>{glyph.notice} {mode === "plan" ? "plan mode" : "auto-accept edits"}</Text>
           <Text color={color.faint}> · {mode === "plan" ? "read-only" : "writes apply without asking; shell still gated"} · shift+tab to cycle</Text>
+        </Box>
+      ) : null}
+      {search ? (
+        <Box paddingX={1}>
+          <Text color={color.accent}>(reverse-i-search)</Text>
+          <Text color={color.text}>`{search.q}`: </Text>
+          <Text color={color.dim}>{searchHistory(historyRef.current, search.q, search.idx) ?? (search.q ? "(no match)" : "")}</Text>
         </Box>
       ) : null}
       {perm ? (

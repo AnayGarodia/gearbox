@@ -205,11 +205,11 @@ export function markdownToLines(md: string, width: number): Line[] {
 }
 
 // ── transcript items → lines ──
-function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number): Line[] {
-  const MAX = 16;
+function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, expand = false): Line[] {
+  const MAX = expand ? Infinity : 16;
   const shown = diff.slice(0, MAX);
   const out: Line[] = shown.map((d) => [{ text: `${d.sign === "+" ? "+" : "−"} ${d.text}`.slice(0, width), color: d.sign === "+" ? color.ok : color.err }]);
-  if (diff.length > MAX) out.push([{ text: `… +${diff.length - MAX} more lines`, color: color.faint }]);
+  if (diff.length > MAX) out.push([{ text: `… +${diff.length - MAX} more lines · ⌃O to expand`, color: color.faint }]);
   return indent(out, 3);
 }
 
@@ -228,7 +228,7 @@ function streamLines(stream: string, count: number, width: number): Line[] {
 
 /** Flatten the transcript into styled lines wrapped to `width`. A leading blank
  *  line separates turns (so the windowed view keeps its rhythm). */
-export function itemsToLines(items: Item[], width: number): Line[] {
+export function itemsToLines(items: Item[], width: number, expand = false): Line[] {
   const out: Line[] = [];
   for (const it of items) {
     out.push(BLANK);
@@ -254,7 +254,7 @@ export function itemsToLines(items: Item[], width: number): Line[] {
         if (it.status !== "running" && it.summary) {
           out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: it.summary.slice(0, Math.max(width - 5, 1)), color: it.status === "err" ? color.err : color.dim }]);
         }
-        if (it.diff?.length) out.push(...diffLines(it.diff, Math.max(width - 5, 1)));
+        if (it.diff?.length) out.push(...diffLines(it.diff, Math.max(width - 5, 1), expand));
         break;
       }
       case "notice": {

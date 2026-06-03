@@ -16,3 +16,17 @@ export function navHistory(
   if (next >= history.length) return { value: "", idx: null }; // back to the live line
   return { value: history[next] ?? "", idx: next };
 }
+
+// Reverse incremental search (⌃R): the idx-th most-recent history entry that
+// contains `q` (case-insensitive). Returns null when there's no match.
+export function searchHistory(history: string[], q: string, idx: number): string | null {
+  if (!q) return null;
+  const lq = q.toLowerCase();
+  const matches: string[] = [];
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i]!;
+    if (h.toLowerCase().includes(lq)) matches.push(h);
+  }
+  if (!matches.length) return null;
+  return matches[Math.min(idx, matches.length - 1)] ?? null;
+}

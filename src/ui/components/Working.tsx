@@ -16,6 +16,7 @@ export function Working({
   skin,
   verb,
   elapsed,
+  tps = 0,
   linger,
   width,
 }: {
@@ -23,6 +24,7 @@ export function Working({
   skin: GhostSkin;
   verb: string;
   elapsed: number;
+  tps?: number; // live output tokens/sec estimate
   linger?: boolean; // post-turn celebrate/error beat — show a label, not the timer
   width: number;
 }) {
@@ -33,7 +35,7 @@ export function Working({
       <Box marginRight={1} flexDirection="column" alignItems="flex-end">
         <Text color={labelColor}>{label}</Text>
         {!linger ? (
-          <Text color={color.faint}>{elapsed}s · esc to interrupt</Text>
+          <Text color={color.faint}>{elapsed}s{tps > 0 ? ` · ~${tps} tok/s` : ""} · esc to interrupt</Text>
         ) : null}
       </Box>
       <StateGhost state={state} skin={skin} />
