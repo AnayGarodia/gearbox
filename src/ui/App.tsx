@@ -44,6 +44,7 @@ import { listProjectFiles, expandMentions } from "./files.ts";
 import { useTerminalSize } from "./useTerminalSize.ts";
 import { gitBranch } from "./git.ts";
 import { basename } from "node:path";
+import { existsSync } from "node:fs";
 
 // Stateless: picks the active account per provider (reads the registry each call).
 const accountResolver = new AccountResolver();
@@ -519,7 +520,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         // router can vary the model later without changing this shape).
         // The model that actually ran this turn (set by defaultRunner). Falls
         // back to a fresh select only if a custom runner bypassed defaultRunner.
-        let modelId = routedRef.current?.model.id;
+        let modelId = activeCliRef.current?.id ?? routedRef.current?.model.id;
         if (!modelId) {
           try {
             modelId = selectorRef.current.select({ prompt: lastPromptRef.current ?? "" }).model.id;
@@ -873,6 +874,55 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           notice(formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()));
           return;
         }
+        case "login": {
+          echo(text);
+          const which = (arg || "").toLowerCase();
+          const provider = which === "codex" || which === "chatgpt" ? "codex-cli" : which === "claude" || !which ? "claude-cli" : null;
+          if (!provider) {
+            notice("usage: /login claude   |   /login codex");
+            return;
+          }
+          const res = addCliAccount(provider);
+          if (!res.ok || !res.account) {
+            notice(res.message);
+            return;
+          }
+          const bin = (res.account.auth as any).binary as string;
+          activeCliRef.current = { id: res.account.id, binary: bin };
+          cliSessionRef.current = undefined;
+          setLastPick(null);
+          setSelector(selectorRef.current); // trigger a re-render of the status line
+          notice(`${res.message}\n⚠ this account runs ${bin}'s own loop, tools, and permissions — Gearbox's gate doesn't apply. Make sure you're logged in (\`${bin}\`). /account off to leave.`);
+          return;
+        }
+        case "account": {
+          echo(text);
+          if (arg.toLowerCase() === "off") {
+            activeCliRef.current = null;
+            cliSessionRef.current = undefined;
+            notice("left the subscription account — back to API/in-loop models");
+            return;
+          }
+          if (!arg) {
+            notice(formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()) + (activeCliRef.current ? `\n  active: ${activeCliRef.current.id} (cli)` : ""));
+            return;
+          }
+          const a = getAccount(arg);
+          if (!a) {
+            notice(`no account "${arg}" — /accounts to list`);
+            return;
+          }
+          if (a.exec === "cli") {
+            activeCliRef.current = { id: a.id, binary: (a.auth as any).binary };
+            cliSessionRef.current = undefined;
+            notice(`active → ${a.id} (runs via ${(a.auth as any).binary} CLI; /account off to leave)`);
+          } else {
+            activeCliRef.current = null;
+            setDefaultAccount(a.provider, a.id);
+            notice(`active account for ${a.provider} → ${a.id}`);
+          }
+          return;
+        }
         case "compact": {
           echo(text);
           if (busyRef.current) {
@@ -1098,6 +1148,17 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         }
       }
       return;
+    }
+    // File drag-drop: terminals paste the dropped file's path. If it's a real
+    // file, turn it into an @mention so it gets read into the prompt.
+    if (!busyRef.current && input.length > 3 && !input.includes("\n")) {
+      const p = input.replace(/\x1b\[20[01]~/g, "").trim().replace(/^'|'$/g, "").replace(/\\ /g, " ");
+      if (/[/\\.]/.test(p) && p.length < 1024 && existsSync(p)) {
+        const e = editRef.current;
+        const ins = `@${p} `;
+        setEdit({ value: e.value.slice(0, e.cursor) + ins + e.value.slice(e.cursor), cursor: e.cursor + ins.length });
+        return;
+      }
     }
     // Large paste → collapse to a chip so it doesn't flood the composer.
     if (!busyRef.current && (input.includes("\x1b[200~") || (input.length > 240 && input.includes("\n")))) {
