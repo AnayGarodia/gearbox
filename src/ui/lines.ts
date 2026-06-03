@@ -8,11 +8,25 @@
 import { marked } from "marked";
 import { color } from "./theme.ts";
 import { glyph } from "./theme.ts";
+import { highlightLine } from "./highlight.ts";
 import type { Item } from "./types.ts";
 
 export type Span = { text: string; color?: string; bold?: boolean; italic?: boolean; dim?: boolean; bg?: string };
 export type Line = Span[];
 export const BLANK: Line = [];
+
+/** Truncate a list of spans to `width` columns total (no wrapping). */
+export function clipSpans(spans: Span[], width: number): Line {
+  const out: Line = [];
+  let len = 0;
+  for (const s of spans) {
+    if (len >= width) break;
+    const t = s.text.slice(0, width - len);
+    if (t) out.push({ ...s, text: t });
+    len += t.length;
+  }
+  return out;
+}
 
 type Style = Omit<Span, "text">;
 
@@ -137,8 +151,9 @@ function blockLines(tok: any, width: number): Line[] {
       return wrapSpans(spans, width);
     }
     case "code": {
+      const lang = String(tok.lang ?? "");
       const lines = String(tok.text ?? "").split("\n");
-      return lines.map((l) => [{ text: l.slice(0, width), dim: true }]);
+      return lines.map((l) => clipSpans(highlightLine(l, lang) as Span[], width));
     }
     case "blockquote": {
       const inner: Line[] = (tok.tokens ?? []).flatMap((t: any) => blockLines(t, Math.max(width - 2, 1)));

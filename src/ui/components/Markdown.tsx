@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { marked } from "marked";
 import { color } from "../theme.ts";
+import { highlightLine } from "../highlight.ts";
 
 // Parse with marked (battle-tested), render with Ink (full control, no foreign
 // ANSI fighting Ink's layout). marked handles headings, lists, tables, code,
@@ -60,12 +61,19 @@ function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
   );
 }
 
-// ---- code block (Ink-native; syntax highlight can be added later as spans) ----
+// ---- code block (Ink-native syntax highlighting via styled spans) ----
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
+  const lines = decode(code).replace(/\n$/, "").split("\n");
   return (
     <Box flexDirection="column" marginY={1} paddingX={1} borderStyle="round" borderColor={color.faint}>
       {lang ? <Text color={color.faint}>{lang}</Text> : null}
-      <Text color={color.text}>{decode(code).replace(/\n$/, "")}</Text>
+      {lines.map((l, i) => (
+        <Text key={i}>
+          {highlightLine(l, lang).map((s, j) => (
+            <Text key={j} color={s.color} bold={s.bold} dimColor={s.dim}>{s.text}</Text>
+          ))}
+        </Text>
+      ))}
     </Box>
   );
 }

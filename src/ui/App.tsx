@@ -58,8 +58,9 @@ const KEYS_HELP = [
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
   "  ⌃A / ⌃E line start / end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
   "  ⌃Y copy last reply · shift+tab cycle mode (normal · auto-accept · plan)",
-  "  tab @file complete · PgUp/PgDn or wheel to scroll",
-  "  / commands · @ files · ! shell · # memory",
+  "  tab @file complete · PgUp/PgDn or wheel to scroll · type while busy to queue",
+  "  / commands · @ files · ! shell · # memory · ? this help",
+  "  select text: hold ⌥ (Option) — fullscreen owns the mouse for scrolling",
 ].join("\n");
 
 /** Serialize the transcript to Markdown for /export. */
@@ -872,6 +873,11 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       }
       ctrlCRef.current = now;
       notice("press ⌃C again to quit");
+      return;
+    }
+    // ? on an empty composer → shortcuts cheatsheet (still typeable mid-text).
+    if (input === "?" && !editRef.current.value && !busyRef.current && !key.ctrl && !key.meta) {
+      notice(KEYS_HELP);
       return;
     }
     // ⌃Y — copy the last assistant reply to the clipboard (OSC 52; works over SSH).
