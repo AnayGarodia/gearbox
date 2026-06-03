@@ -71,7 +71,7 @@ if (args.includes("--version") || args.includes("-v")) {
 // the in-app /accounts command so you can set up keys from a script or SSH.
 if (args[0] === "auth") {
   const { listAccounts, loadAccounts, removeAccount } = await import("./accounts/store.ts");
-  const { importableEnvCreds, importEnvCred } = await import("./accounts/detect.ts");
+  const { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } = await import("./accounts/detect.ts");
   const { addApiKeyAccount, addByPastedKey, testAccount, addableProviders } = await import("./accounts/onboard.ts");
   const { detectProviderByKey } = await import("./accounts/catalog.ts");
   const sub = args[1];
@@ -83,9 +83,12 @@ if (args[0] === "auth") {
     const imp = importableEnvCreds();
     if (imp.length) console.log(`\nImportable from your env (gearbox auth import): ${imp.map((c) => c.envVar).join(", ")}`);
   } else if (sub === "import") {
-    const cands = importableEnvCreds();
-    for (const c of cands) await importEnvCred(c);
-    console.log(cands.length ? `Imported ${cands.length}: ${cands.map((c) => c.provider).join(", ")}` : "Nothing to import.");
+    const keys = importableEnvCreds();
+    const cloud = importableCloudCreds();
+    for (const c of keys) await importEnvCred(c);
+    for (const c of cloud) await importCloudCred(c);
+    const names = [...keys.map((c) => c.provider), ...cloud.map((c) => c.provider)];
+    console.log(names.length ? `Imported ${names.length}: ${names.join(", ")}` : "Nothing to import.");
   } else if (sub === "add") {
     const res = rest[0] && !rest[1] && detectProviderByKey(rest[0]) ? await addByPastedKey(rest[0]) : rest[0] && rest[1] ? await addApiKeyAccount(rest[0], rest[1]) : { ok: false, message: "usage: gearbox auth add <key>   |   gearbox auth add <provider> <key>" };
     console.log(res.message);

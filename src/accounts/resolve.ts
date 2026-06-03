@@ -20,8 +20,30 @@ export async function resolveCreds(account: Account): Promise<ResolvedCreds> {
       headers: account.extraHeaders,
     };
   }
-  // aws / azure / vertex are wired in P2; cli accounts run via the subprocess
-  // backend (no in-loop creds).
+  if (auth.kind === "aws") {
+    return {
+      aws: {
+        accessKeyId: (await getSecret(auth.accessKeyIdRef)) ?? "",
+        secretAccessKey: (await getSecret(auth.secretKeyRef)) ?? "",
+        sessionToken: auth.sessionTokenRef ? (await getSecret(auth.sessionTokenRef)) ?? undefined : undefined,
+        region: auth.region,
+      },
+    };
+  }
+  if (auth.kind === "azure") {
+    return { azure: { resourceName: auth.resourceName, apiKey: (await getSecret(auth.ref)) ?? "", apiVersion: auth.apiVersion } };
+  }
+  if (auth.kind === "vertex") {
+    const sa = auth.serviceAccountRef ? await getSecret(auth.serviceAccountRef) : null;
+    let credentials: Record<string, unknown> | undefined;
+    try {
+      credentials = sa ? JSON.parse(sa) : undefined;
+    } catch {
+      credentials = undefined; // malformed SA json → fall back to ADC
+    }
+    return { vertex: { project: auth.project, location: auth.location, credentials } };
+  }
+  // cli accounts run via the subprocess backend (no in-loop creds).
   return {};
 }
 

@@ -29,6 +29,7 @@ import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCre
 import { addApiKeyAccount, addByPastedKey, testAccount, addCliAccount } from "../accounts/onboard.ts";
 import { detectProviderByKey } from "../accounts/catalog.ts";
 import { runCliTask } from "../agent/cli-backend.ts";
+import { recordUsage, recordRateLimit, formatUsage } from "../accounts/usage.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
@@ -201,6 +202,10 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // path. cliSessionRef keeps the binary's session id for resume.
   const activeCliRef = useRef<{ id: string; binary: string } | null>(null);
   const cliSessionRef = useRef<string | undefined>(undefined);
+  // Which account ran the last turn + its provider-reported cost/limit (for the
+  // per-account spend ledger; see src/accounts/usage.ts).
+  const usedAccountRef = useRef<string | null>(null);
+  const cliMetaRef = useRef<{ costUSD?: number; rate?: { utilization: number; resetsAt?: number; type?: string } } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
   const ghostSkinRef = useRef<GhostSkin>("base");
@@ -357,8 +362,10 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       const cli = activeCliRef.current;
       if (cli) {
         routedRef.current = null;
+        usedAccountRef.current = cli.id;
         const r = await runCliTask({ binary: cli.binary, prompt, messages, onEvent, signal, sessionId: cliSessionRef.current, autoApprove: isYolo() });
         cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
+        cliMetaRef.current = { costUSD: r.costUSD, rate: r.rate };
         return { messages: r.messages, usage: r.usage };
       }
       const plan = modeRef.current === "plan";
@@ -374,8 +381,10 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       // No account → env-default (back-compat + demo). CLI accounts are P3.
       const account = accountResolver.pick(choice.model.provider);
       const creds = account ? await resolveCreds(account) : undefined;
+      usedAccountRef.current = account?.id ?? null;
+      cliMetaRef.current = null;
       if (account) markUsed(account.id);
-      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds });
+      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: effortRef.current });
       // r.messages = the sent context + the newly produced turn. Rebuild msgRef as
       // FULL history + the user message + only the new messages (never the curated
       // projection), and sanitize so an interrupted turn can't leave a dangling
@@ -429,7 +438,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
 
   // Effort tier → which model the routing seam should prefer. Pins the model via
   // the existing switch machinery so the status line + cost reflect it.
-  const EFFORT_MODEL: Record<"fast" | "balanced" | "max", string> = { fast: "haiku-4.5", balanced: "sonnet-4.6", max: "sonnet-4.6" };
+  const EFFORT_MODEL: Record<"fast" | "balanced" | "max", string> = { fast: "haiku-4.5", balanced: "sonnet-4.6", max: "opus-4.8" };
   const effortRef = useRef(effort);
   effortRef.current = effort;
   const setEffort = (tier: "fast" | "balanced" | "max") => {
@@ -529,6 +538,13 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           }
         }
         sessionRef.current.turns.push({ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, at: Date.now() });
+        // Per-account spend ledger (ACCOUNT pillar): real cost when the provider
+        // reports it (claude CLI), else an estimate from token usage × list price.
+        const acctId = usedAccountRef.current ?? modelId;
+        const cm = cliMetaRef.current;
+        const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
+        recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
+        if (cm?.rate) recordRateLimit(acctId, cm.rate);
         // Auto-compact: once the history approaches the budget, summarize old
         // turns (cheap delegated model) so the next turns stay bounded without
         // losing the gist. Best-effort and skipped on interrupt.
@@ -923,6 +939,11 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           }
           return;
         }
+        case "cost":
+        case "usage":
+          echo(text);
+          notice(formatUsage(estimateCost(sessionRef.current.turns)));
+          return;
         case "compact": {
           echo(text);
           if (busyRef.current) {

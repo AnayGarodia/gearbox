@@ -4,9 +4,9 @@ import { estimateCost } from "../src/providers.ts";
 test("estimateCost sums per-turn cost from each turn's model + tokens", () => {
   const turns = [
     { model: "claude-sonnet-4-6", inputTokens: 1_000_000, outputTokens: 1_000_000 }, // $3 + $15
-    { model: "claude-haiku-4-5", inputTokens: 1_000_000, outputTokens: 0 }, // $0.80
+    { model: "claude-haiku-4-5", inputTokens: 1_000_000, outputTokens: 0 }, // $1.00
   ];
-  expect(estimateCost(turns)).toBeCloseTo(18.8, 5);
+  expect(estimateCost(turns)).toBeCloseTo(19.0, 5);
 });
 
 test("estimateCost ignores unknown models and zero turns", () => {

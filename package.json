@@ -16,9 +16,12 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@ai-sdk/amazon-bedrock": "3",
     "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/azure": "2",
     "@ai-sdk/deepseek": "^1.0.0",
     "@ai-sdk/google": "^2.0.0",
+    "@ai-sdk/google-vertex": "3",
     "@ai-sdk/openai": "^2.0.0",
     "@inkjs/ui": "^2.0.0",
     "ai": "^5.0.0",

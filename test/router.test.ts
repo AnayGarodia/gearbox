@@ -47,7 +47,7 @@ test("with a DeepSeek key, coding routes to the cheapest model that clears the b
   only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
   const r = new RoutingSelector();
   // deepseek-chat: SWE 0.806 (clears 0.7 bar) and far cheaper than sonnet
-  expect(r.select({ prompt: "refactor the parser" }).model.id).toBe("deepseek-chat");
+  expect(r.select({ prompt: "refactor the parser" }).model.id).toBe("deepseek-v4-pro");
 });
 
 // ── explicit task kind overrides the classifier (the sub-task delegation path) ──

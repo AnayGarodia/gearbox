@@ -15,7 +15,7 @@ test("helpText lists every command", () => {
 test("formatModelList marks current and lists labels", () => {
   const out = formatModelList("claude-sonnet-4-6");
   expect(out).toContain("sonnet-4.6");
-  expect(out).toContain("gpt-5.4");
+  expect(out).toContain("gpt-5.5");
   expect(out).toContain("●");
 });
 
@@ -30,8 +30,8 @@ test("resolveModelSwitch is fuzzy: substring, no-match, no-key, ambiguous, exact
     process.env.ANTHROPIC_API_KEY = "x";
     process.env.GOOGLE_GENERATIVE_AI_API_KEY = "x";
 
-    // no model contains "opus" yet
-    expect(resolveModelSwitch("opus").ok).toBe(false);
+    // a string that matches no model id/label
+    expect(resolveModelSwitch("zzznotamodel").ok).toBe(false);
     // "haiku" → the one haiku model (anthropic key present)
     expect(resolveModelSwitch("haiku")).toMatchObject({ ok: true, modelId: "claude-haiku-4-5" });
     // "gemini" matches two available google models → ambiguous
@@ -39,7 +39,7 @@ test("resolveModelSwitch is fuzzy: substring, no-match, no-key, ambiguous, exact
     expect(g.ok).toBe(false);
     expect(g.message).toContain("be more specific");
     // exact label resolves even when it's a substring of another
-    expect(resolveModelSwitch("gemini-flash")).toMatchObject({ ok: true, modelId: "gemini-2.5-flash" });
+    expect(resolveModelSwitch("gemini-3.5-flash")).toMatchObject({ ok: true, modelId: "gemini-3.5-flash" });
     // matches a model whose provider has no key
     expect(resolveModelSwitch("gpt").ok).toBe(false);
   } finally {

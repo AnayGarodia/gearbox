@@ -4,6 +4,7 @@
 import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
+import { reasoningOptions, type Effort } from "../model/reasoning.ts";
 import { tools, readOnlyTools } from "../tools.ts";
 import { config } from "../config.ts";
 import { BASE_SYSTEM, PLAN_ADDENDUM } from "../context/builder.ts";
@@ -125,20 +126,24 @@ export async function runTask(opts: {
   signal?: AbortSignal;
   plan?: boolean;
   system?: string; // prebuilt by the Context Engine; falls back to SYSTEM
+  creds?: ResolvedCreds; // per-account credentials (from the active account); env-default if absent
+  effort?: Effort; // reasoning-effort tier → per-provider providerOptions (model/reasoning.ts)
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
 }): Promise<{ messages: ModelMessage[]; usage: Usage }> {
   const { model, messages, onEvent, signal, plan } = opts;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+  const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
 
   const result = opts._stream
     ? null
     : streamText({
-        model: resolveModel(model),
+        model: resolveModel(model, opts.creds),
         system: opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM),
         messages,
         tools: plan ? readOnlyTools : tools,
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: signal,
+        ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
       });
   const parts: AsyncIterable<any> = opts._stream ?? (result!.fullStream as AsyncIterable<any>);
 

@@ -31,12 +31,12 @@ export interface CatalogProvider {
 export const CATALOG: CatalogProvider[] = [
   // ── native (first-party AI SDK packages already installed) ──
   { id: "anthropic", label: "Anthropic", group: "native", exec: "in-loop", authKind: "api-key", envVars: ["ANTHROPIC_API_KEY"], keyPrefix: ["sk-ant-"], signupUrl: "https://console.anthropic.com/settings/keys", defaultModels: ["claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-8"] },
-  { id: "openai", label: "OpenAI", group: "native", exec: "in-loop", authKind: "api-key", envVars: ["OPENAI_API_KEY"], keyPrefix: ["sk-proj-", "sk-"], signupUrl: "https://platform.openai.com/api-keys", defaultModels: ["gpt-5.4", "gpt-5.4-mini"] },
-  { id: "google", label: "Google Gemini", group: "native", exec: "in-loop", authKind: "api-key", envVars: ["GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"], keyPrefix: ["AIza"], signupUrl: "https://aistudio.google.com/apikey", defaultModels: ["gemini-2.5-pro", "gemini-2.5-flash"] },
-  { id: "deepseek", label: "DeepSeek", group: "native", exec: "in-loop", authKind: "api-key", envVars: ["DEEPSEEK_API_KEY"], baseUrl: "https://api.deepseek.com/v1", signupUrl: "https://platform.deepseek.com/api_keys", defaultModels: ["deepseek-chat", "deepseek-reasoner"] },
+  { id: "openai", label: "OpenAI", group: "native", exec: "in-loop", authKind: "api-key", envVars: ["OPENAI_API_KEY"], keyPrefix: ["sk-proj-", "sk-"], signupUrl: "https://platform.openai.com/api-keys", defaultModels: ["gpt-5.5", "gpt-5.5-pro", "gpt-5.5-mini"] },
+  { id: "google", label: "Google Gemini", group: "native", exec: "in-loop", authKind: "api-key", envVars: ["GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"], keyPrefix: ["AIza"], signupUrl: "https://aistudio.google.com/apikey", defaultModels: ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"] },
+  { id: "deepseek", label: "DeepSeek", group: "native", exec: "in-loop", authKind: "api-key", envVars: ["DEEPSEEK_API_KEY"], baseUrl: "https://api.deepseek.com/v1", signupUrl: "https://platform.deepseek.com/api_keys", defaultModels: ["deepseek-v4-pro", "deepseek-v4-flash"] },
 
   // ── direct API, OpenAI-wire-compatible (no dedicated package needed) ──
-  { id: "xai", label: "xAI (Grok)", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["XAI_API_KEY"], keyPrefix: ["xai-"], baseUrl: "https://api.x.ai/v1", signupUrl: "https://console.x.ai", defaultModels: ["grok-4", "grok-4-fast"] },
+  { id: "xai", label: "xAI (Grok)", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["XAI_API_KEY"], keyPrefix: ["xai-"], baseUrl: "https://api.x.ai/v1", signupUrl: "https://console.x.ai", defaultModels: ["grok-4.3", "grok-4.1-fast"] },
   { id: "mistral", label: "Mistral", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["MISTRAL_API_KEY"], baseUrl: "https://api.mistral.ai/v1", signupUrl: "https://console.mistral.ai/api-keys", defaultModels: ["mistral-large-latest", "codestral-latest"] },
   { id: "groq", label: "Groq", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["GROQ_API_KEY"], keyPrefix: ["gsk_"], baseUrl: "https://api.groq.com/openai/v1", signupUrl: "https://console.groq.com/keys", defaultModels: ["llama-3.3-70b-versatile", "moonshotai/kimi-k2-instruct"] },
   { id: "together", label: "Together AI", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["TOGETHER_API_KEY"], baseUrl: "https://api.together.xyz/v1", signupUrl: "https://api.together.ai/settings/api-keys", defaultModels: ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-Coder-32B-Instruct"] },
@@ -61,7 +61,7 @@ export const CATALOG: CatalogProvider[] = [
 
   // ── cloud (credential chains; native packages added in P2) ──
   { id: "bedrock", label: "Amazon Bedrock", group: "cloud", exec: "in-loop", authKind: "aws", envVars: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_PROFILE"], keyPrefix: ["AKIA", "ASIA"], signupUrl: "https://console.aws.amazon.com/bedrock", defaultModels: ["anthropic.claude-sonnet-4-20250514-v1:0"], notes: "Needs @ai-sdk/amazon-bedrock (P2)." },
-  { id: "vertex", label: "Google Vertex AI", group: "cloud", exec: "in-loop", authKind: "vertex", envVars: ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION", "GOOGLE_APPLICATION_CREDENTIALS"], signupUrl: "https://console.cloud.google.com/vertex-ai", defaultModels: ["gemini-2.5-pro"], notes: "Needs @ai-sdk/google-vertex (P2); ADC or a service-account JSON." },
+  { id: "vertex", label: "Google Vertex AI", group: "cloud", exec: "in-loop", authKind: "vertex", envVars: ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION", "GOOGLE_APPLICATION_CREDENTIALS"], signupUrl: "https://console.cloud.google.com/vertex-ai", defaultModels: ["gemini-3.1-pro-preview"], notes: "ADC or a service-account JSON." },
   { id: "azure", label: "Azure OpenAI", group: "cloud", exec: "in-loop", authKind: "azure", envVars: ["AZURE_API_KEY", "AZURE_RESOURCE_NAME"], signupUrl: "https://oai.azure.com", notes: "Needs @ai-sdk/azure (P2); resourceName + deployment." },
 
   // ── local (OpenAI-compatible servers; usually no key) ──
@@ -72,7 +72,7 @@ export const CATALOG: CatalogProvider[] = [
 
   // ── CLI-backed subscriptions (subprocess; never token extraction) ──
   { id: "claude-cli", label: "Claude (Pro/Max via claude CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "claude", signupUrl: "https://claude.com/product/claude-code", defaultModels: ["claude-opus-4-8", "claude-sonnet-4-6"], notes: "Wraps the official binary (like Conductor). Runs its own tools/permissions. ToS-clean: no token is read." },
-  { id: "codex-cli", label: "ChatGPT (Plus/Pro via codex CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "codex", signupUrl: "https://developers.openai.com/codex/cli", defaultModels: ["gpt-5.4-codex"], notes: "Wraps the official binary. Runs its own tools/permissions. ToS-clean." },
+  { id: "codex-cli", label: "ChatGPT (Plus/Pro via codex CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "codex", signupUrl: "https://developers.openai.com/codex/cli", defaultModels: ["gpt-5.5-codex"], notes: "Wraps the official binary. Runs its own tools/permissions. ToS-clean." },
 ];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));

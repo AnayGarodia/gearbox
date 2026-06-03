@@ -44,8 +44,12 @@ export interface AccountsFile {
 
 // Resolved credentials handed to providers.resolveModel (kept out of the SDK
 // seam so providers.ts never touches the store). Secrets fetched on demand.
+// Cloud providers carry richer config than a single key.
 export interface ResolvedCreds {
   apiKey?: string;
   baseURL?: string;
   headers?: Record<string, string>;
+  aws?: { accessKeyId: string; secretAccessKey: string; sessionToken?: string; region: string };
+  azure?: { resourceName: string; apiKey: string; apiVersion?: string };
+  vertex?: { project: string; location: string; credentials?: Record<string, unknown> };
 }

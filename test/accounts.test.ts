@@ -7,6 +7,13 @@ import {
   putAccount, getAccount, listAccounts, accountsForProvider,
   defaultAccount, setDefaultAccount, removeAccount, secretRefs,
 } from "../src/accounts/store.ts";
+import { CATALOG, catalogProvider, detectProviderByKey } from "../src/accounts/catalog.ts";
+import { importEnvCred, importableEnvCreds } from "../src/accounts/detect.ts";
+import { resolveCreds } from "../src/accounts/resolve.ts";
+import { addApiKeyAccount, addByPastedKey } from "../src/accounts/onboard.ts";
+import { detectCloudCreds, importCloudCred } from "../src/accounts/detect.ts";
+import { recordUsage, recordRateLimit, loadUsage, accountUsage, totalSpent } from "../src/accounts/usage.ts";
+import { MODELS, findModel, resolveModel } from "../src/providers.ts";
 import type { Account } from "../src/accounts/types.ts";
 
 // Force the deterministic file store (the keychain path is OS-dependent / can
@@ -66,6 +73,143 @@ test("removeAccount reassigns the default and wipes its secrets", async () => {
   expect(getAccount("anthropic-work")).toBeUndefined();
   expect(await getSecret("anthropic-work:api-key")).toBeNull(); // secret cleaned up
   expect(defaultAccount("anthropic")?.id).toBe("anthropic-personal"); // default moved
+});
+
+// ── catalog ──
+test("catalog has unique ids and well-formed rows", () => {
+  const ids = CATALOG.map((p) => p.id);
+  expect(new Set(ids).size).toBe(ids.length); // unique
+  for (const p of CATALOG) {
+    expect(p.label.length).toBeGreaterThan(0);
+    // openai-wire providers need an endpoint (except self-hosted ones like
+    // litellm where the user supplies the baseUrl).
+    if ((p.group === "openai-compat" || p.group === "local") && p.id !== "litellm") {
+      expect(p.baseUrl).toBeTruthy();
+    }
+    if (p.group === "cli") expect(p.binary).toBeTruthy();
+  }
+  expect(catalogProvider("openrouter")?.baseUrl).toContain("openrouter.ai");
+});
+
+test("paste-detect picks the most specific key prefix", () => {
+  expect(detectProviderByKey("sk-ant-abc123")).toBe("anthropic");
+  expect(detectProviderByKey("sk-or-v1-xyz")).toBe("openrouter");
+  expect(detectProviderByKey("gsk_abc")).toBe("groq");
+  expect(detectProviderByKey("xai-abc")).toBe("xai");
+  expect(detectProviderByKey("AKIA1234")).toBe("bedrock");
+  expect(detectProviderByKey("sk-proj-abc")).toBe("openai"); // beats bare sk-
+  expect(detectProviderByKey("totally-unknown")).toBeUndefined();
+});
+
+// ── detect/import (env → stored account) ──
+test("importEnvCred stores a usable account and resolves its creds", async () => {
+  const c = { provider: "anthropic", label: "Anthropic", envVar: "ANTHROPIC_API_KEY", value: "sk-ant-imported" };
+  const acc = await importEnvCred(c);
+  expect(acc.id).toBe("anthropic-env");
+  expect(getAccount("anthropic-env")?.auth.kind).toBe("api-key");
+  expect(await resolveCreds(acc)).toEqual({ apiKey: "sk-ant-imported" });
+
+  // openai-compat import carries the catalog baseUrl into the resolved creds
+  const g = await importEnvCred({ provider: "groq", label: "Groq", envVar: "GROQ_API_KEY", value: "gsk_x" });
+  const creds = await resolveCreds(g);
+  expect(creds.apiKey).toBe("gsk_x");
+  expect(creds.baseURL).toContain("groq.com");
+});
+
+test("importableEnvCreds excludes already-imported providers", async () => {
+  process.env.OPENAI_API_KEY = "sk-test-openai";
+  try {
+    expect(importableEnvCreds().some((c) => c.provider === "openai")).toBe(true);
+    await importEnvCred({ provider: "openai", label: "OpenAI", envVar: "OPENAI_API_KEY", value: "sk-test-openai" });
+    expect(importableEnvCreds().some((c) => c.provider === "openai")).toBe(false); // now stored
+  } finally {
+    delete process.env.OPENAI_API_KEY;
+  }
+});
+
+// ── P1: the catalog providers are now runnable models, not just stored ──
+test("MODELS is generated from the catalog (the long tail is selectable)", () => {
+  // curated natives still present and canonical
+  expect(findModel("claude-sonnet-4-6")?.provider).toBe("anthropic");
+  // generated openai-compat models exist and are namespaced
+  expect(findModel("xai/grok-4.3")?.provider).toBe("xai");
+  expect(findModel("groq/llama-3.3-70b-versatile")?.provider).toBe("groq");
+  // no duplicate ids
+  const ids = MODELS.map((m) => m.id);
+  expect(new Set(ids).size).toBe(ids.length);
+  // cli providers are NOT in the model registry (they run via subprocess)
+  expect(MODELS.some((m) => m.provider === "claude-cli")).toBe(false);
+});
+
+test("resolveModel builds an openai-compat model via the catalog baseUrl", () => {
+  const spec = findModel("groq/llama-3.3-70b-versatile")!;
+  const model = resolveModel(spec, { apiKey: "gsk_test", baseURL: "https://api.groq.com/openai/v1" });
+  expect(model).toBeTruthy(); // constructs without throwing (no network)
+  // and without explicit creds it falls back to the catalog baseUrl path too
+  expect(resolveModel(spec)).toBeTruthy();
+});
+
+test("addByPastedKey detects the provider and stores a usable account", async () => {
+  const res = await addByPastedKey("sk-ant-pasted-key");
+  expect(res.ok).toBe(true);
+  expect(res.account?.provider).toBe("anthropic");
+  expect(await resolveCreds(res.account!)).toMatchObject({ apiKey: "sk-ant-pasted-key" });
+
+  const groq = await addApiKeyAccount("groq", "gsk_pasted");
+  expect(groq.account?.auth.kind).toBe("openai-compat");
+  expect((await resolveCreds(groq.account!)).baseURL).toContain("groq.com");
+});
+
+// ── P2: cloud providers ──
+test("resolveModel builds Bedrock / Vertex / Azure clients without throwing", () => {
+  expect(resolveModel(findModel("bedrock/anthropic.claude-sonnet-4-20250514-v1:0")!, { aws: { accessKeyId: "AKIA", secretAccessKey: "s", region: "us-east-2" } })).toBeTruthy();
+  expect(resolveModel(findModel("vertex/gemini-3.1-pro-preview")!, { vertex: { project: "p", location: "us-central1" } })).toBeTruthy();
+  // azure has no generated model; construct a spec
+  expect(resolveModel({ id: "azure/gpt-5.4", provider: "azure", sdkId: "gpt-5.4", label: "azure-gpt", contextWindow: 128_000 }, { azure: { resourceName: "myres", apiKey: "k" } })).toBeTruthy();
+});
+
+test("cloud account stores secrets and resolveCreds returns the cloud config", async () => {
+  process.env.AWS_ACCESS_KEY_ID = "AKIAEXAMPLE";
+  process.env.AWS_SECRET_ACCESS_KEY = "secretzz";
+  process.env.AWS_REGION = "us-east-2";
+  try {
+    const detected = detectCloudCreds().find((c) => c.provider === "bedrock");
+    expect(detected?.aws?.region).toBe("us-east-2");
+    const acc = await importCloudCred(detected!);
+    expect(acc.auth.kind).toBe("aws");
+    const creds = await resolveCreds(acc);
+    expect(creds.aws).toMatchObject({ accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secretzz", region: "us-east-2" });
+  } finally {
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_REGION;
+  }
+});
+
+// ── P4: per-account usage/spend ledger ──
+test("recordUsage accumulates spend, tokens, and turns per account", () => {
+  recordUsage({ accountId: "anthropic-work", inputTokens: 100, outputTokens: 20, costUSD: 0.5, estimated: false });
+  recordUsage({ accountId: "anthropic-work", inputTokens: 50, outputTokens: 10, costUSD: 0.25, estimated: true });
+  recordUsage({ accountId: "claude-cli", inputTokens: 9000, outputTokens: 5, costUSD: 0.19, estimated: false });
+
+  const work = accountUsage("anthropic-work")!;
+  expect(work.spentUSD).toBeCloseTo(0.75, 5);
+  expect(work.inputTokens).toBe(150);
+  expect(work.turns).toBe(2);
+  expect(work.estimated).toBe(true); // one turn was an estimate
+
+  expect(totalSpent()).toBeCloseTo(0.94, 5);
+  // sorted by spend, highest first
+  expect(loadUsage()[0]!.accountId).toBe("anthropic-work");
+});
+
+test("recordRateLimit attaches a quota snapshot to an account", () => {
+  recordUsage({ accountId: "claude-cli", inputTokens: 1, outputTokens: 1, costUSD: 0.01, estimated: false });
+  recordRateLimit("claude-cli", { utilization: 0.81, type: "seven_day", resetsAt: 1780718400 });
+  expect(accountUsage("claude-cli")?.rate?.utilization).toBe(0.81);
+  // no-op for an unknown account (nothing to attach to)
+  recordRateLimit("ghost", { utilization: 0.5 });
+  expect(accountUsage("ghost")).toBeUndefined();
 });
 
 test("secretRefs enumerates every secret an account owns", () => {

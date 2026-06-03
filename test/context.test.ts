@@ -20,7 +20,7 @@ test("countTokens applies measured per-model calibration", () => {
   expect(base).toBeGreaterThan(0);
 
   const claude = countTokens(text, "claude-sonnet-4-6"); // calibration 1.35
-  const openai = countTokens(text, "gpt-5.4"); // calibration 1.0
+  const openai = countTokens(text, "gpt-5.5"); // calibration 1.0
 
   expect(claude).toBeGreaterThan(base); // Claude runs hotter than tiktoken
   expect(openai).toBe(base); // tiktoken-native → no scaling
