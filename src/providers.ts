@@ -26,13 +26,15 @@ export interface ModelSpec {
 
 // The registry. Adding a model is data, not code. Routing will score over this list.
 // contextWindow values are approximate (for the UI's context %); refine as needed.
+// cost values are approximate public list prices ($/Mtok) — used for the live
+// session cost estimate in the status bar (and later by the router).
 export const MODELS: ModelSpec[] = [
-  { id: "claude-sonnet-4-6", provider: "anthropic", sdkId: "claude-sonnet-4-6", label: "sonnet-4.6", contextWindow: 200_000 },
-  { id: "claude-haiku-4-5", provider: "anthropic", sdkId: "claude-haiku-4-5", label: "haiku-4.5", contextWindow: 200_000 },
-  { id: "gpt-5.4", provider: "openai", sdkId: "gpt-5.4", label: "gpt-5.4", contextWindow: 256_000 },
-  { id: "gemini-2.5-pro", provider: "google", sdkId: "gemini-2.5-pro", label: "gemini-2.5-pro", contextWindow: 1_000_000 },
-  { id: "gemini-2.5-flash", provider: "google", sdkId: "gemini-2.5-flash", label: "gemini-flash", contextWindow: 1_000_000 },
-  { id: "deepseek-chat", provider: "deepseek", sdkId: "deepseek-chat", label: "deepseek", contextWindow: 128_000 },
+  { id: "claude-sonnet-4-6", provider: "anthropic", sdkId: "claude-sonnet-4-6", label: "sonnet-4.6", contextWindow: 200_000, cost: { inUSDPerMtok: 3, outUSDPerMtok: 15 } },
+  { id: "claude-haiku-4-5", provider: "anthropic", sdkId: "claude-haiku-4-5", label: "haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 0.8, outUSDPerMtok: 4 } },
+  { id: "gpt-5.4", provider: "openai", sdkId: "gpt-5.4", label: "gpt-5.4", contextWindow: 256_000, cost: { inUSDPerMtok: 2.5, outUSDPerMtok: 10 } },
+  { id: "gemini-2.5-pro", provider: "google", sdkId: "gemini-2.5-pro", label: "gemini-2.5-pro", contextWindow: 1_000_000, cost: { inUSDPerMtok: 1.25, outUSDPerMtok: 10 } },
+  { id: "gemini-2.5-flash", provider: "google", sdkId: "gemini-2.5-flash", label: "gemini-flash", contextWindow: 1_000_000, cost: { inUSDPerMtok: 0.3, outUSDPerMtok: 2.5 } },
+  { id: "deepseek-chat", provider: "deepseek", sdkId: "deepseek-chat", label: "deepseek", contextWindow: 128_000, cost: { inUSDPerMtok: 0.27, outUSDPerMtok: 1.1 } },
 ];
 
 const ENV_KEY: Record<ProviderId, string> = {
@@ -50,6 +52,17 @@ export function providerAvailable(p: ProviderId): boolean {
 
 export function findModel(idOrLabel: string): ModelSpec | undefined {
   return MODELS.find((m) => m.id === idOrLabel || m.label === idOrLabel);
+}
+
+/** Approximate USD cost of a set of turns, from each turn's model + token usage. */
+export function estimateCost(turns: { model: string; inputTokens: number; outputTokens: number }[]): number {
+  let usd = 0;
+  for (const t of turns) {
+    const c = MODELS.find((m) => m.id === t.model)?.cost;
+    if (!c) continue;
+    usd += (t.inputTokens / 1e6) * c.inUSDPerMtok + (t.outputTokens / 1e6) * c.outUSDPerMtok;
+  }
+  return usd;
 }
 
 // Build the AI SDK model instance. With `creds` (from an account) we configure

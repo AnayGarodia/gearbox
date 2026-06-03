@@ -2,6 +2,7 @@
 // (for model list/switch) kept testable and separate from the UI.
 import { MODELS, providerAvailable, findModel, type ProviderId } from "./providers.ts";
 import { glyph } from "./ui/theme.ts";
+import { fuzzyRank } from "./ui/fuzzy.ts";
 
 export interface CommandMeta {
   name: string;
@@ -36,7 +37,11 @@ export function matchCommands(draft: string): CommandMeta[] {
   const q = draft.trim().toLowerCase();
   if (!q.startsWith("/")) return [];
   const head = q.split(/\s+/)[0] ?? q;
-  return COMMANDS.filter((c) => c.name.startsWith(head));
+  if (head === "/") return COMMANDS;
+  // Prefer prefix matches; fall back to fuzzy subsequence (e.g. "/cpy" → /copy).
+  const prefix = COMMANDS.filter((c) => c.name.startsWith(head));
+  if (prefix.length) return prefix;
+  return fuzzyRank(COMMANDS, head.slice(1), (c) => c.name.slice(1), 12);
 }
 
 export function helpText(): string {

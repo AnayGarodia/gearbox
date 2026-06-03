@@ -20,7 +20,7 @@ import type { Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector } from "../model/router.ts";
-import { findModel, type ModelSpec } from "../providers.ts";
+import { findModel, estimateCost, type ModelSpec } from "../providers.ts";
 import { runTask } from "../agent/run.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount } from "../accounts/store.ts";
@@ -113,6 +113,14 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const [mascotState, setMascotState] = useState<MascotState>("thinking");
   const [linger, setLinger] = useState(false);
   const lingerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Type-ahead: prompts submitted while busy are queued and sent when the turn ends.
+  const queueRef = useRef<string[]>([]);
+  const [queued, setQueued] = useState<string[]>([]);
+  const ctrlCRef = useRef(0); // timestamp of the last bare ⌃C (for "press again to quit")
+  // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
+  // text is kept here and expanded back in on submit.
+  const pasteStoreRef = useRef<Map<string, string>>(new Map());
+  const pasteIdRef = useRef(0);
   const [yolo, setYoloState] = useState(isYolo());
   const [perm, setPermState] = useState<PermRequest | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -783,7 +791,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
 
   const submit = useCallback(
     (value: string) => {
-      const text = value.trim();
+      let text = value.trim();
+      // Expand any collapsed-paste chips back to their real text before sending.
+      if (pasteStoreRef.current.size) {
+        for (const [ph, full] of pasteStoreRef.current) if (text.includes(ph)) text = text.split(ph).join(full);
+        pasteStoreRef.current.clear();
+      }
       setEdit({ value: "", cursor: 0 });
       histIdxRef.current = null;
       if (!text) return;
@@ -809,11 +822,25 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         handleCommand(text);
         return;
       }
-      if (busyRef.current) return;
+      if (busyRef.current) {
+        // Queue it — sent automatically when the current turn finishes.
+        queueRef.current.push(text);
+        setQueued([...queueRef.current]);
+        notice(`queued (${queueRef.current.length}) — sends when the current turn finishes`);
+        return;
+      }
       void runTurn(text);
     },
     [handleCommand, runTurn],
   );
+
+  // Drain the type-ahead queue when a turn finishes.
+  useEffect(() => {
+    if (busy || queueRef.current.length === 0) return;
+    const next = queueRef.current.shift();
+    setQueued([...queueRef.current]);
+    if (next) void runTurn(next);
+  }, [busy, runTurn]);
 
   useInput((input, key) => {
     // Swallow any stray mouse-report bytes so they never land in the composer
@@ -825,6 +852,26 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       else if (input === "2") resolvePerm("always");
       else if (input === "a" || input === "A") resolvePerm("all");
       else if (input === "3" || key.escape) resolvePerm("deny");
+      return;
+    }
+    // ⌃C — interrupt a turn; else clear the composer; else "press again to quit".
+    if (key.ctrl && input === "c") {
+      if (busyRef.current) {
+        interruptedRef.current = true;
+        abortRef.current?.abort();
+        return;
+      }
+      if (editRef.current.value) {
+        setEdit({ value: "", cursor: 0 });
+        return;
+      }
+      const now = Date.now();
+      if (now - ctrlCRef.current < 1500) {
+        exit();
+        return;
+      }
+      ctrlCRef.current = now;
+      notice("press ⌃C again to quit");
       return;
     }
     // ⌃Y — copy the last assistant reply to the clipboard (OSC 52; works over SSH).
@@ -857,6 +904,19 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         }
       }
       return;
+    }
+    // Large paste → collapse to a chip so it doesn't flood the composer.
+    if (!busyRef.current && (input.includes("\x1b[200~") || (input.length > 240 && input.includes("\n")))) {
+      const clean = input.replace(/\x1b\[20[01]~/g, "").replace(/\r\n?/g, "\n");
+      const lines = clean.split("\n").length;
+      if (lines > 4 || clean.length > 400) {
+        const id = ++pasteIdRef.current;
+        const ph = `[Pasted #${id}: ${lines} line${lines > 1 ? "s" : ""}]`;
+        pasteStoreRef.current.set(ph, clean);
+        const e = editRef.current;
+        setEdit({ value: e.value.slice(0, e.cursor) + ph + e.value.slice(e.cursor), cursor: e.cursor + ph.length });
+        return;
+      }
     }
     const action = applyKey(editRef.current, input, key);
     if (busyRef.current) {
@@ -905,6 +965,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   footer += perm ? 9 : 3; // permission card vs composer (rule + input + marginTop)
   if (busy || linger) footer += STATE_GHOST_ROWS + 1; // the fixed-height ghost line (+ marginTop)
   if (mode !== "normal") footer += 2;
+  if (queued.length) footer += queued.length + 1;
   if (cmdMatches.length) footer += cmdMatches.length + 1;
   if (shownFiles.length) footer += shownFiles.length + 2;
   const HEADER = 3;
@@ -941,6 +1002,13 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} /> : null}
       <CommandPalette draft={edit.value} />
       <FilePalette matches={shownFiles} />
+      {queued.length ? (
+        <Box paddingX={1} marginTop={1} flexDirection="column">
+          {queued.map((q, i) => (
+            <Text key={i} color={color.faint}>↳ queued: {q.length > 60 ? q.slice(0, 57) + "…" : q}</Text>
+          ))}
+        </Box>
+      ) : null}
       {mode !== "normal" ? (
         <Box paddingX={1} marginTop={1}>
           <Text color={color.accent}>{glyph.notice} {mode === "plan" ? "plan mode" : "auto-accept edits"}</Text>
@@ -952,7 +1020,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       ) : (
         <Composer value={edit.value} cursor={edit.cursor} placeholder={mode === "plan" ? "describe what to plan…" : "ask anything"} busy={busy} width={width} />
       )}
-      <StatusBar model={modelLabel} branch={branch} routing={routing} yolo={yolo} ctxPct={ctxPct} tokens={tokens} width={width} mode={mode} effort={effort} />
+      <StatusBar model={modelLabel} branch={branch} routing={routing} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={effort} />
     </>
   );
 

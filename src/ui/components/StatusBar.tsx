@@ -18,6 +18,7 @@ export function StatusBar({
   yolo,
   ctxPct,
   tokens,
+  cost = 0,
   width,
   mode = "normal",
   effort = "balanced",
@@ -29,6 +30,7 @@ export function StatusBar({
   yolo?: boolean;
   ctxPct: number | null;
   tokens: number;
+  cost?: number;
   width: number;
   mode?: "normal" | "auto-accept" | "plan";
   effort?: "fast" | "balanced" | "max";
@@ -41,6 +43,7 @@ export function StatusBar({
     branch ? `${glyph.branch} ${branch}` : null,
     ctxPct != null && ctxPct > 0 ? `${ctxPct}% ctx` : null,
     tokens > 0 ? `${fmtTokens(tokens)} tok` : null,
+    cost >= 0.005 ? `$${cost.toFixed(2)}` : null,
   ].filter(Boolean) as string[];
 
   return (

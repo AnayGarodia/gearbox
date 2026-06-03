@@ -1,4 +1,5 @@
 // Pure logic for @file mentions in the composer. Tested without a terminal.
+import { fuzzyRank } from "./fuzzy.ts";
 
 export interface Mention {
   token: string; // text after '@' up to the cursor
@@ -19,14 +20,17 @@ export function currentMention(value: string, cursor: number): Mention | null {
 export function matchFiles(files: string[], token: string, limit = 8): string[] {
   const q = token.toLowerCase();
   if (!q) return files.slice(0, limit);
-  return files
+  // Exact substring matches first (ranked by position then length), then fall
+  // back to fuzzy subsequence (e.g. "uistatus" → src/ui/components/StatusBar.tsx).
+  const sub = files
     .filter((f) => f.toLowerCase().includes(q))
     .sort((a, b) => {
       const ai = a.toLowerCase().indexOf(q);
       const bi = b.toLowerCase().indexOf(q);
       return ai - bi || a.length - b.length;
-    })
-    .slice(0, limit);
+    });
+  if (sub.length) return sub.slice(0, limit);
+  return fuzzyRank(files, token, (f) => f, limit);
 }
 
 /** Replace the mention token with the chosen path + a trailing space. */

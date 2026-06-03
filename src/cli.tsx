@@ -99,6 +99,7 @@ const restore = () => {
 if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h");
 if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h");
 
-const app = render(<App selector={selector} demo={demo} fullscreen={fullscreen} resumeId={resumeId} />);
+// exitOnCtrlC:false so the app can handle ⌃C itself (interrupt / clear / confirm-quit).
+const app = render(<App selector={selector} demo={demo} fullscreen={fullscreen} resumeId={resumeId} />, { exitOnCtrlC: false });
 app.waitUntilExit().then(restore, restore);
 process.on("exit", restore);
