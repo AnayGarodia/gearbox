@@ -12,11 +12,16 @@ export interface CommandMeta {
 export const COMMANDS: CommandMeta[] = [
   { name: "/help", usage: "/help", desc: "show commands" },
   { name: "/model", usage: "/model [name|auto]", desc: "show models, pin one, or /model auto to route per task" },
-  { name: "/plan", usage: "/plan", desc: "toggle read-only plan mode (or shift+tab)" },
+  { name: "/plan", usage: "/plan", desc: "toggle read-only plan mode (or shift+tab to cycle modes)" },
+  { name: "/effort", usage: "/effort [fast|balanced|max]", desc: "set the effort tier (picks the model)" },
+  { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard" },
+  { name: "/export", usage: "/export [file]", desc: "write the transcript to a file" },
+  { name: "/keys", usage: "/keys", desc: "show keyboard shortcuts" },
   { name: "/init", usage: "/init", desc: "survey the repo and write GEARBOX.md" },
   { name: "/memory", usage: "/memory [note]", desc: "show remembered facts, or add one (also: #note)" },
   { name: "/context", usage: "/context", desc: "show the working-set breakdown (tokens per section)" },
   { name: "/compact", usage: "/compact", desc: "summarize older turns now to free up context" },
+  { name: "/accounts", usage: "/accounts [import|use <id>|rm <id>]", desc: "manage provider accounts & credentials" },
   { name: "/ghost", usage: "/ghost [mood]", desc: "change Boo's mood (base/mint/pink/golden/shades)" },
   { name: "/yolo", usage: "/yolo", desc: "toggle yolo mode (run writes/edits/shell without asking)" },
   { name: "/clear", usage: "/clear", desc: "clear the conversation (starts a new session)" },
@@ -37,6 +42,27 @@ export function matchCommands(draft: string): CommandMeta[] {
 export function helpText(): string {
   const rows = COMMANDS.map((c) => `  ${c.usage.padEnd(16)} ${c.desc}`);
   return ["commands", ...rows].join("\n");
+}
+
+/** Render the account list + any importable env creds, marking each provider's default. */
+export function formatAccounts(
+  accounts: { id: string; label: string; provider: string; exec: string }[],
+  defaults: Record<string, string>,
+  importable: { provider: string; label: string; envVar: string }[],
+): string {
+  const lines: string[] = ["accounts"];
+  if (!accounts.length) lines.push("  (none yet)");
+  for (const a of accounts) {
+    const mark = defaults[a.provider] === a.id ? glyph.on : glyph.off;
+    const tag = a.exec === "cli" ? " · cli" : "";
+    lines.push(`  ${mark} ${a.id.padEnd(20)} ${a.label}${tag}`);
+  }
+  if (importable.length) {
+    lines.push("", "importable from your environment — /accounts import:");
+    for (const c of importable) lines.push(`  + ${c.label} (${c.envVar})`);
+  }
+  lines.push("", "  /accounts import · /accounts use <id> · /accounts rm <id>");
+  return lines.join("\n");
 }
 
 /** Render the Context Engine's working-set breakdown (one row per section). */

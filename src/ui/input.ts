@@ -40,6 +40,26 @@ const insert = (s: Edit, text: string): KeyAction => ({
   state: { value: s.value.slice(0, s.cursor) + text + s.value.slice(s.cursor), cursor: s.cursor + text.length },
 });
 
+const at = (value: string, cursor: number): KeyAction => ({ type: "edit", state: { value, cursor } });
+
+// Word boundaries (readline-style): a word is a run of non-whitespace.
+function wordLeft(v: string, c: number): number {
+  let i = c;
+  while (i > 0 && /\s/.test(v[i - 1]!)) i--;
+  while (i > 0 && !/\s/.test(v[i - 1]!)) i--;
+  return i;
+}
+function wordRight(v: string, c: number): number {
+  let i = c;
+  while (i < v.length && /\s/.test(v[i]!)) i++;
+  while (i < v.length && !/\s/.test(v[i]!)) i++;
+  return i;
+}
+function lineEndOf(value: string, cursor: number): number {
+  const nl = value.indexOf(NL, cursor);
+  return nl === -1 ? value.length : nl;
+}
+
 export function applyKey(s: Edit, input: string, key: Key): KeyAction {
   // Newline: modifier+Enter or ⌃J. Checked before plain Enter (submit).
   if ((key.return && (key.shift || key.meta)) || (key.ctrl && input === "j")) return insert(s, NL);
@@ -57,12 +77,24 @@ export function applyKey(s: Edit, input: string, key: Key): KeyAction {
     if (lineIdx < lines.length - 1) return { type: "edit", state: { value: s.value, cursor: offsetAt(s.value, lineIdx + 1, col) } };
     return { type: "history", dir: "down" };
   }
-  if (key.leftArrow) return { type: "edit", state: { value: s.value, cursor: Math.max(0, s.cursor - 1) } };
-  if (key.rightArrow) return { type: "edit", state: { value: s.value, cursor: Math.min(s.value.length, s.cursor + 1) } };
-  if (key.ctrl && input === "a") return { type: "edit", state: { value: s.value, cursor: lineStart } }; // line home
-  if (key.ctrl && input === "e") {
-    const nl = s.value.indexOf(NL, s.cursor);
-    return { type: "edit", state: { value: s.value, cursor: nl === -1 ? s.value.length : nl } }; // line end
+  // Word jumps: Option/Alt+← → (key.meta) or Ctrl+← →. Must precede plain arrows.
+  if ((key.meta || key.ctrl) && key.leftArrow) return at(s.value, wordLeft(s.value, s.cursor));
+  if ((key.meta || key.ctrl) && key.rightArrow) return at(s.value, wordRight(s.value, s.cursor));
+  if (key.leftArrow) return at(s.value, Math.max(0, s.cursor - 1));
+  if (key.rightArrow) return at(s.value, Math.min(s.value.length, s.cursor + 1));
+  if (key.ctrl && input === "a") return at(s.value, lineStart); // line home
+  if (key.ctrl && input === "e") return at(s.value, lineEndOf(s.value, s.cursor)); // line end
+  // Kill bindings (readline): ⌃U to line start, ⌃K to line end, ⌃W / ⌥⌫ word back.
+  if (key.ctrl && input === "u") return { type: "edit", state: { value: s.value.slice(0, lineStart) + s.value.slice(s.cursor), cursor: lineStart } };
+  if (key.ctrl && input === "k") return { type: "edit", state: { value: s.value.slice(0, s.cursor) + s.value.slice(lineEndOf(s.value, s.cursor)), cursor: s.cursor } };
+  if ((key.ctrl && input === "w") || (key.meta && (key.backspace || key.delete))) {
+    const wl = wordLeft(s.value, s.cursor);
+    if (wl === s.cursor) return { type: "none" };
+    return { type: "edit", state: { value: s.value.slice(0, wl) + s.value.slice(s.cursor), cursor: wl } };
+  }
+  if (key.ctrl && input === "d") {
+    if (s.cursor >= s.value.length) return { type: "none" }; // EOF handled by caller
+    return { type: "edit", state: { value: s.value.slice(0, s.cursor) + s.value.slice(s.cursor + 1), cursor: s.cursor } };
   }
   if (key.backspace || key.delete) {
     if (s.cursor <= 0) return { type: "none" };

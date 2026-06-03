@@ -22,19 +22,27 @@ import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector } from "../model/router.ts";
 import { findModel, type ModelSpec } from "../providers.ts";
 import { runTask } from "../agent/run.ts";
+import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
+import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount } from "../accounts/store.ts";
+import { importableEnvCreds, importEnvCred } from "../accounts/detect.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { runTaskMock } from "../agent/mock.ts";
 import { runShell } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, matchCommands, formatContextBreakdown } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, matchCommands, formatContextBreakdown, formatAccounts } from "../commands.ts";
 import { applyKey, type Edit } from "./input.ts";
+import { copyToClipboard } from "./clipboard.ts";
+import { setTitle, bell, notify } from "./terminal.ts";
 import { navHistory } from "./history.ts";
 import { currentMention, matchFiles, completeMention } from "./mention.ts";
 import { listProjectFiles, expandMentions } from "./files.ts";
 import { useTerminalSize } from "./useTerminalSize.ts";
 import { gitBranch } from "./git.ts";
 import { basename } from "node:path";
+
+// Stateless: picks the active account per provider (reads the registry each call).
+const accountResolver = new AccountResolver();
 
 export type Runner = (opts: {
   prompt: string;
@@ -43,6 +51,29 @@ export type Runner = (opts: {
   selector: ModelSelector;
   signal: AbortSignal;
 }) => Promise<{ messages: ModelMessage[]; usage: Usage }>;
+
+const KEYS_HELP = [
+  "Keyboard shortcuts",
+  "  ⏎ send · ⌃J newline · esc interrupt · ⌃C twice to quit",
+  "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
+  "  ⌃A / ⌃E line start / end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
+  "  ⌃Y copy last reply · shift+tab cycle mode (normal · auto-accept · plan)",
+  "  tab @file complete · PgUp/PgDn or wheel to scroll",
+  "  / commands · @ files · ! shell · # memory",
+].join("\n");
+
+/** Serialize the transcript to Markdown for /export. */
+function transcriptMarkdown(items: Item[]): string {
+  const out: string[] = ["# Gearbox transcript", ""];
+  for (const it of items) {
+    if (it.kind === "user") out.push("## You", "", it.text, "");
+    else if (it.kind === "assistant") out.push("## Gearbox", "", it.text, "");
+    else if (it.kind === "tool") out.push(`> \`${it.name}\` ${it.arg}${it.summary ? " — " + it.summary : ""}`, "");
+    else if (it.kind === "notice") out.push(`_${it.text}_`, "");
+    else if (it.kind === "error") out.push(`**error:** ${it.text}`, "");
+  }
+  return out.join("\n");
+}
 
 export interface AppProps {
   selector: ModelSelector;
@@ -72,7 +103,8 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const [lastInput, setLastInput] = useState(0);
   const [edit, setEditState] = useState<Edit>({ value: "", cursor: 0 });
   const [selector, setSelector] = useState<ModelSelector>(initialSelector);
-  const [mode, setMode] = useState<"normal" | "plan">("normal");
+  const [mode, setMode] = useState<"normal" | "auto-accept" | "plan">("normal");
+  const [effort, setEffortState] = useState<"fast" | "balanced" | "max">("balanced");
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
   const [ghostSkin, setGhostSkinState] = useState<GhostSkin>("base");
@@ -95,6 +127,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     const start = Date.now();
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 500);
     return () => clearInterval(t);
+  }, [busy]);
+
+  // Reflect status in the terminal window/tab title (OSC 2).
+  useEffect(() => {
+    const proj = basename(process.cwd());
+    setTitle(busy ? `✳ ${proj} · working` : `${proj} · gearbox`);
   }, [busy]);
 
   // Refs read by the (closure-captured) input handler — avoids stale state.
@@ -153,6 +191,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     setPermissionHandler(
       (req) =>
         new Promise<PermDecision>((resolve) => {
+          // Auto-accept-edits mode: apply file writes/edits without asking (the
+          // diff still renders); shell commands are still gated.
+          if (modeRef.current === "auto-accept" && (req.kind === "write" || req.kind === "edit")) {
+            resolve("once");
+            return;
+          }
           permQueue.current.push({ req, resolve });
           pumpPerm();
         }),
@@ -274,7 +318,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       // The Context Engine projects the full history into a bounded, model-aware
       // working set to SEND; the returned ledger stays the full source of truth.
       const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, model: choice.model, plan });
-      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system });
+      // Pick the active account for this model's provider and inject its creds.
+      // No account → env-default (back-compat + demo). CLI accounts are P3.
+      const account = accountResolver.pick(choice.model.provider);
+      const creds = account ? await resolveCreds(account) : undefined;
+      if (account) markUsed(account.id);
+      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds });
       // r.messages = the sent context + the newly produced turn. Rebuild msgRef as
       // FULL history + the user message + only the new messages (never the curated
       // projection), and sanitize so an interrupted turn can't leave a dangling
@@ -308,11 +357,39 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     [demo],
   );
 
-  const togglePlan = () => {
-    const next = modeRef.current === "plan" ? "normal" : "plan";
+  const MODE_NOTE: Record<"normal" | "auto-accept" | "plan", string> = {
+    normal: "normal mode — I'll ask before writes, edits, and shell",
+    "auto-accept": "auto-accept edits — file writes/edits apply without asking (shell still gated)",
+    plan: "plan mode — read-only; I'll propose a plan before changing anything",
+  };
+  const setModeTo = (next: "normal" | "auto-accept" | "plan") => {
     modeRef.current = next;
     setMode(next);
-    notice(next === "plan" ? "plan mode on — read-only; I'll propose a plan before changing anything" : "plan mode off");
+    notice(MODE_NOTE[next]);
+  };
+  // Shift+Tab cycles normal → auto-accept → plan → normal (Claude Code style).
+  const cycleMode = () => {
+    const order = ["normal", "auto-accept", "plan"] as const;
+    setModeTo(order[(order.indexOf(modeRef.current) + 1) % order.length]!);
+  };
+  // /plan jumps straight to/from plan mode (toggle), independent of the cycle.
+  const togglePlan = () => setModeTo(modeRef.current === "plan" ? "normal" : "plan");
+
+  // Effort tier → which model the routing seam should prefer. Pins the model via
+  // the existing switch machinery so the status line + cost reflect it.
+  const EFFORT_MODEL: Record<"fast" | "balanced" | "max", string> = { fast: "haiku-4.5", balanced: "sonnet-4.6", max: "sonnet-4.6" };
+  const effortRef = useRef(effort);
+  effortRef.current = effort;
+  const setEffort = (tier: "fast" | "balanced" | "max") => {
+    effortRef.current = tier;
+    setEffortState(tier);
+    const r = resolveModelSwitch(EFFORT_MODEL[tier]);
+    if (r.ok && r.modelId) {
+      setSelector(new FixedSelector(r.modelId));
+      setLastPick(null);
+      routedRef.current = null;
+    }
+    notice(`effort: ${tier}${r.ok && r.modelId ? ` · ${r.modelId}` : ""}`);
   };
 
   const runTurn = useCallback(
@@ -323,6 +400,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       const { text: modelPrompt, attached } = expandMentions(prompt);
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
       setBusy(true);
+      const turnStart = Date.now();
       if (lingerRef.current) clearTimeout(lingerRef.current);
       setLinger(false);
       setMascotState("thinking");
@@ -440,6 +518,11 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           setLinger(true);
           if (lingerRef.current) clearTimeout(lingerRef.current);
           lingerRef.current = setTimeout(() => setLinger(false), 1500);
+          // Nudge the user back for long turns (likely stepped away): bell + notify.
+          if (Date.now() - turnStart > 8000) {
+            bell();
+            notify("gearbox", hadError ? "turn finished with an error" : "turn finished");
+          }
         }
       }
     },
@@ -504,6 +587,37 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         case "plan":
           echo(text);
           togglePlan();
+          return;
+        case "effort": {
+          echo(text);
+          const tier = arg.toLowerCase();
+          if (tier === "fast" || tier === "balanced" || tier === "max") setEffort(tier);
+          else notice(`effort: ${effortRef.current} — use /effort fast|balanced|max`);
+          return;
+        }
+        case "copy": {
+          echo(text);
+          const last = [...itemsRef.current].reverse().find((i) => i.kind === "assistant");
+          if (last && last.kind === "assistant" && last.text) {
+            copyToClipboard(last.text);
+            notice("copied last reply to clipboard");
+          } else notice("nothing to copy yet");
+          return;
+        }
+        case "export": {
+          echo(text);
+          const file = arg || "gearbox-transcript.md";
+          try {
+            Bun.write(file, transcriptMarkdown(itemsRef.current));
+            notice(`exported transcript → ${file}`);
+          } catch (e: any) {
+            notice(`couldn't write ${file}: ${e?.message ?? e}`);
+          }
+          return;
+        }
+        case "keys":
+          echo(text);
+          notice(KEYS_HELP);
           return;
         case "yolo": {
           echo(text);
@@ -585,6 +699,39 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           }
           const { sections } = buildContext({ history: msgRef.current, userText: lastPromptRef.current || "(your next message)", model: m, plan: modeRef.current === "plan" });
           notice(formatContextBreakdown(sections, m.contextWindow));
+          return;
+        }
+        case "accounts": {
+          echo(text);
+          const [sub, ...rest] = arg.split(/\s+/);
+          const argId = rest.join(" ").trim();
+          if (sub === "import") {
+            void (async () => {
+              const cands = importableEnvCreds();
+              if (!cands.length) {
+                notice("nothing to import — no new provider keys in your environment");
+                return;
+              }
+              for (const c of cands) await importEnvCred(c);
+              notice(`imported ${cands.length} account${cands.length > 1 ? "s" : ""}: ${cands.map((c) => c.provider).join(", ")}`);
+            })();
+            return;
+          }
+          if (sub === "use" && argId) {
+            const a = getAccount(argId);
+            if (!a) {
+              notice(`no account "${argId}" — /accounts to list`);
+              return;
+            }
+            setDefaultAccount(a.provider, a.id);
+            notice(`default for ${a.provider} → ${a.id}`);
+            return;
+          }
+          if (sub === "rm" && argId) {
+            void removeAccount(argId).then(() => notice(`removed ${argId}`));
+            return;
+          }
+          notice(formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()));
           return;
         }
         case "compact": {
@@ -680,13 +827,22 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       else if (input === "3" || key.escape) resolvePerm("deny");
       return;
     }
+    // ⌃Y — copy the last assistant reply to the clipboard (OSC 52; works over SSH).
+    if (key.ctrl && input === "y") {
+      const last = [...itemsRef.current].reverse().find((i) => i.kind === "assistant");
+      if (last && last.kind === "assistant" && last.text) {
+        copyToClipboard(last.text);
+        notice("copied last reply to clipboard");
+      } else notice("nothing to copy yet");
+      return;
+    }
     // Keyboard scroll: PgUp/PgDn page through the transcript.
     if (key.pageUp || key.pageDown) {
       scrollBy((key.pageUp ? -1 : 1) * Math.max(1, Math.floor(viewportHeightRef.current / 2)));
       return;
     }
     if (key.tab && key.shift) {
-      if (!busyRef.current) togglePlan();
+      if (!busyRef.current) cycleMode();
       return;
     }
     if (key.tab) {
@@ -748,7 +904,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   let footer = 2; // status line + its top margin
   footer += perm ? 9 : 3; // permission card vs composer (rule + input + marginTop)
   if (busy || linger) footer += STATE_GHOST_ROWS + 1; // the fixed-height ghost line (+ marginTop)
-  if (mode === "plan") footer += 2;
+  if (mode !== "normal") footer += 2;
   if (cmdMatches.length) footer += cmdMatches.length + 1;
   if (shownFiles.length) footer += shownFiles.length + 2;
   const HEADER = 3;
@@ -785,10 +941,10 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} /> : null}
       <CommandPalette draft={edit.value} />
       <FilePalette matches={shownFiles} />
-      {mode === "plan" ? (
+      {mode !== "normal" ? (
         <Box paddingX={1} marginTop={1}>
-          <Text color={color.accent}>{glyph.notice} plan mode</Text>
-          <Text color={color.faint}> · read-only · shift+tab to exit</Text>
+          <Text color={color.accent}>{glyph.notice} {mode === "plan" ? "plan mode" : "auto-accept edits"}</Text>
+          <Text color={color.faint}> · {mode === "plan" ? "read-only" : "writes apply without asking; shell still gated"} · shift+tab to cycle</Text>
         </Box>
       ) : null}
       {perm ? (
@@ -796,7 +952,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       ) : (
         <Composer value={edit.value} cursor={edit.cursor} placeholder={mode === "plan" ? "describe what to plan…" : "ask anything"} busy={busy} width={width} />
       )}
-      <StatusBar model={modelLabel} branch={branch} routing={routing} yolo={yolo} ctxPct={ctxPct} tokens={tokens} width={width} />
+      <StatusBar model={modelLabel} branch={branch} routing={routing} yolo={yolo} ctxPct={ctxPct} tokens={tokens} width={width} mode={mode} effort={effort} />
     </>
   );
 

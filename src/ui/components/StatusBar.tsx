@@ -19,6 +19,8 @@ export function StatusBar({
   ctxPct,
   tokens,
   width,
+  mode = "normal",
+  effort = "balanced",
 }: {
   model: string;
   cwd?: string;
@@ -28,10 +30,14 @@ export function StatusBar({
   ctxPct: number | null;
   tokens: number;
   width: number;
+  mode?: "normal" | "auto-accept" | "plan";
+  effort?: "fast" | "balanced" | "max";
 }) {
   const sep = `  ${glyph.bullet}  `;
+  const modeLabel = mode === "auto-accept" ? "auto-accept" : mode; // "plan" / "auto-accept"
   const left = [
     model,
+    `⚡${effort}`,
     branch ? `${glyph.branch} ${branch}` : null,
     ctxPct != null && ctxPct > 0 ? `${ctxPct}% ctx` : null,
     tokens > 0 ? `${fmtTokens(tokens)} tok` : null,
@@ -40,6 +46,7 @@ export function StatusBar({
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
       <Text color={color.faint} wrap="truncate-end">
+        {mode !== "normal" ? <Text color={color.accent}>{modeLabel}{sep}</Text> : null}
         {left.join(sep)}
       </Text>
       <Text color={color.faint} wrap="truncate-end">
