@@ -342,12 +342,15 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // The model + reason that ACTUALLY ran the last turn (routing varies it per
   // task). Falls back to the selector's generic pick before the first turn.
   const [lastPick, setLastPick] = useState<{ model: ModelSpec; reason: string } | null>(null);
+  // Mirrors activeCliRef as state so the status line re-renders when you /login
+  // to (or leave) a subscription account.
+  const [activeCli, setActiveCli] = useState<{ id: string; label: string } | null>(null);
   const model = lastPick?.model ?? choice?.model ?? null;
-  const modelLabel = demo ? "demo · no key" : (model?.label ?? "none");
-  // The routing reason, surfaced in the status line — the product's USP, now the
-  // LIVE per-task pick (kind · why · price), not a fixed default.
-  const routing = demo ? null : (lastPick?.reason ?? choice?.reason ?? null);
-  const ctxPct = model && lastInput > 0 ? Math.round((lastInput / model.contextWindow) * 100) : null;
+  // On a subscription, the status reflects the CLI account, not the in-loop model/routing.
+  const modelLabel = demo ? "demo · no key" : activeCli ? activeCli.label : (model?.label ?? "none");
+  const subscription = activeCli ? activeCli.label : null;
+  const routing = demo || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
+  const ctxPct = !activeCli && model && lastInput > 0 ? Math.round((lastInput / model.contextWindow) * 100) : null;
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const echo = (text: string) => push({ kind: "user", id: idRef.current++, text });
@@ -907,8 +910,9 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           activeCliRef.current = { id: res.account.id, binary: bin };
           cliSessionRef.current = undefined;
           setLastPick(null);
-          setSelector(selectorRef.current); // trigger a re-render of the status line
-          notice(`${res.message}\n⚠ this account runs ${bin}'s own loop, tools, and permissions — Gearbox's gate doesn't apply. Make sure you're logged in (\`${bin}\`). /account off to leave.`);
+          setActiveCli({ id: res.account.id, label: bin });
+          // Concise: uses the vendor CLI's own login (no token handling here).
+          notice(`✓ on ${bin === "codex" ? "ChatGPT" : "Claude"} via the ${bin} CLI — uses your existing ${bin} login, runs its own tools/permissions. /account off to switch back.\nNot logged in? run \`${bin} ${bin === "codex" ? "login" : "/login"}\` in a terminal, then retry.`);
           return;
         }
         case "account": {
@@ -916,7 +920,8 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           if (arg.toLowerCase() === "off") {
             activeCliRef.current = null;
             cliSessionRef.current = undefined;
-            notice("left the subscription account — back to API/in-loop models");
+            setActiveCli(null);
+            notice("left the subscription — back to API/in-loop models");
             return;
           }
           if (!arg) {
@@ -929,11 +934,14 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           if (a.exec === "cli") {
-            activeCliRef.current = { id: a.id, binary: (a.auth as any).binary };
+            const bin = (a.auth as any).binary as string;
+            activeCliRef.current = { id: a.id, binary: bin };
             cliSessionRef.current = undefined;
-            notice(`active → ${a.id} (runs via ${(a.auth as any).binary} CLI; /account off to leave)`);
+            setActiveCli({ id: a.id, label: bin });
+            notice(`active → ${a.id} (runs via the ${bin} CLI; /account off to leave)`);
           } else {
             activeCliRef.current = null;
+            setActiveCli(null);
             setDefaultAccount(a.provider, a.id);
             notice(`active account for ${a.provider} → ${a.id}`);
           }
@@ -1324,7 +1332,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       ) : (
         <Composer value={edit.value} cursor={edit.cursor} placeholder={mode === "plan" ? "describe what to plan…" : "ask anything"} busy={busy} width={width} vim={vim} />
       )}
-      <StatusBar model={modelLabel} branch={branch} routing={routing} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={effort} />
+      <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={effort} />
     </>
   );
 

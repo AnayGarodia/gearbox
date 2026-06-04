@@ -99,8 +99,9 @@ export class RoutingSelector implements ModelSelector {
     );
     const model = candidates[0]!;
 
-    const why = clears.length ? "cheapest clearing the bar" : "best available";
-    const reason = `${kind} · ${why} · $${costOf(model).toFixed(2)}/Mtok`;
+    // Concise, user-facing: the task class + the per-Mtok rate. (The full
+    // "why" scorecard lives behind the future routing UI, not the status line.)
+    const reason = `${kind} · $${costOf(model).toFixed(2)}/Mtok`;
     return { model, reason };
   }
 }

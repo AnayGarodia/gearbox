@@ -22,6 +22,7 @@ export function StatusBar({
   width,
   mode = "normal",
   effort = "balanced",
+  subscription = null,
 }: {
   model: string;
   cwd?: string;
@@ -34,12 +35,13 @@ export function StatusBar({
   width: number;
   mode?: "normal" | "auto-accept" | "plan";
   effort?: "fast" | "balanced" | "max";
+  subscription?: string | null; // active CLI-backed subscription account label
 }) {
   const sep = `  ${glyph.bullet}  `;
   const modeLabel = mode === "auto-accept" ? "auto-accept" : mode; // "plan" / "auto-accept"
   const left = [
     model,
-    `⚡${effort}`,
+    subscription ? null : `⚡${effort}`, // effort/reasoning doesn't apply on a CLI subscription
     branch ? `${glyph.branch} ${branch}` : null,
     ctxPct != null && ctxPct > 0 ? `${ctxPct}% ctx` : null,
     tokens > 0 ? `${fmtTokens(tokens)} tok` : null,
@@ -54,9 +56,13 @@ export function StatusBar({
       </Text>
       <Text color={color.faint} wrap="truncate-end">
         {yolo ? <Text color={color.err} bold>⚡ yolo</Text> : null}
-        {yolo && routing ? `  ${glyph.bullet}  ` : null}
-        {routing ? <Text color={color.accentDim}>routing</Text> : null}
-        {routing ? ` ${glyph.bullet} ${routing}` : null}
+        {yolo && (subscription || routing) ? `  ${glyph.bullet}  ` : null}
+        {/* Active subscription account takes over the right side (no in-loop routing).
+            The model name is already on the left, so the right reminds you of the
+            one thing that's different: it runs its own tools/permissions. */}
+        {subscription ? <Text color={color.accent}>subscription {glyph.bullet} own tools/perms</Text> : null}
+        {!subscription && routing ? <Text color={color.accentDim}>auto</Text> : null}
+        {!subscription && routing ? ` ${glyph.bullet} ${routing}` : null}
       </Text>
     </Box>
   );
