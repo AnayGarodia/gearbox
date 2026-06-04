@@ -933,15 +933,23 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           if (subL === "add") {
-            // `/account add <key>` (auto-detect) or `/account add <provider> <key>`.
             const first = rest[0] ?? "";
+            const firstL = first.toLowerCase();
+            // Subscriptions: `/account add claude [name]` / `add codex [name]`
+            // routes to the CLI sign-in (no key). This is what people try first.
+            if (["claude", "codex", "chatgpt", "claude-cli", "codex-cli"].includes(firstL)) {
+              const provider = firstL.startsWith("codex") || firstL === "chatgpt" ? "codex" : "claude";
+              signInCli(`${provider} ${rest.slice(1).join(" ")}`.trim());
+              return;
+            }
+            // API keys: `/account add <key>` (auto-detect) or `<provider> <key>`.
             const second = rest.slice(1).join(" ").trim();
             void (async () => {
               let res;
               if (first && !second && detectProviderByKey(first)) res = await addByPastedKey(first);
               else if (first && second) res = await addApiKeyAccount(first, second);
               else {
-                notice("paste a key: /account add <key>   (or /account add <provider> <key>)");
+                notice("add an account:\n  /account add <key>            (API key — auto-detects the provider)\n  /account add <provider> <key> (e.g. anthropic, openai, openrouter)\n  /account add claude [name]    (Claude subscription — opens sign-in)\n  /account add codex [name]     (ChatGPT subscription — opens sign-in)");
                 return;
               }
               if (!res.ok || !res.account) {
@@ -968,8 +976,8 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           // `/account use <id>` or bare `/account <id>` → make that account active.
-          const id = subL === "use" ? argId : sub ? arg.trim() : "";
-          if (id && !KNOWN.includes(subL)) {
+          const id = subL === "use" ? argId : sub && !KNOWN.includes(subL) ? arg.trim() : "";
+          if (id) {
             const a = getAccount(id);
             if (!a) {
               notice(`no account "${id}".\n\n` + formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()));

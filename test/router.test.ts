@@ -1,5 +1,12 @@
 import { test, expect, afterEach } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { RoutingSelector, classify } from "../src/model/router.ts";
+
+// Isolate the account store to an empty dir so provider availability depends
+// ONLY on env keys (not the developer's real ~/.gearbox accounts).
+process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-router-"));
 
 const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "DEEPSEEK_API_KEY"];
 const saved: Record<string, string | undefined> = {};

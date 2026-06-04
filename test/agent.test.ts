@@ -1,8 +1,14 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runTaskMock } from "../src/agent/mock.ts";
 import type { AgentEvent } from "../src/agent/events.ts";
 import { findModel } from "../src/providers.ts";
 import { FixedSelector } from "../src/model/selector.ts";
+
+// Isolate the account store so "needs a key" depends only on env, not real accounts.
+process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-agent-"));
 
 test("mock runner emits text, a full tool lifecycle, and ends with done", async () => {
   const events: AgentEvent[] = [];
