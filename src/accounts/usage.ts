@@ -164,35 +164,3 @@ export function buildUsageView(sessionUSD?: number, labelFor?: (id: string) => s
   };
 }
 
-/**
- * Aligned cost table. `labelFor` maps a recorded accountId to a human label
- * (the caller passes the same labels /account shows); without it, raw ids show.
- */
-export function formatUsage(sessionUSD?: number, labelFor?: (id: string) => string): string {
-  const rows = loadUsage();
-  if (!rows.length) return "cost · spend per account\n  (nothing recorded yet)";
-
-  const data = rows.map((u) => ({
-    name: labelFor ? labelFor(u.accountId) : u.accountId,
-    spend: usd(u.spentUSD) + (u.estimated ? "~" : ""),
-    turns: String(u.turns),
-    tok: `${fmtTok(u.inputTokens)}/${fmtTok(u.outputTokens)}`,
-    limit: u.rate ? `${Math.round(u.rate.utilization * 100)}% of ${prettyLimit(u.rate.type)}` : "",
-  }));
-
-  const colW = (head: string, pick: (d: (typeof data)[number]) => string) => Math.max(head.length, ...data.map((d) => pick(d).length));
-  const wName = colW("account", (d) => d.name);
-  const wSpend = Math.max("spend".length, usd(totalSpent()).length, ...data.map((d) => d.spend.length));
-  const wTurns = colW("turns", (d) => d.turns);
-  const wTok = colW("tokens", (d) => d.tok);
-
-  const row = (name: string, spend: string, turns: string, tok: string, limit: string) =>
-    `  ${name.padEnd(wName)}  ${spend.padStart(wSpend)}  ${turns.padStart(wTurns)}  ${tok.padEnd(wTok)}  ${limit}`.trimEnd();
-
-  const lines: string[] = ["cost · spend per account (all sessions)", "", row("account", "spend", "turns", "tokens", "limit")];
-  for (const d of data) lines.push(row(d.name, d.spend, d.turns, d.tok, d.limit));
-  lines.push(row("total", usd(totalSpent()), "", "", ""));
-  if (sessionUSD != null) lines.push("", `  this session (est): ${usd(sessionUSD)}`);
-  lines.push("", "  ~ = estimated (provider didn't report an exact cost)");
-  return lines.join("\n");
-}

@@ -4,6 +4,7 @@ import { MODELS, providerAvailable, findModel, type ProviderId } from "./provide
 import { catalogProvider } from "./accounts/catalog.ts";
 import { glyph } from "./ui/theme.ts";
 import { fuzzyRank } from "./ui/fuzzy.ts";
+import type { ContextView } from "./ui/types.ts";
 
 // The env var (or generic hint) to set for a provider, for "no key" messages.
 const envHint = (p: string): string => ENV_LABEL[p] ?? catalogProvider(p)?.envVars[0] ?? "an API key";
@@ -134,13 +135,24 @@ export function formatAccounts(
   return lines.filter(Boolean).join("\n");
 }
 
-/** Render the Context Engine's working-set breakdown (one row per section). */
-export function formatContextBreakdown(sections: { name: string; tokens: number }[], contextWindow?: number): string {
+/** Build the structured /context card: one bar per working-set section (sized
+ *  against the largest section) plus a window-fill percentage. */
+export function buildContextView(sections: { name: string; tokens: number }[], contextWindow?: number, cwd = ""): ContextView {
   const total = sections.reduce((s, x) => s + x.tokens, 0);
+  const max = Math.max(1, ...sections.map((s) => s.tokens));
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  const rows = sections.map((s) => `  ${s.name.padEnd(10)} ${fmt(s.tokens).padStart(8)}`);
-  const pct = contextWindow ? `  (${Math.round((total / contextWindow) * 100)}% of ${fmt(contextWindow)} window)` : "";
-  return ["context · what's loaded for the next message (tokens)", ...rows, `  ${"total".padEnd(10)} ${fmt(total).padStart(8)}${pct}`].join("\n");
+  const rows = sections.map((s) => ({ label: s.name, display: fmt(s.tokens), frac: s.tokens / max }));
+  const labelPad = Math.max("total".length, ...rows.map((r) => r.label.length));
+  const valuePad = Math.max(fmt(total).length, ...rows.map((r) => r.display.length));
+  return {
+    rows,
+    total: fmt(total),
+    windowPct: contextWindow ? Math.round((total / contextWindow) * 100) : undefined,
+    windowLabel: contextWindow ? fmt(contextWindow) : undefined,
+    cwd,
+    labelPad,
+    valuePad,
+  };
 }
 
 const ENV_LABEL: Record<ProviderId, string> = {

@@ -12,7 +12,7 @@ import { highlightLine } from "./highlight.ts";
 import type { Item } from "./types.ts";
 import { barCells } from "../accounts/usage.ts";
 
-const limitColor = (pct: number) => (pct >= 90 ? color.err : pct >= 70 ? color.accent : color.ok);
+const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
 
 export type Span = { text: string; color?: string; bold?: boolean; italic?: boolean; dim?: boolean; bg?: string };
 export type Line = Span[];
@@ -297,6 +297,34 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         if (v.sessionUSD) totalLine.push({ text: "     this session (est): " + v.sessionUSD, color: color.faint });
         out.push(clipSpans(totalLine, width));
         if (v.hasEstimate) out.push([{ text: "  ~ estimated (provider didn't report an exact cost)", color: color.faint }]);
+        break;
+      }
+      case "context": {
+        const v = it.view;
+        out.push([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: "context · what's loaded for the next message", color: color.text }]);
+        out.push(BLANK);
+        for (const r of v.rows) {
+          const { fill, empty } = barCells(r.frac, 18);
+          out.push(
+            clipSpans(
+              [
+                { text: "  " + r.label.padEnd(v.labelPad), color: color.dim },
+                { text: "  " + r.display.padStart(v.valuePad) + "  ", color: color.text },
+                { text: fill, color: color.accent },
+                { text: empty, color: color.faint },
+              ],
+              width,
+            ),
+          );
+        }
+        out.push(BLANK);
+        const totalLine: Line = [{ text: "  " + "total".padEnd(v.labelPad) + "  " + v.total.padStart(v.valuePad) + "  ", color: color.text }];
+        if (v.windowPct != null) {
+          const win = barCells(v.windowPct / 100, 18);
+          totalLine.push({ text: win.fill, color: limitColor(v.windowPct) }, { text: win.empty, color: color.faint }, { text: " " + v.windowPct + "% of " + v.windowLabel, color: limitColor(v.windowPct) });
+        }
+        out.push(clipSpans(totalLine, width));
+        if (v.cwd) out.push(clipSpans([{ text: "  working directory: " + v.cwd, color: color.faint }], width));
         break;
       }
       case "error": {

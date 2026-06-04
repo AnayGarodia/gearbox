@@ -4,9 +4,11 @@ import { color, glyph } from "../theme.ts";
 import type { Item } from "../types.ts";
 import { Markdown } from "./Markdown.tsx";
 import { barCells, type UsageView } from "../../accounts/usage.ts";
+import type { ContextView } from "../types.ts";
 
-// Green under 70%, accent up to 90%, coral above — for limit-utilization bars.
-const limitColor = (pct: number) => (pct >= 90 ? color.err : pct >= 70 ? color.accent : color.ok);
+// Limit-utilization color: green when there's headroom, accent mid, coral when
+// you're nearly maxed (≥85%) so it reads as a warning.
+const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
 
 function Bar({ frac, width, on }: { frac: number; width: number; on: string }) {
   const { fill, empty } = barCells(frac, width);
@@ -131,6 +133,38 @@ function ToolLine({ item }: { item: Extract<Item, { kind: "tool" }> }) {
   );
 }
 
+// The /context card: a bar per working-set section (sized to the largest) and a
+// window-fill bar that greens→reds as the window fills.
+function ContextCard({ view }: { view: ContextView }) {
+  return (
+    <Box flexDirection="column" marginTop={1} marginLeft={2}>
+      <Box>
+        <Text color={color.accentDim}>{glyph.notice} </Text>
+        <Text color={color.text}>context · what's loaded for the next message</Text>
+      </Box>
+      <Box marginTop={1} flexDirection="column">
+        {view.rows.map((r, i) => (
+          <Box key={i}>
+            <Text color={color.dim}>{"  " + r.label.padEnd(view.labelPad)}</Text>
+            <Text color={color.text}>{"  " + r.display.padStart(view.valuePad) + "  "}</Text>
+            <Bar frac={r.frac} width={18} on={color.accent} />
+          </Box>
+        ))}
+      </Box>
+      <Box marginTop={1}>
+        <Text color={color.text}>{"  " + "total".padEnd(view.labelPad) + "  " + view.total.padStart(view.valuePad) + "  "}</Text>
+        {view.windowPct != null ? (
+          <Text>
+            <Bar frac={view.windowPct / 100} width={18} on={limitColor(view.windowPct)} />
+            <Text color={limitColor(view.windowPct)}>{" " + view.windowPct + "% of " + view.windowLabel}</Text>
+          </Text>
+        ) : null}
+      </Box>
+      {view.cwd ? <Text color={color.faint}>{"  working directory: " + view.cwd}</Text> : null}
+    </Box>
+  );
+}
+
 // One transcript item → its element (no key; the caller supplies it).
 function Row({ item, width }: { item: Item; width: number }) {
   switch (item.kind) {
@@ -142,6 +176,8 @@ function Row({ item, width }: { item: Item; width: number }) {
       return <ToolLine item={item} />;
     case "usage":
       return <UsageCard view={item.view} />;
+    case "context":
+      return <ContextCard view={item.view} />;
     case "notice":
       return (
         <Box marginTop={1} marginLeft={2}>

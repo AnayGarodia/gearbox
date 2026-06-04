@@ -35,7 +35,7 @@ import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../conte
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { runTaskMock } from "../agent/mock.ts";
 import { runShell } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, matchCommands, formatContextBreakdown, formatAccounts, accountLabel } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel } from "../commands.ts";
 import { applyKey, type Edit } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
@@ -81,6 +81,10 @@ function transcriptMarkdown(items: Item[]): string {
       out.push("**cost · spend per account**", "");
       for (const r of it.view.rows) out.push(`- ${r.name.trim()} — ${r.spend.trim()} · ${r.meta}${r.limitPct != null ? ` · ${r.limitLabel} ${r.limitPct}%` : ""}`);
       out.push(`- total ${it.view.total.trim()}`, "");
+    } else if (it.kind === "context") {
+      out.push("**context · what's loaded**", "");
+      for (const r of it.view.rows) out.push(`- ${r.label.trim()} — ${r.display.trim()}`);
+      out.push(`- total ${it.view.total.trim()}${it.view.windowPct != null ? ` (${it.view.windowPct}% of ${it.view.windowLabel})` : ""}`, "");
     } else if (it.kind === "error") out.push(`**error:** ${it.text}`, "");
   }
   return out.join("\n");
@@ -463,16 +467,28 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const EFFORT_MODEL: Record<"fast" | "balanced" | "max", string> = { fast: "haiku-4.5", balanced: "sonnet-4.6", max: "opus-4.8" };
   const effortRef = useRef(effort);
   effortRef.current = effort;
+  // Picking a model/effort is an in-loop (API) choice, so it implies leaving any
+  // active CLI subscription (which otherwise owns every turn and would make the
+  // choice a silent no-op). Returns a suffix to append to the notice if it acted.
+  const leaveSubscription = (): string => {
+    if (!activeCliRef.current) return "";
+    activeCliRef.current = null;
+    cliSessionRef.current = undefined;
+    setActiveCli(null);
+    updatePrefs({ activeAccount: null });
+    return " (left the subscription)";
+  };
   const setEffort = (tier: "fast" | "balanced" | "max") => {
     effortRef.current = tier;
     setEffortState(tier);
+    const left = leaveSubscription();
     const r = resolveModelSwitch(EFFORT_MODEL[tier]);
     if (r.ok && r.modelId) {
       setSelector(new FixedSelector(r.modelId));
       setLastPick(null);
       routedRef.current = null;
     }
-    notice(`effort: ${tier}${r.ok && r.modelId ? ` · ${r.modelId}` : ""}`);
+    notice(`effort: ${tier}${r.ok && r.modelId ? ` · ${r.modelId}` : ""}${left}`);
   };
 
   // Hand the terminal to an interactive child (e.g. `claude auth login`'s OAuth
@@ -703,6 +719,9 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         })();
       };
 
+      // Every command runs inside this boundary: a bug in any handler becomes a
+      // single clean notice, never a raw stack dumped over the UI or a crash.
+      try {
       switch (name) {
         case "exit":
         case "quit":
@@ -715,7 +734,9 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           setTokens(0);
           setLastInput(0);
           curAsstRef.current = null;
+          routedRef.current = null;
           sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
+          notice("started a fresh conversation");
           return;
         case "resume": {
           echo(text);
@@ -768,12 +789,13 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         case "export": {
           echo(text);
           const file = arg || "gearbox-transcript.md";
-          try {
-            Bun.write(file, transcriptMarkdown(itemsRef.current));
-            notice(`exported transcript → ${file}`);
-          } catch (e: any) {
-            notice(`couldn't write ${file}: ${e?.message ?? e}`);
+          if (!itemsRef.current.length) {
+            notice("nothing to export yet");
+            return;
           }
+          void Bun.write(file, transcriptMarkdown(itemsRef.current))
+            .then(() => notice(`exported transcript → ${file}`))
+            .catch((e: any) => notice(`couldn't write ${file}: ${e?.message ?? String(e)}`));
           return;
         }
         case "keys":
@@ -879,22 +901,26 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           if (arg.toLowerCase() === "auto" || arg.toLowerCase() === "route") {
+            const left = leaveSubscription();
             setSelector(new RoutingSelector());
             setLastPick(null);
             routedRef.current = null;
             updatePrefs({ pinnedModel: undefined }); // remember: routing, across sessions
-            notice("routing on — Gearbox now picks the model per task (the cheapest that can do the job)");
+            notice("routing on — Gearbox now picks the model per task (the cheapest that can do the job)" + left);
             return;
           }
           {
             const r = resolveModelSwitch(arg);
             if (r.ok && r.modelId) {
+              const left = leaveSubscription();
               setSelector(new FixedSelector(r.modelId));
               setLastPick(null);
               routedRef.current = null;
               updatePrefs({ pinnedModel: r.modelId }); // persist the pin across sessions
+              notice(`${r.message} — pinned (persists across sessions). /model auto to route per task again.` + left);
+            } else {
+              notice(r.message);
             }
-            notice(r.ok ? `${r.message} — pinned (persists across sessions). /model auto to route per task again.` : r.message);
           }
           return;
         case "memory": {
@@ -915,7 +941,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           const { sections } = buildContext({ history: msgRef.current, userText: lastPromptRef.current || "(your next message)", model: m, plan: modeRef.current === "plan" });
-          notice(formatContextBreakdown(sections, m.contextWindow) + `\n\n  working directory: ${process.cwd()}`);
+          push({ kind: "context", id: idRef.current++, view: buildContextView(sections, m.contextWindow, process.cwd()) });
           return;
         }
         // Everything account-related, addressed by NUMBER (never an id):
@@ -979,6 +1005,11 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           const numbered = byNumber(subL);
           if (numbered) {
             activate(numbered);
+            return;
+          }
+          // A number that's out of range (vs. a non-number, which may be a subcommand).
+          if (/^\d+$/.test(subL)) {
+            notice(all.length ? `there's no account ${subL} — pick 1–${all.length}.\n\n` + formatAccounts(all, activeId, []) : "no accounts yet — /account add to add one");
             return;
           }
           if (subL === "add") {
@@ -1111,10 +1142,16 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             "Initialize project memory: survey this repository (use the repo map and read the key entry points, config, and docs) and write a concise GEARBOX.md at the repo root covering what the project is, how to build/test/run it, the layout, and any conventions a new contributor must know. Keep it tight and accurate.",
           );
           return;
-        default:
+        default: {
           echo(text);
-          notice(`unknown command: /${name} — try /help`);
+          // Suggest the closest real command (typo-friendly), else point to /help.
+          const near = matchCommands(`/${name}`).filter((c) => c.name !== `/${name}`)[0];
+          notice(near ? `no /${name} command — did you mean ${near.name}?  (/help for all)` : `no /${name} command — type /help to see what's available`);
           return;
+        }
+      }
+      } catch (e: any) {
+        notice(`/${name} hit an error: ${(e?.message ?? String(e)).split("\n")[0]}`);
       }
     },
     [exit, runTurn],
@@ -1137,10 +1174,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       if (text.startsWith("!")) {
         const cmd = text.slice(1).trim();
         echo(text);
-        if (cmd) {
-          const r = runShell(cmd);
-          notice(r.output);
+        if (!cmd) {
+          notice("run a shell command with !<command> — e.g. !git status");
+          return;
         }
+        const r = runShell(cmd);
+        notice(r.output || "(no output)");
         return;
       }
       if (text.startsWith("#")) {
