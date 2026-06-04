@@ -61,41 +61,6 @@ export function Composer({
     { isActive: true, mouse: "all" },
   );
 
-  // ── Mouse‑selection hook ────────────────────────────────────────────────
-  const lastClick = useRef<{ time: number; x: number; y: number; count?: number } | null>(null);
-
-  const handleMouse = useCallback(
-    (raw: { button: number; x: number; y: number; shift: boolean; meta: boolean; ctrl: boolean }) => {
-      if (!onEdit) return;
-      const now = Date.now();
-      const prev = lastClick.current;
-      let count = 1;
-      if (prev && now - prev.time < 500 && prev.x === raw.x && prev.y === raw.y) {
-        count = Math.min(prev.count ?? 1, 3) + 1;
-      }
-      lastClick.current = { time: now, x: raw.x, y: raw.y, count };
-      const action = mouseEventToAction(
-        { value, cursor, selectionAnchor },
-        raw,
-        count,
-      );
-      if (action.type === "edit") {
-        onEdit(action.state);
-      }
-    },
-    [value, cursor, selectionAnchor, onEdit],
-  );
-
-  useInput(
-    (_input: string, key: any) => {
-      // Mouse events come through `key.mouse` when `mouse` is enabled.
-      if (key.mouse) {
-        handleMouse(key.mouse);
-      }
-    },
-    { isActive: true, mouse: "all" },
-  );
-
   const lines = value.split("\n");
   const { lineIdx: curLine, col: curCol } = caretPos(value, cursor);
   const selected = selectionRange({ value, cursor, selectionAnchor });
