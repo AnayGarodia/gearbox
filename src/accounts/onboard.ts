@@ -86,17 +86,20 @@ export async function cliAuthStatus(binary: string, profile?: string): Promise<{
   // env API key (which would otherwise shadow it — see cli-backend.subscriptionEnv).
   // `profile` scopes the check to a specific account's config dir (multi-account).
   const env = subscriptionEnv(binary, profile);
+  // Read BOTH streams: codex prints its status to stderr, claude to stdout.
+  const readBoth = async (cmd: string[]): Promise<string> => {
+    const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", env });
+    const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+    await p.exited;
+    return `${o}\n${e}`.trim();
+  };
   try {
     if (binary === "codex") {
-      const p = Bun.spawn(["codex", "login", "status"], { stdout: "pipe", stderr: "pipe", env });
-      const out = (await new Response(p.stdout).text()).trim();
-      await p.exited;
-      const loggedIn = /logged in|signed in|account:|email/i.test(out) && !/not logged in/i.test(out);
-      return { loggedIn, detail: out.split("\n").find((l) => /@|plan|account/i.test(l))?.trim().slice(0, 60) };
+      const out = await readBoth(["codex", "login", "status"]);
+      const loggedIn = /logged in|signed in|account:|email|using chatgpt/i.test(out) && !/not logged in|not signed in/i.test(out);
+      return { loggedIn, detail: loggedIn ? (out.split("\n").map((l) => l.trim()).find((l) => /@|plan|chatgpt/i.test(l))?.slice(0, 60) || "ChatGPT") : undefined };
     }
-    const p = Bun.spawn(["claude", "auth", "status"], { stdout: "pipe", stderr: "pipe", env });
-    const out = (await new Response(p.stdout).text()).trim();
-    await p.exited;
+    const out = await readBoth(["claude", "auth", "status"]);
     // Extract the flat JSON object that carries loggedIn (robust to any noise).
     const m = out.match(/\{[^{}]*"loggedIn"[\s\S]*?\}/);
     try {

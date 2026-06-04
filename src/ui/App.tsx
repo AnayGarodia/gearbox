@@ -968,7 +968,15 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             const provGiven = parts[2] ? key : "";
             const keyVal = parts[2] ?? "";
             if (!key) {
-              notice("add an account:\n  /account add claude        sign in to a Claude subscription (Pro/Max)\n  /account add codex         sign in to a ChatGPT subscription (Plus/Pro)\n  /account add <api-key>     paste any provider key (auto-detected)\n  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter");
+              notice(
+                "add an account:\n" +
+                  "  /account add claude          Claude subscription (Pro/Max)\n" +
+                  "  /account add claude <name>   a 2nd Claude account, e.g. /account add claude work\n" +
+                  "  /account add codex           ChatGPT subscription (Plus/Pro)\n" +
+                  "  /account add codex <name>    a 2nd ChatGPT account\n" +
+                  "  /account add <api-key>       paste any provider key (auto-detected)\n" +
+                  "  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter",
+              );
               return;
             }
             void (async () => {
