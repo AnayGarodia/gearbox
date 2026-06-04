@@ -1,7 +1,8 @@
-import React from "react";
-import { Box, Text } from "ink";
+import React, { useRef, useCallback } from "react";
+import { Box, Text, useInput } from "ink";
 import { color, glyph } from "../theme.ts";
-import { caretPos, selectionRange } from "../input.ts";
+import { caretPos, selectionRange, type Edit } from "../input.ts";
+import { mouseEventToAction } from "../terminal.ts";
 
 // Borderless composer: a hairline rule, then a `❯` prompt with the input and a
 // terminal-native block cursor (`inverse`). Multi-line aware — continuation lines
@@ -14,6 +15,7 @@ export function Composer({
   busy,
   width,
   vim = "off",
+  onEdit,
 }: {
   value: string;
   cursor: number;
@@ -22,7 +24,78 @@ export function Composer({
   busy: boolean;
   width: number;
   vim?: "off" | "insert" | "normal";
+  onEdit?: (edit: Edit) => void;
 }) {
+  // ── Mouse‑selection hook ────────────────────────────────────────────────
+  const lastClick = useRef<{ time: number; x: number; y: number; count?: number } | null>(null);
+
+  const handleMouse = useCallback(
+    (raw: { button: number; x: number; y: number; shift: boolean; meta: boolean; ctrl: boolean }) => {
+      if (!onEdit) return;
+      const now = Date.now();
+      const prev = lastClick.current;
+      let count = 1;
+      if (prev && now - prev.time < 500 && prev.x === raw.x && prev.y === raw.y) {
+        count = Math.min(prev.count ?? 1, 3) + 1;
+      }
+      lastClick.current = { time: now, x: raw.x, y: raw.y, count };
+      const action = mouseEventToAction(
+        { value, cursor, selectionAnchor },
+        raw,
+        count,
+      );
+      if (action.type === "edit") {
+        onEdit(action.state);
+      }
+    },
+    [value, cursor, selectionAnchor, onEdit],
+  );
+
+  useInput(
+    (_input: string, key: any) => {
+      // Mouse events come through `key.mouse` when `mouse` is enabled.
+      if (key.mouse) {
+        handleMouse(key.mouse);
+      }
+    },
+    { isActive: true, mouse: "all" },
+  );
+
+  // ── Mouse‑selection hook ────────────────────────────────────────────────
+  const lastClick = useRef<{ time: number; x: number; y: number; count?: number } | null>(null);
+
+  const handleMouse = useCallback(
+    (raw: { button: number; x: number; y: number; shift: boolean; meta: boolean; ctrl: boolean }) => {
+      if (!onEdit) return;
+      const now = Date.now();
+      const prev = lastClick.current;
+      let count = 1;
+      if (prev && now - prev.time < 500 && prev.x === raw.x && prev.y === raw.y) {
+        count = Math.min(prev.count ?? 1, 3) + 1;
+      }
+      lastClick.current = { time: now, x: raw.x, y: raw.y, count };
+      const action = mouseEventToAction(
+        { value, cursor, selectionAnchor },
+        raw,
+        count,
+      );
+      if (action.type === "edit") {
+        onEdit(action.state);
+      }
+    },
+    [value, cursor, selectionAnchor, onEdit],
+  );
+
+  useInput(
+    (_input: string, key: any) => {
+      // Mouse events come through `key.mouse` when `mouse` is enabled.
+      if (key.mouse) {
+        handleMouse(key.mouse);
+      }
+    },
+    { isActive: true, mouse: "all" },
+  );
+
   const lines = value.split("\n");
   const { lineIdx: curLine, col: curCol } = caretPos(value, cursor);
   const selected = selectionRange({ value, cursor, selectionAnchor });
