@@ -26,7 +26,7 @@ import { runTask } from "../agent/run.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount } from "../accounts/store.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
-import { addApiKeyAccount, addByPastedKey, testAccount, addCliAccount } from "../accounts/onboard.ts";
+import { addApiKeyAccount, addByPastedKey, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
 import { detectProviderByKey } from "../accounts/catalog.ts";
 import { runCliTask } from "../agent/cli-backend.ts";
 import { recordUsage, recordRateLimit, formatUsage } from "../accounts/usage.ts";
@@ -92,7 +92,7 @@ export interface AppProps {
 
 export function App({ selector: initialSelector, demo, runner, fullscreen = false, resumeId }: AppProps) {
   const { exit } = useApp();
-  const { stdin, isRawModeSupported } = useStdin();
+  const { stdin, isRawModeSupported, setRawMode } = useStdin();
   const { columns, rows } = useTerminalSize();
   // Chrome (title bar, rules, composer, status) spans the full terminal width;
   // long prose wraps at a readable cap inside it (see Transcript).
@@ -454,6 +454,27 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       routedRef.current = null;
     }
     notice(`effort: ${tier}${r.ok && r.modelId ? ` · ${r.modelId}` : ""}`);
+  };
+
+  // Hand the terminal to an interactive child (e.g. `claude auth login`'s OAuth
+  // flow): drop raw mode + leave the alt-screen/mouse so the child owns the TTY,
+  // run it synchronously (Ink is frozen meanwhile, so it can't steal stdin), then
+  // restore our screen. Returns the child's exit code (or null if it couldn't run).
+  const runInteractive = (cmd: string, cmdArgs: string[]): number | null => {
+    try {
+      setRawMode?.(false);
+      if (fullscreen) process.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l"); // mouse off, leave alt-screen
+      process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, cursor on
+      process.stdout.write(`\n→ running \`${cmd} ${cmdArgs.join(" ")}\` — follow the prompts…\n\n`);
+      const r = Bun.spawnSync([cmd, ...cmdArgs], { stdio: ["inherit", "inherit", "inherit"] });
+      return r.exitCode ?? 0;
+    } catch {
+      return null;
+    } finally {
+      if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h");
+      process.stdout.write("\x1b[?2004h");
+      setRawMode?.(true);
+    }
   };
 
   const runTurn = useCallback(
@@ -907,12 +928,31 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           const bin = (res.account.auth as any).binary as string;
-          activeCliRef.current = { id: res.account.id, binary: bin };
-          cliSessionRef.current = undefined;
-          setLastPick(null);
-          setActiveCli({ id: res.account.id, label: bin });
-          // Concise: uses the vendor CLI's own login (no token handling here).
-          notice(`✓ on ${bin === "codex" ? "ChatGPT" : "Claude"} via the ${bin} CLI — uses your existing ${bin} login, runs its own tools/permissions. /account off to switch back.\nNot logged in? run \`${bin} ${bin === "codex" ? "login" : "/login"}\` in a terminal, then retry.`);
+          const acctId = res.account.id;
+          void (async () => {
+            // 1) check the vendor CLI's real auth status.
+            let st = await cliAuthStatus(bin);
+            // 2) not signed in → run the vendor's interactive OAuth here.
+            if (!st.loggedIn) {
+              notice(`not signed in to ${bin} — starting sign-in…`);
+              const code = runInteractive(bin, cliLoginArgs(bin));
+              if (code == null) {
+                notice(`couldn't launch \`${bin} ${cliLoginArgs(bin).join(" ")}\` — run it in a terminal, then /login ${which || "claude"} again`);
+                return;
+              }
+              st = await cliAuthStatus(bin); // re-check after the flow
+              if (!st.loggedIn) {
+                notice(`sign-in didn't complete — try \`${bin} ${cliLoginArgs(bin).join(" ")}\` again, then /login`);
+                return;
+              }
+            }
+            // 3) activate the subscription account.
+            activeCliRef.current = { id: acctId, binary: bin };
+            cliSessionRef.current = undefined;
+            setLastPick(null);
+            setActiveCli({ id: acctId, label: bin });
+            notice(`✓ signed in${st.detail ? ` — ${st.detail}` : ""}. Runs via the ${bin} CLI (its own tools/permissions). /account off to switch back.`);
+          })();
           return;
         }
         case "account": {

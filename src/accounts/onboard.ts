@@ -58,6 +58,37 @@ export function addCliAccount(provider: string): AddResult {
   return { ok: true, account, message: `${cat.label} ready — runs via the ${cat.binary} CLI (its own login/permissions; no token stored)` };
 }
 
+// Check whether the vendor CLI is signed in — fast, free, no model call.
+// claude: `claude auth status` (JSON). codex: `codex login status` (text).
+export async function cliAuthStatus(binary: string): Promise<{ loggedIn: boolean; detail?: string }> {
+  try {
+    if (binary === "codex") {
+      const p = Bun.spawn(["codex", "login", "status"], { stdout: "pipe", stderr: "pipe" });
+      const out = (await new Response(p.stdout).text()).trim();
+      await p.exited;
+      const loggedIn = /logged in|signed in|account:|email/i.test(out) && !/not logged in/i.test(out);
+      return { loggedIn, detail: out.split("\n")[0]?.slice(0, 60) };
+    }
+    const p = Bun.spawn(["claude", "auth", "status"], { stdout: "pipe", stderr: "pipe" });
+    const out = (await new Response(p.stdout).text()).trim();
+    await p.exited;
+    try {
+      const j = JSON.parse(out);
+      const plan = j.subscriptionType ? `Claude ${String(j.subscriptionType).replace(/^\w/, (c: string) => c.toUpperCase())}` : "Claude";
+      return { loggedIn: !!j.loggedIn, detail: j.loggedIn ? `${j.email ?? "signed in"} · ${plan}` : undefined };
+    } catch {
+      return { loggedIn: /logged ?in/i.test(out) && !/not/i.test(out) };
+    }
+  } catch {
+    return { loggedIn: false };
+  }
+}
+
+/** The argv that starts the vendor's interactive sign-in flow. */
+export function cliLoginArgs(binary: string): string[] {
+  return binary === "codex" ? ["login"] : ["auth", "login"];
+}
+
 /** Paste any key — detect the provider from its prefix, then add it. */
 export async function addByPastedKey(key: string): Promise<AddResult> {
   const provider = detectProviderByKey(key);
