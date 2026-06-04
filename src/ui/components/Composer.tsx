@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
-import { caretPos } from "../input.ts";
+import { caretPos, selectionRange } from "../input.ts";
 
 // Borderless composer: a hairline rule, then a `❯` prompt with the input and a
 // terminal-native block cursor (`inverse`). Multi-line aware — continuation lines
@@ -9,6 +9,7 @@ import { caretPos } from "../input.ts";
 export function Composer({
   value,
   cursor,
+  selectionAnchor,
   placeholder,
   busy,
   width,
@@ -16,6 +17,7 @@ export function Composer({
 }: {
   value: string;
   cursor: number;
+  selectionAnchor?: number;
   placeholder: string;
   busy: boolean;
   width: number;
@@ -23,7 +25,38 @@ export function Composer({
 }) {
   const lines = value.split("\n");
   const { lineIdx: curLine, col: curCol } = caretPos(value, cursor);
+  const selected = selectionRange({ value, cursor, selectionAnchor });
   const prefix = (i: number) => (i === 0 ? glyph.prompt + " " : "  ");
+  const offsetOfLine = (line: number) => {
+    let off = 0;
+    for (let i = 0; i < line; i++) off += lines[i]!.length + 1;
+    return off;
+  };
+  const renderLine = (ln: string, line: number) => {
+    const lineStart = offsetOfLine(line);
+    const lineEnd = lineStart + ln.length;
+    const selStart = selected ? Math.max(selected[0], lineStart) - lineStart : -1;
+    const selEnd = selected ? Math.min(selected[1], lineEnd) - lineStart : -1;
+    const hasSel = selected && selStart < selEnd;
+    const cursorHere = line === curLine;
+    if (!hasSel) {
+      if (!cursorHere) return <Text>{ln}</Text>;
+      return (
+        <Text>
+          {ln.slice(0, curCol)}
+          <Text inverse>{ln[curCol] ?? " "}</Text>
+          {ln.slice(curCol + 1)}
+        </Text>
+      );
+    }
+    return (
+      <Text>
+        {ln.slice(0, selStart)}
+        <Text inverse>{ln.slice(selStart, selEnd)}</Text>
+        {ln.slice(selEnd)}
+      </Text>
+    );
+  };
 
   return (
     <Box flexDirection="column" width={width} marginTop={1}>
@@ -57,15 +90,7 @@ export function Composer({
           {lines.map((ln, i) => (
             <Box key={i}>
               <Text color={color.accent} bold>{prefix(i)}</Text>
-              {i === curLine ? (
-                <Text>
-                  {ln.slice(0, curCol)}
-                  <Text inverse>{ln[curCol] ?? " "}</Text>
-                  {ln.slice(curCol + 1)}
-                </Text>
-              ) : (
-                <Text>{ln}</Text>
-              )}
+              {renderLine(ln, i)}
             </Box>
           ))}
         </Box>
