@@ -9,14 +9,23 @@ test("matchCommands filters by prefix", () => {
 
 test("helpText lists every command", () => {
   const h = helpText();
-  for (const c of COMMANDS) expect(h).toContain(c.usage);
+  for (const c of COMMANDS) expect(h).toContain(c.name);
 });
 
-test("formatModelList marks current and lists labels", () => {
-  const out = formatModelList("claude-sonnet-4-6");
-  expect(out).toContain("sonnet-4.6");
-  expect(out).toContain("gpt-5.5");
-  expect(out).toContain("●");
+test("formatModelList marks current and lists available labels", () => {
+  // formatModelList shows models whose provider is available; give it keys.
+  const saved = { a: process.env.ANTHROPIC_API_KEY, o: process.env.OPENAI_API_KEY };
+  process.env.ANTHROPIC_API_KEY = "x";
+  process.env.OPENAI_API_KEY = "x";
+  try {
+    const out = formatModelList("claude-sonnet-4-6");
+    expect(out).toContain("sonnet-4.6");
+    expect(out).toContain("gpt-5.5");
+    expect(out).toContain("●");
+  } finally {
+    if (saved.a === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved.a;
+    if (saved.o === undefined) delete process.env.OPENAI_API_KEY; else process.env.OPENAI_API_KEY = saved.o;
+  }
 });
 
 test("resolveModelSwitch is fuzzy: substring, no-match, no-key, ambiguous, exact", () => {

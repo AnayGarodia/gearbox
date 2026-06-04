@@ -8,39 +8,52 @@ import { fuzzyRank } from "./ui/fuzzy.ts";
 // The env var (or generic hint) to set for a provider, for "no key" messages.
 const envHint = (p: string): string => ENV_LABEL[p] ?? catalogProvider(p)?.envVars[0] ?? "an API key";
 
+// Commands are grouped so /help reads as a few short lists instead of one
+// 26-row wall. `usage` stays short (≤ ~14 chars) so the live palette and help
+// columns always line up; the detail lives in `desc`, in plain language.
+type Group = "models" | "chat" | "accounts" | "output" | "modes" | "settings" | "other";
+
 export interface CommandMeta {
   name: string;
   usage: string;
   desc: string;
+  group: Group;
 }
 
 export const COMMANDS: CommandMeta[] = [
-  { name: "/help", usage: "/help", desc: "show commands" },
-  { name: "/model", usage: "/model [name|auto]", desc: "show models, pin one, or /model auto to route per task" },
-  { name: "/plan", usage: "/plan", desc: "toggle read-only plan mode (or shift+tab to cycle modes)" },
-  { name: "/effort", usage: "/effort [fast|balanced|max]", desc: "set the effort tier (picks the model)" },
-  { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard" },
-  { name: "/export", usage: "/export [file]", desc: "write the transcript to a file" },
-  { name: "/keys", usage: "/keys", desc: "show keyboard shortcuts" },
-  { name: "/theme", usage: "/theme [dark|light|mono|solarized]", desc: "switch the color theme" },
-  { name: "/config", usage: "/config [key value]", desc: "show or set saved prefs (theme, effort, inline, notify)" },
-  { name: "/vim", usage: "/vim", desc: "toggle vim keybindings in the composer" },
-  { name: "/init", usage: "/init", desc: "survey the repo and write GEARBOX.md" },
-  { name: "/memory", usage: "/memory [note]", desc: "show remembered facts, or add one (also: #note)" },
-  { name: "/context", usage: "/context", desc: "show the working-set breakdown (tokens per section)" },
-  { name: "/compact", usage: "/compact", desc: "summarize older turns now to free up context" },
-  { name: "/accounts", usage: "/accounts [add <key>|import|use <id>|test <id>|rm <id>]", desc: "manage provider accounts & credentials" },
-  { name: "/login", usage: "/login [claude|codex]", desc: "use a Claude/ChatGPT subscription via its official CLI" },
-  { name: "/account", usage: "/account [id|off]", desc: "switch the active account (or off to leave a subscription)" },
-  { name: "/cost", usage: "/cost", desc: "per-account spend, tokens, and limit usage" },
-  { name: "/ghost", usage: "/ghost [mood]", desc: "change Boo's mood (base/mint/pink/golden/shades)" },
-  { name: "/yolo", usage: "/yolo", desc: "toggle yolo mode (run writes/edits/shell without asking)" },
-  { name: "/clear", usage: "/clear", desc: "clear the conversation (starts a new session)" },
-  { name: "/resume", usage: "/resume [n]", desc: "list saved sessions, or resume one" },
-  { name: "/retry", usage: "/retry", desc: "re-run your last prompt" },
-  { name: "/cwd", usage: "/cwd", desc: "show the working directory" },
-  { name: "/exit", usage: "/exit", desc: "quit gearbox" },
+  // models & routing — the product's point: pick the right model per task
+  { name: "/model", usage: "/model [name]", desc: "list models · /model <name> pins one · /model auto routes per task", group: "models" },
+  { name: "/effort", usage: "/effort [tier]", desc: "quality vs speed: fast · balanced · max (used unless a model is pinned)", group: "models" },
+  // conversation
+  { name: "/clear", usage: "/clear", desc: "start a fresh conversation", group: "chat" },
+  { name: "/resume", usage: "/resume [n]", desc: "reopen a past conversation", group: "chat" },
+  { name: "/retry", usage: "/retry", desc: "send your last message again", group: "chat" },
+  { name: "/compact", usage: "/compact", desc: "shrink the conversation to free up room", group: "chat" },
+  { name: "/context", usage: "/context", desc: "see what's loaded and how many tokens it uses", group: "chat" },
+  { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
+  // accounts & cost
+  { name: "/account", usage: "/account", desc: "add, sign in to, switch, or remove model accounts", group: "accounts" },
+  { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },
+  // save & copy
+  { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard", group: "output" },
+  { name: "/export", usage: "/export [file]", desc: "save the conversation to a file", group: "output" },
+  // modes
+  { name: "/plan", usage: "/plan", desc: "plan mode: read-only, no edits (also shift+tab)", group: "modes" },
+  { name: "/yolo", usage: "/yolo", desc: "run edits and commands without asking", group: "modes" },
+  // look & settings
+  { name: "/theme", usage: "/theme [name]", desc: "colors: dark · light · mono · solarized", group: "settings" },
+  { name: "/config", usage: "/config", desc: "view or change saved settings", group: "settings" },
+  // other
+  { name: "/init", usage: "/init", desc: "scan this repo and write a GEARBOX.md guide", group: "other" },
+  { name: "/keys", usage: "/keys", desc: "keyboard shortcuts", group: "other" },
+  { name: "/help", usage: "/help", desc: "this list", group: "other" },
+  { name: "/exit", usage: "/exit", desc: "quit gearbox", group: "other" },
 ];
+
+// Hidden aliases: still work when typed, but kept out of /help and the palette
+// to reduce clutter (/accounts, /login fold into /account; /vim into /config;
+// /ghost is an easter egg; /cwd was removed — `/context` shows the directory).
+const HIDDEN = new Set(["/accounts", "/login", "/vim", "/ghost", "/cwd"]);
 
 /** Commands whose name starts with the typed draft (for the live palette). */
 export function matchCommands(draft: string): CommandMeta[] {
@@ -54,9 +67,27 @@ export function matchCommands(draft: string): CommandMeta[] {
   return fuzzyRank(COMMANDS, head.slice(1), (c) => c.name.slice(1), 12);
 }
 
+const GROUP_TITLES: { id: Group; title: string }[] = [
+  { id: "models", title: "models & routing" },
+  { id: "chat", title: "conversation" },
+  { id: "accounts", title: "accounts & cost" },
+  { id: "output", title: "save & copy" },
+  { id: "modes", title: "modes" },
+  { id: "settings", title: "look & settings" },
+  { id: "other", title: "other" },
+];
+
 export function helpText(): string {
-  const rows = COMMANDS.map((c) => `  ${c.usage.padEnd(16)} ${c.desc}`);
-  return ["commands", ...rows].join("\n");
+  const visible = COMMANDS.filter((c) => !HIDDEN.has(c.name));
+  const pad = Math.max(...visible.map((c) => c.name.length)) + 2;
+  const out: string[] = ["commands · type / to filter, or just say what you want"];
+  for (const g of GROUP_TITLES) {
+    const items = visible.filter((c) => c.group === g.id);
+    if (!items.length) continue;
+    out.push("", g.title);
+    for (const c of items) out.push(`  ${c.name.padEnd(pad)}${c.desc}`);
+  }
+  return out.join("\n");
 }
 
 /** Render the account list + any importable env creds, marking each provider's default. */
@@ -73,10 +104,15 @@ export function formatAccounts(
     lines.push(`  ${mark} ${a.id.padEnd(20)} ${a.label}${tag}`);
   }
   if (importable.length) {
-    lines.push("", "importable from your environment — /accounts import:");
+    lines.push("", "found in your environment — /account import to add:");
     for (const c of importable) lines.push(`  + ${c.label} (${c.envVar})`);
   }
-  lines.push("", "  /accounts import · /accounts use <id> · /accounts rm <id>");
+  lines.push(
+    "",
+    "  /account add <key>   add an API key (auto-detects the provider)",
+    "  /account login       sign in to a Claude or ChatGPT subscription",
+    "  /account use <id>    switch active account · /account rm <id> to remove",
+  );
   return lines.join("\n");
 }
 
@@ -86,7 +122,7 @@ export function formatContextBreakdown(sections: { name: string; tokens: number 
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
   const rows = sections.map((s) => `  ${s.name.padEnd(10)} ${fmt(s.tokens).padStart(8)}`);
   const pct = contextWindow ? `  (${Math.round((total / contextWindow) * 100)}% of ${fmt(contextWindow)} window)` : "";
-  return ["context · working set sent this turn", ...rows, `  ${"total".padEnd(10)} ${fmt(total).padStart(8)}${pct}`].join("\n");
+  return ["context · what's loaded for the next message (tokens)", ...rows, `  ${"total".padEnd(10)} ${fmt(total).padStart(8)}${pct}`].join("\n");
 }
 
 const ENV_LABEL: Record<ProviderId, string> = {
@@ -96,14 +132,31 @@ const ENV_LABEL: Record<ProviderId, string> = {
   deepseek: "DEEPSEEK_API_KEY",
 };
 
-/** A nicely-aligned model list; marks the current model and which lack a key. */
-export function formatModelList(currentId: string | null): string {
-  const rows = MODELS.map((m) => {
-    const mark = m.id === currentId ? glyph.on : glyph.off;
-    const avail = providerAvailable(m.provider) ? m.provider : `${m.provider} · no key`;
-    return `  ${mark} ${m.label.padEnd(16)} ${avail}`;
-  });
-  return ["models · /model <name> to switch", ...rows].join("\n");
+/**
+ * Model list. Usable models (you have an account for) come first; the long tail
+ * of providers you haven't set up collapses to a one-line count, so the list is
+ * short and actionable. `/model all` passes showAll to spell them all out.
+ */
+export function formatModelList(currentId: string | null, showAll = false): string {
+  const line = (m: (typeof MODELS)[number]) => `  ${m.id === currentId ? glyph.on : glyph.off} ${m.label.padEnd(18)} ${m.provider}`;
+  const usable = MODELS.filter((m) => providerAvailable(m.provider));
+  const rest = MODELS.filter((m) => !providerAvailable(m.provider));
+  const rows: string[] = ["models · /model <name> pins one · /model auto routes per task"];
+
+  if (usable.length) {
+    rows.push("", "ready to use");
+    for (const m of usable) rows.push(line(m));
+  } else {
+    rows.push("", "no accounts yet — /account to add one");
+  }
+
+  if (showAll && rest.length) {
+    rows.push("", "needs an account");
+    for (const m of rest) rows.push(`  ${glyph.off} ${m.label.padEnd(18)} ${m.provider}`);
+  } else if (rest.length) {
+    rows.push("", `  + ${rest.length} more once you add a key — /model all to list · /account to add one`);
+  }
+  return rows.join("\n");
 }
 
 export interface SwitchResult {
@@ -125,7 +178,7 @@ export function resolveModelSwitch(query: string): SwitchResult {
   const available = matches.filter((m) => providerAvailable(m.provider));
 
   if (exact) {
-    if (!providerAvailable(exact.provider)) return { ok: false, message: `${exact.label}: no account for ${exact.provider} — /accounts add ${exact.provider} <key> or set ${envHint(exact.provider)}` };
+    if (!providerAvailable(exact.provider)) return { ok: false, message: `${exact.label}: no ${exact.provider} account yet — /account add ${exact.provider} <key> or set ${envHint(exact.provider)}` };
     return { ok: true, modelId: exact.id, message: `model → ${exact.label}` };
   }
   if (available.length === 0) {

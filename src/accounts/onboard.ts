@@ -1,9 +1,13 @@
 // Onboarding actions: add an API-key account (guided or paste-detected) and
 // live-test a credential so a bad key fails on add, not at first prompt. Shared
 // by the in-app `/accounts add` command and the `gearbox auth` CLI subcommand.
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { putAccount, setSecret } from "./store.ts";
 import { catalogProvider, detectProviderByKey, CATALOG } from "./catalog.ts";
 import { resolveCreds } from "./resolve.ts";
+import { subscriptionEnv } from "../agent/cli-backend.ts";
 import type { Account } from "./types.ts";
 
 export interface AddResult {
@@ -40,44 +44,70 @@ export async function addApiKeyAccount(provider: string, key: string, opts: { id
 /** Register a CLI-backed subscription account (claude-cli / codex-cli). No secret
  *  is stored — the token lives in the vendor binary, which we drive as a
  *  subprocess (ToS-clean). Requires the binary on PATH + the user logged in. */
-export function addCliAccount(provider: string): AddResult {
+// Per-account config dir for a named CLI account, so multiple claude (or codex)
+// logins coexist. The unnamed account reuses the system default login.
+function cliProfileDir(id: string): string {
+  const home = process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
+  return join(home, "cli", id);
+}
+
+/**
+ * Register a CLI-backed subscription account. With no `name` it's the default
+ * account (id = provider, reuses the system `claude`/`codex` login). With a
+ * `name` it's an additional, isolated account (its own config dir) — that's how
+ * you run MULTIPLE Claude or Codex subscriptions at once.
+ */
+export function addCliAccount(provider: string, name?: string): AddResult {
   const cat = catalogProvider(provider);
   if (!cat || cat.group !== "cli" || !cat.binary) return { ok: false, message: `"${provider}" is not a CLI subscription provider` };
-  if (!Bun.which(cat.binary)) return { ok: false, message: `the ${cat.binary} binary isn't on your PATH — install it and run \`${cat.binary} ${cat.binary === "codex" ? "login" : "/login"}\` first` };
+  if (!Bun.which(cat.binary)) return { ok: false, message: `the ${cat.binary} binary isn't on your PATH — install it first` };
+  const slug = name ? name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
+  const id = slug ? `${provider}-${slug}` : provider;
+  const profile = slug ? cliProfileDir(id) : undefined; // named → isolated dir; default → system login
+  if (profile) mkdirSync(profile, { recursive: true });
   const account: Account = {
-    id: provider,
-    label: cat.label,
+    id,
+    label: slug ? `${cat.label.replace(/ \(.*\)$/, "")} (${name!.trim()})` : cat.label,
     provider,
     exec: "cli",
-    auth: { kind: "cli", binary: cat.binary },
+    auth: { kind: "cli", binary: cat.binary, loginProfile: profile },
     models: cat.defaultModels,
     enabled: true,
     addedAt: Date.now(),
   };
   putAccount(account);
-  return { ok: true, account, message: `${cat.label} ready — runs via the ${cat.binary} CLI (its own login/permissions; no token stored)` };
+  return { ok: true, account, message: `${account.label} ready — runs via the ${cat.binary} CLI${profile ? " (separate login)" : ""}` };
 }
 
 // Check whether the vendor CLI is signed in — fast, free, no model call.
 // claude: `claude auth status` (JSON). codex: `codex login status` (text).
-export async function cliAuthStatus(binary: string): Promise<{ loggedIn: boolean; detail?: string }> {
+export async function cliAuthStatus(binary: string, profile?: string): Promise<{ loggedIn: boolean; detail?: string }> {
+  // Strip the API key from the env so we report the SUBSCRIPTION login, not an
+  // env API key (which would otherwise shadow it — see cli-backend.subscriptionEnv).
+  // `profile` scopes the check to a specific account's config dir (multi-account).
+  const env = subscriptionEnv(binary, profile);
   try {
     if (binary === "codex") {
-      const p = Bun.spawn(["codex", "login", "status"], { stdout: "pipe", stderr: "pipe" });
+      const p = Bun.spawn(["codex", "login", "status"], { stdout: "pipe", stderr: "pipe", env });
       const out = (await new Response(p.stdout).text()).trim();
       await p.exited;
       const loggedIn = /logged in|signed in|account:|email/i.test(out) && !/not logged in/i.test(out);
-      return { loggedIn, detail: out.split("\n")[0]?.slice(0, 60) };
+      return { loggedIn, detail: out.split("\n").find((l) => /@|plan|account/i.test(l))?.trim().slice(0, 60) };
     }
-    const p = Bun.spawn(["claude", "auth", "status"], { stdout: "pipe", stderr: "pipe" });
+    const p = Bun.spawn(["claude", "auth", "status"], { stdout: "pipe", stderr: "pipe", env });
     const out = (await new Response(p.stdout).text()).trim();
     await p.exited;
+    // Extract the flat JSON object that carries loggedIn (robust to any noise).
+    const m = out.match(/\{[^{}]*"loggedIn"[\s\S]*?\}/);
     try {
-      const j = JSON.parse(out);
-      const plan = j.subscriptionType ? `Claude ${String(j.subscriptionType).replace(/^\w/, (c: string) => c.toUpperCase())}` : "Claude";
-      return { loggedIn: !!j.loggedIn, detail: j.loggedIn ? `${j.email ?? "signed in"} · ${plan}` : undefined };
+      const j = JSON.parse(m ? m[0] : out);
+      const parts: string[] = [];
+      if (j.email) parts.push(j.email);
+      if (j.subscriptionType) parts.push(`Claude ${String(j.subscriptionType).replace(/^\w/, (c: string) => c.toUpperCase())}`);
+      else if (j.authMethod && j.authMethod !== "claude.ai") parts.push(`auth: ${j.authMethod}`);
+      return { loggedIn: !!j.loggedIn, detail: parts.join(" · ") || undefined };
     } catch {
-      return { loggedIn: /logged ?in/i.test(out) && !/not/i.test(out) };
+      return { loggedIn: /"loggedIn"\s*:\s*true/.test(out) };
     }
   } catch {
     return { loggedIn: false };

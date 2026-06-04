@@ -28,7 +28,7 @@ import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount,
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
 import { addApiKeyAccount, addByPastedKey, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
 import { detectProviderByKey } from "../accounts/catalog.ts";
-import { runCliTask } from "../agent/cli-backend.ts";
+import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordUsage, recordRateLimit, formatUsage } from "../accounts/usage.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
@@ -200,7 +200,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // Active CLI-backed subscription account (claude/codex). When set, turns run
   // through the vendor binary (its own loop/tools/permissions), not the in-loop
   // path. cliSessionRef keeps the binary's session id for resume.
-  const activeCliRef = useRef<{ id: string; binary: string } | null>(null);
+  const activeCliRef = useRef<{ id: string; binary: string; profile?: string } | null>(null);
   const cliSessionRef = useRef<string | undefined>(undefined);
   // Which account ran the last turn + its provider-reported cost/limit (for the
   // per-account spend ledger; see src/accounts/usage.ts).
@@ -366,7 +366,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       if (cli) {
         routedRef.current = null;
         usedAccountRef.current = cli.id;
-        const r = await runCliTask({ binary: cli.binary, prompt, messages, onEvent, signal, sessionId: cliSessionRef.current, autoApprove: isYolo() });
+        const r = await runCliTask({ binary: cli.binary, prompt, messages, onEvent, signal, sessionId: cliSessionRef.current, autoApprove: isYolo(), profile: cli.profile });
         cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
         cliMetaRef.current = { costUSD: r.costUSD, rate: r.rate };
         return { messages: r.messages, usage: r.usage };
@@ -460,13 +460,13 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // flow): drop raw mode + leave the alt-screen/mouse so the child owns the TTY,
   // run it synchronously (Ink is frozen meanwhile, so it can't steal stdin), then
   // restore our screen. Returns the child's exit code (or null if it couldn't run).
-  const runInteractive = (cmd: string, cmdArgs: string[]): number | null => {
+  const runInteractive = (cmd: string, cmdArgs: string[], env?: Record<string, string>): number | null => {
     try {
       setRawMode?.(false);
       if (fullscreen) process.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l"); // mouse off, leave alt-screen
       process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, cursor on
       process.stdout.write(`\n→ running \`${cmd} ${cmdArgs.join(" ")}\` — follow the prompts…\n\n`);
-      const r = Bun.spawnSync([cmd, ...cmdArgs], { stdio: ["inherit", "inherit", "inherit"] });
+      const r = Bun.spawnSync([cmd, ...cmdArgs], { stdio: ["inherit", "inherit", "inherit"], ...(env ? { env } : {}) });
       return r.exitCode ?? 0;
     } catch {
       return null;
@@ -636,6 +636,53 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         }
       })();
 
+      // Sign in to a Claude/ChatGPT subscription through its official CLI.
+      // Shared by `/account login` and the `/login` alias.
+      // `/login claude` uses the system login; `/login claude <name>` adds an
+      // ADDITIONAL, separately-logged-in account (its own config dir), so several
+      // Claude (or Codex) subscriptions can run side by side.
+      const signInCli = (which: string) => {
+        const [w0, ...nameParts] = (which || "").trim().split(/\s+/);
+        const w = (w0 || "").toLowerCase();
+        const name = nameParts.join(" ").trim() || undefined;
+        const provider = w === "codex" || w === "chatgpt" ? "codex-cli" : w === "claude" || !w ? "claude-cli" : null;
+        if (!provider) {
+          notice("which subscription? /login claude [name]  ·  /login codex [name]");
+          return;
+        }
+        const res = addCliAccount(provider, name);
+        if (!res.ok || !res.account) {
+          notice(res.message);
+          return;
+        }
+        const bin = (res.account.auth as any).binary as string;
+        const profile = (res.account.auth as any).loginProfile as string | undefined;
+        const acctId = res.account.id;
+        const shortLabel = name ? `${bin}·${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : bin;
+        void (async () => {
+          let st = await cliAuthStatus(bin, profile);
+          if (!st.loggedIn) {
+            notice(`signing in to ${res.account!.label}…`);
+            // Run the vendor OAuth scoped to this account's own config dir.
+            const code = runInteractive(bin, cliLoginArgs(bin), subscriptionEnv(bin, profile));
+            if (code == null) {
+              notice(`couldn't launch \`${bin} ${cliLoginArgs(bin).join(" ")}\` — run it in a terminal, then try again`);
+              return;
+            }
+            st = await cliAuthStatus(bin, profile);
+            if (!st.loggedIn) {
+              notice(`sign-in didn't complete — try /login ${w || "claude"}${name ? " " + name : ""} again`);
+              return;
+            }
+          }
+          activeCliRef.current = { id: acctId, binary: bin, profile };
+          cliSessionRef.current = undefined;
+          setLastPick(null);
+          setActiveCli({ id: acctId, label: shortLabel });
+          notice(`✓ ${res.account!.label} signed in${st.detail ? ` — ${st.detail}` : ""}. Runs via the ${bin} CLI (own tools/permissions). /account off to switch back.`);
+        })();
+      };
+
       switch (name) {
         case "exit":
         case "quit":
@@ -741,11 +788,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           const p = loadPrefs();
           if (!key) {
             notice(
-              `config (saved in ~/.gearbox/prefs.json):\n` +
-                `  theme   ${p.theme ?? "dark"}\n` +
-                `  inline  ${p.fullscreen === false ? "on" : "off"} (native scroll + select-to-copy; restart to apply)\n` +
-                `  notify  ${p.notify === false ? "off" : "on"}\n` +
-                `  use: /config <theme|inline|notify> <value>`,
+              `settings (saved in ~/.gearbox/prefs.json):\n` +
+                `  theme   ${p.theme ?? "dark"}        colors — ${THEME_NAMES.join(" · ")}\n` +
+                `  vim     ${p.vim ? "on" : "off"}         vim keys in the composer\n` +
+                `  notify  ${p.notify === false ? "off" : "on"}          desktop ping when a long turn finishes\n` +
+                `  inline  ${p.fullscreen === false ? "on" : "off"}         native scroll + select-to-copy (restart to apply)\n` +
+                `  change one: /config <theme|vim|notify|inline> <value>`,
             );
             return;
           }
@@ -753,6 +801,10 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           if (key === "theme") {
             if (val && setTheme(val)) { updatePrefs({ theme: val }); bumpTheme(); notice(`theme: ${val}`); }
             else notice(`themes: ${THEME_NAMES.join(" · ")}`);
+          } else if (key === "vim") {
+            setVim(on ? "insert" : "off");
+            updatePrefs({ vim: on });
+            notice(on ? "vim mode on — esc for normal, i to insert" : "vim mode off");
           } else if (key === "inline") {
             updatePrefs({ fullscreen: !on });
             notice(`inline mode ${on ? "on" : "off"} — restart gearbox to apply`);
@@ -761,7 +813,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             updatePrefs({ notify: on });
             notice(`notifications ${on ? "on" : "off"}`);
           } else {
-            notice("config keys: theme · inline · notify");
+            notice("settings: theme · vim · notify · inline");
           }
           return;
         }
@@ -790,10 +842,6 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           notice(`Boo is feeling ${next}.`);
           return;
         }
-        case "cwd":
-          echo(text);
-          notice(process.cwd());
-          return;
         case "retry":
           if (!lastPromptRef.current) {
             echo(text);
@@ -804,16 +852,17 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           return;
         case "model":
           echo(text);
-          if (!arg) {
-            const mode = selectorRef.current instanceof RoutingSelector ? "auto (routing on) — /model <name> to pin, /model auto to route" : "pinned — /model auto to route per task";
-            notice(formatModelList(currentId) + `\n  mode: ${mode}`);
+          if (!arg || arg.toLowerCase() === "all") {
+            const routing = selectorRef.current instanceof RoutingSelector;
+            const mode = routing ? "now: routing on — Gearbox picks per task" : `now: pinned to ${currentId ?? "one model"} — /model auto to route`;
+            notice(formatModelList(currentId, arg.toLowerCase() === "all") + `\n\n  ${mode}`);
             return;
           }
           if (arg.toLowerCase() === "auto" || arg.toLowerCase() === "route") {
             setSelector(new RoutingSelector());
             setLastPick(null);
             routedRef.current = null;
-            notice("routing on — Gearbox picks the model per task (cheapest that clears the bar)");
+            notice("routing on — Gearbox now picks the model per task (the cheapest that can do the job)");
             return;
           }
           {
@@ -823,7 +872,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
               setLastPick(null);
               routedRef.current = null;
             }
-            notice(r.ok ? `${r.message} (pinned — routing off; /model auto to re-enable)` : r.message);
+            notice(r.ok ? `${r.message} — pinned. /model auto to route per task again.` : r.message);
           }
           return;
         case "memory": {
@@ -844,14 +893,31 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           const { sections } = buildContext({ history: msgRef.current, userText: lastPromptRef.current || "(your next message)", model: m, plan: modeRef.current === "plan" });
-          notice(formatContextBreakdown(sections, m.contextWindow));
+          notice(formatContextBreakdown(sections, m.contextWindow) + `\n\n  working directory: ${process.cwd()}`);
           return;
         }
-        case "accounts": {
+        // One command for everything account-related: list, add a key, sign in
+        // to a subscription, switch, test, remove. `/accounts` is a kept alias.
+        case "accounts":
+        case "account": {
           echo(text);
           const [sub, ...rest] = arg.split(/\s+/);
+          const subL = (sub || "").toLowerCase();
           const argId = rest.join(" ").trim();
-          if (sub === "import") {
+          const KNOWN = ["login", "signin", "add", "import", "use", "rm", "remove", "test", "off"];
+
+          if (subL === "login" || subL === "signin") {
+            signInCli(rest[0] ?? "");
+            return;
+          }
+          if (subL === "off") {
+            activeCliRef.current = null;
+            cliSessionRef.current = undefined;
+            setActiveCli(null);
+            notice("left the subscription — back to your API models");
+            return;
+          }
+          if (subL === "import") {
             void (async () => {
               const keys = importableEnvCreds();
               const cloud = importableCloudCreds();
@@ -866,22 +932,8 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             })();
             return;
           }
-          if (sub === "use" && argId) {
-            const a = getAccount(argId);
-            if (!a) {
-              notice(`no account "${argId}" — /accounts to list`);
-              return;
-            }
-            setDefaultAccount(a.provider, a.id);
-            notice(`default for ${a.provider} → ${a.id}`);
-            return;
-          }
-          if (sub === "rm" && argId) {
-            void removeAccount(argId).then(() => notice(`removed ${argId}`));
-            return;
-          }
-          if (sub === "add") {
-            // `/accounts add <key>` (paste-detect) or `/accounts add <provider> <key>`.
+          if (subL === "add") {
+            // `/account add <key>` (auto-detect) or `/account add <provider> <key>`.
             const first = rest[0] ?? "";
             const second = rest.slice(1).join(" ").trim();
             void (async () => {
@@ -889,7 +941,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
               if (first && !second && detectProviderByKey(first)) res = await addByPastedKey(first);
               else if (first && second) res = await addApiKeyAccount(first, second);
               else {
-                notice("usage: /accounts add <key>  (auto-detects)  ·  or  /accounts add <provider> <key>");
+                notice("paste a key: /account add <key>   (or /account add <provider> <key>)");
                 return;
               }
               if (!res.ok || !res.account) {
@@ -902,89 +954,49 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             })();
             return;
           }
-          if (sub === "test" && argId) {
+          if ((subL === "rm" || subL === "remove") && argId) {
+            void removeAccount(argId).then(() => notice(`removed ${argId}`));
+            return;
+          }
+          if (subL === "test" && argId) {
             const a = getAccount(argId);
             if (!a) {
-              notice(`no account "${argId}" — /accounts to list`);
+              notice(`no account "${argId}" — /account to list`);
               return;
             }
             void testAccount(a).then((t) => notice(`${argId}: ${t.ok ? t.message + " ✓" : "failed — " + t.message}`));
             return;
           }
-          notice(formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()));
+          // `/account use <id>` or bare `/account <id>` → make that account active.
+          const id = subL === "use" ? argId : sub ? arg.trim() : "";
+          if (id && !KNOWN.includes(subL)) {
+            const a = getAccount(id);
+            if (!a) {
+              notice(`no account "${id}".\n\n` + formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()));
+              return;
+            }
+            if (a.exec === "cli") {
+              const bin = (a.auth as any).binary as string;
+              const profile = (a.auth as any).loginProfile as string | undefined;
+              activeCliRef.current = { id: a.id, binary: bin, profile };
+              cliSessionRef.current = undefined;
+              setActiveCli({ id: a.id, label: a.id === bin ? bin : a.id.replace(/^.*?-/, `${bin}·`) });
+              notice(`active → ${a.id} (runs through the ${bin} CLI; /account off to leave)`);
+            } else {
+              activeCliRef.current = null;
+              setActiveCli(null);
+              setDefaultAccount(a.provider, a.id);
+              notice(`active account for ${a.provider} → ${a.id}`);
+            }
+            return;
+          }
+          // Bare `/account` → the list + what's active now.
+          notice(formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()) + (activeCliRef.current ? `\n  active now: ${activeCliRef.current.id} (subscription)` : ""));
           return;
         }
         case "login": {
           echo(text);
-          const which = (arg || "").toLowerCase();
-          const provider = which === "codex" || which === "chatgpt" ? "codex-cli" : which === "claude" || !which ? "claude-cli" : null;
-          if (!provider) {
-            notice("usage: /login claude   |   /login codex");
-            return;
-          }
-          const res = addCliAccount(provider);
-          if (!res.ok || !res.account) {
-            notice(res.message);
-            return;
-          }
-          const bin = (res.account.auth as any).binary as string;
-          const acctId = res.account.id;
-          void (async () => {
-            // 1) check the vendor CLI's real auth status.
-            let st = await cliAuthStatus(bin);
-            // 2) not signed in → run the vendor's interactive OAuth here.
-            if (!st.loggedIn) {
-              notice(`not signed in to ${bin} — starting sign-in…`);
-              const code = runInteractive(bin, cliLoginArgs(bin));
-              if (code == null) {
-                notice(`couldn't launch \`${bin} ${cliLoginArgs(bin).join(" ")}\` — run it in a terminal, then /login ${which || "claude"} again`);
-                return;
-              }
-              st = await cliAuthStatus(bin); // re-check after the flow
-              if (!st.loggedIn) {
-                notice(`sign-in didn't complete — try \`${bin} ${cliLoginArgs(bin).join(" ")}\` again, then /login`);
-                return;
-              }
-            }
-            // 3) activate the subscription account.
-            activeCliRef.current = { id: acctId, binary: bin };
-            cliSessionRef.current = undefined;
-            setLastPick(null);
-            setActiveCli({ id: acctId, label: bin });
-            notice(`✓ signed in${st.detail ? ` — ${st.detail}` : ""}. Runs via the ${bin} CLI (its own tools/permissions). /account off to switch back.`);
-          })();
-          return;
-        }
-        case "account": {
-          echo(text);
-          if (arg.toLowerCase() === "off") {
-            activeCliRef.current = null;
-            cliSessionRef.current = undefined;
-            setActiveCli(null);
-            notice("left the subscription — back to API/in-loop models");
-            return;
-          }
-          if (!arg) {
-            notice(formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()) + (activeCliRef.current ? `\n  active: ${activeCliRef.current.id} (cli)` : ""));
-            return;
-          }
-          const a = getAccount(arg);
-          if (!a) {
-            notice(`no account "${arg}" — /accounts to list`);
-            return;
-          }
-          if (a.exec === "cli") {
-            const bin = (a.auth as any).binary as string;
-            activeCliRef.current = { id: a.id, binary: bin };
-            cliSessionRef.current = undefined;
-            setActiveCli({ id: a.id, label: bin });
-            notice(`active → ${a.id} (runs via the ${bin} CLI; /account off to leave)`);
-          } else {
-            activeCliRef.current = null;
-            setActiveCli(null);
-            setDefaultAccount(a.provider, a.id);
-            notice(`active account for ${a.provider} → ${a.id}`);
-          }
+          signInCli(arg);
           return;
         }
         case "cost":

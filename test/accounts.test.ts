@@ -10,7 +10,8 @@ import {
 import { CATALOG, catalogProvider, detectProviderByKey } from "../src/accounts/catalog.ts";
 import { importEnvCred, importableEnvCreds } from "../src/accounts/detect.ts";
 import { resolveCreds } from "../src/accounts/resolve.ts";
-import { addApiKeyAccount, addByPastedKey } from "../src/accounts/onboard.ts";
+import { addApiKeyAccount, addByPastedKey, addCliAccount } from "../src/accounts/onboard.ts";
+import { subscriptionEnv } from "../src/agent/cli-backend.ts";
 import { detectCloudCreds, importCloudCred } from "../src/accounts/detect.ts";
 import { recordUsage, recordRateLimit, loadUsage, accountUsage, totalSpent } from "../src/accounts/usage.ts";
 import { MODELS, findModel, resolveModel } from "../src/providers.ts";
@@ -210,6 +211,40 @@ test("recordRateLimit attaches a quota snapshot to an account", () => {
   // no-op for an unknown account (nothing to attach to)
   recordRateLimit("ghost", { utilization: 0.5 });
   expect(accountUsage("ghost")).toBeUndefined();
+});
+
+// ── multiple accounts of the same kind ──
+test("multiple CLI subscription accounts coexist via isolated config dirs", () => {
+  const def = addCliAccount("claude-cli"); // default: system login, no profile
+  const work = addCliAccount("claude-cli", "work"); // additional: own config dir
+  const codex = addCliAccount("codex-cli", "personal");
+  expect(def.account!.id).toBe("claude-cli");
+  expect((def.account!.auth as any).loginProfile).toBeUndefined();
+  expect(work.account!.id).toBe("claude-cli-work");
+  expect((work.account!.auth as any).loginProfile).toContain("claude-cli-work");
+  // all three are distinct, persisted accounts
+  const ids = listAccounts().map((a) => a.id);
+  expect(ids).toEqual(expect.arrayContaining(["claude-cli", "claude-cli-work", "codex-cli-personal"]));
+});
+
+test("subscriptionEnv strips the API key and scopes the config dir per account", () => {
+  process.env.ANTHROPIC_API_KEY = "sk-ant-should-be-stripped";
+  try {
+    const env = subscriptionEnv("claude", "/tmp/acct-x");
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined(); // key stripped → uses subscription, not the (dead) key
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/acct-x"); // scoped to this account's login
+    expect(subscriptionEnv("codex", "/tmp/cx").CODEX_HOME).toBe("/tmp/cx");
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+});
+
+// multiple API keys per provider already work (unique ids):
+test("multiple API-key accounts for one provider coexist", async () => {
+  const a = await addApiKeyAccount("anthropic", "sk-ant-one", { id: "anthropic-a" });
+  const b = await addApiKeyAccount("anthropic", "sk-ant-two", { id: "anthropic-b" });
+  expect(a.account!.id).not.toBe(b.account!.id);
+  expect(accountsForProvider("anthropic").length).toBeGreaterThanOrEqual(2);
 });
 
 test("secretRefs enumerates every secret an account owns", () => {

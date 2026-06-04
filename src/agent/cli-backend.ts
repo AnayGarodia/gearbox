@@ -130,6 +130,28 @@ function shortArg(x: any): string {
   return String(s).slice(0, 64);
 }
 
+// CRITICAL: the vendor CLIs prefer an API key in the environment over their
+// subscription OAuth login. If ANTHROPIC_API_KEY / OPENAI_API_KEY is set (e.g.
+// imported as a Gearbox account), claude/codex would bill the API — not the
+// Pro/Max/Plus subscription — and fail if that key is out of credits. So we run
+// the subprocess with the provider's API-key vars stripped, forcing it onto the
+// subscription login. (We don't touch the keys for in-loop API accounts.)
+const KEYS_TO_STRIP: Record<string, string[]> = {
+  claude: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+  codex: ["OPENAI_API_KEY"],
+};
+// The env var each CLI uses to relocate its config + credentials — the mechanism
+// for MULTIPLE accounts of the same kind: each account points at its own dir, so
+// several claude (or codex) logins coexist instead of sharing one system login.
+const CONFIG_DIR_VAR: Record<string, string> = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" };
+
+export function subscriptionEnv(binary: string, profile?: string): Record<string, string> {
+  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+  for (const k of KEYS_TO_STRIP[binary] ?? []) delete env[k];
+  if (profile && CONFIG_DIR_VAR[binary]) env[CONFIG_DIR_VAR[binary]!] = profile;
+  return env;
+}
+
 /** Build the binary's argv. Flags are best-effort per the spike; may need
  *  per-version tuning. `autoApprove` mirrors Gearbox's yolo (the CLI self-governs). */
 export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean } = {}): string[] {
@@ -179,6 +201,7 @@ export async function runCliTask(opts: {
   sessionId?: string;
   autoApprove?: boolean;
   cwd?: string;
+  profile?: string; // per-account config dir (multi-account); undefined = system default login
 }): Promise<CliResult> {
   const { binary, prompt, messages, onEvent, signal } = opts;
   const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove });
@@ -186,7 +209,7 @@ export async function runCliTask(opts: {
 
   let proc: ReturnType<typeof Bun.spawn>;
   try {
-    proc = Bun.spawn([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd() });
+    proc = Bun.spawn([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd(), env: subscriptionEnv(binary, opts.profile) });
   } catch (e: any) {
     onEvent({ type: "error", message: `couldn't start ${binary}: ${e?.message ?? e}` });
     onEvent({ type: "done", usage: state.usage });
