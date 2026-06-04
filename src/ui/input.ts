@@ -192,3 +192,126 @@ export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boole
   }
   return { type: "none" };
 }
+
+// ── Mouse selection helpers ────────────────────────────────────────────────
+
+/** Return the character offset corresponding to a column index in a line. */
+function offsetInLine(line: string, col: number): number {
+  return Math.max(0, Math.min(col, line.length));
+}
+
+/** Find the start of the word at `offset` (readline‑style word boundaries). */
+function wordStartAt(value: string, offset: number): number {
+  let i = offset;
+  // skip trailing whitespace
+  while (i > 0 && /\s/.test(value[i - 1]!)) i--;
+  // skip word characters
+  while (i > 0 && !/\s/.test(value[i - 1]!)) i--;
+  return i;
+}
+
+/** Find the end of the word at `offset` (readline‑style word boundaries). */
+function wordEndAt(value: string, offset: number): number {
+  let i = offset;
+  // skip leading whitespace
+  while (i < value.length && /\s/.test(value[i]!)) i++;
+  // skip word characters
+  while (i < value.length && !/\s/.test(value[i]!)) i++;
+  return i;
+}
+
+/** Return the start offset of the line that contains `offset`. */
+function lineStartAt(value: string, offset: number): number {
+  const nl = value.lastIndexOf(NL, offset - 1);
+  return nl === -1 ? 0 : nl + 1;
+}
+
+/** Return the end offset of the line that contains `offset` (exclusive). */
+function lineEndAt(value: string, offset: number): number {
+  const nl = value.indexOf(NL, offset);
+  return nl === -1 ? value.length : nl;
+}
+
+export interface MouseClick {
+  /** 0‑based column (character cell) where the click happened. */
+  col: number;
+  /** 0‑based line index where the click happened. */
+  line: number;
+  /** Number of consecutive clicks (1 = single, 2 = double, 3 = triple). */
+  count: number;
+  /** Whether the Shift modifier was held during the click. */
+  shift: boolean;
+}
+
+/**
+ * Apply a mouse click to the current edit state.
+ *
+ * - Single click: move cursor to the clicked position, clearing any selection.
+ * - Double click: select the word under the cursor.
+ * - Triple click: select the whole line under the cursor.
+ * - Shift‑click: extend the existing selection (or start a new one if there is
+ *   no selection) from the current cursor to the clicked position.
+ *
+ * The returned action is always an `edit` action (or `none` if the click is
+ * outside the text).
+ */
+export function applyMouse(s: Edit, click: MouseClick): KeyAction {
+  const lines = s.value.split(NL);
+  const lineIdx = Math.max(0, Math.min(click.line, lines.length - 1));
+  const line = lines[lineIdx]!;
+  const col = offsetInLine(line, click.col);
+  const offset = offsetAt(s.value, lineIdx, col);
+
+  // Shift‑click: extend selection from the current cursor (or anchor) to the
+  // clicked position.
+  if (click.shift) {
+    const anchor = s.selectionAnchor ?? s.cursor;
+    // If there is no existing selection, start one from the current cursor.
+    return {
+      type: "edit",
+      state: {
+        value: s.value,
+        cursor: offset,
+        selectionAnchor: anchor,
+      },
+    };
+  }
+
+  // Triple‑click: select the whole line.
+  if (click.count >= 3) {
+    const lineStart = lineStartAt(s.value, offset);
+    const lineEnd = lineEndAt(s.value, offset);
+    return {
+      type: "edit",
+      state: {
+        value: s.value,
+        cursor: lineEnd,
+        selectionAnchor: lineStart,
+      },
+    };
+  }
+
+  // Double‑click: select the word under the cursor.
+  if (click.count === 2) {
+    const ws = wordStartAt(s.value, offset);
+    const we = wordEndAt(s.value, offset);
+    return {
+      type: "edit",
+      state: {
+        value: s.value,
+        cursor: we,
+        selectionAnchor: ws,
+      },
+    };
+  }
+
+  // Single click: move cursor, clear selection.
+  return {
+    type: "edit",
+    state: {
+      value: s.value,
+      cursor: offset,
+      selectionAnchor: undefined,
+    },
+  };
+}
