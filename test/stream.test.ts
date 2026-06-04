@@ -77,3 +77,22 @@ test("runTask streams write_file content incrementally as input arrives", async 
   expect(events.some((e) => e.type === "tool-start" && e.id === "t1")).toBe(true);
   expect(events.some((e) => e.type === "tool-end" && e.id === "t1")).toBe(true);
 });
+
+test("a stream error becomes ONE clean line, never the raw error object", async () => {
+  // A fat APICallError-like object (the thing that got dumped to the screen).
+  const big: any = Object.assign(new Error("Your credit balance is too low to access the Anthropic API."), {
+    url: "https://api.anthropic.com/v1/messages",
+    statusCode: 400,
+    requestBodyValues: { model: "claude-sonnet-4-6", messages: [{}], tools: [{}, {}] },
+    responseHeaders: { "anthropic-organization-id": "x" },
+  });
+  async function* fakeStream() {
+    yield { type: "error", error: big };
+  }
+  const events: AgentEvent[] = [];
+  await runTask({ model: {} as any, messages: [], onEvent: (e) => events.push(e), _stream: fakeStream() });
+  const err = events.find((e): e is Extract<AgentEvent, { type: "error" }> => e.type === "error");
+  expect(err?.message).toBe("Your credit balance is too low to access the Anthropic API.");
+  expect(err?.message).not.toContain("requestBodyValues");
+  expect(err?.message).not.toContain("statusCode");
+});

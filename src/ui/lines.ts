@@ -10,6 +10,9 @@ import { color } from "./theme.ts";
 import { glyph } from "./theme.ts";
 import { highlightLine } from "./highlight.ts";
 import type { Item } from "./types.ts";
+import { barCells } from "../accounts/usage.ts";
+
+const limitColor = (pct: number) => (pct >= 90 ? color.err : pct >= 70 ? color.accent : color.ok);
 
 export type Span = { text: string; color?: string; bold?: boolean; italic?: boolean; dim?: boolean; bg?: string };
 export type Line = Span[];
@@ -267,6 +270,33 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
             first = false;
           });
         }
+        break;
+      }
+      case "usage": {
+        const v = it.view;
+        out.push([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: "cost · spend per account ", color: color.text }, { text: "(all sessions)", color: color.faint }]);
+        out.push(BLANK);
+        for (const r of v.rows) {
+          const zero = r.spend.trim().startsWith("$0.00");
+          const { fill, empty } = barCells(r.spendFrac, v.barWidth);
+          const line: Line = [
+            { text: "  " + r.name, color: color.text },
+            { text: "  " + r.spend + "  ", color: zero ? color.faint : color.ok },
+            { text: fill, color: color.accent },
+            { text: empty, color: color.faint },
+            { text: "  " + r.meta, color: color.faint },
+          ];
+          if (r.limitPct != null) {
+            const lim = barCells(r.limitPct / 100, 6);
+            line.push({ text: "   " + (r.limitLabel ?? "") + " ", color: color.faint }, { text: lim.fill, color: limitColor(r.limitPct) }, { text: lim.empty, color: color.faint }, { text: " " + r.limitPct + "%", color: limitColor(r.limitPct) });
+          }
+          out.push(clipSpans(line, width));
+        }
+        out.push(BLANK);
+        const totalLine: Line = [{ text: "  total  ", color: color.dim }, { text: v.total.trim(), color: color.text }];
+        if (v.sessionUSD) totalLine.push({ text: "     this session (est): " + v.sessionUSD, color: color.faint });
+        out.push(clipSpans(totalLine, width));
+        if (v.hasEstimate) out.push([{ text: "  ~ estimated (provider didn't report an exact cost)", color: color.faint }]);
         break;
       }
       case "error": {

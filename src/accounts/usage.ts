@@ -102,17 +102,97 @@ const fmtTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(
 
 /** Render the per-account spend ledger for /cost. `sessionUSD` is this session's
  *  estimate (from the status bar) for context. */
-export function formatUsage(sessionUSD?: number): string {
+// Provider limit-window names → plain English (e.g. "seven_day" → "7-day").
+const PRETTY_LIMIT: Record<string, string> = { seven_day: "7-day", five_hour: "5-hour", one_hour: "1-hour" };
+const prettyLimit = (t?: string) => (t ? (PRETTY_LIMIT[t] ?? t.replace(/_/g, " ")) : "limit");
+
+// Eighth-block ramp for sub-cell precision in bars.
+const EIGHTHS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"] as const;
+export const BAR_FULL = "█";
+export const BAR_TRACK = "░";
+
+/** A proportional bar split into a full run, an optional partial glyph, and the
+ *  empty track — so a renderer can color the filled part and the track apart. */
+export function barCells(frac: number, width: number): { fill: string; empty: string } {
+  const units = Math.max(0, Math.min(1, frac || 0)) * width;
+  const full = Math.floor(units);
+  const partial = EIGHTHS[Math.round((units - full) * 8)] ?? "";
+  const fill = BAR_FULL.repeat(full) + partial;
+  const empty = BAR_TRACK.repeat(Math.max(0, width - full - (partial ? 1 : 0)));
+  return { fill, empty };
+}
+
+// Structured /usage view — the data both renderers (inline + fullscreen) draw
+// bars from, so they stay identical. Columns are pre-padded here.
+export interface UsageRow {
+  name: string; // padded to the account column width
+  spend: string; // padded, right-aligned (e.g. "$0.24~")
+  spendFrac: number; // 0..1 of the largest spend (the bar)
+  meta: string; // "3 turns · 13/3.8k"
+  limitPct?: number; // 0..100
+  limitLabel?: string; // "7-day"
+}
+export interface UsageView {
+  rows: UsageRow[];
+  barWidth: number;
+  total: string;
+  totalPad: number; // = account column width, so total/labels align
+  sessionUSD?: string;
+  hasEstimate: boolean;
+}
+
+export function buildUsageView(sessionUSD?: number, labelFor?: (id: string) => string): UsageView {
   const rows = loadUsage();
-  const lines: string[] = ["cost · per-account spend (all sessions)"];
-  if (!rows.length) lines.push("  (nothing recorded yet)");
-  for (const u of rows) {
-    const tok = `${fmtTok(u.inputTokens)}/${fmtTok(u.outputTokens)} tok`;
-    const limit = u.rate ? ` · ${Math.round(u.rate.utilization * 100)}% of ${u.rate.type ?? "limit"}` : "";
-    lines.push(`  ${u.accountId.padEnd(20)} ${usd(u.spentUSD).padStart(8)}${u.estimated ? "~" : " "} ${u.turns} turns · ${tok}${limit}`);
-  }
-  lines.push(`  ${"total".padEnd(20)} ${usd(totalSpent()).padStart(8)}`);
-  if (sessionUSD != null) lines.push(`\n  this session (est): ${usd(sessionUSD)}`);
-  lines.push("\n  ~ = includes estimated figures (provider didn't report exact cost)");
+  const maxSpend = Math.max(0, ...rows.map((u) => u.spentUSD));
+  const view = rows.map((u) => ({
+    name: labelFor ? labelFor(u.accountId) : u.accountId,
+    spendRaw: usd(u.spentUSD) + (u.estimated ? "~" : ""),
+    spendFrac: maxSpend > 0 ? u.spentUSD / maxSpend : 0,
+    meta: `${u.turns} turn${u.turns === 1 ? "" : "s"} · ${fmtTok(u.inputTokens)}/${fmtTok(u.outputTokens)}`,
+    limitPct: u.rate ? Math.round(u.rate.utilization * 100) : undefined,
+    limitLabel: u.rate ? prettyLimit(u.rate.type) : undefined,
+  }));
+  const nameW = Math.max("total".length, ...view.map((v) => v.name.length));
+  const spendW = Math.max(...view.map((v) => v.spendRaw.length), usd(totalSpent()).length, 1);
+  return {
+    rows: view.map((v) => ({ name: v.name.padEnd(nameW), spend: v.spendRaw.padStart(spendW), spendFrac: v.spendFrac, meta: v.meta, limitPct: v.limitPct, limitLabel: v.limitLabel })),
+    barWidth: 16,
+    total: usd(totalSpent()).padStart(spendW),
+    totalPad: nameW,
+    sessionUSD: sessionUSD != null ? usd(sessionUSD) : undefined,
+    hasEstimate: rows.some((u) => u.estimated),
+  };
+}
+
+/**
+ * Aligned cost table. `labelFor` maps a recorded accountId to a human label
+ * (the caller passes the same labels /account shows); without it, raw ids show.
+ */
+export function formatUsage(sessionUSD?: number, labelFor?: (id: string) => string): string {
+  const rows = loadUsage();
+  if (!rows.length) return "cost · spend per account\n  (nothing recorded yet)";
+
+  const data = rows.map((u) => ({
+    name: labelFor ? labelFor(u.accountId) : u.accountId,
+    spend: usd(u.spentUSD) + (u.estimated ? "~" : ""),
+    turns: String(u.turns),
+    tok: `${fmtTok(u.inputTokens)}/${fmtTok(u.outputTokens)}`,
+    limit: u.rate ? `${Math.round(u.rate.utilization * 100)}% of ${prettyLimit(u.rate.type)}` : "",
+  }));
+
+  const colW = (head: string, pick: (d: (typeof data)[number]) => string) => Math.max(head.length, ...data.map((d) => pick(d).length));
+  const wName = colW("account", (d) => d.name);
+  const wSpend = Math.max("spend".length, usd(totalSpent()).length, ...data.map((d) => d.spend.length));
+  const wTurns = colW("turns", (d) => d.turns);
+  const wTok = colW("tokens", (d) => d.tok);
+
+  const row = (name: string, spend: string, turns: string, tok: string, limit: string) =>
+    `  ${name.padEnd(wName)}  ${spend.padStart(wSpend)}  ${turns.padStart(wTurns)}  ${tok.padEnd(wTok)}  ${limit}`.trimEnd();
+
+  const lines: string[] = ["cost · spend per account (all sessions)", "", row("account", "spend", "turns", "tokens", "limit")];
+  for (const d of data) lines.push(row(d.name, d.spend, d.turns, d.tok, d.limit));
+  lines.push(row("total", usd(totalSpent()), "", "", ""));
+  if (sessionUSD != null) lines.push("", `  this session (est): ${usd(sessionUSD)}`);
+  lines.push("", "  ~ = estimated (provider didn't report an exact cost)");
   return lines.join("\n");
 }

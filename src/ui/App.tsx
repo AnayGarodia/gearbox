@@ -29,7 +29,7 @@ import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCre
 import { addApiKeyAccount, addByPastedKey, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
 import { detectProviderByKey } from "../accounts/catalog.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
-import { recordUsage, recordRateLimit, formatUsage } from "../accounts/usage.ts";
+import { recordUsage, recordRateLimit, buildUsageView, type UsageView } from "../accounts/usage.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
@@ -66,7 +66,7 @@ const KEYS_HELP = [
   "  ⌃Y copy last reply · shift+tab cycle mode (normal · auto-accept · plan)",
   "  tab @file complete · PgUp/PgDn or wheel to scroll · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · ? this help",
-  "  select text: hold ⌥ (Option) — fullscreen owns the mouse for scrolling",
+  "  select & scroll with your mouse normally (run --fullscreen for the alt-screen frame)",
 ].join("\n");
 
 /** Serialize the transcript to Markdown for /export. */
@@ -77,7 +77,11 @@ function transcriptMarkdown(items: Item[]): string {
     else if (it.kind === "assistant") out.push("## Gearbox", "", it.text, "");
     else if (it.kind === "tool") out.push(`> \`${it.name}\` ${it.arg}${it.summary ? " — " + it.summary : ""}`, "");
     else if (it.kind === "notice") out.push(`_${it.text}_`, "");
-    else if (it.kind === "error") out.push(`**error:** ${it.text}`, "");
+    else if (it.kind === "usage") {
+      out.push("**cost · spend per account**", "");
+      for (const r of it.view.rows) out.push(`- ${r.name.trim()} — ${r.spend.trim()} · ${r.meta}${r.limitPct != null ? ` · ${r.limitLabel} ${r.limitPct}%` : ""}`);
+      out.push(`- total ${it.view.total.trim()}`, "");
+    } else if (it.kind === "error") out.push(`**error:** ${it.text}`, "");
   }
   return out.join("\n");
 }
@@ -233,6 +237,20 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     setTimeout(pumpPerm, 0);
   };
 
+  // Restore the active subscription account from a prior session (persisted in
+  // prefs.activeAccount), so /account choices survive restarts.
+  useEffect(() => {
+    if (demo) return;
+    const acctId = loadPrefs().activeAccount;
+    if (!acctId) return;
+    const a = getAccount(acctId);
+    if (a && a.exec === "cli") {
+      const bin = (a.auth as any).binary as string;
+      activeCliRef.current = { id: a.id, binary: bin, profile: (a.auth as any).loginProfile };
+      setActiveCli({ id: a.id, label: bin });
+    }
+  }, [demo]);
+
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
   useEffect(() => {
     setPermissionHandler(
@@ -355,6 +373,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const echo = (text: string) => push({ kind: "user", id: idRef.current++, text });
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
+  const pushUsage = (view: UsageView) => push({ kind: "usage", id: idRef.current++, view });
 
   const defaultRunner: Runner = useCallback(
     async ({ prompt, messages, onEvent, selector: sel, signal }) => {
@@ -679,6 +698,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           cliSessionRef.current = undefined;
           setLastPick(null);
           setActiveCli({ id: acctId, label: shortLabel });
+          updatePrefs({ activeAccount: acctId }); // restore this subscription next launch
           notice(`✓ ${res.account!.label} signed in${st.detail ? ` — ${st.detail}` : ""}. Runs via the ${bin} CLI (own tools/permissions). /account off to switch back.`);
         })();
       };
@@ -792,7 +812,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
                 `  theme   ${p.theme ?? "dark"}        colors — ${THEME_NAMES.join(" · ")}\n` +
                 `  vim     ${p.vim ? "on" : "off"}         vim keys in the composer\n` +
                 `  notify  ${p.notify === false ? "off" : "on"}          desktop ping when a long turn finishes\n` +
-                `  inline  ${p.fullscreen === false ? "on" : "off"}         native scroll + select-to-copy (restart to apply)\n` +
+                `  inline  ${p.fullscreen === true ? "off" : "on"}         native mouse select + scroll (default; off = alt-screen frame; restart to apply)\n` +
                 `  change one: /config <theme|vim|notify|inline> <value>`,
             );
             return;
@@ -862,6 +882,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             setSelector(new RoutingSelector());
             setLastPick(null);
             routedRef.current = null;
+            updatePrefs({ pinnedModel: undefined }); // remember: routing, across sessions
             notice("routing on — Gearbox now picks the model per task (the cheapest that can do the job)");
             return;
           }
@@ -871,8 +892,9 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
               setSelector(new FixedSelector(r.modelId));
               setLastPick(null);
               routedRef.current = null;
+              updatePrefs({ pinnedModel: r.modelId }); // persist the pin across sessions
             }
-            notice(r.ok ? `${r.message} — pinned. /model auto to route per task again.` : r.message);
+            notice(r.ok ? `${r.message} — pinned (persists across sessions). /model auto to route per task again.` : r.message);
           }
           return;
         case "memory": {
@@ -929,12 +951,14 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
                 activeCliRef.current = { id: a.id, binary: bin, profile };
                 cliSessionRef.current = undefined;
                 setActiveCli({ id: a.id, label: bin });
+                updatePrefs({ activeAccount: a.id });
                 notice(`switched to ${accountLabel(a)}${st.detail ? ` — ${st.detail}` : ""}`);
               })();
             } else {
               activeCliRef.current = null;
               setActiveCli(null);
               setDefaultAccount(a.provider, a.id);
+              updatePrefs({ activeAccount: null });
               notice(`switched to ${accountLabel(a)}`);
             }
           };
@@ -947,6 +971,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             activeCliRef.current = null;
             cliSessionRef.current = undefined;
             setActiveCli(null);
+            updatePrefs({ activeAccount: null });
             notice("left the subscription — back to your API keys");
             return;
           }
@@ -1039,7 +1064,14 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         case "cost":
         case "usage":
           echo(text);
-          notice(formatUsage(estimateCost(sessionRef.current.turns)));
+          pushUsage(
+            buildUsageView(estimateCost(sessionRef.current.turns), (id) => {
+              const a = getAccount(id);
+              if (a) return accountLabel(a);
+              if (id === "unknown") return "(unattributed)";
+              return id; // a model id or env-derived label
+            }),
+          );
           return;
         case "compact": {
           echo(text);
@@ -1385,7 +1417,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       {firstRunRef.current ? (
         <Box marginTop={1} flexDirection="column" alignItems="center">
           <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
-          <Text color={color.faint}>{demo ? "set ANTHROPIC_API_KEY (or another provider) to start — running in demo mode" : "/theme to restyle · /config inline for native scroll + copy"}</Text>
+          <Text color={color.faint}>{demo ? "set ANTHROPIC_API_KEY (or another provider) to start — running in demo mode" : "/theme to restyle · select text with your mouse · --fullscreen for the alt-screen frame"}</Text>
         </Box>
       ) : null}
     </Box>
@@ -1443,11 +1475,20 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     );
   }
 
-  // Inline fallback (GEARBOX_INLINE=1): flows into native scrollback.
+  // Inline (the DEFAULT): the terminal owns the screen — native selection,
+  // scrollback, and wheel scroll. Finished items commit to scrollback via
+  // <Static> (in Transcript); only the live tail + footer re-render.
+  const banner = <Banner model={modelLabel} cwd={basename(process.cwd())} width={width} />;
   return (
     <Box flexDirection="column" width={width}>
-      <Banner model={modelLabel} cwd={basename(process.cwd())} width={width} />
-      {welcome ? <Box marginTop={1}>{hero}</Box> : <Transcript items={items} width={width} />}
+      {welcome ? (
+        <>
+          {banner}
+          <Box marginTop={1}>{hero}</Box>
+        </>
+      ) : (
+        <Transcript items={items} width={width} header={banner} />
+      )}
       {footerJsx}
     </Box>
   );

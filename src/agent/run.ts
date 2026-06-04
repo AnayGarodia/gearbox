@@ -112,6 +112,14 @@ export function readField(buf: string, field: string): string | null {
   return out;
 }
 
+// Pull a short, human line out of any error (AI SDK APICallError, plain Error,
+// string, or object) — never the full object/stack.
+function cleanError(err: any): string {
+  const raw = err?.message ?? err?.error?.message ?? err?.responseBody ?? (typeof err === "string" ? err : "");
+  const msg = String(raw || "request failed").split("\n")[0]!.trim();
+  return msg.length > 240 ? msg.slice(0, 240) + "…" : msg;
+}
+
 const resultSummary = (out: any): string => {
   const s = typeof out === "string" ? out : JSON.stringify(out);
   const first = s.split("\n").find((l) => l.trim()) ?? "";
@@ -134,6 +142,18 @@ export async function runTask(opts: {
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
 
+  // One clean, one-line error path. The AI SDK surfaces errors three ways
+  // (an `error` stream part, a thrown iterator error, and — if unhandled — a
+  // rejected internal promise that Bun would dump RAW to the screen). `onError`
+  // catches that third case; `emitErr` dedupes + trims so the UI shows a single
+  // readable line, never the giant APICallError object.
+  let errored = false;
+  const emitErr = (err: unknown) => {
+    if (errored || signal?.aborted) return;
+    errored = true;
+    onEvent({ type: "error", message: cleanError(err) });
+  };
+
   const result = opts._stream
     ? null
     : streamText({
@@ -143,6 +163,7 @@ export async function runTask(opts: {
         tools: plan ? readOnlyTools : tools,
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: signal,
+        onError: ({ error }) => emitErr(error),
         ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
       });
   const parts: AsyncIterable<any> = opts._stream ?? (result!.fullStream as AsyncIterable<any>);
@@ -256,7 +277,7 @@ export async function runTask(opts: {
           break;
         }
         case "error": {
-          onEvent({ type: "error", message: String(part.error ?? "unknown error") });
+          emitErr(part.error);
           break;
         }
         case "finish": {
@@ -269,7 +290,7 @@ export async function runTask(opts: {
     }
   } catch (e: any) {
     // On a user interrupt the App shows its own "interrupted" notice — stay quiet.
-    if (!signal?.aborted) onEvent({ type: "error", message: e?.message ?? String(e) });
+    if (!signal?.aborted) emitErr(e);
   }
 
   let next = messages;

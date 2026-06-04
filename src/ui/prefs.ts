@@ -13,6 +13,8 @@ export interface Prefs {
   ghost?: string; // mascot skin
   onboarded?: boolean; // first-run screen shown
   vim?: boolean; // composer vim keybindings
+  pinnedModel?: string; // /model <name> pin (absent/"auto" = routing); restored next launch
+  activeAccount?: string | null; // active CLI subscription account id; restored next launch
 }
 
 function file(): string {

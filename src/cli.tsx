@@ -51,6 +51,8 @@ Options:
   --model <name>      e.g. sonnet-4.6, haiku, gemini-flash, deepseek
   -c, --continue      resume the most recent session here (/resume to pick one)
   --yolo              auto-approve writes/edits/shell (no permission prompts)
+  --fullscreen        alt-screen frame + scrollbar (mouse-wheel scroll; native
+                      text selection then needs the terminal's modifier, e.g. ⌥-drag)
   -v, --version       print version
   -h, --help          this help
 
@@ -113,10 +115,11 @@ if (args[0] === "auth") {
 const mi = args.indexOf("--model");
 const preferred = mi >= 0 ? args[mi + 1] : undefined;
 const demo = !anyProviderAvailable();
-// Routing is the default (the product's point: pick the model per task). An
-// explicit --model pins one model (FixedSelector) and turns routing off; switch
-// back in-app with `/model auto`.
-const selector = preferred ? new FixedSelector(preferred) : new RoutingSelector();
+// Selector at launch: --model wins; else a pinned model persisted from a prior
+// session (/model <name>); else routing. (The active subscription account is
+// restored inside the App from the same prefs.)
+const pinned = preferred ?? loadPrefs().pinnedModel;
+const selector = pinned ? new FixedSelector(pinned) : new RoutingSelector();
 if (args.includes("--yolo")) setYolo(true); // start with writes/edits/shell auto-approved
 // --continue / -c resumes the most recent session for this directory.
 const resumeId = args.includes("--continue") || args.includes("-c") ? (latestSession()?.id ?? undefined) : undefined;
@@ -129,15 +132,18 @@ setImageMode(imageMode);
 // the UI references them via cheap Unicode placeholders (a=T,U=1 draws nothing).
 if (process.stdout.isTTY && imageMode === "kitty") process.stdout.write(transmitAll());
 
-// Fullscreen via the alternate screen buffer: the app owns the screen, the input
-// is pinned to the bottom, and the transcript is a virtualized scroll region (it
-// renders only the visible lines, so the frame never exceeds the screen). Restore
-// the main screen on every exit path. GEARBOX_INLINE=1 forces plain inline flow.
-// Inline mode (no alt-screen / no mouse grab) lets the terminal do native
-// scrollback + select-to-copy. Opt in with GEARBOX_INLINE=1 or `/config inline`.
+// Inline is the DEFAULT (like Claude Code): no alt-screen, no mouse grab, so the
+// terminal owns the screen — native click-drag selection, scrollback, and
+// copy all "just work" with no modifier. Fullscreen (the alt-screen frame with a
+// virtualized scroll region + scrollbar) is opt-in, because grabbing the mouse
+// for wheel-scroll is what disables native selection. Opt in with `--fullscreen`,
+// GEARBOX_FULLSCREEN=1, or `/config inline off`. GEARBOX_INLINE=1 forces inline.
 const uiPrefs = loadPrefs();
 if (uiPrefs.theme) setTheme(uiPrefs.theme); // apply before first render
-const fullscreen = Boolean(process.stdout.isTTY) && process.env.GEARBOX_INLINE !== "1" && uiPrefs.fullscreen !== false;
+const wantsFullscreen =
+  process.env.GEARBOX_INLINE !== "1" &&
+  (args.includes("--fullscreen") || process.env.GEARBOX_FULLSCREEN === "1" || uiPrefs.fullscreen === true);
+const fullscreen = Boolean(process.stdout.isTTY) && wantsFullscreen;
 const restore = () => {
   if (!process.stdout.isTTY) return;
   process.stdout.write("\x1b[?2004l"); // bracketed paste off
