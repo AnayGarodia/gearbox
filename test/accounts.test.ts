@@ -213,6 +213,21 @@ test("recordRateLimit attaches a quota snapshot to an account", () => {
   expect(accountUsage("ghost")).toBeUndefined();
 });
 
+// ── plain-English labels + numbered list (no ids in the UI) ──
+test("accountLabel reads in plain English; list is numbered", async () => {
+  const { accountLabel, formatAccounts } = await import("../src/commands.ts");
+  addCliAccount("claude-cli");
+  addCliAccount("codex-cli", "personal");
+  await addApiKeyAccount("anthropic", "sk-ant-x", { id: "anthropic-x" });
+  expect(accountLabel(getAccount("claude-cli")!)).toBe("Claude · subscription");
+  expect(accountLabel(getAccount("codex-cli-personal")!)).toBe("ChatGPT (personal) · subscription");
+  expect(accountLabel(getAccount("anthropic-x")!)).toBe("Anthropic · API key");
+  const out = formatAccounts(listAccounts(), "claude-cli", []);
+  expect(out).toContain("1."); // numbered
+  expect(out).toContain("/account <number>"); // switch by number, not id
+  expect(out).not.toContain("<id>"); // ids are gone from the UI
+});
+
 // ── multiple accounts of the same kind ──
 test("multiple CLI subscription accounts coexist via isolated config dirs", () => {
   const def = addCliAccount("claude-cli"); // default: system login, no profile

@@ -35,7 +35,7 @@ import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../conte
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { runTaskMock } from "../agent/mock.ts";
 import { runShell } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, matchCommands, formatContextBreakdown, formatAccounts } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, matchCommands, formatContextBreakdown, formatAccounts, accountLabel } from "../commands.ts";
 import { applyKey, type Edit } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
@@ -896,25 +896,113 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           notice(formatContextBreakdown(sections, m.contextWindow) + `\n\n  working directory: ${process.cwd()}`);
           return;
         }
-        // One command for everything account-related: list, add a key, sign in
-        // to a subscription, switch, test, remove. `/accounts` is a kept alias.
+        // Everything account-related, addressed by NUMBER (never an id):
+        //   /account              → numbered list
+        //   /account <n>          → switch to account #n
+        //   /account add …        → sign in (claude/codex) or paste an API key
+        //   /account remove <n>   → remove account #n
+        //   /account off          → leave the active subscription
         case "accounts":
         case "account": {
           echo(text);
-          const [sub, ...rest] = arg.split(/\s+/);
-          const subL = (sub || "").toLowerCase();
-          const argId = rest.join(" ").trim();
-          const KNOWN = ["login", "signin", "add", "import", "use", "rm", "remove", "test", "off"];
+          const parts = arg.split(/\s+/).filter(Boolean);
+          const subL = (parts[0] || "").toLowerCase();
+          const all = listAccounts();
+          const activeId = activeCliRef.current?.id ?? null;
+          const showList = () => notice(formatAccounts(all, activeId, importableEnvCreds()));
+          const byNumber = (s?: string) => {
+            const n = Number(s);
+            return Number.isInteger(n) && n >= 1 && n <= all.length ? all[n - 1] : undefined;
+          };
+          // Make an account active. cli → run through its binary; api → set the
+          // provider default and drop any active subscription so API/routing runs.
+          const activate = (a: (typeof all)[number]) => {
+            if (a.exec === "cli") {
+              const bin = (a.auth as any).binary as string;
+              const profile = (a.auth as any).loginProfile as string | undefined;
+              void (async () => {
+                const st = await cliAuthStatus(bin, profile);
+                if (!st.loggedIn) {
+                  notice(`${accountLabel(a)} isn't signed in — run /account add ${bin === "codex" ? "codex" : "claude"} to sign in`);
+                  return;
+                }
+                activeCliRef.current = { id: a.id, binary: bin, profile };
+                cliSessionRef.current = undefined;
+                setActiveCli({ id: a.id, label: bin });
+                notice(`switched to ${accountLabel(a)}${st.detail ? ` — ${st.detail}` : ""}`);
+              })();
+            } else {
+              activeCliRef.current = null;
+              setActiveCli(null);
+              setDefaultAccount(a.provider, a.id);
+              notice(`switched to ${accountLabel(a)}`);
+            }
+          };
 
-          if (subL === "login" || subL === "signin") {
-            signInCli(rest[0] ?? "");
+          if (!subL) {
+            showList();
             return;
           }
           if (subL === "off") {
             activeCliRef.current = null;
             cliSessionRef.current = undefined;
             setActiveCli(null);
-            notice("left the subscription — back to your API models");
+            notice("left the subscription — back to your API keys");
+            return;
+          }
+          // Switch by number: `/account 2`.
+          const numbered = byNumber(subL);
+          if (numbered) {
+            activate(numbered);
+            return;
+          }
+          if (subL === "add") {
+            const first = (parts[1] ?? "").toLowerCase();
+            // Subscription sign-in (what people try first).
+            if (["claude", "codex", "chatgpt", "claude-cli", "codex-cli"].includes(first)) {
+              const provider = first.startsWith("codex") || first === "chatgpt" ? "codex" : "claude";
+              signInCli(`${provider} ${parts.slice(2).join(" ")}`.trim());
+              return;
+            }
+            const key = parts[1] ?? "";
+            const provGiven = parts[2] ? key : "";
+            const keyVal = parts[2] ?? "";
+            if (!key) {
+              notice("add an account:\n  /account add claude        sign in to a Claude subscription (Pro/Max)\n  /account add codex         sign in to a ChatGPT subscription (Plus/Pro)\n  /account add <api-key>     paste any provider key (auto-detected)\n  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter");
+              return;
+            }
+            void (async () => {
+              let res;
+              if (provGiven) res = await addApiKeyAccount(provGiven, keyVal);
+              else if (detectProviderByKey(key)) res = await addByPastedKey(key);
+              else {
+                notice(`"${key}" isn't a recognized key. Try /account add claude, /account add codex, or paste a full API key.`);
+                return;
+              }
+              if (!res.ok || !res.account) {
+                notice(res.message);
+                return;
+              }
+              notice(`${res.message} — testing…`);
+              const t = await testAccount(res.account);
+              notice(t.ok ? `✓ added · ${t.message}` : `added, but the key test failed: ${t.message}`);
+            })();
+            return;
+          }
+          if (subL === "remove" || subL === "rm") {
+            const a = byNumber(parts[1]);
+            if (!a) {
+              notice(`which account? use its number:\n\n` + formatAccounts(all, activeId, []));
+              return;
+            }
+            const wasActive = activeCliRef.current?.id === a.id;
+            void removeAccount(a.id).then(() => {
+              if (wasActive) {
+                activeCliRef.current = null;
+                setActiveCli(null);
+              }
+              notice(`removed ${accountLabel(a)}`);
+            });
             return;
           }
           if (subL === "import") {
@@ -927,79 +1015,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
               }
               for (const c of keys) await importEnvCred(c);
               for (const c of cloud) await importCloudCred(c);
-              const names = [...keys.map((c) => c.provider), ...cloud.map((c) => c.provider)];
-              notice(`imported ${names.length} account${names.length > 1 ? "s" : ""}: ${names.join(", ")}`);
+              showList();
             })();
             return;
           }
-          if (subL === "add") {
-            const first = rest[0] ?? "";
-            const firstL = first.toLowerCase();
-            // Subscriptions: `/account add claude [name]` / `add codex [name]`
-            // routes to the CLI sign-in (no key). This is what people try first.
-            if (["claude", "codex", "chatgpt", "claude-cli", "codex-cli"].includes(firstL)) {
-              const provider = firstL.startsWith("codex") || firstL === "chatgpt" ? "codex" : "claude";
-              signInCli(`${provider} ${rest.slice(1).join(" ")}`.trim());
-              return;
-            }
-            // API keys: `/account add <key>` (auto-detect) or `<provider> <key>`.
-            const second = rest.slice(1).join(" ").trim();
-            void (async () => {
-              let res;
-              if (first && !second && detectProviderByKey(first)) res = await addByPastedKey(first);
-              else if (first && second) res = await addApiKeyAccount(first, second);
-              else {
-                notice("add an account:\n  /account add <key>            (API key — auto-detects the provider)\n  /account add <provider> <key> (e.g. anthropic, openai, openrouter)\n  /account add claude [name]    (Claude subscription — opens sign-in)\n  /account add codex [name]     (ChatGPT subscription — opens sign-in)");
-                return;
-              }
-              if (!res.ok || !res.account) {
-                notice(res.message);
-                return;
-              }
-              notice(`${res.message} — testing…`);
-              const t = await testAccount(res.account);
-              notice(t.ok ? `${res.account!.id}: ${t.message} ✓` : `${res.account!.id} stored, but test failed: ${t.message}`);
-            })();
-            return;
-          }
-          if ((subL === "rm" || subL === "remove") && argId) {
-            void removeAccount(argId).then(() => notice(`removed ${argId}`));
-            return;
-          }
-          if (subL === "test" && argId) {
-            const a = getAccount(argId);
-            if (!a) {
-              notice(`no account "${argId}" — /account to list`);
-              return;
-            }
-            void testAccount(a).then((t) => notice(`${argId}: ${t.ok ? t.message + " ✓" : "failed — " + t.message}`));
-            return;
-          }
-          // `/account use <id>` or bare `/account <id>` → make that account active.
-          const id = subL === "use" ? argId : sub && !KNOWN.includes(subL) ? arg.trim() : "";
-          if (id) {
-            const a = getAccount(id);
-            if (!a) {
-              notice(`no account "${id}".\n\n` + formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()));
-              return;
-            }
-            if (a.exec === "cli") {
-              const bin = (a.auth as any).binary as string;
-              const profile = (a.auth as any).loginProfile as string | undefined;
-              activeCliRef.current = { id: a.id, binary: bin, profile };
-              cliSessionRef.current = undefined;
-              setActiveCli({ id: a.id, label: a.id === bin ? bin : a.id.replace(/^.*?-/, `${bin}·`) });
-              notice(`active → ${a.id} (runs through the ${bin} CLI; /account off to leave)`);
-            } else {
-              activeCliRef.current = null;
-              setActiveCli(null);
-              setDefaultAccount(a.provider, a.id);
-              notice(`active account for ${a.provider} → ${a.id}`);
-            }
-            return;
-          }
-          // Bare `/account` → the list + what's active now.
-          notice(formatAccounts(listAccounts(), loadAccounts().defaults, importableEnvCreds()) + (activeCliRef.current ? `\n  active now: ${activeCliRef.current.id} (subscription)` : ""));
+          // Anything else → show the list (so a stray arg still helps).
+          notice(`didn't recognize "/account ${arg}".\n\n` + formatAccounts(all, activeId, importableEnvCreds()));
           return;
         }
         case "login": {

@@ -32,7 +32,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/context", usage: "/context", desc: "see what's loaded and how many tokens it uses", group: "chat" },
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
   // accounts & cost
-  { name: "/account", usage: "/account", desc: "add, sign in to, switch, or remove model accounts", group: "accounts" },
+  { name: "/account", usage: "/account", desc: "list accounts; /account <number> to switch, /account add to add one", group: "accounts" },
   { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },
   // save & copy
   { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard", group: "output" },
@@ -90,18 +90,36 @@ export function helpText(): string {
   return out.join("\n");
 }
 
-/** Render the account list + any importable env creds, marking each provider's default. */
+// A plain-English label for an account — no ids. e.g. "Claude · subscription",
+// "Claude (work) · subscription", "Anthropic · API key", "OpenRouter · API key".
+export function accountLabel(a: { id: string; provider: string; exec: string; auth?: any }): string {
+  if (a.exec === "cli") {
+    const bin = a.auth?.binary;
+    const base = bin === "codex" ? "ChatGPT" : "Claude";
+    const named = a.id.match(/-cli-(.+)$/); // additional account: claude-cli-<name>
+    return `${named ? `${base} (${named[1]})` : base} · subscription`;
+  }
+  return `${catalogProvider(a.provider)?.label ?? a.provider} · API key`;
+}
+
+/**
+ * Numbered account list — you switch/remove by NUMBER, never an id. The active
+ * subscription (if any) is marked; otherwise API keys auto-route.
+ */
 export function formatAccounts(
-  accounts: { id: string; label: string; provider: string; exec: string }[],
-  defaults: Record<string, string>,
+  accounts: { id: string; label: string; provider: string; exec: string; auth?: any }[],
+  activeCliId: string | null,
   importable: { provider: string; label: string; envVar: string }[],
 ): string {
-  const lines: string[] = ["accounts"];
-  if (!accounts.length) lines.push("  (none yet)");
-  for (const a of accounts) {
-    const mark = defaults[a.provider] === a.id ? glyph.on : glyph.off;
-    const tag = a.exec === "cli" ? " · cli" : "";
-    lines.push(`  ${mark} ${a.id.padEnd(20)} ${a.label}${tag}`);
+  const lines: string[] = ["your accounts"];
+  if (!accounts.length) {
+    lines.push("  (none yet)");
+  } else {
+    accounts.forEach((a, i) => {
+      const mark = a.id === activeCliId ? glyph.on : " ";
+      lines.push(`  ${mark} ${String(i + 1).padStart(2)}.  ${accountLabel(a)}`);
+    });
+    if (!activeCliId) lines.push("", "  no subscription active — your API keys auto-route per task");
   }
   if (importable.length) {
     lines.push("", "found in your environment — /account import to add:");
@@ -109,11 +127,11 @@ export function formatAccounts(
   }
   lines.push(
     "",
-    "  /account add <key>   add an API key (auto-detects the provider)",
-    "  /account login       sign in to a Claude or ChatGPT subscription",
-    "  /account use <id>    switch active account · /account rm <id> to remove",
+    "  switch:   /account <number>",
+    "  add:      /account add        (Claude/ChatGPT sign-in, or paste an API key)",
+    accounts.length ? "  remove:   /account remove <number>" : "",
   );
-  return lines.join("\n");
+  return lines.filter(Boolean).join("\n");
 }
 
 /** Render the Context Engine's working-set breakdown (one row per section). */
