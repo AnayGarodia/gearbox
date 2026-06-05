@@ -58,6 +58,13 @@ test("with a DeepSeek key, coding routes to the cheapest model that clears the b
   expect(r.select({ prompt: "refactor the parser" }).model.id).toBe("deepseek-v4-pro");
 });
 
+test("image turns require a vision-capable model even when a cheaper code model is available", () => {
+  only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+  const r = new RoutingSelector();
+  expect(r.select({ prompt: "fix this UI from the screenshot", requires: ["tools", "images"] }).model.id).toBe("claude-sonnet-4-6");
+  expect(r.select({ prompt: "fix this UI from the screenshot", requires: ["tools", "images"] }).reason).toContain("tools+images required");
+});
+
 // ── explicit task kind overrides the classifier (the sub-task delegation path) ──
 test("an explicit kind is honored over the prompt", () => {
   only("ANTHROPIC_API_KEY");

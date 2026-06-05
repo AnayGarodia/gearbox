@@ -39,6 +39,7 @@ import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../conte
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageContent, imagePathsInText, loadImageAttachment, type ImageAttachment } from "../image.ts";
+import { missingRequirements, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
@@ -1041,7 +1042,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return { messages: r.messages, usage: r.usage };
       }
       const plan = modeRef.current === "plan";
-      const choice = sel.select({ prompt: prompt, kind: plan ? "plan" : undefined });
+      const requires: ModelRequirement[] = ["tools", ...(activeImagesRef.current.length ? ["images" as const] : [])];
+      const choice = sel.select({ prompt: prompt, kind: plan ? "plan" : undefined, requires });
+      const missing = missingRequirements(choice.model, requires);
+      if (missing.length) {
+        throw new Error(`${choice.model.label} cannot run this turn (${missing.join(", ")} unsupported). Use /model auto or pick a compatible model.`);
+      }
       // Record the ACTUAL pick (routing varies it per task) for the status line
       // and the turn ledger — not a re-classification with an empty prompt.
       routedRef.current = { model: choice.model, reason: choice.reason };

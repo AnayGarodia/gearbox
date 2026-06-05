@@ -5,6 +5,7 @@
 // selector it has. Do not bypass this to call a provider directly.
 import { pickDefaultModel } from "../config.ts";
 import type { ModelSpec } from "../providers.ts";
+import type { ModelRequirement } from "./capabilities.ts";
 
 export interface Task {
   prompt: string;
@@ -15,6 +16,7 @@ export interface Task {
   kind?: "code" | "search" | "summarize" | "classify" | "plan" | "chat";
   estTokens?: number; // estimated working-set size for this turn
   touchedFiles?: string[]; // files in play, for locality-aware routing
+  requires?: ModelRequirement[]; // runtime capabilities needed by this turn
 }
 
 export interface ModelChoice {

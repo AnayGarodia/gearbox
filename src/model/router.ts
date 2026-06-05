@@ -14,6 +14,7 @@ import { profileFor } from "./profiles.ts";
 import { pickDefaultModel } from "../config.ts";
 import type { ModelSelector, Task, ModelChoice } from "./selector.ts";
 import { preferenceFor } from "./preferences.ts";
+import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -75,7 +76,16 @@ export class RoutingSelector implements ModelSelector {
     const kind = task.kind ?? classify(task.prompt);
     const bar = BAR[kind];
 
+    const required = task.requires ?? [];
     const available = MODELS.filter((m) => providerAvailable(m.provider) && profileFor(m.id));
+    const capable = required.length ? available.filter((m) => supportsRequirements(m, required)) : available;
+    if (available.length > 0 && capable.length === 0) {
+      const missing = available
+        .slice(0, 4)
+        .map((m) => `${m.label}: ${missingRequirements(m, required).join(", ")}`)
+        .join("; ");
+      throw new Error(`No configured model supports this turn (${required.join(", ")} required). ${missing}`);
+    }
     if (available.length === 0) {
       const m = pickDefaultModel(this.fallbackId);
       if (!m) {
@@ -89,8 +99,9 @@ export class RoutingSelector implements ModelSelector {
     // Context-window guard: drop models that can't hold the estimated working set
     // (with headroom). If none fit, keep all (best effort — the builder still trims).
     const need = (task.estTokens ?? 0) * 1.2;
-    const fits = need > 0 ? available.filter((m) => m.contextWindow >= need) : available;
-    const pool = fits.length ? fits : available;
+    const base = capable.length ? capable : available;
+    const fits = need > 0 ? base.filter((m) => m.contextWindow >= need) : base;
+    const pool = fits.length ? fits : base;
 
     // Cheapest model that clears the bar; if nothing clears it, the best one we have.
     const clears = pool.filter((m) => qualityOf(m) >= bar);
@@ -109,7 +120,8 @@ export class RoutingSelector implements ModelSelector {
     // Concise, user-facing: the task class + the per-Mtok rate. (The full
     // "why" scorecard lives behind the future routing UI, not the status line.)
     const skipped = preferredPool && qualityOf(preferredPool) < bar ? ` · ${preferredPool.label} skipped below quality bar` : "";
-    const reason = `${kind} · $${costOf(model).toFixed(2)}/Mtok${skipped}`;
+    const caps = required.length ? ` · ${required.join("+")} required` : "";
+    const reason = `${kind}${caps} · $${costOf(model).toFixed(2)}/Mtok${skipped}`;
     return { model, reason };
   }
 }

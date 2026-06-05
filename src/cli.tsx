@@ -262,6 +262,7 @@ Usage:
   gearbox --model <name>  start with a specific model
   gearbox --continue      resume the most recent session in this directory
   gearbox mcp list        show configured MCP tools
+  gearbox doctor models   show provider/model capability matrix
   gearbox upgrade         pull the latest version + reinstall deps
 
 Options:
@@ -305,6 +306,17 @@ if (args[0] === "mcp") {
     console.log(mcpConfigPaths().join("\n"));
   } else {
     console.log("gearbox mcp [list|paths]");
+  }
+  process.exit(0);
+}
+
+if (args[0] === "doctor") {
+  const sub = args[1] ?? "models";
+  if (sub === "models" || sub === "providers") {
+    const { formatCapabilityMatrix } = await import("./model/capabilities.ts");
+    console.log(formatCapabilityMatrix());
+  } else {
+    console.log("gearbox doctor [models|providers]");
   }
   process.exit(0);
 }
