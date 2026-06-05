@@ -18,7 +18,7 @@ import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 
-const VERSION = "0.1.10";
+const VERSION = "0.1.11";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.NO_COLOR !== "1" && process.env.TERM !== "dumb" && (process.stdout.isTTY || process.env.FORCE_COLOR === "1");

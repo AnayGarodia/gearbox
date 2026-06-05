@@ -10,6 +10,7 @@ import { runShellStream } from "./shell.ts";
 import { requestPermission } from "./permission.ts";
 import { which, Glob, spawnSyncProc } from "./proc.ts";
 import type { OnEvent } from "./agent/events.ts";
+import { fetchUrlText } from "./fetch.ts";
 
 const ROOT = process.cwd();
 const CAP = 60_000; // cap tool output so the transcript stays sane
@@ -28,6 +29,40 @@ function safe(path: string): string {
 }
 
 const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
+
+function countOccurrences(text: string, find: string): number {
+  if (!find) return 0;
+  let count = 0;
+  let at = 0;
+  while ((at = text.indexOf(find, at)) >= 0) {
+    count++;
+    at += find.length;
+  }
+  return count;
+}
+
+function replaceOccurrence(text: string, find: string, replace: string, occurrence: number): string {
+  let at = -1;
+  let from = 0;
+  for (let i = 0; i < occurrence; i++) {
+    at = text.indexOf(find, from);
+    if (at < 0) return text;
+    from = at + find.length;
+  }
+  return text.slice(0, at) + replace + text.slice(at + find.length);
+}
+
+function notFoundHint(path: string, before: string, find: string): string {
+  const needle = find.trim().split(/\s+/).filter((w) => w.length >= 3)[0]?.toLowerCase();
+  if (!needle) return `text not found in ${path}`;
+  const lines = before.split("\n");
+  const hit = lines.findIndex((l) => l.toLowerCase().includes(needle));
+  if (hit < 0) return `text not found in ${path}`;
+  const start = Math.max(0, hit - 2);
+  const end = Math.min(lines.length, hit + 3);
+  const snippet = lines.slice(start, end).map((l, i) => `${start + i + 1}: ${l}`).join("\n");
+  return `text not found in ${path}. Nearby match for "${needle}":\n${snippet}`;
+}
 
 export function createTools(onEvent?: OnEvent) {
   return {
@@ -53,17 +88,35 @@ export function createTools(onEvent?: OnEvent) {
   }),
 
   edit_file: tool({
-    description: "Replace the first exact occurrence of `find` with `replace` in a file.",
-    inputSchema: z.object({ path: z.string(), find: z.string(), replace: z.string() }),
-    execute: async ({ path, find, replace }) => {
+    description: "Edit a file by exact text replacement. Use occurrence for a specific match, or replaceAll for every exact match.",
+    inputSchema: z.object({
+      path: z.string(),
+      find: z.string().min(1),
+      replace: z.string(),
+      occurrence: z.number().int().positive().default(1).describe("1-based match to replace when replaceAll is false"),
+      replaceAll: z.boolean().default(false).describe("replace every exact occurrence"),
+    }),
+    execute: async ({ path, find, replace, occurrence, replaceAll }) => {
       const abs = safe(path);
       const before = await readFile(abs, "utf8");
-      if (!before.includes(find)) throw new Error(`text not found in ${path}`);
+      const matches = countOccurrences(before, find);
+      if (matches === 0) throw new Error(notFoundHint(path, before, find));
+      if (!replaceAll && occurrence > matches) throw new Error(`only found ${matches} occurrence${matches === 1 ? "" : "s"} in ${path}; requested occurrence ${occurrence}`);
       if (!(await requestPermission({ kind: "edit", title: "Edit a file", detail: path }))) throw new Error(DENIED);
-      const after = before.replace(find, replace);
+      const after = replaceAll ? before.split(find).join(replace) : replaceOccurrence(before, find, replace, occurrence);
       await writeFile(abs, after, "utf8");
       const diff = computeDiff(before, after);
-      return { summary: `edited ${path} (${diffStat(diff)})`, diff };
+      const changed = replaceAll ? matches : 1;
+      return { summary: `edited ${path} · ${changed} replacement${changed === 1 ? "" : "s"} (${diffStat(diff)})`, diff };
+    },
+  }),
+
+  fetch_url: tool({
+    description: "Fetch a public http(s) URL and return readable text. Use this for docs, release notes, issue pages, or pasted links.",
+    inputSchema: z.object({ url: z.string().url() }),
+    execute: async ({ url }) => {
+      const page = await fetchUrlText(url);
+      return clip([`URL: ${page.url}`, page.title ? `Title: ${page.title}` : "", "", page.text].filter(Boolean).join("\n"));
     },
   }),
 
@@ -182,4 +235,5 @@ export const readOnlyTools = {
   list_dir: tools.list_dir,
   search: tools.search,
   glob: tools.glob,
+  fetch_url: tools.fetch_url,
 };

@@ -37,6 +37,9 @@ import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
+import { fetchUrlText, urlsInText } from "../fetch.ts";
+import { writeProjectGuide } from "../init.ts";
+import { detectVerificationCommands, runVerification } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug } from "../commands.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
@@ -1156,8 +1159,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       echo(prompt);
       lastPromptRef.current = prompt;
       setVerb(nextVerb());
-      const { text: modelPrompt, attached } = expandMentions(prompt);
+      let { text: modelPrompt, attached } = expandMentions(prompt);
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
+      const urls = urlsInText(modelPrompt);
+      if (urls.length) {
+        const fetched: string[] = [];
+        for (const url of urls) {
+          try {
+            const page = await fetchUrlText(url);
+            fetched.push(`=== ${page.url}${page.title ? ` · ${page.title}` : ""} ===\n${page.text}`);
+          } catch (e: any) {
+            notice(`couldn't fetch ${url}: ${(e?.message ?? String(e)).split("\n")[0]}`);
+          }
+        }
+        if (fetched.length) {
+          notice(`fetched ${fetched.length} URL${fetched.length === 1 ? "" : "s"} for context`);
+          modelPrompt += `\n\n# FETCHED URL CONTEXT\n${fetched.join("\n\n")}`;
+        }
+      }
       setBusy(true);
       setSuggestion(null);
       const turnStart = Date.now();
@@ -1303,6 +1322,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       try {
         const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal });
         msgRef.current = r.messages;
+        if (!hadError && !ac.signal.aborted && changedFiles.size && checks.length === 0) {
+          const commands = detectVerificationCommands(process.cwd(), [...changedFiles]);
+          if (commands.length) {
+            const results = await runVerification(commands, { onEvent, signal: ac.signal });
+            if (results.some((res) => !res.ok)) hadError = true;
+          } else {
+            onEvent({ type: "phase", label: "verification skipped", detail: "no test/build/typecheck command detected", state: "err" });
+          }
+        }
         // Record the turn's model + usage (routing/cost data; per-turn so the
         // router can vary the model later without changing this shape).
         // The model that actually ran this turn (set by defaultRunner). Falls
@@ -2035,9 +2063,28 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             notice("busy — try /init again once the current turn finishes");
             return;
           }
-          void runTurn(
-            "Initialize project memory: survey this repository (use the repo map and read the key entry points, config, and docs) and write a concise GEARBOX.md at the repo root covering what the project is, how to build/test/run it, the layout, and any conventions a new contributor must know. Keep it tight and accurate.",
-          );
+          echo(text);
+          setBusy(true);
+          setSuggestion(null);
+          void (async () => {
+            const id = idRef.current++;
+            try {
+              push({ kind: "tool", id, callId: `init:${id}`, name: "write_file", arg: "GEARBOX.md", status: "running", summary: "", startedAt: Date.now() });
+              const res = writeProjectGuide(process.cwd());
+              setItems((prev) => prev.map((i) => (i.id === id && i.kind === "tool" ? { ...i, status: "ok", summary: res.summary, diff: res.diff, endedAt: Date.now() } : i)));
+              const commands = detectVerificationCommands(process.cwd(), ["GEARBOX.md"]);
+              if (commands.length) await runVerification(commands.slice(0, 1), { onEvent: (e) => {
+                if (e.type === "verification") push({ kind: "verification", id: idRef.current++, command: e.command, ok: e.ok, summary: e.summary });
+                else if (e.type === "phase") push({ kind: "phase", id: idRef.current++, label: e.label, detail: e.detail, state: e.state ?? "running" });
+              } });
+              notice("initialized GEARBOX.md");
+              persist();
+            } catch (e: any) {
+              setItems((prev) => prev.map((i) => (i.id === id && i.kind === "tool" ? { ...i, status: "err", summary: e?.message ?? String(e), endedAt: Date.now() } : i)));
+            } finally {
+              setBusy(false);
+            }
+          })();
           return;
         default: {
           echo(text);

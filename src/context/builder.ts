@@ -19,6 +19,7 @@ import { countTokens } from "../model/tokens.ts";
 import { loadProjectMemory } from "./memory.ts";
 import { repoMap } from "./repomap.ts";
 import { retrieveFiles } from "./retrieve.ts";
+import { gitContext } from "./git.ts";
 
 export const BASE_SYSTEM = `You are Gearbox, a precise terminal coding agent.
 Work in small, verifiable steps. Use the tools to read before you write, and
@@ -158,6 +159,12 @@ export function buildContext(opts: {
   if (memory) {
     system += `\n\n# PROJECT MEMORY\n${memory}`;
     sections.push({ name: "memory", tokens: countTokens(memory, modelId) });
+  }
+
+  const git = safe(() => gitContext(cwd), "");
+  if (git) {
+    system += `\n\n# GIT CONTEXT (current repository state; do not overwrite unrelated user changes)\n${git}`;
+    sections.push({ name: "git", tokens: countTokens(git, modelId) });
   }
 
   const mapBudget = Math.min(4_000, Math.floor(inputBudget * 0.05));
