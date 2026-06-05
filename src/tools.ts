@@ -8,6 +8,7 @@ import { resolve, relative, isAbsolute } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
 import { runShellStream } from "./shell.ts";
 import { requestPermission } from "./permission.ts";
+import { which, Glob, spawnSyncProc } from "./proc.ts";
 import type { OnEvent } from "./agent/events.ts";
 
 const ROOT = process.cwd();
@@ -74,9 +75,9 @@ export function createTools(onEvent?: OnEvent) {
     }),
     execute: async ({ query, path }) => {
       const abs = safe(path);
-      const rg = Bun.which("rg");
+      const rg = which("rg");
       if (rg) {
-        const p = Bun.spawnSync(
+        const p = spawnSyncProc(
           [rg, "--line-number", "--no-heading", "--color", "never", "--max-columns", "240", "--max-count", "100", "-e", query, abs],
           { stdout: "pipe", stderr: "pipe" },
         );
@@ -92,7 +93,7 @@ export function createTools(onEvent?: OnEvent) {
         return `invalid regex: ${e?.message ?? e}`;
       }
       const hits: string[] = [];
-      for (const f of new Bun.Glob("**/*").scanSync({ cwd: abs, onlyFiles: true })) {
+      for (const f of new Glob("**/*").scanSync({ cwd: abs, onlyFiles: true })) {
         if (IGNORE.test(f)) continue;
         if (hits.length >= 100) break;
         try {
@@ -118,7 +119,7 @@ export function createTools(onEvent?: OnEvent) {
     execute: async ({ pattern, path }) => {
       const abs = safe(path);
       const matches: string[] = [];
-      for (const m of new Bun.Glob(pattern).scanSync({ cwd: abs, onlyFiles: true })) {
+      for (const m of new Glob(pattern).scanSync({ cwd: abs, onlyFiles: true })) {
         if (IGNORE.test(m)) continue;
         matches.push(m);
         if (matches.length >= 300) break;

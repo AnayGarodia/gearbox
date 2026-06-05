@@ -3,6 +3,7 @@
 // over SSH and inside tmux, unlike shelling out to pbcopy/xclip. We also try the
 // platform clipboard binary as a best-effort fallback for terminals that don't
 // implement OSC 52. Both are fire-and-forget; copying never throws.
+import { spawnProc } from "../proc.ts";
 
 /** Build the raw OSC 52 sequence for `text` (exported for testing). */
 export function osc52(text: string): string {
@@ -30,9 +31,9 @@ export function copyToClipboard(text: string): void {
     const candidates = direct ? [direct] : [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-ib"]];
     for (const [cmd, ...args] of candidates) {
       try {
-        const p = Bun.spawn([cmd!, ...args], { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
-        p.stdin.write(text);
-        p.stdin.end();
+        const p = spawnProc([cmd!, ...args], { stdin: "pipe", stdout: "ignore", stderr: "ignore" });
+        p.stdin?.write(text);
+        p.stdin?.end();
         break; // first one that spawns wins
       } catch {
         /* try next */

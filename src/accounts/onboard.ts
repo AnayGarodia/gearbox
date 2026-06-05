@@ -8,6 +8,7 @@ import { putAccount, setSecret } from "./store.ts";
 import { catalogProvider, detectProviderByKey, CATALOG } from "./catalog.ts";
 import { resolveCreds } from "./resolve.ts";
 import { subscriptionEnv } from "../agent/cli-backend.ts";
+import { which, spawnProc, readStream } from "../proc.ts";
 import type { Account } from "./types.ts";
 
 export interface AddResult {
@@ -126,7 +127,7 @@ function cliProfileDir(id: string): string {
 export function addCliAccount(provider: string, name?: string): AddResult {
   const cat = catalogProvider(provider);
   if (!cat || cat.group !== "cli" || !cat.binary) return { ok: false, message: `"${provider}" is not a CLI subscription provider` };
-  if (!Bun.which(cat.binary)) return { ok: false, message: `the ${cat.binary} binary isn't on your PATH — install it first` };
+  if (!which(cat.binary)) return { ok: false, message: `the ${cat.binary} binary isn't on your PATH — install it first` };
   const slug = name ? name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
   const id = slug ? `${provider}-${slug}` : provider;
   const profile = slug ? cliProfileDir(id) : undefined; // named → isolated dir; default → system login
@@ -154,7 +155,7 @@ export async function cliAuthStatus(binary: string, profile?: string): Promise<C
   const env = subscriptionEnv(binary, profile);
   // Read BOTH streams: codex prints its status to stderr, claude to stdout.
   const readBoth = async (cmd: string[], timeoutMs = 5_000): Promise<{ out: string; timedOut: boolean }> => {
-    const p = Bun.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
+    const p = spawnProc(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
@@ -165,7 +166,7 @@ export async function cliAuthStatus(binary: string, profile?: string): Promise<C
       }
     }, timeoutMs);
     try {
-      const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+      const [o, e] = await Promise.all([readStream(p.stdout), readStream(p.stderr)]);
       await p.exited.catch(() => {});
       return { out: `${o}\n${e}`.trim(), timedOut };
     } finally {

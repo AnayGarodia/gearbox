@@ -12,6 +12,8 @@
 // Event schemas recorded in experiments/cli-backend-spike.md.
 import type { ModelMessage } from "ai";
 import type { OnEvent, Usage } from "./events.ts";
+import { spawnProc } from "../proc.ts";
+import type { Proc } from "../proc.ts";
 
 export interface CliRate {
   utilization: number;
@@ -247,9 +249,9 @@ export async function runCliTask(opts: {
   const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove, modelId: opts.modelId, effort: opts.effort });
   const state = newState();
 
-  let proc: ReturnType<typeof Bun.spawn>;
+  let proc: Proc;
   try {
-    proc = Bun.spawn([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd(), env: subscriptionEnv(binary, opts.profile) });
+    proc = spawnProc([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd(), env: subscriptionEnv(binary, opts.profile) });
   } catch (e: any) {
     onEvent({ type: "error", message: `couldn't start ${binary}: ${e?.message ?? e}` });
     onEvent({ type: "done", usage: state.usage });

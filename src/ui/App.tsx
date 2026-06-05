@@ -15,7 +15,7 @@ import { itemsToLines, type Line } from "./lines.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb } from "./character.ts";
-import { color, glyph, setTheme, THEME_NAMES } from "./theme.ts";
+import { color, glyph } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
@@ -50,6 +50,9 @@ import { useOnline, isNetworkError } from "./net.ts";
 import { gitBranch } from "./git.ts";
 import { basename, extname } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { writeFile as fsWriteFile } from "node:fs/promises";
+import { spawnSync as nodeSpawnSync } from "node:child_process";
+import { spawnSyncProc } from "../proc.ts";
 
 // Stateless: picks the active account per provider (reads the registry each call).
 const accountResolver = new AccountResolver();
@@ -132,7 +135,7 @@ let codexModelCache: CliModelChoice[] | null = null;
 function codexCliModels(): CliModelChoice[] {
   if (codexModelCache) return codexModelCache;
   try {
-    const r = Bun.spawnSync(["codex", "debug", "models"], { stdout: "pipe", stderr: "ignore" });
+    const r = spawnSyncProc(["codex", "debug", "models"], { stdout: "pipe", stderr: "ignore" });
     if (r.exitCode === 0) {
       const text = new TextDecoder().decode(r.stdout);
       const parsed = JSON.parse(text) as { models?: Array<{ slug?: string; visibility?: string; supported_reasoning_levels?: Array<{ effort?: string }> }> };
@@ -278,8 +281,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const [expandAll, setExpandAll] = useState(false); // ⌃O: show full diffs/tool output
   const [search, setSearchState] = useState<{ q: string; idx: number } | null>(null); // ⌃R reverse-i-search
   const [paletteIndex, setPaletteIndexState] = useState(0);
-  const [, bumpTheme] = useReducer((x: number) => x + 1, 0); // forces a re-render after setTheme mutates `color`
-  const searchRef = useRef<{ q: string; idx: number } | null>(null);
+const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const paletteIndexRef = useRef(0);
   const setSearch = (s: { q: string; idx: number } | null) => {
     searchRef.current = s;
@@ -788,7 +790,6 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         { value: "/account add", label: "add key", detail: "paste an API key" },
       ]);
     }
-    if (head === "/theme") return take(THEME_NAMES.map((t) => ({ value: `/theme ${t}`, label: t, detail: t === loadPrefs().theme ? "active" : "theme" })));
     if (head === "/effort") {
       return take(effortRows());
     }
@@ -1031,8 +1032,8 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       if (fullscreen) process.stdout.write("\x1b[?1049l"); // leave alt-screen
       process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, cursor on
       process.stdout.write(`\n→ running \`${cmd} ${cmdArgs.join(" ")}\` — follow the prompts…\n\n`);
-      const r = Bun.spawnSync([cmd, ...cmdArgs], { stdio: ["inherit", "inherit", "inherit"], ...(env ? { env } : {}) });
-      return r.exitCode ?? 0;
+      const r = nodeSpawnSync(cmd, cmdArgs, { stdio: ["inherit", "inherit", "inherit"], ...(env ? { env } : {}) });
+      return r.status ?? 0;
     } catch {
       return null;
     } finally {
@@ -1451,7 +1452,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             notice("nothing to export yet");
             return;
           }
-          void Bun.write(file, transcriptMarkdown(itemsRef.current))
+          void fsWriteFile(file, transcriptMarkdown(itemsRef.current))
             .then(() => notice(`exported transcript → ${file}`))
             .catch((e: any) => notice(`couldn't write ${file}: ${e?.message ?? String(e)}`));
           return;
@@ -1468,20 +1469,6 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           notice(on ? "vim mode on — esc for normal, i to insert" : "vim mode off");
           return;
         }
-        case "theme": {
-          echo(text);
-          const name = arg.toLowerCase();
-          if (!name) {
-            notice(`themes: ${THEME_NAMES.join(" · ")} — /theme <name>`);
-          } else if (setTheme(name)) {
-            updatePrefs({ theme: name });
-            bumpTheme();
-            notice(`theme: ${name}`);
-          } else {
-            notice(`unknown theme "${name}" — try: ${THEME_NAMES.join(" · ")}`);
-          }
-          return;
-        }
         case "config": {
           echo(text);
           const [key, val] = arg.split(/\s+/);
@@ -1489,19 +1476,15 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           if (!key) {
             notice(
               `settings (saved in ~/.gearbox/prefs.json):\n` +
-                `  theme   ${p.theme ?? "dark"}        colors — ${THEME_NAMES.join(" · ")}\n` +
                 `  vim     ${p.vim ? "on" : "off"}         vim keys in the composer\n` +
                 `  notify  ${p.notify === false ? "off" : "on"}          desktop ping when a long turn finishes\n` +
                 `  inline  ${p.fullscreen === false ? "on" : "off"}         terminal scrollback instead of fixed bottom input (restart to apply)\n` +
-                `  change one: /config <theme|vim|notify|inline> <value>`,
+                `  change one: /config <vim|notify|inline> <value>`,
             );
             return;
           }
           const on = /^(on|true|yes|1)$/i.test(val ?? "");
-          if (key === "theme") {
-            if (val && setTheme(val)) { updatePrefs({ theme: val }); bumpTheme(); notice(`theme: ${val}`); }
-            else notice(`themes: ${THEME_NAMES.join(" · ")}`);
-          } else if (key === "vim") {
+          if (key === "vim") {
             setVim(on ? "insert" : "off");
             updatePrefs({ vim: on });
             notice(on ? "vim mode on — esc for normal, i to insert" : "vim mode off");
@@ -1513,7 +1496,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             updatePrefs({ notify: on });
             notice(`notifications ${on ? "on" : "off"}`);
           } else {
-            notice("settings: theme · vim · notify · inline");
+            notice("settings: vim · notify · inline");
           }
           return;
         }
@@ -2350,7 +2333,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       {firstRunRef.current ? (
         <Box marginTop={1} flexDirection="column" alignItems="center">
           <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
-          <Text color={color.faint}>{demo ? "set ANTHROPIC_API_KEY (or another provider) to start — running in demo mode" : "/theme to restyle · /config inline on for terminal scrollback"}</Text>
+          <Text color={color.faint}>{demo ? "set ANTHROPIC_API_KEY (or another provider) to start — running in demo mode" : "/config inline on for terminal scrollback · /keys for shortcuts"}</Text>
         </Box>
       ) : null}
     </Box>

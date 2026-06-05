@@ -1,14 +1,11 @@
-// Secret store + account registry. Secrets go in the OS keychain via Bun.secrets
-// (macOS Keychain / Linux libsecret / Windows Credential Manager) — no dependency,
-// nothing in plaintext, not an env export. `GEARBOX_SECRET_STORE` = auto (default:
-// keychain, fall back to file) | keychain | file, mirroring Codex's store modes.
+// Secret store + account registry. Secrets are stored in an AES-256-GCM
+// encrypted file at ~/.gearbox/credentials.enc with a random key at
+// ~/.gearbox/.enckey (0600). When running under Bun the OS keychain is also
+// tried first (set GEARBOX_SECRET_STORE=file to skip it).
 //
-// The encrypted-file fallback (for headless/CI/no-keychain and possibly the
-// compiled binary) is AES-256-GCM with a random key in ~/.gearbox/.enckey (0600).
-// HONEST THREAT MODEL: the key sits next to the data, so file mode is obfuscation
-// against casual leakage (a stray `cat`, an accidental commit), NOT protection
-// against a local attacker who can read your home dir. The keychain path is the
-// real one; file mode is the graceful degradation.
+// HONEST THREAT MODEL: the key sits next to the data, so file mode is
+// obfuscation against casual leakage (a stray `cat`, accidental commit),
+// NOT protection against a local attacker who can read your home dir.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -29,9 +26,10 @@ const mode = (): StoreMode => {
 
 // ── secrets ──
 export async function setSecret(ref: string, value: string): Promise<void> {
-  if (mode() !== "file") {
+  // Under Bun try the OS keychain first (better security); fall back to file.
+  if (typeof Bun !== "undefined" && mode() !== "file") {
     try {
-      await Bun.secrets.set({ service: SERVICE, name: ref, value });
+      await (Bun as any).secrets.set({ service: SERVICE, name: ref, value });
       return;
     } catch (e) {
       if (mode() === "keychain") throw e;
@@ -41,9 +39,9 @@ export async function setSecret(ref: string, value: string): Promise<void> {
 }
 
 export async function getSecret(ref: string): Promise<string | null> {
-  if (mode() !== "file") {
+  if (typeof Bun !== "undefined" && mode() !== "file") {
     try {
-      const v = await Bun.secrets.get({ service: SERVICE, name: ref });
+      const v = await (Bun as any).secrets.get({ service: SERVICE, name: ref });
       if (v != null) return v;
     } catch {
       if (mode() === "keychain") return null;
@@ -53,9 +51,9 @@ export async function getSecret(ref: string): Promise<string | null> {
 }
 
 export async function deleteSecret(ref: string): Promise<void> {
-  if (mode() !== "file") {
+  if (typeof Bun !== "undefined" && mode() !== "file") {
     try {
-      await Bun.secrets.delete({ service: SERVICE, name: ref });
+      await (Bun as any).secrets.delete({ service: SERVICE, name: ref });
     } catch {
       /* fall through to clear the file copy too */
     }

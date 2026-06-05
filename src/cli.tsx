@@ -1,4 +1,7 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
+// Ensure UTF-8 output regardless of the shell's locale settings.
+process.env.LANG = process.env.LANG || "en_US.UTF-8";
+process.env.LC_ALL = process.env.LC_ALL || "en_US.UTF-8";
 import React from "react";
 import { render } from "ink";
 import { execFileSync } from "node:child_process";
@@ -11,7 +14,6 @@ import { anyProviderAvailable } from "./config.ts";
 import { MODELS } from "./providers.ts";
 import { detectImageMode, setImageMode, transmitAll } from "./ui/image.ts";
 import { loadPrefs } from "./ui/prefs.ts";
-import { setTheme } from "./ui/theme.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 
@@ -136,7 +138,6 @@ if (process.stdout.isTTY && imageMode === "kitty") process.stdout.write(transmit
 // pinned to the bottom, like the coding CLIs users expect. Inline remains
 // available when terminal scrollback is more important than a fixed footer.
 const uiPrefs = loadPrefs();
-if (uiPrefs.theme) setTheme(uiPrefs.theme); // apply before first render
 const explicitInline = args.includes("--inline") || process.env.GEARBOX_INLINE === "1" || process.env.GEARBOX_FULLSCREEN === "0";
 const explicitFullscreen = args.includes("--fullscreen") || process.env.GEARBOX_FULLSCREEN === "1";
 const wantsInline = explicitInline || (!explicitFullscreen && uiPrefs.fullscreen === false);

@@ -2,6 +2,7 @@
 // Intentionally runs through a shell — that is the point (tests, git, pipes).
 // Safety belongs in a confirm/permission gate (planned), not in avoiding the shell.
 import { execSync } from "node:child_process";
+import { spawnProc } from "./proc.ts";
 
 const CAP = 60_000;
 const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
@@ -42,7 +43,7 @@ export async function runShellStream(
 ): Promise<ShellResult> {
   const started = Date.now();
   const chunks: string[] = [];
-  const proc = Bun.spawn(["/bin/sh", "-lc", command], {
+  const proc = spawnProc(["/bin/sh", "-lc", command], {
     cwd: process.cwd(),
     stdin: "ignore",
     stdout: "pipe",
@@ -64,7 +65,7 @@ export async function runShellStream(
   const onAbort = () => kill();
   opts.signal?.addEventListener("abort", onAbort);
 
-  const read = async (stream: ReadableStream<Uint8Array> | null, name: "stdout" | "stderr") => {
+  const read = async (stream: NodeJS.ReadableStream | null, name: "stdout" | "stderr") => {
     if (!stream) return;
     const dec = new TextDecoder();
     for await (const chunk of stream as any) {

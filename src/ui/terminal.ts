@@ -1,5 +1,6 @@
 // Small terminal-integration helpers: window/tab title, bell, and an OS
 // notification. All best-effort and no-ops when there's no TTY.
+import { spawnProc } from "../proc.ts";
 
 /** Set the terminal window/tab title via OSC 2 (`ESC ] 2 ; <title> BEL`). */
 export function setTitle(title: string): void {
@@ -24,7 +25,7 @@ export function notify(title: string, body: string): void {
   try {
     if (process.platform !== "darwin") return;
     const esc = (s: string) => s.replace(/["\\]/g, "\\$&");
-    Bun.spawn(["osascript", "-e", `display notification "${esc(body)}" with title "${esc(title)}"`], {
+    spawnProc(["osascript", "-e", `display notification "${esc(body)}" with title "${esc(title)}"`], {
       stdout: "ignore",
       stderr: "ignore",
     });
