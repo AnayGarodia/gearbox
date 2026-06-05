@@ -18,8 +18,51 @@ import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 
-const VERSION = "0.1.8";
+const VERSION = "0.1.9";
 const args = process.argv.slice(2);
+
+const supportsAnsi = process.env.NO_COLOR !== "1" && process.env.TERM !== "dumb" && (process.stdout.isTTY || process.env.FORCE_COLOR === "1");
+const ansi = (code: string) => supportsAnsi ? `\x1b[${code}m` : "";
+const paint = (code: string, text: string) => `${ansi(code)}${text}${ansi("0")}`;
+const bold = (text: string) => paint("1", text);
+const accent = (text: string) => paint("36", text);
+const dim = (text: string) => paint("2", text);
+const ok = (text: string) => paint("32", text);
+const warn = (text: string) => paint("33", text);
+const errColor = (text: string) => paint("31", text);
+const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
+const visibleLength = (text: string) => stripAnsi(text).length;
+const padVisible = (text: string, width: number) => text + " ".repeat(Math.max(width - visibleLength(text), 0));
+
+function onboardingBoo(): string {
+  return [
+    "        .-''''-.",
+    "      .'  .--.  '.",
+    "     /   (    )   \\",
+    "    |  .-.    .-.  |",
+    "    |  |_|    |_|  |",
+    "    |      __      |",
+    "     \\   .'  '.   /",
+    "      '._\\____/_.'",
+    "        /|    |\\",
+  ].join("\n");
+}
+
+function box(title: string, lines: string[]): void {
+  const width = Math.min(78, Math.max(title.length + 4, ...lines.map((l) => visibleLength(l) + 4)));
+  const rule = "─".repeat(width - 2);
+  console.log(accent(`╭${rule}╮`));
+  console.log(accent("│ ") + padVisible(bold(title), width - 3) + accent("│"));
+  console.log(accent(`├${rule}┤`));
+  for (const line of lines) {
+    console.log(accent("│ ") + padVisible(line, width - 3) + accent("│"));
+  }
+  console.log(accent(`╰${rule}╯`));
+}
+
+function optionLine(key: string, label: string, detail: string): string {
+  return `${accent(key.padStart(2))}  ${bold(label)}  ${dim(detail)}`;
+}
 
 async function runCliOnboarding(): Promise<boolean> {
   const { listAccounts } = await import("./accounts/store.ts");
@@ -28,39 +71,51 @@ async function runCliOnboarding(): Promise<boolean> {
   const { subscriptionEnv } = await import("./agent/cli-backend.ts");
   const { detectProviderByKey } = await import("./accounts/catalog.ts");
   const { which } = await import("./proc.ts");
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ask = async (q: string) => (await rl.question(q)).trim();
-  const providerRows = () => addableProviders().map((p) => `  ${p.id.padEnd(16)} ${p.label}`).join("\n");
+  const pipedAnswers = process.stdin.isTTY ? null : (await readStdin()).split(/\r?\n/);
+  const rl = pipedAnswers ? null : createInterface({ input: process.stdin, output: process.stdout });
+  const ask = async (q: string) => {
+    if (pipedAnswers) {
+      const answer = (pipedAnswers.shift() ?? "").trim();
+      console.log(accent(q) + answer);
+      return answer;
+    }
+    return (await rl!.question(accent(q))).trim();
+  };
+  const providerRows = () => addableProviders().map((p) => `  ${accent(p.id.padEnd(16))} ${p.label}`).join("\n");
   const testAndReport = async (account: any) => {
-    console.log("Testing credential...");
+    console.log(dim("Testing credential with the provider..."));
     const t = await testAccount(account);
-    console.log(t.ok ? `OK: ${t.message}` : `Stored, but the test failed: ${t.message}`);
+    console.log(t.ok ? ok(`Credential works: ${t.message}`) : warn(`Stored, but the live test failed: ${t.message}`));
   };
   const addSubscription = async (provider: "claude-cli" | "codex-cli") => {
     const res = addCliAccount(provider);
-    console.log(res.message);
+    console.log(res.ok ? ok(res.message) : errColor(res.message));
     if (!res.ok || !res.account || res.account.auth.kind !== "cli") return false;
     const bin = res.account.auth.binary;
     const profile = res.account.auth.loginProfile;
     let status = await cliAuthStatus(bin, profile);
     if (!status.loggedIn) {
-      console.log(`Starting ${bin} sign-in...`);
+      console.log(dim(`Starting ${bin} sign-in in this terminal...`));
       const r = spawnSync(bin, cliLoginArgs(bin), { stdio: "inherit", env: subscriptionEnv(bin, profile) });
       if ((r.status ?? 1) !== 0) return false;
       status = await cliAuthStatus(bin, profile);
     }
     if (!status.loggedIn) {
-      console.log(`${bin} did not report a completed sign-in.`);
+      console.log(warn(`${bin} did not report a completed sign-in.`));
       return false;
     }
-    console.log(`OK: ${bin} subscription ready${status.detail ? ` (${status.detail})` : ""}`);
+    console.log(ok(`${bin} subscription ready${status.detail ? ` (${status.detail})` : ""}`));
     return true;
   };
 
   try {
     console.log("");
-    console.log("Gearbox setup");
-    console.log("One provider account is required before the coding app opens.");
+    if (supportsAnsi) console.log(paint("38;5;117", onboardingBoo()));
+    else console.log(onboardingBoo());
+    console.log("");
+    console.log(bold("Gearbox setup"));
+    console.log("Boo needs one model account before the coding app opens.");
+    console.log(dim("Your credentials stay local. API keys are stored in Gearbox's credential store; subscription sign-ins stay inside the vendor CLI."));
     console.log("");
 
     while (!anyProviderAvailable()) {
@@ -69,25 +124,31 @@ async function runCliOnboarding(): Promise<boolean> {
       const existing = listAccounts();
       if (existing.length) break;
 
-      console.log("Choose a setup path:");
-      if (env.length || cloud.length) console.log("  1) Import detected credentials");
-      console.log("  2) Paste an API key");
-      console.log("  3) Choose provider + API key");
-      console.log("  4) Azure OpenAI / Azure AI Foundry");
-      if (which("claude")) console.log("  5) Claude subscription CLI");
-      if (which("codex")) console.log("  6) ChatGPT subscription CLI");
-      console.log("  p) Show providers");
-      console.log("  q) Quit setup");
+      const options: string[] = [];
+      if (env.length || cloud.length) {
+        const names = [...env.map((c) => c.envVar), ...cloud.map((c) => `${c.label} (${c.source})`)];
+        options.push(optionLine("1", "Import detected credentials", names.join(", ")));
+      }
+      options.push(optionLine("2", "Paste API key", "auto-detects common key prefixes"));
+      options.push(optionLine("3", "Choose provider + key", "Anthropic, OpenAI, Gemini, OpenRouter, Groq, ..."));
+      options.push(optionLine("4", "Azure endpoint + key", "Azure OpenAI or Azure AI Foundry"));
+      if (which("claude")) options.push(optionLine("5", "Claude subscription", "uses the official claude CLI; no token extraction"));
+      if (which("codex")) options.push(optionLine("6", "ChatGPT subscription", "uses the official codex CLI; no token extraction"));
+      options.push(optionLine("p", "Show provider catalog", "all API-key providers Gearbox knows how to add"));
+      options.push(optionLine("q", "Quit setup", "Gearbox will not open the coding app yet"));
+      box("Choose how Gearbox should connect", options);
       console.log("");
       const choice = (await ask("Selection: ")).toLowerCase();
 
       if (choice === "q" || choice === "quit" || choice === "skip") {
         console.log("");
-        console.log("Setup skipped. Run `gearbox onboard` when you are ready.");
+        console.log(warn("Setup skipped. Run `gearbox onboard` when you are ready."));
         return false;
       }
       if (choice === "p" || choice === "providers") {
         console.log("");
+        console.log(bold("Provider catalog"));
+        console.log(dim("Use these ids with: gearbox auth add <provider> <api-key>"));
         console.log(providerRows());
         console.log("");
         continue;
@@ -95,19 +156,20 @@ async function runCliOnboarding(): Promise<boolean> {
       if (choice === "1" && (env.length || cloud.length)) {
         for (const c of env) await importEnvCred(c);
         for (const c of cloud) await importCloudCred(c);
-        console.log(`Imported ${env.length + cloud.length} credential${env.length + cloud.length === 1 ? "" : "s"}.`);
+        console.log(ok(`Imported ${env.length + cloud.length} credential${env.length + cloud.length === 1 ? "" : "s"}.`));
         break;
       }
       if (choice === "2") {
+        console.log(dim("Paste is visible in most terminals. Use option 3 if you want to be explicit about the provider."));
         const key = await ask("Paste API key: ");
         if (!key) continue;
         const detected = detectProviderByKey(key);
         if (!detected) {
-          console.log("Could not detect the provider from that key. Use option 3.");
+          console.log(warn("Could not detect the provider from that key. Use option 3."));
           continue;
         }
         const res = await addByPastedKey(key);
-        console.log(res.message);
+        console.log(res.ok ? ok(res.message) : errColor(res.message));
         if (res.ok && res.account) {
           await testAndReport(res.account);
           break;
@@ -116,12 +178,14 @@ async function runCliOnboarding(): Promise<boolean> {
       }
       if (choice === "3") {
         console.log("");
+        console.log(bold("Provider catalog"));
         console.log(providerRows());
         console.log("");
         const provider = await ask("Provider id: ");
+        console.log(dim("The key is stored locally and tested before setup finishes."));
         const key = await ask("API key: ");
         const res = await addApiKeyAccount(provider, key);
-        console.log(res.message);
+        console.log(res.ok ? ok(res.message) : errColor(res.message));
         if (res.ok && res.account) {
           await testAndReport(res.account);
           break;
@@ -129,13 +193,14 @@ async function runCliOnboarding(): Promise<boolean> {
         continue;
       }
       if (choice === "4") {
+        console.log(dim("Use a resource name like my-openai-resource, or a full Foundry endpoint URL."));
         const endpoint = await ask("Azure resource name or endpoint: ");
         const key = await ask("API key: ");
         const apiVersion = await ask("API version (optional): ");
         const res = /^https?:\/\//i.test(endpoint)
           ? await addAzureFoundryAccount(endpoint, key)
           : await addAzureAccount(endpoint, key, { apiVersion: apiVersion || undefined });
-        console.log(res.message);
+        console.log(res.ok ? ok(res.message) : errColor(res.message));
         if (res.ok && res.account) {
           await testAndReport(res.account);
           break;
@@ -150,16 +215,22 @@ async function runCliOnboarding(): Promise<boolean> {
         if (await addSubscription("codex-cli")) break;
         continue;
       }
-      console.log("Choose one of the listed options.");
+      console.log(warn("Choose one of the listed options."));
     }
 
     console.log("");
-    console.log("Gearbox is ready.");
-    console.log("Run `gearbox` inside a project.");
+    console.log(ok("Gearbox is ready."));
+    console.log(`Next: ${accent("cd ~/your-project")} and run ${accent("gearbox")}.`);
     return true;
   } finally {
-    rl.close();
+    rl?.close();
   }
+}
+
+async function readStdin(): Promise<string> {
+  let input = "";
+  for await (const chunk of process.stdin) input += chunk;
+  return input;
 }
 
 if (args[0] === "upgrade" || args[0] === "update") {
