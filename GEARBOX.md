@@ -20,15 +20,14 @@ bun run src/cli.tsx    # run from source (dev)
 bun run build          # compile to dist/gearbox (single binary)
 ```
 
-**Keys** (set any one or more):
+**Provider setup** (choose any common API-key provider):
 ```sh
-export ANTHROPIC_API_KEY=...
-export OPENAI_API_KEY=...
-export GOOGLE_GENERATIVE_AI_API_KEY=...
-export DEEPSEEK_API_KEY=...
+gearbox auth add <api-key>
+gearbox auth add <provider> <api-key>
+gearbox auth import
 ```
 
-No key → demo mode (scripted mock, no API calls).
+No provider configured → first-run setup screen. Gearbox does not run a fake model.
 
 **Common invocations:**
 ```sh
@@ -72,7 +71,7 @@ src/
                          (never expose raw AI SDK types above this layer)
     run.ts             Real agent loop: streamText → AgentEvent, abort-aware,
                          incremental tool-input streaming, usage capture
-    mock.ts            Scripted demo stream (no key needed; used by tests)
+    mock.ts            Scripted AgentEvent fixture (used by tests)
   ui/
     App.tsx            Root Ink component: state, useInput, slash commands, turns
     theme.ts           Colors + glyphs (the look)
@@ -139,7 +138,7 @@ Ink's width math and break the virtualized line buffer.
 | Permission gates | Mutating tools call `requestPermission()` before acting |
 | Session data dir | `~/.gearbox/` (override: `GEARBOX_HOME`) |
 | Max agent steps | `GEARBOX_MAX_STEPS` env (default 24) |
-| Demo / CI mode | No key → `runTaskMock()` in `agent/mock.ts` |
+| First-run setup | No account → onboarding screen, no fake model |
 | Fullscreen | `GEARBOX_INLINE=1` forces plain inline flow |
 | Ghost rendering | `GEARBOX_GHOST=kitty\|iterm` opts in to PNG paths |
 | Motion freeze | `GEARBOX_NO_MOTION=1` freezes Boo to frame 0 |
@@ -149,8 +148,8 @@ Ink's width math and break the virtualized line buffer.
 `shift+tab` plan mode · `esc` interrupt · `⌃c` quit
 
 ### Slash commands
-`/help` `/model` `/plan` `/init` `/memory` `/context` `/ghost` `/yolo`
-`/clear` `/resume` `/retry` `/cwd` `/exit`
+`/help` `/model` `/account` `/onboard` `/cost` `/plan` `/init` `/memory`
+`/context` `/config` `/yolo` `/clear` `/resume` `/retry` `/exit`
 
 ---
 
@@ -174,4 +173,4 @@ All tests are in `test/`; run with `bun test`. Tests cover: agent mock stream,
 commands, context engine, diff, prompt history, image mode, input reducer, line
 buffer, mascot renderer, mention picker, permission broker, session persistence,
 tool-input streaming. No API keys required; the real agent loop is exercised via
-`runTaskMock`.
+mocked runners and event fixtures.

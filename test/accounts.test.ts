@@ -161,6 +161,16 @@ test("addByPastedKey detects the provider and stores a usable account", async ()
   expect((await resolveCreds(groq.account!)).baseURL).toContain("groq.com");
 });
 
+test("common provider aliases normalize during account add", async () => {
+  const gemini = await addApiKeyAccount("gemini", "AIza-test");
+  expect(gemini.ok).toBe(true);
+  expect(gemini.account?.provider).toBe("google");
+
+  const grok = await addApiKeyAccount("grok", "xai-test");
+  expect(grok.ok).toBe(true);
+  expect(grok.account?.provider).toBe("xai");
+});
+
 // ── P2: cloud providers ──
 test("resolveModel builds Bedrock / Vertex / Azure clients without throwing", () => {
   expect(resolveModel(findModel("bedrock/anthropic.claude-sonnet-4-20250514-v1:0")!, { aws: { accessKeyId: "AKIA", secretAccessKey: "s", region: "us-east-2" } })).toBeTruthy();

@@ -26,7 +26,7 @@ export async function probeOnline(timeoutMs = 3500): Promise<boolean> {
 
 /** True/false online state, re-checked every `intervalMs`. Starts optimistic
  *  (true) so we never flash "offline" before the first probe resolves. Pass
- *  `enabled: false` (e.g. demo mode / tests) to skip probing entirely — no
+ *  `enabled: false` (e.g. tests) to skip probing entirely — no
  *  network calls, always reports online. */
 export function useOnline(intervalMs = 20_000, enabled = true): boolean {
   const [online, setOnline] = useState(true);

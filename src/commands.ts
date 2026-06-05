@@ -35,6 +35,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
   // accounts & cost
   { name: "/account", usage: "/account", desc: "list accounts; /account <number> to switch, /account add to add one", group: "accounts" },
+  { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },
   // save & copy
   { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard", group: "output" },

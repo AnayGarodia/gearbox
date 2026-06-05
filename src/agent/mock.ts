@@ -1,6 +1,5 @@
-// Scripted demo runner: emits the same AgentEvents the real loop does, with no
-// API key. Lets the TUI run out of the box and gives tests a deterministic
-// stream. Same signature as runTask so the UI can't tell them apart.
+// Scripted runner fixture: emits the same AgentEvents the real loop does with no
+// provider call. Tests use this for a deterministic stream.
 import type { ModelMessage } from "ai";
 import type { OnEvent, Usage } from "./events.ts";
 
@@ -14,7 +13,7 @@ async function stream(text: string, onEvent: OnEvent, chunk = 3, delay = 8) {
 }
 
 // Stream a file write the way the real loop does (tool-start → streamed content →
-// tool-end with the diff), so demo mode shows off live file streaming with no key.
+// tool-end with the diff), matching how the real loop streams tool input.
 async function streamWrite(id: string, path: string, content: string, onEvent: OnEvent, stop: () => boolean) {
   onEvent({ type: "tool-start", id, name: "write_file", arg: "" });
   onEvent({ type: "tool-stream", id, arg: path });
@@ -50,12 +49,12 @@ export async function runTaskMock(opts: {
 
   await stream(`\nHere's a quick file — watch it stream in:\n`, onEvent);
   if (stop()) return done(messages, onEvent);
-  const demoFile = `# hello.py — written live in demo mode\n\ndef greet(name: str) -> str:\n    return f"Hello, {name}!"\n\nif __name__ == "__main__":\n    for who in ("world", "gearbox", "Boo"):\n        print(greet(who))\n`;
+  const demoFile = `# hello.py — written by the scripted test runner\n\ndef greet(name: str) -> str:\n    return f"Hello, {name}!"\n\nif __name__ == "__main__":\n    for who in ("world", "gearbox", "Boo"):\n        print(greet(who))\n`;
   await streamWrite("3", "hello.py", demoFile, onEvent, stop);
   if (stop()) return done(messages, onEvent);
 
-  await stream(`\nThis is demo mode — no API key is set, so I'm not calling a real model. ` +
-    `Set ANTHROPIC_API_KEY (or OPENAI / GOOGLE / DEEPSEEK) and I'll actually work on: "${prompt}".\n`, onEvent);
+  await stream(`\nThis is the scripted test runner, so no provider call was made. ` +
+    `A real session would work on: "${prompt}".\n`, onEvent);
 
   return done(messages, onEvent);
 }

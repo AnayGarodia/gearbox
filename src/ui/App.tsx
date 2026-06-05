@@ -30,13 +30,13 @@ import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount,
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
 import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
+import { featuredApiKeyProviders, needsOnboarding, onboardingSummary } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordUsage, recordRateLimits, recordBalance, buildUsageView, type UsageView } from "../accounts/usage.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
-import { runTaskMock } from "../agent/mock.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug } from "../commands.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
@@ -52,7 +52,7 @@ import { basename, extname } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile } from "node:fs/promises";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
-import { spawnSyncProc } from "../proc.ts";
+import { spawnSyncProc, which } from "../proc.ts";
 
 // Stateless: picks the active account per provider (reads the registry each call).
 const accountResolver = new AccountResolver();
@@ -211,17 +211,16 @@ function ActivityRail({ items, width }: { items: Item[]; width: number }) {
 
 export interface AppProps {
   selector: ModelSelector;
-  demo: boolean;
   runner?: Runner;
   fullscreen?: boolean;
   resumeId?: string; // resume this saved session on launch (--continue)
 }
 
-export function App({ selector: initialSelector, demo, runner, fullscreen = false, resumeId }: AppProps) {
+export function App({ selector: initialSelector, runner, fullscreen = false, resumeId }: AppProps) {
   const { exit } = useApp();
   const { stdin, isRawModeSupported, setRawMode } = useStdin();
   const { columns, rows } = useTerminalSize();
-  const online = useOnline(20_000, !demo); // background reachability → "⚠ offline" (skipped in demo/tests)
+  const online = useOnline(20_000, true); // background reachability → "⚠ offline"
   // Chrome (title bar, rules, composer, status) spans the full terminal width;
   // long prose wraps at a readable cap inside it (see Transcript).
   const width = columns;
@@ -255,7 +254,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const ctrlCRef = useRef(0); // timestamp of the last bare ⌃C (for "press again to quit")
   const escRef = useRef(0); // timestamp of the last bare esc (for double-esc rewind)
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
-  const firstRunRef = useRef(!loadPrefs().onboarded); // show the one-time onboarding tips
+  const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
   // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
   // text is kept here and expanded back in on submit.
   const pasteStoreRef = useRef<Map<string, string>>(new Map());
@@ -315,11 +314,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 500);
     return () => clearInterval(t);
   }, [busy]);
-
-  // First-run onboarding shows once, then we mark it seen.
-  useEffect(() => {
-    if (firstRunRef.current) updatePrefs({ onboarded: true });
-  }, []);
 
   // Reflect status in the terminal window/tab title (OSC 2).
   useEffect(() => {
@@ -392,7 +386,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Restore the active subscription account from a prior session (persisted in
   // prefs.activeAccount), so /account choices survive restarts.
   useEffect(() => {
-    if (demo) return;
     const acctId = loadPrefs().activeAccount;
     if (!acctId) return;
     const a = getAccount(acctId);
@@ -402,7 +395,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (activeCliModelRef.current && !cliSupportsModel(bin, activeCliModelRef.current)) setActiveCliModelId(undefined);
       setActiveCli({ id: a.id, label: bin });
     }
-  }, [demo]);
+  }, []);
 
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
   useEffect(() => {
@@ -644,7 +637,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Save the current conversation (best-effort) — model-agnostic messages + the UI
   // transcript + per-turn model/usage, so it resumes faithfully and feeds routing.
   const persist = useCallback(() => {
-    if (demo) return;
     const s = sessionRef.current;
     if (!itemsRef.current.length) return;
     saveSession({
@@ -657,7 +649,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       items: itemsRef.current,
       turns: s.turns,
     });
-  }, [demo]);
+  }, []);
 
   const loadInto = (s: Session) => {
     idRef.current = s.items.reduce((m, i) => Math.max(m, i.id), 0) + 1;
@@ -817,11 +809,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // to (or leave) a subscription account.
   const [activeCli, setActiveCli] = useState<{ id: string; label: string } | null>(null);
   const [activeCliModel, setActiveCliModel] = useState<string | null>(null);
+  const onboardingState = {
+    configured: listAccounts(),
+    importable: importableEnvCreds(),
+    cloudImportable: importableCloudCreds().map((c) => ({ provider: c.provider, label: c.label, source: c.source })),
+    hasClaudeCli: Boolean(which("claude")),
+    hasCodexCli: Boolean(which("codex")),
+  };
+  const setupRequired = needsOnboarding(onboardingState);
+  useEffect(() => {
+    if (!setupRequired && firstRunRef.current) {
+      firstRunRef.current = false;
+      updatePrefs({ onboarded: true });
+    }
+  }, [setupRequired]);
   const model = lastPick?.model ?? choice?.model ?? null;
   // On a subscription, the status reflects the CLI account, not the in-loop model/routing.
-  const modelLabel = demo ? "demo · no key" : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}` : (model?.label ?? "none");
+  const modelLabel = setupRequired ? "setup required" : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}` : (model?.label ?? "none");
   const subscription = activeCli ? activeCli.label : null;
-  const routing = demo || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
+  const routing = setupRequired || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
   const ctxPct = !activeCli && model && lastInput > 0 ? Math.round((lastInput / model.contextWindow) * 100) : null;
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
@@ -903,7 +909,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const defaultRunner: Runner = useCallback(
     async ({ prompt, messages, onEvent, selector: sel, signal }) => {
-      if (demo) return runTaskMock({ prompt, messages, onEvent, signal });
       // Active CLI subscription account: delegate the whole turn to the vendor
       // binary (account-first; the model selector doesn't apply). Plain-text
       // transcript carries across; the binary self-governs tools/permissions.
@@ -933,7 +938,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // working set to SEND; the returned ledger stays the full source of truth.
       const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, model: choice.model, plan });
       // Pick the active account for this model's provider and inject its creds.
-      // No account → env-default (back-compat + demo). CLI accounts are P3.
+      // No account → env-default for users who have opted to keep keys in env.
+      // Durable accounts remain the preferred onboarding path.
       const account = accountResolver.pick(choice.model.provider);
       const creds = account ? await resolveCreds(account) : undefined;
       usedAccountRef.current = account?.id ?? null;
@@ -949,7 +955,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt }, ...produced]);
       return { messages: ledger, usage: r.usage };
     },
-    [demo],
+    [],
   );
 
   // Summarize older turns (cheap model via the selector seam — kind:"summarize")
@@ -957,7 +963,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // only the model's working context shrinks. Returns a status line for a notice.
   const compactNow = useCallback(
     async (keepRecent: number, signal?: AbortSignal): Promise<string> => {
-      if (demo) return "compaction needs a model (no key in demo)";
       let model;
       try {
         model = selectorRef.current.select({ prompt: "", kind: "summarize" }).model;
@@ -971,7 +976,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
       return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""} · ~${savedStr} tokens freed`;
     },
-    [demo],
+    [],
   );
 
   const MODE_NOTE: Record<"normal" | "auto-accept" | "plan", string> = {
@@ -1219,7 +1224,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // Auto-compact: once the history approaches the budget, summarize old
         // turns (cheap delegated model) so the next turns stay bounded without
         // losing the gist. Best-effort and skipped on interrupt.
-        if (!demo && !ac.signal.aborted) {
+        if (!ac.signal.aborted) {
           try {
             const cm = selectorRef.current.select({ prompt: "", kind: "summarize" }).model;
             const budget = Math.max(8000, cm.contextWindow - 32000);
@@ -1618,11 +1623,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           echo(text);
           const m = (() => { try { return selectorRef.current.select({ prompt: "" }).model; } catch { return null; } })();
           if (!m) {
-            notice("no model available — set a key to see the working set");
+            notice("no model available — add a provider first\n\n" + onboardingSummary(onboardingState));
             return;
           }
           const { sections } = buildContext({ history: msgRef.current, userText: lastPromptRef.current || "(your next message)", model: m, plan: modeRef.current === "plan" });
           push({ kind: "context", id: idRef.current++, view: buildContextView(sections, m.contextWindow, process.cwd()) });
+          return;
+        }
+        case "onboard": {
+          echo(text);
+          if (arg.trim().toLowerCase() === "providers") {
+            const rows = featuredApiKeyProviders().map((p) => `  ${p.id.padEnd(18)} ${p.label.padEnd(24)} ${p.envVars[0] ?? ""}`.trimEnd());
+            notice(["providers you can add with /account add <provider> <api-key>", ...rows, "", "Aliases work for common names, e.g. gemini -> google, grok -> xai, kimi -> moonshot."].join("\n"));
+          } else {
+            notice(onboardingSummary(onboardingState));
+          }
           return;
         }
         // Everything account-related, addressed by NUMBER (never an id):
@@ -1894,10 +1909,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             notice("busy — try /compact once the current turn finishes");
             return;
           }
-          if (demo) {
-            notice("compaction needs a model (no key in demo)");
-            return;
-          }
           setBusy(true);
           setVerb("Compacting context");
           setMascotState("thinking");
@@ -1938,7 +1949,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         notice(`/${name} hit an error: ${(e?.message ?? String(e)).split("\n")[0]}`);
       }
     },
-    [exit, runTurn],
+    [exit, runTurn, onboardingState],
   );
 
   const submit = useCallback(
@@ -1991,6 +2002,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         handleCommand(text);
         return;
       }
+      if (setupRequired) {
+        echo(text);
+        notice("set up a provider before sending a task\n\n" + onboardingSummary(onboardingState));
+        return;
+      }
       if (busyRef.current) {
         // Queue it — sent automatically when the current turn finishes.
         queueRef.current.push(text);
@@ -2000,7 +2016,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       void runTurn(text);
     },
-    [handleCommand, runTurn],
+    [handleCommand, runTurn, setupRequired, onboardingState],
   );
 
   // Drain the type-ahead queue when a turn finishes.
@@ -2320,22 +2336,44 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const hero = (
     <Box flexDirection="column" alignItems="center">
       <MascotSplash skin={ghostSkin} size={splashSize} />
-      <Box marginTop={1}>
-        <Text color={color.dim}>talk or type </Text>
-        <Text color={color.faint}>{glyph.bullet} </Text>
-        <Text color={color.accentDim}>/</Text>
-        <Text color={color.dim}>commands </Text>
-        <Text color={color.accentDim}>@</Text>
-        <Text color={color.dim}>files </Text>
-        <Text color={color.accentDim}>!</Text>
-        <Text color={color.dim}>shell</Text>
-      </Box>
-      {firstRunRef.current ? (
+      {setupRequired ? (
         <Box marginTop={1} flexDirection="column" alignItems="center">
-          <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
-          <Text color={color.faint}>{demo ? "set ANTHROPIC_API_KEY (or another provider) to start — running in demo mode" : "/config inline on for terminal scrollback · /keys for shortcuts"}</Text>
+          <Text color={color.text}>setup required</Text>
+          {onboardingState.importable.length || onboardingState.cloudImportable.length ? (
+            <Text color={color.faint}>detected credentials: <Text color={color.accent}>/account import</Text></Text>
+          ) : null}
+          <Text color={color.faint}>add any provider key: <Text color={color.accent}>/account add &lt;provider&gt; &lt;api-key&gt;</Text></Text>
+          <Text color={color.faint}>paste-detect: <Text color={color.accent}>/account add &lt;api-key&gt;</Text>  ·  list: <Text color={color.accent}>/onboard providers</Text></Text>
+          <Box marginTop={1} flexDirection="column" alignItems="flex-start">
+            {featuredApiKeyProviders().slice(0, 6).map((p) => (
+              <Text key={p.id} color={color.dim}>  <Text color={color.accent}>/account add {p.id} &lt;api-key&gt;</Text>  {p.label}</Text>
+            ))}
+            <Text color={color.dim}>  <Text color={color.accent}>/account add azure &lt;endpoint&gt; &lt;api-key&gt;</Text>  Azure OpenAI / Foundry</Text>
+          </Box>
+          {(onboardingState.hasClaudeCli || onboardingState.hasCodexCli) ? (
+            <Text color={color.faint}>{onboardingState.hasClaudeCli ? "/account add claude" : ""}{onboardingState.hasClaudeCli && onboardingState.hasCodexCli ? "  ·  " : ""}{onboardingState.hasCodexCli ? "/account add codex" : ""}</Text>
+          ) : null}
         </Box>
-      ) : null}
+      ) : (
+        <>
+          <Box marginTop={1}>
+            <Text color={color.dim}>talk or type </Text>
+            <Text color={color.faint}>{glyph.bullet} </Text>
+            <Text color={color.accentDim}>/</Text>
+            <Text color={color.dim}>commands </Text>
+            <Text color={color.accentDim}>@</Text>
+            <Text color={color.dim}>files </Text>
+            <Text color={color.accentDim}>!</Text>
+            <Text color={color.dim}>shell</Text>
+          </Box>
+          {firstRunRef.current ? (
+            <Box marginTop={1} flexDirection="column" alignItems="center">
+              <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
+              <Text color={color.faint}>/config inline on for terminal scrollback · /keys for shortcuts</Text>
+            </Box>
+          ) : null}
+        </>
+      )}
     </Box>
   );
 
@@ -2349,7 +2387,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} />
   );
 
   const footerJsx = (

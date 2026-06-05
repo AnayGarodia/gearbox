@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { putAccount, setSecret } from "./store.ts";
 import { catalogProvider, detectProviderByKey, CATALOG } from "./catalog.ts";
+import { normalizeProviderId } from "./onboarding.ts";
 import { resolveCreds } from "./resolve.ts";
 import { subscriptionEnv } from "../agent/cli-backend.ts";
 import { which, spawnProc, readStream } from "../proc.ts";
@@ -26,8 +27,9 @@ export interface CliAuthStatus {
 
 /** Store an API-key (or openai-compat) account for `provider`. */
 export async function addApiKeyAccount(provider: string, key: string, opts: { id?: string; label?: string } = {}): Promise<AddResult> {
+  provider = normalizeProviderId(provider);
   const cat = catalogProvider(provider);
-  if (!cat) return { ok: false, message: `unknown provider "${provider}" — see /accounts catalog` };
+  if (!cat) return { ok: false, message: `unknown provider "${provider}" — use /onboard providers` };
   if (cat.group === "cli") return { ok: false, message: `${cat.label} is a subscription account — use /login ${provider} (P3), not a key` };
   if (cat.authKind !== "api-key" && cat.authKind !== "openai-compat") {
     return { ok: false, message: `${cat.label} needs ${cat.authKind} credentials — use the guided add (P2)` };

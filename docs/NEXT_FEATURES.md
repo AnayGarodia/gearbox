@@ -17,9 +17,9 @@ Ordered by priority. These ship before any subscription or public launch.
 **Where:** `commands.ts` + `accounts/usage.ts` `buildUsageView`.
 **Why:** The product pitch is "saves you money." Without this users have to do the math themselves.
 
-## 4. First-run onboarding screen
-**What:** When no accounts or keys are detected on startup, show a clear setup screen instead of silently falling into demo mode. Tell the user exactly what to do: which env vars to set, or run `gearbox auth add <key>`.
-**Where:** `App.tsx` — detect no accounts on mount, render a setup prompt before the main UI.
+## 4. First-run onboarding polish
+**What:** The setup screen is live. Next polish pass: add health checks for each provider path, richer local-provider setup, and clearer failure recovery after a bad key test.
+**Where:** `App.tsx`, `accounts/onboarding.ts`, `accounts/onboard.ts`.
 **Why:** The biggest friction point for a new user is getting past the first launch.
 
 ## 5. Preference suggestion after a good turn

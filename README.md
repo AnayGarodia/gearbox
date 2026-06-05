@@ -31,12 +31,14 @@ A beautiful, simple coding harness for the terminal. It reads, edits, and runs y
 
 ```bash
 bun install
-export ANTHROPIC_API_KEY=...   # or OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / DEEPSEEK_API_KEY
+gearbox auth add <api-key>     # paste-detects common providers when possible
+# or: gearbox auth add <provider> <api-key>
+# or: gearbox auth import      # import keys from env/cloud credentials
 bun start                      # or: bun run src/cli.tsx
 bun start -- --model gemini-flash   # pick a model
 ```
 
-No key? It launches in demo mode so you can see the interface. Preview the look without running anything:
+No provider configured? Gearbox opens a setup screen and will not run a fake model. Preview the look without running anything:
 
 ```bash
 bun run scripts/preview.tsx
@@ -48,7 +50,7 @@ Requires [Bun](https://bun.sh). Clone the repo, then:
 
 ```bash
 ./install.sh          # bun install + bun link  → 'gearbox' on your PATH
-export ANTHROPIC_API_KEY=...   # each person uses their own key (add to ~/.zshrc)
+gearbox auth add <api-key>     # each person uses their own provider account
 cd ~/any/project && gearbox    # the current directory is the workspace
 ```
 

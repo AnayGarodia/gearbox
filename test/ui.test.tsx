@@ -1,6 +1,9 @@
 import React from "react";
 import { test, expect, beforeEach } from "bun:test";
 import { render } from "ink-testing-library";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Transcript } from "../src/ui/components/Transcript.tsx";
 import { CommandPalette } from "../src/ui/components/CommandPalette.tsx";
 import { FilePalette } from "../src/ui/components/FilePalette.tsx";
@@ -10,6 +13,7 @@ import { itemsToLines } from "../src/ui/lines.ts";
 // of which terminal runs the tests (kitty/Ghostty would emit image placeholders).
 beforeEach(() => {
   process.env.GEARBOX_GHOST = "blocks";
+  process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-ui-"));
 });
 import { Banner } from "../src/ui/components/Banner.tsx";
 import { App } from "../src/ui/App.tsx";
@@ -172,17 +176,16 @@ test("command palette rows keep selected label and detail on one row", () => {
   expect(f).toContain("balanced");
 });
 
-test("app initial render: banner, demo label, empty-state hint, input", () => {
+test("app initial render: banner, onboarding setup, input", () => {
   const { lastFrame } = render(
     <App
       selector={new FixedSelector()}
-      demo={true}
       runner={async ({ messages }) => ({ messages, usage: { inputTokens: 0, outputTokens: 0 } })}
     />,
   );
   const f = lastFrame() ?? "";
   expect(f).toContain("gearbox");
-  expect(f).toContain("demo · no key");
-  expect(f).toContain("every model");
-  expect(f).toContain("ask anything");
+  expect(f).toContain("setup required");
+  expect(f).toContain("/account add <provider> <api-key>");
+  expect(f).toContain("/onboard providers");
 });

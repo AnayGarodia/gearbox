@@ -10,7 +10,6 @@ import { existsSync } from "node:fs";
 import { App } from "./ui/App.tsx";
 import { FixedSelector } from "./model/selector.ts";
 import { RoutingSelector } from "./model/router.ts";
-import { anyProviderAvailable } from "./config.ts";
 import { MODELS } from "./providers.ts";
 import { detectImageMode, setImageMode, transmitAll } from "./ui/image.ts";
 import { loadPrefs } from "./ui/prefs.ts";
@@ -58,8 +57,10 @@ Options:
   -v, --version       print version
   -h, --help          this help
 
-Set at least one provider key first (each user uses their own):
-  ANTHROPIC_API_KEY · OPENAI_API_KEY · GOOGLE_GENERATIVE_AI_API_KEY · DEEPSEEK_API_KEY
+Set up at least one provider first:
+  gearbox auth add <api-key>
+  gearbox auth add <provider> <api-key>
+  gearbox auth import
 
 Models: ${MODELS.map((m) => m.label).join(", ")}
 In-app: / for commands, @ for files, !cmd for shell, shift+tab for plan mode.`);
@@ -116,7 +117,6 @@ if (args[0] === "auth") {
 
 const mi = args.indexOf("--model");
 const preferred = mi >= 0 ? args[mi + 1] : undefined;
-const demo = !anyProviderAvailable();
 // Selector at launch: --model wins; else a pinned model persisted from a prior
 // session (/model <name>); else routing. (The active subscription account is
 // restored inside the App from the same prefs.)
@@ -157,6 +157,6 @@ if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H");
 if (mouse) process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
 
 // exitOnCtrlC:false so the app can handle ⌃C itself (interrupt / clear / confirm-quit).
-const app = render(<App selector={selector} demo={demo} fullscreen={fullscreen} resumeId={resumeId} />, { exitOnCtrlC: false });
+const app = render(<App selector={selector} fullscreen={fullscreen} resumeId={resumeId} />, { exitOnCtrlC: false });
 app.waitUntilExit().then(restore, restore);
 process.on("exit", restore);

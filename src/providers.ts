@@ -108,8 +108,8 @@ function vertexFromEnv(): ResolvedCreds["vertex"] | undefined {
   return { project, location: process.env.GOOGLE_VERTEX_LOCATION ?? "us-central1" };
 }
 
-// Available if a stored account exists for it OR a key is in the env (back-compat
-// + the zero-config demo path). Accounts are the durable path; env is the fallback.
+// Available if a stored account exists for it OR a key is in the env
+// (back-compat). Accounts are the durable onboarding path; env is the fallback.
 export function providerAvailable(p: ProviderId): boolean {
   if (accountsForProvider(p).length > 0) return true;
   const ev = envVarFor(p);
@@ -133,7 +133,7 @@ export function estimateCost(turns: { model: string; inputTokens: number; output
 
 // Build the AI SDK model instance. With `creds` (from an account) we configure
 // the provider explicitly; without them we use the env-default instances
-// (back-compat + demo). Any `creds.baseURL` routes through the OpenAI wire
+// (back-compat). Any `creds.baseURL` routes through the OpenAI wire
 // protocol — that one path covers every openai-compat provider, gateway, and
 // local server, so adding those is data (a catalog row), not code here.
 export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageModel {
