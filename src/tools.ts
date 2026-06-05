@@ -11,6 +11,8 @@ import { requestPermission } from "./permission.ts";
 import { which, Glob, spawnSyncProc } from "./proc.ts";
 import type { OnEvent } from "./agent/events.ts";
 import { fetchUrlText } from "./fetch.ts";
+import { webSearch, formatSearchResults } from "./websearch.ts";
+import { mcpTools } from "./mcp.ts";
 
 const ROOT = process.cwd();
 const CAP = 60_000; // cap tool output so the transcript stays sane
@@ -118,6 +120,15 @@ export function createTools(onEvent?: OnEvent) {
       const page = await fetchUrlText(url);
       return clip([`URL: ${page.url}`, page.title ? `Title: ${page.title}` : "", "", page.text].filter(Boolean).join("\n"));
     },
+  }),
+
+  web_search: tool({
+    description: "Search the web for current docs, APIs, errors, release notes, or examples. Returns titles, URLs, and snippets.",
+    inputSchema: z.object({
+      query: z.string().describe("search query"),
+      count: z.number().int().min(1).max(10).default(5),
+    }),
+    execute: async ({ query, count }) => formatSearchResults(query, await webSearch(query, count)),
   }),
 
   search: tool({
@@ -236,4 +247,10 @@ export const readOnlyTools = {
   search: tools.search,
   glob: tools.glob,
   fetch_url: tools.fetch_url,
+  web_search: tools.web_search,
 };
+
+export async function createToolset(onEvent?: OnEvent, opts: { readOnly?: boolean } = {}) {
+  const base = opts.readOnly ? readOnlyTools : createTools(onEvent);
+  return { ...base, ...(await mcpTools(onEvent, Boolean(opts.readOnly))) };
+}

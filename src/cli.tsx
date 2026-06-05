@@ -18,7 +18,7 @@ import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 
-const VERSION = "0.1.11";
+const VERSION = "0.1.12";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.NO_COLOR !== "1" && process.env.TERM !== "dumb" && (process.stdout.isTTY || process.env.FORCE_COLOR === "1");
@@ -261,6 +261,7 @@ Usage:
   gearbox onboard         set up a provider before opening the app
   gearbox --model <name>  start with a specific model
   gearbox --continue      resume the most recent session in this directory
+  gearbox mcp list        show configured MCP tools
   gearbox upgrade         pull the latest version + reinstall deps
 
 Options:
@@ -292,6 +293,19 @@ if (args.includes("--version") || args.includes("-v")) {
 
 if (args[0] === "onboard" || args[0] === "setup") {
   await runCliOnboarding();
+  process.exit(0);
+}
+
+if (args[0] === "mcp") {
+  const { mcpToolSummary, mcpConfigPaths } = await import("./mcp.ts");
+  const sub = args[1] ?? "list";
+  if (sub === "list" || sub === "tools") {
+    console.log(await mcpToolSummary());
+  } else if (sub === "paths") {
+    console.log(mcpConfigPaths().join("\n"));
+  } else {
+    console.log("gearbox mcp [list|paths]");
+  }
   process.exit(0);
 }
 

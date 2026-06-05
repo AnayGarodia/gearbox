@@ -79,10 +79,40 @@ npm uninstall -g gearbox-code
 
 Gearbox is a terminal coding agent that can use the model accounts you already
 pay for. It supports provider accounts, local credential storage, model routing,
-session history, file edits, shell commands, and permission gates.
+session history, file edits, shell commands, MCP tools, web search, image input,
+and permission gates.
 
 Supported setup paths include API keys, detected env/cloud credentials, Azure,
 and provider CLIs where available.
+
+## Capabilities
+
+Paste or drag an image path into the composer to attach screenshots or UI
+captures. Local image attachments work with API-backed multimodal models.
+
+Gearbox loads MCP servers from `~/.gearbox/mcp.json`, `.mcp.json`, or
+`.gearbox/mcp.json`. Check what loaded with:
+
+```bash
+gearbox mcp list
+```
+
+Example MCP config:
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+    }
+  }
+}
+```
+
+The built-in `web_search` tool works out of the box with DuckDuckGo, and uses
+Brave or SearXNG when `BRAVE_SEARCH_API_KEY` or `SEARXNG_URL` is set.
 
 ## Develop
 

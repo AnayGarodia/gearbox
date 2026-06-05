@@ -38,6 +38,7 @@ import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { fetchUrlText, urlsInText } from "../fetch.ts";
+import { imageContent, imagePathsInText, loadImageAttachment, type ImageAttachment } from "../image.ts";
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
@@ -75,7 +76,7 @@ const KEYS_HELP = [
   "  ⌃A / ⌃E line start / end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
   "  ⌃Y copy last reply · shift+tab cycle mode (normal · auto-accept · plan)",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
-  "  / commands · @ files · ! shell · # memory · ? this help",
+  "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
   "  input stays fixed at the bottom; /config inline on uses terminal scrollback",
 ].join("\n");
 
@@ -438,6 +439,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const activeCliRef = useRef<{ id: string; binary: string; profile?: string } | null>(null);
   const activeCliModelRef = useRef<string | undefined>(undefined);
   const cliSessionRef = useRef<string | undefined>(undefined);
+  const activeImagesRef = useRef<ImageAttachment[]>([]);
   const accountStatusCacheRef = useRef<Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>>({});
   // Which account ran the last turn + its provider-reported cost/limit (for the
   // per-account spend ledger; see src/accounts/usage.ts).
@@ -1001,6 +1003,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // transcript carries across; the binary self-governs tools/permissions.
       const cli = activeCliRef.current;
       if (cli) {
+        if (activeImagesRef.current.length) {
+          onEvent({
+            type: "error",
+            message: "image attachments need an API-backed model in Gearbox right now. Use `/account off` or an API-key account, then retry with the image path.",
+          });
+          return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
+        }
         routedRef.current = null;
         usedAccountRef.current = cli.id;
         const modelLabel = cliModelLabel(activeCliModelRef.current);
@@ -1041,7 +1050,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
       // The Context Engine projects the full history into a bounded, model-aware
       // working set to SEND; the returned ledger stays the full source of truth.
-      const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, model: choice.model, plan });
+      const userContent = imageContent(prompt, activeImagesRef.current);
+      const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
       // Pick the active account for this model's provider and inject its creds.
       // No account → env-default for users who have opted to keep keys in env.
       // Durable accounts remain the preferred onboarding path.
@@ -1057,7 +1067,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // projection), and sanitize so an interrupted turn can't leave a dangling
       // tool_use that 400s the next request.
       const produced = r.messages.slice(ctx.length);
-      const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt }, ...produced]);
+      const imageNote = activeImagesRef.current.length
+        ? `\n\n[Attached images: ${activeImagesRef.current.map((img) => basename(img.path)).join(", ")}]`
+        : "";
+      const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt + imageNote }, ...produced]);
       return { messages: ledger, usage: r.usage };
     },
     [],
@@ -1159,8 +1172,23 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       echo(prompt);
       lastPromptRef.current = prompt;
       setVerb(nextVerb());
+      activeImagesRef.current = [];
       let { text: modelPrompt, attached } = expandMentions(prompt);
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
+      const imagePaths = imagePathsInText(modelPrompt);
+      const images: ImageAttachment[] = [];
+      for (const path of imagePaths) {
+        try {
+          images.push(loadImageAttachment(path));
+        } catch (e: any) {
+          notice(`couldn't attach ${path}: ${(e?.message ?? String(e)).split("\n")[0]}`);
+        }
+      }
+      activeImagesRef.current = images;
+      if (images.length) {
+        const names = images.map((img) => basename(img.path)).join(", ");
+        notice(`attached ${images.length} image${images.length === 1 ? "" : "s"}: ${names}`);
+      }
       const urls = urlsInText(modelPrompt);
       if (urls.length) {
         const fetched: string[] = [];
@@ -1378,6 +1406,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           onEvent({ type: "error", message: err?.message ?? String(err) });
         }
       } finally {
+        activeImagesRef.current = [];
         flushToolStreams();
         abortRef.current = null;
         setBusy(false);

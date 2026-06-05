@@ -5,7 +5,7 @@ import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import { reasoningOptions, type Effort } from "../model/reasoning.ts";
-import { createTools, readOnlyTools } from "../tools.ts";
+import { createToolset } from "../tools.ts";
 import { config } from "../config.ts";
 import { BASE_SYSTEM, PLAN_ADDENDUM } from "../context/builder.ts";
 import type { OnEvent, Usage } from "./events.ts";
@@ -155,7 +155,7 @@ export async function runTask(opts: {
   };
 
   onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
-  const activeTools = plan ? readOnlyTools : createTools(onEvent);
+  const activeTools = await createToolset(onEvent, { readOnly: Boolean(plan) });
   const result = opts._stream
     ? null
     : streamText({

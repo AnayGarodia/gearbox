@@ -58,6 +58,7 @@ export function textOf(content: unknown): string {
       .map((p: any) => {
         if (typeof p === "string") return p;
         if (p?.type === "text") return p.text ?? "";
+        if (p?.type === "image") return `[image ${p.mediaType ?? ""}]`;
         if (p?.type === "tool-call") return JSON.stringify(p.input ?? p.args ?? {});
         if (p?.type === "tool-result") return typeof p.output === "string" ? p.output : JSON.stringify(p.output ?? p.result ?? "");
         return JSON.stringify(p ?? "");
@@ -140,6 +141,7 @@ export function sanitizeToolPairs(messages: ModelMessage[]): ModelMessage[] {
 export function buildContext(opts: {
   history: ModelMessage[];
   userText: string;
+  userContent?: any;
   model: ModelSpec;
   plan?: boolean;
   cwd?: string;
@@ -185,7 +187,7 @@ export function buildContext(opts: {
   const systemTokens = countTokens(system, modelId);
 
   // ── curated history + current user message, budgeted ──
-  const userMsg: ModelMessage = { role: "user", content: userText };
+  const userMsg: ModelMessage = { role: "user", content: opts.userContent ?? userText };
   const userTokens = msgTokens(userMsg, modelId);
 
   const turns = groupTurns(history);
