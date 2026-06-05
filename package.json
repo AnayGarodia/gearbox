@@ -1,6 +1,6 @@
 {
   "name": "gearbox-code",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "A beautiful multi-provider coding harness for the terminal. (Intelligent model routing lands on top of this soon.)",
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,8 @@
   },
   "files": [
     "dist/cli.mjs",
-    "install.sh"
+    "install.sh",
+    "install.ps1"
   ],
   "scripts": {
     "start": "bun run src/cli.tsx",

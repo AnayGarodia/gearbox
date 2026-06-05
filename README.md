@@ -46,15 +46,21 @@ bun run scripts/preview.tsx
 
 ## Install
 
-One command, no sudo, no npm global permissions:
+macOS, Linux, WSL:
 
 ```bash
 curl -fsSL https://unpkg.com/gearbox-code@latest/install.sh | bash
 ```
 
-The installer is served from the published npm package, downloads the latest
-`gearbox-code` tarball, and creates a user-owned `gearbox` command in
-`~/.local/bin`.
+Windows PowerShell:
+
+```powershell
+irm https://unpkg.com/gearbox-code@latest/install.ps1 | iex
+```
+
+The installers are served from the published npm package, download the latest
+`gearbox-code` tarball, and create a user-owned `gearbox` command. They avoid
+`sudo`, admin privileges, and `npm install -g`.
 
 Then:
 
