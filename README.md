@@ -49,11 +49,12 @@ bun run scripts/preview.tsx
 One command, no sudo, no npm global permissions:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AnayGarodia/gearbox/main/install.sh | bash
+curl -fsSL https://unpkg.com/gearbox-code@latest/install.sh | bash
 ```
 
-The installer downloads the published `gearbox-code` package and creates a
-user-owned `gearbox` command in `~/.local/bin`.
+The installer is served from the published npm package, downloads the latest
+`gearbox-code` tarball, and creates a user-owned `gearbox` command in
+`~/.local/bin`.
 
 Then:
 
