@@ -1005,7 +1005,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const cliChoices = cliModelChoices(cli.binary);
         const cliChoice = cliChoices.find((m) => m.id === activeCliModelRef.current) ?? cliChoices[0];
         const cliEffort = cliChoice ? normalizeEffort(effortRef.current, cliChoice.efforts ?? []) ?? undefined : undefined;
-        const r = await runCliTask({ binary: cli.binary, prompt, messages, onEvent, signal, sessionId: cliSessionRef.current, autoApprove: isYolo(), profile: cli.profile, modelId: activeCliModelRef.current, effort: cliEffort });
+        const activeAccount = getAccount(cli.id);
+        const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
+        const reloginCommand = cli.binary.includes("codex")
+          ? `/account add codex${activeName ? ` ${activeName}` : ""}`
+          : `/account add claude${activeName ? ` ${activeName}` : ""}`;
+        const r = await runCliTask({
+          binary: cli.binary,
+          prompt,
+          messages,
+          onEvent,
+          signal,
+          sessionId: cliSessionRef.current,
+          autoApprove: isYolo(),
+          profile: cli.profile,
+          modelId: activeCliModelRef.current,
+          effort: cliEffort,
+          accountLabel: activeAccount ? accountLabel(activeAccount) : cli.id,
+          reloginCommand,
+        });
         cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
         cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
         return { messages: r.messages, usage: r.usage };

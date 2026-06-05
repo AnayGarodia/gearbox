@@ -92,3 +92,27 @@ test("runCliTask surfaces stderr when a CLI exits without JSON output", async ()
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("runCliTask turns Codex expired-session stderr into an account-specific relogin hint", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gearbox-fake-codex-"));
+  const bin = join(dir, "codex-fake");
+  writeFileSync(bin, "#!/bin/sh\necho 'ERROR Failed to refresh token: app_session_terminated. Your session has ended. Please log in again.' >&2\nexit 1\n");
+  chmodSync(bin, 0o755);
+  const ev: AgentEvent[] = [];
+  try {
+    await runCliTask({
+      binary: bin,
+      prompt: "x",
+      messages: [],
+      onEvent: (e) => ev.push(e),
+      accountLabel: "ChatGPT (maitree) · subscription",
+      reloginCommand: "/account add codex maitree",
+    });
+    const msg = ev.find((e) => e.type === "error")?.message ?? "";
+    expect(msg).toContain("Codex session expired for ChatGPT (maitree) · subscription");
+    expect(msg).toContain("/account add codex maitree");
+    expect(msg).not.toContain("Failed to refresh token");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

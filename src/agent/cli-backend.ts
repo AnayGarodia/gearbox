@@ -231,6 +231,20 @@ function cleanCliStderr(text: string): string {
   return cleaned;
 }
 
+function cliFailureMessage(binary: string, stderr: string, opts: { accountLabel?: string; reloginCommand?: string } = {}): string {
+  const err = cleanCliStderr(stderr);
+  const isCodex = binary.includes("codex");
+  if (isCodex && /app_session_terminated|Your session has ended|Failed to refresh token|HTTP error: 401 Unauthorized/i.test(err)) {
+    const account = opts.accountLabel ? ` for ${opts.accountLabel}` : "";
+    const relogin = opts.reloginCommand ? ` Run ${opts.reloginCommand} to sign in again, then /retry.` : " Sign in to that Codex account again, then /retry.";
+    return `Codex session expired${account}.${relogin}`;
+  }
+  const hint = isCodex
+    ? "Codex CLI failed before returning an assistant message. Check the line above, then /retry."
+    : `${binary} failed before returning an assistant message. Check the line above, then /retry.`;
+  return err ? `${hint} ${err}` : hint;
+}
+
 /** Run a turn through the vendor CLI subprocess, emitting AgentEvents. */
 export async function runCliTask(opts: {
   binary: string;
@@ -244,6 +258,8 @@ export async function runCliTask(opts: {
   effort?: string;
   cwd?: string;
   profile?: string; // per-account config dir (multi-account); undefined = system default login
+  accountLabel?: string;
+  reloginCommand?: string;
 }): Promise<CliResult> {
   const { binary, prompt, messages, onEvent, signal } = opts;
   const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove, modelId: opts.modelId, effort: opts.effort });
@@ -308,10 +324,7 @@ export async function runCliTask(opts: {
   if (!signal?.aborted) {
     const err = cleanCliStderr(stderr);
     if ((proc.exitCode ?? 0) !== 0) {
-      const hint = binary.includes("codex")
-        ? "Codex CLI failed before returning an assistant message. Check the line above, then /retry."
-        : `${binary} failed before returning an assistant message. Check the line above, then /retry.`;
-      onEvent({ type: "error", message: err ? `${hint} ${err}` : hint });
+      onEvent({ type: "error", message: cliFailureMessage(binary, stderr, { accountLabel: opts.accountLabel, reloginCommand: opts.reloginCommand }) });
     } else if (!state.text && !sawEvent && err) {
       onEvent({ type: "error", message: `${binary} produced no JSON output: ${err}` });
     } else if (!state.text && !sawEvent) {

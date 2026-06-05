@@ -38,6 +38,9 @@ Common setup commands:
 ```bash
 gearbox auth add <api-key>                # auto-detects known key prefixes
 gearbox auth add <provider> <api-key>     # anthropic, openai, google, deepseek, openrouter, groq, xai, mistral...
+gearbox auth add codex                    # ChatGPT subscription through the Codex CLI
+gearbox auth add codex work               # second ChatGPT account, isolated CODEX_HOME
+gearbox auth add claude work              # second Claude account, isolated config
 gearbox auth import                       # import credentials from env/cloud config
 gearbox auth providers                    # list supported providers
 ```

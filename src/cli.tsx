@@ -18,7 +18,7 @@ import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 
-const VERSION = "0.1.9";
+const VERSION = "0.1.10";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.NO_COLOR !== "1" && process.env.TERM !== "dumb" && (process.stdout.isTTY || process.env.FORCE_COLOR === "1");
@@ -276,6 +276,8 @@ Set up at least one provider first:
   gearbox onboard
   gearbox auth add <api-key>
   gearbox auth add <provider> <api-key>
+  gearbox auth add codex [name]
+  gearbox auth add claude [name]
   gearbox auth import
 
 Models: ${MODELS.map((m) => m.label).join(", ")}
@@ -298,7 +300,8 @@ if (args[0] === "onboard" || args[0] === "setup") {
 if (args[0] === "auth") {
   const { listAccounts, loadAccounts, removeAccount } = await import("./accounts/store.ts");
   const { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } = await import("./accounts/detect.ts");
-  const { addApiKeyAccount, addByPastedKey, testAccount, addableProviders } = await import("./accounts/onboard.ts");
+  const { addApiKeyAccount, addByPastedKey, testAccount, addableProviders, addCliAccount, cliAuthStatus, cliLoginArgs } = await import("./accounts/onboard.ts");
+  const { subscriptionEnv } = await import("./agent/cli-backend.ts");
   const { detectProviderByKey } = await import("./accounts/catalog.ts");
   const sub = args[1];
   const rest = args.slice(2);
@@ -316,11 +319,31 @@ if (args[0] === "auth") {
     const names = [...keys.map((c) => c.provider), ...cloud.map((c) => c.provider)];
     console.log(names.length ? `Imported ${names.length}: ${names.join(", ")}` : "Nothing to import.");
   } else if (sub === "add") {
-    const res = rest[0] && !rest[1] && detectProviderByKey(rest[0]) ? await addByPastedKey(rest[0]) : rest[0] && rest[1] ? await addApiKeyAccount(rest[0], rest[1]) : { ok: false, message: "usage: gearbox auth add <key>   |   gearbox auth add <provider> <key>" };
+    const head = (rest[0] ?? "").toLowerCase();
+    const cliProvider = head === "codex" || head === "chatgpt" ? "codex-cli" : head === "claude" ? "claude-cli" : "";
+    const res = cliProvider
+      ? addCliAccount(cliProvider, rest.slice(1).join(" ").trim() || undefined)
+      : rest[0] && !rest[1] && detectProviderByKey(rest[0])
+        ? await addByPastedKey(rest[0])
+        : rest[0] && rest[1]
+          ? await addApiKeyAccount(rest[0], rest[1])
+          : { ok: false, message: "usage: gearbox auth add <key>   |   gearbox auth add <provider> <key>   |   gearbox auth add codex [name]" };
     console.log(res.message);
     if (res.ok && res.account) {
-      const t = await testAccount(res.account);
-      console.log(t.ok ? "  test: ✓ " + t.message : "  test: ✗ " + t.message + " (stored anyway)");
+      if (res.account.exec === "cli" && res.account.auth.kind === "cli") {
+        const bin = res.account.auth.binary;
+        const profile = res.account.auth.loginProfile;
+        let st = await cliAuthStatus(bin, profile);
+        if (!st.loggedIn) {
+          console.log(`  sign-in: starting ${bin} ${cliLoginArgs(bin).join(" ")}`);
+          spawnSync(bin, cliLoginArgs(bin), { stdio: "inherit", env: subscriptionEnv(bin, profile) });
+          st = await cliAuthStatus(bin, profile);
+        }
+        console.log(st.loggedIn ? `  sign-in: ✓ ${st.detail ?? "ready"}` : `  sign-in: ✗ not signed in${st.detail ? ` (${st.detail})` : ""}`);
+      } else {
+        const t = await testAccount(res.account);
+        console.log(t.ok ? "  test: ✓ " + t.message : "  test: ✗ " + t.message + " (stored anyway)");
+      }
     }
   } else if (sub === "test" && rest[0]) {
     const a = listAccounts().find((x) => x.id === rest[0]);
@@ -331,7 +354,7 @@ if (args[0] === "auth") {
   } else if (sub === "providers") {
     for (const p of addableProviders()) console.log(`${p.id.padEnd(16)} ${p.label} (${p.group})`);
   } else {
-    console.log("gearbox auth [list|import|add <key>|add <provider> <key>|test <id>|rm <id>|providers]");
+    console.log("gearbox auth [list|import|add <key>|add <provider> <key>|add codex [name]|add claude [name]|test <id>|rm <id>|providers]");
   }
   process.exit(0);
 }
