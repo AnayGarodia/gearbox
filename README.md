@@ -1,48 +1,4 @@
-# ⚙ gearbox
-
-A beautiful, simple coding harness for the terminal. It reads, edits, and runs your code through one clean agent loop, talking to any provider (Anthropic, OpenAI, Google, DeepSeek).
-
-> **What it does:** the point of Gearbox is *intelligent per-task model routing* — automatically using the right model for each task across every provider and account you pay for, cheaply and transparently. Basic routing is live: it classifies each task, filters candidates by quality bar, and picks the cheapest one that fits. The richer engine (shadow-eval, credit/limit scoring, confidence display) layers on top. See [`DESIGN.md`](./DESIGN.md).
-
-```
- ⚙   gearbox
-     coding harness · sonnet-4.6
- ──────────────────────────────────────────────────────────
-
- › add a --json flag to the CLI and cover it with a test
-
- ⏺  I'll see how args are parsed, add the flag, then test it.
-
-   ✓ read_file  src/cli.tsx
-     renders the Ink app · 18 lines
-   ✓ edit_file  src/cli.tsx
-   ✓ run_shell  bun test
-     9 pass · 0 fail
-
- ⏺  Done — flag added with a passing test.
-
- ╭──────────────────────────────────────────────────────────╮
- │ › ask gearbox to build or fix something                  │
- ╰──────────────────────────────────────────────────────────╯
-  gearbox · sonnet-4.6 · 18,432 tok · ⏎ send  ctrl+c quit
-```
-
-## Run
-
-```bash
-bun install
-gearbox auth add <api-key>     # paste-detects common providers when possible
-# or: gearbox auth add <provider> <api-key>
-# or: gearbox auth import      # import keys from env/cloud credentials
-bun start                      # or: bun run src/cli.tsx
-bun start -- --model gemini-flash   # pick a model
-```
-
-No provider configured? Gearbox opens a setup screen and will not run a fake model. Preview the look without running anything:
-
-```bash
-bun run scripts/preview.tsx
-```
+# gearbox
 
 ## Install
 
@@ -58,60 +14,80 @@ Windows PowerShell:
 irm https://unpkg.com/gearbox-code@latest/install.ps1 | iex
 ```
 
-The installers are served from the published npm package, download the latest
-`gearbox-code` tarball, and create a user-owned `gearbox` command. They avoid
-`sudo`, admin privileges, and `npm install -g`.
+These installers do not use `sudo`, admin privileges, or `npm install -g`.
+They install Gearbox into a user-owned directory, create the `gearbox` command,
+then start onboarding before the coding app opens.
 
-Then:
-
-```bash
-gearbox auth add <api-key>     # each person uses their own provider account
-cd ~/any/project && gearbox    # the current directory is the workspace
-```
-
-If `~/.local/bin` is not on your PATH, the installer prints the exact line to
-add to your shell config.
-
-You can still run without installing:
+Run without installing:
 
 ```bash
 npx gearbox-code@latest
 ```
 
-**Upgrade** later by rerunning the install command. `gearbox upgrade` still works
-for git checkouts.
+## First Run
 
-## Develop From Source
+Gearbox needs one provider account before it opens the coding app. The installer
+runs setup automatically. You can also run it yourself:
 
-Requires [Bun](https://bun.sh). Clone the repo, then:
+```bash
+gearbox onboard
+```
+
+Common setup commands:
+
+```bash
+gearbox auth add <api-key>                # auto-detects known key prefixes
+gearbox auth add <provider> <api-key>     # anthropic, openai, google, deepseek, openrouter, groq, xai, mistral...
+gearbox auth import                       # import credentials from env/cloud config
+gearbox auth providers                    # list supported providers
+```
+
+After setup:
+
+```bash
+cd ~/your-project
+gearbox
+```
+
+No account configured means no fake/demo model: Gearbox runs onboarding first.
+
+## Uninstall
+
+macOS, Linux, WSL:
+
+```bash
+rm -f ~/.local/bin/gearbox
+rm -rf ~/.local/share/gearbox
+```
+
+Windows PowerShell:
+
+```powershell
+Remove-Item "$env:LOCALAPPDATA\Gearbox" -Recurse -Force
+```
+
+If you previously installed with npm global:
+
+```bash
+npm uninstall -g gearbox-code
+```
+
+## What It Is
+
+Gearbox is a terminal coding agent that can use the model accounts you already
+pay for. It supports provider accounts, local credential storage, model routing,
+session history, file edits, shell commands, and permission gates.
+
+Supported setup paths include API keys, detected env/cloud credentials, Azure,
+and provider CLIs where available.
+
+## Develop
+
+Requires [Bun](https://bun.sh).
 
 ```bash
 bun install
 bun run src/cli.tsx
-```
-
-**Standalone binary** (no clone/install on the target, same OS/arch):
-
-```bash
-bun run build         # → dist/gearbox  (single ~64MB executable)
-cp dist/gearbox ~/.bun/bin/    # or anywhere on PATH; share the file directly
-```
-
-> ⚠ **Before running on real code:** there is no permission/confirm gate yet — `write_file`, `edit_file`, `run_shell`, and the `!` prefix execute without asking. Fine for trusted internal use on your own repos; do not point it at anything you don't want modified. A confirm-gate is the next thing to land.
-
-## Develop
-
-```bash
-bun test            # render + agent tests (no API key needed)
+bun test
 bun run typecheck
 ```
-
-## Principles
-
-- **Open + free.** MIT. No paid dependencies, no hosted backend, no telemetry. The only cost is your own model calls on your own keys.
-- **Beautiful + calm.** One accent color, generous spacing, consistent glyphs. The whole look lives in `src/ui/theme.ts`.
-- **Routing-ready.** Model choice happens in exactly one place (`src/model/selector.ts`); the router drops in there later with no changes upstream. See [`CLAUDE.md`](./CLAUDE.md).
-
-## Status
-
-v0.1 — streaming agent loop, real file + shell tools, a polished Ink TUI, multi-provider support, accounts + spend ledger, BM25 context retrieval, and basic per-task routing (classify → quality bar → cheapest winner). The richer routing engine (shadow-eval, credit/limit/plan scoring, per-repo calibration) is next (`DESIGN.md`).

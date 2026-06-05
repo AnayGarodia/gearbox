@@ -4,20 +4,163 @@ process.env.LANG = process.env.LANG || "en_US.UTF-8";
 process.env.LC_ALL = process.env.LC_ALL || "en_US.UTF-8";
 import React from "react";
 import { render } from "ink";
-import { execFileSync } from "node:child_process";
+import { createInterface } from "node:readline/promises";
+import { execFileSync, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { App } from "./ui/App.tsx";
 import { FixedSelector } from "./model/selector.ts";
 import { RoutingSelector } from "./model/router.ts";
+import { anyProviderAvailable } from "./config.ts";
 import { MODELS } from "./providers.ts";
 import { detectImageMode, setImageMode, transmitAll } from "./ui/image.ts";
 import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 
-const VERSION = "0.1.7";
+const VERSION = "0.1.8";
 const args = process.argv.slice(2);
+
+async function runCliOnboarding(): Promise<boolean> {
+  const { listAccounts } = await import("./accounts/store.ts");
+  const { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } = await import("./accounts/detect.ts");
+  const { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, testAccount, addableProviders, addCliAccount, cliAuthStatus, cliLoginArgs } = await import("./accounts/onboard.ts");
+  const { subscriptionEnv } = await import("./agent/cli-backend.ts");
+  const { detectProviderByKey } = await import("./accounts/catalog.ts");
+  const { which } = await import("./proc.ts");
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const ask = async (q: string) => (await rl.question(q)).trim();
+  const providerRows = () => addableProviders().map((p) => `  ${p.id.padEnd(16)} ${p.label}`).join("\n");
+  const testAndReport = async (account: any) => {
+    console.log("Testing credential...");
+    const t = await testAccount(account);
+    console.log(t.ok ? `OK: ${t.message}` : `Stored, but the test failed: ${t.message}`);
+  };
+  const addSubscription = async (provider: "claude-cli" | "codex-cli") => {
+    const res = addCliAccount(provider);
+    console.log(res.message);
+    if (!res.ok || !res.account || res.account.auth.kind !== "cli") return false;
+    const bin = res.account.auth.binary;
+    const profile = res.account.auth.loginProfile;
+    let status = await cliAuthStatus(bin, profile);
+    if (!status.loggedIn) {
+      console.log(`Starting ${bin} sign-in...`);
+      const r = spawnSync(bin, cliLoginArgs(bin), { stdio: "inherit", env: subscriptionEnv(bin, profile) });
+      if ((r.status ?? 1) !== 0) return false;
+      status = await cliAuthStatus(bin, profile);
+    }
+    if (!status.loggedIn) {
+      console.log(`${bin} did not report a completed sign-in.`);
+      return false;
+    }
+    console.log(`OK: ${bin} subscription ready${status.detail ? ` (${status.detail})` : ""}`);
+    return true;
+  };
+
+  try {
+    console.log("");
+    console.log("Gearbox setup");
+    console.log("One provider account is required before the coding app opens.");
+    console.log("");
+
+    while (!anyProviderAvailable()) {
+      const env = importableEnvCreds();
+      const cloud = importableCloudCreds();
+      const existing = listAccounts();
+      if (existing.length) break;
+
+      console.log("Choose a setup path:");
+      if (env.length || cloud.length) console.log("  1) Import detected credentials");
+      console.log("  2) Paste an API key");
+      console.log("  3) Choose provider + API key");
+      console.log("  4) Azure OpenAI / Azure AI Foundry");
+      if (which("claude")) console.log("  5) Claude subscription CLI");
+      if (which("codex")) console.log("  6) ChatGPT subscription CLI");
+      console.log("  p) Show providers");
+      console.log("  q) Quit setup");
+      console.log("");
+      const choice = (await ask("Selection: ")).toLowerCase();
+
+      if (choice === "q" || choice === "quit" || choice === "skip") {
+        console.log("");
+        console.log("Setup skipped. Run `gearbox onboard` when you are ready.");
+        return false;
+      }
+      if (choice === "p" || choice === "providers") {
+        console.log("");
+        console.log(providerRows());
+        console.log("");
+        continue;
+      }
+      if (choice === "1" && (env.length || cloud.length)) {
+        for (const c of env) await importEnvCred(c);
+        for (const c of cloud) await importCloudCred(c);
+        console.log(`Imported ${env.length + cloud.length} credential${env.length + cloud.length === 1 ? "" : "s"}.`);
+        break;
+      }
+      if (choice === "2") {
+        const key = await ask("Paste API key: ");
+        if (!key) continue;
+        const detected = detectProviderByKey(key);
+        if (!detected) {
+          console.log("Could not detect the provider from that key. Use option 3.");
+          continue;
+        }
+        const res = await addByPastedKey(key);
+        console.log(res.message);
+        if (res.ok && res.account) {
+          await testAndReport(res.account);
+          break;
+        }
+        continue;
+      }
+      if (choice === "3") {
+        console.log("");
+        console.log(providerRows());
+        console.log("");
+        const provider = await ask("Provider id: ");
+        const key = await ask("API key: ");
+        const res = await addApiKeyAccount(provider, key);
+        console.log(res.message);
+        if (res.ok && res.account) {
+          await testAndReport(res.account);
+          break;
+        }
+        continue;
+      }
+      if (choice === "4") {
+        const endpoint = await ask("Azure resource name or endpoint: ");
+        const key = await ask("API key: ");
+        const apiVersion = await ask("API version (optional): ");
+        const res = /^https?:\/\//i.test(endpoint)
+          ? await addAzureFoundryAccount(endpoint, key)
+          : await addAzureAccount(endpoint, key, { apiVersion: apiVersion || undefined });
+        console.log(res.message);
+        if (res.ok && res.account) {
+          await testAndReport(res.account);
+          break;
+        }
+        continue;
+      }
+      if (choice === "5" && which("claude")) {
+        if (await addSubscription("claude-cli")) break;
+        continue;
+      }
+      if (choice === "6" && which("codex")) {
+        if (await addSubscription("codex-cli")) break;
+        continue;
+      }
+      console.log("Choose one of the listed options.");
+    }
+
+    console.log("");
+    console.log("Gearbox is ready.");
+    console.log("Run `gearbox` inside a project.");
+    return true;
+  } finally {
+    rl.close();
+  }
+}
 
 if (args[0] === "upgrade" || args[0] === "update") {
   const root = resolve(import.meta.dir, "..");
@@ -44,6 +187,7 @@ if (args.includes("--help") || args.includes("-h")) {
 
 Usage:
   gearbox                 start in the current directory (it becomes the workspace)
+  gearbox onboard         set up a provider before opening the app
   gearbox --model <name>  start with a specific model
   gearbox --continue      resume the most recent session in this directory
   gearbox upgrade         pull the latest version + reinstall deps
@@ -58,6 +202,7 @@ Options:
   -h, --help          this help
 
 Set up at least one provider first:
+  gearbox onboard
   gearbox auth add <api-key>
   gearbox auth add <provider> <api-key>
   gearbox auth import
@@ -69,6 +214,11 @@ In-app: / for commands, @ for files, !cmd for shell, shift+tab for plan mode.`);
 
 if (args.includes("--version") || args.includes("-v")) {
   console.log(VERSION);
+  process.exit(0);
+}
+
+if (args[0] === "onboard" || args[0] === "setup") {
+  await runCliOnboarding();
   process.exit(0);
 }
 
@@ -113,6 +263,18 @@ if (args[0] === "auth") {
     console.log("gearbox auth [list|import|add <key>|add <provider> <key>|test <id>|rm <id>|providers]");
   }
   process.exit(0);
+}
+
+if (!anyProviderAvailable()) {
+  if (process.stdin.isTTY && process.stdout.isTTY && process.env.GEARBOX_SKIP_ONBOARD !== "1") {
+    const ready = await runCliOnboarding();
+    if (!ready || !anyProviderAvailable()) process.exit(0);
+  } else {
+    console.log("Gearbox needs one provider before the coding app can open.");
+    console.log("Run: gearbox onboard");
+    console.log("Or:  gearbox auth add <api-key>");
+    process.exit(1);
+  }
 }
 
 const mi = args.indexOf("--model");

@@ -93,3 +93,13 @@ case ":${PATH}:" in
     echo "Then run: gearbox"
     ;;
 esac
+
+if [[ "${GEARBOX_SKIP_ONBOARD:-}" != "1" ]]; then
+  echo ""
+  echo "Starting setup..."
+  if [[ -r /dev/tty && -w /dev/tty ]]; then
+    "${BIN_DIR}/gearbox" onboard < /dev/tty > /dev/tty
+  else
+    echo "No interactive terminal detected. Run: ${BIN_DIR}/gearbox onboard"
+  fi
+fi

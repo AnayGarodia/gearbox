@@ -81,6 +81,12 @@ node "$TargetCli" %*
   if (-not $AlreadyOnPath) {
     Write-Host "Open a new terminal if this shell does not pick up the PATH change."
   }
+
+  if ($env:GEARBOX_SKIP_ONBOARD -ne "1") {
+    Write-Host ""
+    Write-Host "Starting setup..."
+    & $CmdPath onboard
+  }
 }
 finally {
   Remove-Item -Recurse -Force $Temp -ErrorAction SilentlyContinue
