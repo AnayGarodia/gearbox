@@ -16,7 +16,7 @@ import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.5";
 const args = process.argv.slice(2);
 
 if (args[0] === "upgrade" || args[0] === "update") {

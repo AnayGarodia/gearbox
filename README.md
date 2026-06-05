@@ -44,17 +44,44 @@ No provider configured? Gearbox opens a setup screen and will not run a fake mod
 bun run scripts/preview.tsx
 ```
 
-## Install for internal use (the `gearbox` command, anywhere)
+## Install
 
-Requires [Bun](https://bun.sh). Clone the repo, then:
+One command, no sudo, no npm global permissions:
 
 ```bash
-./install.sh          # bun install + bun link  → 'gearbox' on your PATH
+curl -fsSL https://raw.githubusercontent.com/AnayGarodia/gearbox/main/install.sh | bash
+```
+
+The installer downloads the published `gearbox-code` package and creates a
+user-owned `gearbox` command in `~/.local/bin`.
+
+Then:
+
+```bash
 gearbox auth add <api-key>     # each person uses their own provider account
 cd ~/any/project && gearbox    # the current directory is the workspace
 ```
 
-**Upgrade** later with one command — `gearbox upgrade` (pulls latest + reinstalls deps). Equivalent to `git pull && bun install` in the repo. If `gearbox` isn't found, add Bun's bin dir to PATH: `export PATH="$HOME/.bun/bin:$PATH"`.
+If `~/.local/bin` is not on your PATH, the installer prints the exact line to
+add to your shell config.
+
+You can still run without installing:
+
+```bash
+npx gearbox-code@latest
+```
+
+**Upgrade** later by rerunning the install command. `gearbox upgrade` still works
+for git checkouts.
+
+## Develop From Source
+
+Requires [Bun](https://bun.sh). Clone the repo, then:
+
+```bash
+bun install
+bun run src/cli.tsx
+```
 
 **Standalone binary** (no clone/install on the target, same OS/arch):
 
