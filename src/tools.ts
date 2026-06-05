@@ -6,8 +6,9 @@ import { readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
-import { runShell } from "./shell.ts";
+import { runShellStream } from "./shell.ts";
 import { requestPermission } from "./permission.ts";
+import type { OnEvent } from "./agent/events.ts";
 
 const ROOT = process.cwd();
 const CAP = 60_000; // cap tool output so the transcript stays sane
@@ -27,7 +28,8 @@ function safe(path: string): string {
 
 const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
 
-export const tools = {
+export function createTools(onEvent?: OnEvent) {
+  return {
   read_file: tool({
     description: "Read a UTF-8 file from the workspace.",
     inputSchema: z.object({ path: z.string().describe("file path, relative to the workspace root") }),
@@ -156,10 +158,20 @@ export const tools = {
     inputSchema: z.object({ command: z.string() }),
     execute: async ({ command }) => {
       if (!(await requestPermission({ kind: "shell", title: "Run a shell command", detail: command }))) throw new Error(DENIED);
-      return runShell(command).output;
+      const id = `run_shell:${command}`;
+      const r = await runShellStream(command, {
+        onChunk: (c) => onEvent?.({ type: "tool-output", id, name: "run_shell", arg: command, stream: c.stream, text: c.text }),
+      });
+      if (/\b(bun|npm|pnpm|yarn)\s+(test|run\s+typecheck|typecheck|build)\b|\b(tsc|pytest|cargo\s+test|go\s+test)\b/.test(command)) {
+        onEvent?.({ type: "verification", command, ok: r.ok, summary: r.ok ? "passed" : "failed" });
+      }
+      return r.output;
     },
   }),
-};
+  };
+}
+
+export const tools = createTools();
 
 export type Tools = typeof tools;
 

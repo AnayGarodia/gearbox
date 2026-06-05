@@ -9,3 +9,4 @@ dist/
 *.sqlite-shm
 # experiments keep their own gitignore
 .gstack/
+.aider*

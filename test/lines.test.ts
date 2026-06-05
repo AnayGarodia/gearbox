@@ -35,3 +35,47 @@ test("a multi-line notice becomes multiple lines", () => {
   // 1 leading blank + 3 content lines
   expect(lines.length).toBeGreaterThanOrEqual(4);
 });
+
+test("fullscreen line buffer formats unfenced source as code", () => {
+  const source = [
+    "from dataclasses import dataclass",
+    "from random import Random",
+    "",
+    "@dataclass(frozen=True)",
+    "class Task:",
+    "    name: str",
+    "    effort: int",
+  ].join("\n");
+  const lines = itemsToLines([{ kind: "assistant", id: 1, text: source, done: true }], 80);
+  const text = lines.map((l) => l.map((s) => s.text).join("")).join("\n");
+
+  expect(text).toContain("python");
+  expect(text).toContain("1 │ from dataclasses import dataclass");
+  expect(text).toContain("class Task:");
+  for (const l of lines) expect(lineLen(l)).toBeLessThanOrEqual(80);
+});
+
+test("diff output paints added and removed rows with full-line backgrounds", () => {
+  const lines = itemsToLines([
+    {
+      kind: "tool",
+      id: 1,
+      callId: "a",
+      name: "edit_file",
+      arg: "src/example.ts",
+      status: "ok",
+      summary: "updated src/example.ts",
+      diff: [
+        { sign: "-", text: "const oldValue = 1;" },
+        { sign: "+", text: "const newValue = compute(2);" },
+      ],
+    },
+  ], 72, true);
+  const diffRows = lines.filter((l) => l.some((s) => s.text.includes("oldValue") || s.text.includes("newValue")));
+
+  expect(diffRows.length).toBe(2);
+  for (const row of diffRows) {
+    expect(row.every((s) => s.bg)).toBe(true);
+    expect(lineLen(row)).toBe(72);
+  }
+});

@@ -1,15 +1,28 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
-import { StateGhost, type MascotState, type GhostSkin } from "./Mascot.tsx";
+import type { MascotState, GhostSkin } from "./Mascot.tsx";
 
-// The working line, pinned to the RIGHT end. Boo IS the indicator now: a compact,
-// native-resolution head-crop ghost (src/ui/ghost/engine.ts) whose face changes
-// with the agent's state — thinking → reasoning, streaming → talking mouth, tool
-// → running, a clean finish → confetti, an error → crying with falling tears. The
-// verb + elapsed + interrupt hint sit to Boo's LEFT, vertically centered; Boo
-// hugs the right edge. The ghost carries its own (deliberately calm) motion, so
-// there is no separate spinner glyph.
+const THINK_FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+const STREAM_FRAMES = ["▁","▂","▃","▄","▅","▆","▇","█","▇","▆","▅","▄","▃","▂"];
+const TOOL_FRAMES = ["◐","◓","◑","◒"];
+const SPIN_PALETTE = ["#8B9EFF","#A78BFA","#C084FC","#9AE8FF","#7EF8A8","#8B9EFF"];
+
+function spinFrame(state: MascotState): string {
+  const f = Math.floor(Date.now() / 80);
+  if (state === "streaming") return STREAM_FRAMES[f % STREAM_FRAMES.length]!;
+  if (state === "tool") return TOOL_FRAMES[f % TOOL_FRAMES.length]!;
+  return THINK_FRAMES[f % THINK_FRAMES.length]!;
+}
+
+function spinColor(state: MascotState): string {
+  if (state === "streaming") return "#7EF8A8";
+  const f = Math.floor(Date.now() / 180);
+  return SPIN_PALETTE[f % SPIN_PALETTE.length]!;
+}
+
+// One-line working strip. The larger ghost stays out of the transcript and
+// selection zones; state is carried by color + concise text.
 
 export function Working({
   state,
@@ -30,15 +43,19 @@ export function Working({
 }) {
   const label = linger ? (state === "error" ? "something broke" : "done") : verb;
   const labelColor = linger && state === "error" ? color.err : linger && state === "celebrate" ? color.ok : color.text;
+  const dotColor = linger ? (state === "error" ? color.err : color.ok) : spinColor(state);
+  const spinner = linger ? "●" : spinFrame(state);
+  const f = Math.floor(Date.now() / 360);
+  const dots = ["", ".", "..", "..."][f % 4]!;
+  const phase = state === "tool" ? "using tools" : state === "streaming" ? "writing" : "thinking";
   return (
-    <Box width={width} paddingX={1} marginTop={1} alignItems="center" justifyContent="flex-end">
-      <Box marginRight={1} flexDirection="column" alignItems="flex-end">
-        <Text color={labelColor}>{label}</Text>
-        {!linger ? (
-          <Text color={color.faint}>{elapsed}s{tps > 0 ? ` · ~${tps} tok/s` : ""} · esc to interrupt</Text>
-        ) : null}
-      </Box>
-      <StateGhost state={state} skin={skin} />
+    <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
+      <Text color={labelColor}>
+        <Text color={dotColor}>{spinner} </Text>
+        {label}
+        {!linger ? <Text color={color.accentDim}> · {phase}{dots}</Text> : null}
+      </Text>
+      {!linger ? <Text><Text color={color.accentDim}>{elapsed}s</Text><Text color={color.faint}>{tps > 0 ? ` · ~${tps} tok/s` : ""} · esc to interrupt</Text></Text> : <Text color={color.faint}> </Text>}
     </Box>
   );
 }

@@ -13,6 +13,65 @@ const decode = (s: string) =>
 
 const visibleLen = (s: string) => decode(s).length;
 
+const codeLineRe =
+  /^(\s{2,}\S|from\s+|import\s+|class\s+|def\s+|async\s+def\s+|@\w|if\s+|elif\s+|else:|for\s+|while\s+|try:|except\s+|finally:|with\s+|return\s+|[A-Za-z_][\w.]*\s*=|[A-Za-z_][\w.]*\(|"""|'''|\/\/|#include\b|const\s+|let\s+|var\s+|function\s+|type\s+|interface\s+|export\s+|package\s+|func\s+)/;
+
+function looksLikeLooseCode(text: string): boolean {
+  const lines = decode(text).split("\n").filter((l) => l.trim());
+  if (lines.length < 2) return false;
+  const hits = lines.filter((l) => codeLineRe.test(l.trimStart() === l ? l.trim() : l)).length;
+  if (lines.length === 2) return hits === 2;
+  return hits / lines.length >= 0.55;
+}
+
+function guessCodeLang(text: string): string {
+  if (/^\s*(from|import|def|class|@dataclass)\b/m.test(text)) return "python";
+  if (/^\s*(const|let|var|function|type|interface|export|import)\b/m.test(text)) return "ts";
+  if (/^\s*(package|func)\b/m.test(text)) return "go";
+  return "";
+}
+
+const spansLen = (spans: { text: string }[]) => spans.reduce((n, s) => n + s.text.length, 0);
+
+function diffRow(line: string, lang: string): { sign: string; code: string; bg: string; fg: string; lang: string } {
+  const isDiff = /^(diff|patch)$/i.test(lang);
+  if ((isDiff || /^[+-]/.test(line)) && line.startsWith("+") && !line.startsWith("+++")) {
+    return { sign: "+", code: line.slice(1), bg: color.diffAddBg, fg: color.ok, lang: "" };
+  }
+  if ((isDiff || /^[+-]/.test(line)) && line.startsWith("-") && !line.startsWith("---")) {
+    return { sign: "−", code: line.slice(1), bg: color.diffDelBg, fg: color.err, lang: "" };
+  }
+  return { sign: "", code: line, bg: color.codeBg, fg: color.faint, lang };
+}
+
+function RichText({ text, baseColor = color.text }: { text: string; baseColor?: string }) {
+  const decoded = decode(text);
+  const out: React.ReactNode[] = [];
+  const re = /(\/[^\s,.)]+|(?:^|\s)(?:python|bun|npm|pnpm|yarn|git|pytest|tsc|node|deno|cargo|go)\s+[^\n.]*|`[^`]+`|"[^"]+"|'[^']+'|\b\d+(?:\.\d+)?\b|^[A-Z][A-Za-z /_-]{1,32}:|\b[A-Za-z][\w /-]{1,28}:)/g;
+  let last = 0;
+  let key = 0;
+  for (const m of decoded.matchAll(re)) {
+    const idx = m.index ?? 0;
+    const raw = m[0]!;
+    const leading = raw.match(/^\s+/)?.[0] ?? "";
+    const token = raw.slice(leading.length);
+    if (idx > last) out.push(<Text key={key++} color={baseColor}>{decoded.slice(last, idx)}</Text>);
+    if (leading) out.push(<Text key={key++} color={baseColor}>{leading}</Text>);
+    const tokenColor =
+      token.startsWith("/") ? color.path :
+      token.startsWith("`") ? color.accent :
+      token.startsWith('"') || token.startsWith("'") ? color.codeString :
+      /^\d/.test(token) ? color.codeNumber :
+      /:$/.test(token) ? color.accent :
+      color.user;
+    const bg = token.startsWith("/") ? color.accentBg : token.startsWith("`") ? color.codeBg : undefined;
+    out.push(<Text key={key++} color={tokenColor} bold={token.startsWith("/") || /:$/.test(token)} backgroundColor={bg}>{token}</Text>);
+    last = idx + raw.length;
+  }
+  if (last < decoded.length) out.push(<Text key={key++} color={baseColor}>{decoded.slice(last)}</Text>);
+  return <>{out.length ? out : <Text color={baseColor}>{decoded}</Text>}</>;
+}
+
 // ---- inline ----
 function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
   return (
@@ -21,7 +80,7 @@ function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
         switch (t.type) {
           case "strong":
             return (
-              <Text key={i} bold>
+              <Text key={i} bold color={color.text}>
                 <Inline tokens={t.tokens} />
               </Text>
             );
@@ -39,7 +98,7 @@ function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
             );
           case "codespan":
             return (
-              <Text key={i} color={color.accent}>
+              <Text key={i} color={/[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent} backgroundColor={color.codeBg}>
                 {decode(t.text)}
               </Text>
             );
@@ -52,9 +111,9 @@ function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
           case "br":
             return <Text key={i}>{"\n"}</Text>;
           case "text":
-            return t.tokens ? <Inline key={i} tokens={t.tokens} /> : <Text key={i}>{decode(t.text)}</Text>;
+            return t.tokens ? <Inline key={i} tokens={t.tokens} /> : <RichText key={i} text={t.text} />;
           default:
-            return <Text key={i}>{decode(t.text ?? t.raw ?? "")}</Text>;
+            return <RichText key={i} text={t.text ?? t.raw ?? ""} />;
         }
       })}
     </>
@@ -62,18 +121,41 @@ function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
 }
 
 // ---- code block (Ink-native syntax highlighting via styled spans) ----
-function CodeBlock({ lang, code }: { lang: string; code: string }) {
+function CodeBlock({ lang, code, width }: { lang: string; code: string; width: number }) {
   const lines = decode(code).replace(/\n$/, "").split("\n");
+  const lineNoWidth = Math.max(2, String(lines.length).length);
+  const contentWidth = Math.max(
+    24,
+    Math.min(
+      Math.max(24, width - 4),
+      Math.max(40, ...lines.map((l) => lineNoWidth + 3 + visibleLen(l)), lang ? visibleLen(lang) + 2 : 0),
+    ),
+  );
+  const renderPaddedLine = (key: React.Key, spans: React.ReactNode[], used: number, bg = color.codeBg) => (
+    <Text key={key}>
+      {spans}
+      <Text backgroundColor={bg}>{" ".repeat(Math.max(0, contentWidth - used))}</Text>
+    </Text>
+  );
   return (
-    <Box flexDirection="column" marginY={1} paddingX={1} borderStyle="round" borderColor={color.faint}>
-      {lang ? <Text color={color.faint}>{lang}</Text> : null}
-      {lines.map((l, i) => (
-        <Text key={i}>
-          {highlightLine(l, lang).map((s, j) => (
-            <Text key={j} color={s.color} bold={s.bold} dimColor={s.dim}>{s.text}</Text>
-          ))}
-        </Text>
-      ))}
+    <Box flexDirection="column" marginY={1} paddingX={1} borderStyle="single" borderColor={color.accentDim}>
+      {lang ? renderPaddedLine("lang", [<Text key="lang-text" color={color.accent} bold backgroundColor={color.codeBg}>{` ${lang} `}</Text>], visibleLen(lang) + 2) : null}
+      {lines.map((l, i) => {
+        const row = diffRow(l, lang);
+        const prefix = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} │ `;
+        const highlighted = highlightLine(row.code, row.lang);
+        return renderPaddedLine(
+          i,
+          [
+            <Text key="prefix" color={row.sign ? row.fg : color.faint} bold={Boolean(row.sign)} backgroundColor={row.bg}>{prefix}</Text>,
+            ...highlighted.map((s, j) => (
+              <Text key={j} color={s.color} bold={s.bold} dimColor={s.dim} backgroundColor={row.bg}>{s.text}</Text>
+            )),
+          ],
+          prefix.length + spansLen(highlighted),
+          row.bg,
+        );
+      })}
     </Box>
   );
 }
@@ -122,7 +204,7 @@ function ListBlock({ token, width }: { token: any; width: number }) {
     <Box flexDirection="column">
       {(token.items ?? []).map((item: any, i: number) => (
         <Box key={i} flexDirection="row">
-          <Text color={color.dim}>{token.ordered ? `${start + i}. ` : "• "}</Text>
+          <Text color={color.accentDim} bold>{token.ordered ? `${start + i}. ` : "• "}</Text>
           <Box flexDirection="column">
             <Blocks tokens={item.tokens} width={width - 3} />
           </Box>
@@ -144,23 +226,31 @@ function Block({ token, width }: { token: any; width: number }): React.ReactElem
         </Text>
       );
     case "paragraph":
+      if (looksLikeLooseCode(token.text ?? token.raw ?? "")) {
+        const text = token.text ?? token.raw ?? "";
+        return <CodeBlock lang={guessCodeLang(text)} code={text} width={width} />;
+      }
       return (
-        <Text wrap="wrap">
+        <Text wrap="wrap" color={color.text}>
           <Inline tokens={token.tokens} />
         </Text>
       );
     case "text":
+      if (looksLikeLooseCode(token.text ?? token.raw ?? "")) {
+        const text = token.text ?? token.raw ?? "";
+        return <CodeBlock lang={guessCodeLang(text)} code={text} width={width} />;
+      }
       return token.tokens ? (
-        <Text wrap="wrap">
+        <Text wrap="wrap" color={color.text}>
           <Inline tokens={token.tokens} />
         </Text>
       ) : (
-        <Text wrap="wrap">{decode(token.text ?? "")}</Text>
+        <Text wrap="wrap" color={color.text}>{decode(token.text ?? "")}</Text>
       );
     case "hr":
       return <Text color={color.faint}>{"─".repeat(Math.min(width, 48))}</Text>;
     case "code":
-      return <CodeBlock lang={token.lang ?? ""} code={token.text ?? ""} />;
+      return <CodeBlock lang={token.lang ?? ""} code={token.text ?? ""} width={width} />;
     case "list":
       return <ListBlock token={token} width={width} />;
     case "table":
@@ -168,14 +258,14 @@ function Block({ token, width }: { token: any; width: number }): React.ReactElem
     case "blockquote":
       return (
         <Box flexDirection="row">
-          <Text color={color.faint}>│ </Text>
+          <Text color={color.accentDim}>│ </Text>
           <Box flexDirection="column">
             <Blocks tokens={token.tokens} width={width - 2} />
           </Box>
         </Box>
       );
     default:
-      return token.text ? <Text wrap="wrap">{decode(token.text)}</Text> : null;
+      return token.text ? <Text wrap="wrap" color={color.text}>{decode(token.text)}</Text> : null;
   }
 }
 
@@ -194,7 +284,7 @@ export function Markdown({ text, width = 80 }: { text: string; width?: number })
   try {
     tokens = marked.lexer(text);
   } catch {
-    return <Text wrap="wrap">{text}</Text>;
+    return <Text wrap="wrap" color={color.text}>{text}</Text>;
   }
   return <Blocks tokens={tokens} width={width} />;
 }

@@ -15,25 +15,58 @@ export interface Theme {
   err: string;
   run: string;
   navy: string;
+  path: string;
+  userBg: string;
+  codeBg: string;
+  panelBg: string;
+  accentBg: string;
+  codeKeyword: string;
+  codeString: string;
+  codeNumber: string;
+  codeComment: string;
+  codePunct: string;
+  codeFunction: string;
+  codeType: string;
+  codeOperator: string;
+  codeBracket: string;
+  diffAddBg: string;
+  diffDelBg: string;
+  diffContextBg: string;
 }
 
 // Built-in palettes. `dark` is the original periwinkle-on-navy look.
 export const THEMES: Record<string, Theme> = {
   dark: {
-    accent: "#A5B4FC", accentDim: "#6E76B0", text: "#DCE2F7", dim: "#8A91B4", faint: "#565E80",
-    user: "#7FB7E8", ok: "#7FD7A8", err: "#F0868C", run: "#A5B4FC", navy: "#1E1B4B",
+    accent: "#7DD3FC", accentDim: "#60A5FA", text: "#EEF4FF", dim: "#B4BDD7", faint: "#7F89A8",
+    user: "#DCEBFF", ok: "#75F0A3", err: "#FF7A8A", run: "#C084FC", navy: "#161A2D",
+    userBg: "#17324A", codeBg: "#151F36", panelBg: "#17223A", accentBg: "#12364B",
+    path: "#F0ABFC", codeKeyword: "#7DD3FC", codeString: "#A7F3D0", codeNumber: "#FCA5A5", codeComment: "#7D879F", codePunct: "#CBD5E1",
+    codeFunction: "#F472B6", codeType: "#C4B5FD", codeOperator: "#FBBF24", codeBracket: "#22D3EE",
+    diffAddBg: "#0B331E", diffDelBg: "#3A1018", diffContextBg: "#151F36",
   },
   light: {
     accent: "#5B53D6", accentDim: "#8A86C9", text: "#1E1B4B", dim: "#4B5168", faint: "#9AA0B8",
     user: "#1D4ED8", ok: "#0F9D58", err: "#C5283D", run: "#5B53D6", navy: "#1E1B4B",
+    userBg: "#EAF2FF", codeBg: "#F2F5FB", panelBg: "#EEF0F7", accentBg: "#ECEAFE",
+    path: "#6D28D9", codeKeyword: "#6D28D9", codeString: "#15803D", codeNumber: "#2563EB", codeComment: "#8A8FA3", codePunct: "#64748B",
+    codeFunction: "#BE185D", codeType: "#7C3AED", codeOperator: "#A16207", codeBracket: "#4F46E5",
+    diffAddBg: "#DCFCE7", diffDelBg: "#FEE2E2", diffContextBg: "#F2F5FB",
   },
   mono: {
     accent: "#FFFFFF", accentDim: "#9A9A9A", text: "#F4F4F4", dim: "#B0B0B0", faint: "#7A7A7A",
     user: "#FFFFFF", ok: "#7CFC7C", err: "#FF6B6B", run: "#FFFFFF", navy: "#000000",
+    userBg: "#202020", codeBg: "#161616", panelBg: "#242424", accentBg: "#303030",
+    path: "#FFFFFF", codeKeyword: "#FFFFFF", codeString: "#D8D8D8", codeNumber: "#C8C8C8", codeComment: "#7A7A7A", codePunct: "#B0B0B0",
+    codeFunction: "#FFFFFF", codeType: "#D8D8D8", codeOperator: "#C8C8C8", codeBracket: "#B0B0B0",
+    diffAddBg: "#103018", diffDelBg: "#351014", diffContextBg: "#161616",
   },
   solarized: {
     accent: "#268BD2", accentDim: "#5E7A8A", text: "#EEE8D5", dim: "#93A1A1", faint: "#657B83",
     user: "#2AA198", ok: "#859900", err: "#DC322F", run: "#268BD2", navy: "#002B36",
+    userBg: "#073642", codeBg: "#00212A", panelBg: "#07313B", accentBg: "#123A46",
+    path: "#6C71C4", codeKeyword: "#268BD2", codeString: "#2AA198", codeNumber: "#D33682", codeComment: "#657B83", codePunct: "#93A1A1",
+    codeFunction: "#B58900", codeType: "#6C71C4", codeOperator: "#CB4B16", codeBracket: "#859900",
+    diffAddBg: "#073B27", diffDelBg: "#3B1518", diffContextBg: "#00212A",
   },
 };
 export const THEME_NAMES = Object.keys(THEMES);

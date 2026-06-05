@@ -10,10 +10,10 @@ import {
 import { CATALOG, catalogProvider, detectProviderByKey } from "../src/accounts/catalog.ts";
 import { importEnvCred, importableEnvCreds } from "../src/accounts/detect.ts";
 import { resolveCreds } from "../src/accounts/resolve.ts";
-import { addApiKeyAccount, addByPastedKey, addCliAccount } from "../src/accounts/onboard.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addCliAccount } from "../src/accounts/onboard.ts";
 import { subscriptionEnv } from "../src/agent/cli-backend.ts";
 import { detectCloudCreds, importCloudCred } from "../src/accounts/detect.ts";
-import { recordUsage, recordRateLimit, loadUsage, accountUsage, totalSpent } from "../src/accounts/usage.ts";
+import { recordUsage, recordRateLimits, loadUsage, accountUsage, totalSpent, buildUsageView } from "../src/accounts/usage.ts";
 import { MODELS, findModel, resolveModel } from "../src/providers.ts";
 import type { Account } from "../src/accounts/types.ts";
 
@@ -187,6 +187,22 @@ test("cloud account stores secrets and resolveCreds returns the cloud config", a
   }
 });
 
+test("addAzureAccount accepts a resource endpoint and resolves Azure creds", async () => {
+  const res = await addAzureAccount("https://myfoundry.openai.azure.com", "az-key", { apiVersion: "2024-10-21" });
+  expect(res.ok).toBe(true);
+  expect(res.account?.provider).toBe("azure");
+  expect(res.account?.label).toBe("Azure (myfoundry)");
+  expect(await resolveCreds(res.account!)).toEqual({ azure: { resourceName: "myfoundry", apiKey: "az-key", apiVersion: "2024-10-21" } });
+});
+
+test("addAzureFoundryAccount stores an OpenAI-compatible Foundry endpoint", async () => {
+  const res = await addAzureFoundryAccount("https://myfoundry.services.ai.azure.com/api/projects/proj", "foundry-key");
+  expect(res.ok).toBe(true);
+  expect(res.account?.provider).toBe("azure-foundry");
+  expect(res.account?.baseUrl).toBe("https://myfoundry.services.ai.azure.com/api/projects/proj/openai/v1");
+  expect(await resolveCreds(res.account!)).toMatchObject({ apiKey: "foundry-key", baseURL: res.account?.baseUrl });
+});
+
 // ── P4: per-account usage/spend ledger ──
 test("recordUsage accumulates spend, tokens, and turns per account", () => {
   recordUsage({ accountId: "anthropic-work", inputTokens: 100, outputTokens: 20, costUSD: 0.5, estimated: false });
@@ -204,27 +220,38 @@ test("recordUsage accumulates spend, tokens, and turns per account", () => {
   expect(loadUsage()[0]!.accountId).toBe("anthropic-work");
 });
 
-test("recordRateLimit attaches a quota snapshot to an account", () => {
+test("recordRateLimits attaches quota snapshots to an account", () => {
   recordUsage({ accountId: "claude-cli", inputTokens: 1, outputTokens: 1, costUSD: 0.01, estimated: false });
-  recordRateLimit("claude-cli", { utilization: 0.81, type: "seven_day", resetsAt: 1780718400 });
+  recordRateLimits("claude-cli", [{ utilization: 0.81, type: "seven_day", resetsAt: 1780718400 }]);
   expect(accountUsage("claude-cli")?.rate?.utilization).toBe(0.81);
+  expect(accountUsage("claude-cli")?.rates?.[0]?.type).toBe("seven_day");
   // no-op for an unknown account (nothing to attach to)
-  recordRateLimit("ghost", { utilization: 0.5 });
+  recordRateLimits("ghost", [{ utilization: 0.5 }]);
   expect(accountUsage("ghost")).toBeUndefined();
+});
+
+test("buildUsageView includes configured accounts without usage yet", () => {
+  const view = buildUsageView(0, (id) => ({ name: id, kind: id.includes("cli") ? "sub" : "api", limitNote: "provider has not reported limits" }), Date.now(), ["claude-cli", "codex-cli", "anthropic"]);
+  expect(view.subscriptions.map((a) => a.name)).toEqual(["claude-cli", "codex-cli"]);
+  expect(view.subscriptions[0]?.turns).toBe(0);
+  expect(view.subscriptions[0]?.limitNote).toBe("provider has not reported limits");
+  expect(view.apiKeys.map((a) => a.name)).toContain("anthropic");
 });
 
 // ── plain-English labels + numbered list (no ids in the UI) ──
 test("accountLabel reads in plain English; list is numbered", async () => {
-  const { accountLabel, formatAccounts } = await import("../src/commands.ts");
+  const { accountLabel, accountSlug, formatAccounts } = await import("../src/commands.ts");
   addCliAccount("claude-cli");
   addCliAccount("codex-cli", "personal");
   await addApiKeyAccount("anthropic", "sk-ant-x", { id: "anthropic-x" });
   expect(accountLabel(getAccount("claude-cli")!)).toBe("Claude · subscription");
   expect(accountLabel(getAccount("codex-cli-personal")!)).toBe("ChatGPT (personal) · subscription");
+  expect(accountSlug(getAccount("codex-cli-personal")!)).toBe("chatgpt-personal");
   expect(accountLabel(getAccount("anthropic-x")!)).toBe("Anthropic · API key");
   const out = formatAccounts(listAccounts(), "claude-cli", []);
-  expect(out).toContain("1."); // numbered
-  expect(out).toContain("/account <number>"); // switch by number, not id
+  expect(out).toContain("(or 1)"); // number remains a shortcut
+  expect(out).toContain("/account chatgpt-personal"); // name alias is first-class
+  expect(out).toContain("/account <name-or-number>");
   expect(out).not.toContain("<id>"); // ids are gone from the UI
 });
 

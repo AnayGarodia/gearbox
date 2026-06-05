@@ -5,7 +5,7 @@ import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import { reasoningOptions, type Effort } from "../model/reasoning.ts";
-import { tools, readOnlyTools } from "../tools.ts";
+import { createTools, readOnlyTools } from "../tools.ts";
 import { config } from "../config.ts";
 import { BASE_SYSTEM, PLAN_ADDENDUM } from "../context/builder.ts";
 import type { OnEvent, Usage } from "./events.ts";
@@ -135,7 +135,7 @@ export async function runTask(opts: {
   plan?: boolean;
   system?: string; // prebuilt by the Context Engine; falls back to SYSTEM
   creds?: ResolvedCreds; // per-account credentials (from the active account); env-default if absent
-  effort?: Effort; // reasoning-effort tier → per-provider providerOptions (model/reasoning.ts)
+  effort?: Effort; // model-specific reasoning effort → per-provider providerOptions
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
 }): Promise<{ messages: ModelMessage[]; usage: Usage }> {
   const { model, messages, onEvent, signal, plan } = opts;
@@ -154,13 +154,15 @@ export async function runTask(opts: {
     onEvent({ type: "error", message: cleanError(err) });
   };
 
+  onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
+  const activeTools = plan ? readOnlyTools : createTools(onEvent);
   const result = opts._stream
     ? null
     : streamText({
         model: resolveModel(model, opts.creds),
         system: opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM),
         messages,
-        tools: plan ? readOnlyTools : tools,
+        tools: activeTools,
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: signal,
         onError: ({ error }) => emitErr(error),
@@ -226,6 +228,7 @@ export async function runTask(opts: {
           started.add(id);
           openStream(id, name);
           onEvent({ type: "tool-start", id, name, arg: "" });
+          onEvent({ type: "phase", label: friendlyToolPhase(name), state: "running" });
           break;
         }
         case "tool-input-delta": {
@@ -258,6 +261,7 @@ export async function runTask(opts: {
           } else {
             started.add(id);
             onEvent({ type: "tool-start", id, name, arg });
+            onEvent({ type: "phase", label: friendlyToolPhase(name), detail: arg, state: "running" });
           }
           break;
         }
@@ -269,11 +273,13 @@ export async function runTask(opts: {
           } else {
             onEvent({ type: "tool-end", id, ok: true, summary: resultSummary(output) });
           }
+          onEvent({ type: "phase", label: "tool finished", state: "ok" });
           break;
         }
         case "tool-error": {
           const id = part.toolCallId ?? part.id ?? "";
           onEvent({ type: "tool-end", id, ok: false, summary: String(part.error ?? "failed").slice(0, 64) });
+          onEvent({ type: "phase", label: "tool failed", state: "err" });
           break;
         }
         case "error": {
@@ -302,6 +308,14 @@ export async function runTask(opts: {
       /* keep prior messages; multi-turn still works from input history */
     }
   }
+  onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
   onEvent({ type: "done", usage });
   return { messages: next, usage };
+}
+
+function friendlyToolPhase(name: string): string {
+  if (name === "read_file" || name === "list_dir" || name === "glob" || name === "search") return "reading context";
+  if (name === "write_file" || name === "edit_file") return "editing files";
+  if (name === "run_shell") return "running command";
+  return "using tool";
 }

@@ -58,6 +58,7 @@ export const CATALOG: CatalogProvider[] = [
   { id: "requesty", label: "Requesty", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["REQUESTY_API_KEY"], baseUrl: "https://router.requesty.ai/v1", signupUrl: "https://app.requesty.ai" },
   { id: "portkey", label: "Portkey", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["PORTKEY_API_KEY"], baseUrl: "https://api.portkey.ai/v1", signupUrl: "https://app.portkey.ai", notes: "Config-driven routing via x-portkey-* headers." },
   { id: "litellm", label: "LiteLLM proxy", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["LITELLM_API_KEY"], signupUrl: "https://docs.litellm.ai/docs/simple_proxy", notes: "Self-hosted; set baseUrl to your proxy." },
+  { id: "azure-foundry", label: "Azure AI Foundry", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["AZURE_AI_FOUNDRY_API_KEY", "AZURE_AI_INFERENCE_API_KEY"], signupUrl: "https://ai.azure.com", defaultModels: ["gpt-5.5", "gpt-5.5-mini", "gpt-4.1", "o4-mini"], notes: "OpenAI-compatible Foundry endpoint. Use baseUrl ending in /openai/v1." },
 
   // ── cloud (credential chains; native packages added in P2) ──
   { id: "bedrock", label: "Amazon Bedrock", group: "cloud", exec: "in-loop", authKind: "aws", envVars: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_PROFILE"], keyPrefix: ["AKIA", "ASIA"], signupUrl: "https://console.aws.amazon.com/bedrock", defaultModels: ["anthropic.claude-sonnet-4-20250514-v1:0"], notes: "Needs @ai-sdk/amazon-bedrock (P2)." },
@@ -72,7 +73,7 @@ export const CATALOG: CatalogProvider[] = [
 
   // ── CLI-backed subscriptions (subprocess; never token extraction) ──
   { id: "claude-cli", label: "Claude (Pro/Max via claude CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "claude", signupUrl: "https://claude.com/product/claude-code", defaultModels: ["claude-opus-4-8", "claude-sonnet-4-6"], notes: "Wraps the official binary (like Conductor). Runs its own tools/permissions. ToS-clean: no token is read." },
-  { id: "codex-cli", label: "ChatGPT (Plus/Pro via codex CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "codex", signupUrl: "https://developers.openai.com/codex/cli", defaultModels: ["gpt-5.5-codex"], notes: "Wraps the official binary. Runs its own tools/permissions. ToS-clean." },
+  { id: "codex-cli", label: "ChatGPT (Plus/Pro via codex CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "codex", signupUrl: "https://developers.openai.com/codex/cli", defaultModels: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"], notes: "Wraps the official binary. Runs its own tools/permissions. ToS-clean." },
 ];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));

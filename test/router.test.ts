@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoutingSelector, classify } from "../src/model/router.ts";
+import { confirmRoutingPreference } from "../src/model/preferences.ts";
 
 // Isolate the account store to an empty dir so provider availability depends
 // ONLY on env keys (not the developer's real ~/.gearbox accounts).
@@ -69,4 +70,19 @@ test("an explicit kind is honored over the prompt", () => {
 test("no provider key → throws", () => {
   only();
   expect(() => new RoutingSelector().select({ prompt: "x" })).toThrow();
+});
+
+test("confirmed task preferences bias routing when the model still clears the bar", () => {
+  const priorHome = process.env.GEARBOX_HOME;
+  process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-router-pref-"));
+  try {
+    only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+    confirmRoutingPreference({ kind: "code", modelId: "claude-sonnet-4-6" });
+    const r = new RoutingSelector();
+    expect(r.select({ prompt: "refactor the parser" }).model.id).toBe("claude-sonnet-4-6");
+    expect(r.select({ prompt: "refactor the parser" }).reason).toContain("remembered preference");
+  } finally {
+    if (priorHome === undefined) delete process.env.GEARBOX_HOME;
+    else process.env.GEARBOX_HOME = priorHome;
+  }
 });

@@ -51,8 +51,8 @@ Options:
   --model <name>      e.g. sonnet-4.6, haiku, gemini-flash, deepseek
   -c, --continue      resume the most recent session here (/resume to pick one)
   --yolo              auto-approve writes/edits/shell (no permission prompts)
-  --fullscreen        alt-screen frame + scrollbar (mouse-wheel scroll; native
-                      text selection then needs the terminal's modifier, e.g. ⌥-drag)
+  --inline            use terminal scrollback instead of the fullscreen app frame
+  --fullscreen        fullscreen app frame (default when stdout is a TTY)
   -v, --version       print version
   -h, --help          this help
 
@@ -132,27 +132,28 @@ setImageMode(imageMode);
 // the UI references them via cheap Unicode placeholders (a=T,U=1 draws nothing).
 if (process.stdout.isTTY && imageMode === "kitty") process.stdout.write(transmitAll());
 
-// Inline is the DEFAULT (like Claude Code): no alt-screen, no mouse grab, so the
-// terminal owns the screen — native click-drag selection, scrollback, and
-// copy all "just work" with no modifier. Fullscreen (the alt-screen frame with a
-// virtualized scroll region + scrollbar) is opt-in, because grabbing the mouse
-// for wheel-scroll is what disables native selection. Opt in with `--fullscreen`,
-// GEARBOX_FULLSCREEN=1, or `/config inline off`. GEARBOX_INLINE=1 forces inline.
+// Fullscreen is the DEFAULT: the app owns a stable frame and the composer stays
+// pinned to the bottom, like the coding CLIs users expect. Inline remains
+// available when terminal scrollback is more important than a fixed footer.
 const uiPrefs = loadPrefs();
 if (uiPrefs.theme) setTheme(uiPrefs.theme); // apply before first render
-const wantsFullscreen =
-  process.env.GEARBOX_INLINE !== "1" &&
-  (args.includes("--fullscreen") || process.env.GEARBOX_FULLSCREEN === "1" || uiPrefs.fullscreen === true);
+const explicitInline = args.includes("--inline") || process.env.GEARBOX_INLINE === "1" || process.env.GEARBOX_FULLSCREEN === "0";
+const explicitFullscreen = args.includes("--fullscreen") || process.env.GEARBOX_FULLSCREEN === "1";
+const wantsInline = explicitInline || (!explicitFullscreen && uiPrefs.fullscreen === false);
+const wantsFullscreen = !wantsInline;
 const fullscreen = Boolean(process.stdout.isTTY) && wantsFullscreen;
+const mouse = Boolean(process.stdout.isTTY) && process.env.GEARBOX_MOUSE !== "0";
 const restore = () => {
   if (!process.stdout.isTTY) return;
-  process.stdout.write("\x1b[?2004l"); // bracketed paste off
-  if (fullscreen) process.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l\x1b[?25h");
+  process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, native cursor back on
+  if (mouse) process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l");
+  if (fullscreen) process.stdout.write("\x1b[?1049l");
 };
-// Bracketed paste so multi-line paste arrives as one chunk (not \r-per-line that
-// would submit on each newline). alt-screen + SGR mouse reporting for fullscreen.
-if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h");
-if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h");
+// Keep bracketed paste OFF. Some Ink/terminal combinations deliver the paste
+// markers as literal "[200~" chunks; normal paste is less surprising.
+if (process.stdout.isTTY) process.stdout.write("\x1b[?2004l\x1b[?25l");
+if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H");
+if (mouse) process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
 
 // exitOnCtrlC:false so the app can handle ⌃C itself (interrupt / clear / confirm-quit).
 const app = render(<App selector={selector} demo={demo} fullscreen={fullscreen} resumeId={resumeId} />, { exitOnCtrlC: false });

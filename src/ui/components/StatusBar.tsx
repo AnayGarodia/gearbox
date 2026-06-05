@@ -23,6 +23,7 @@ export function StatusBar({
   mode = "normal",
   effort = "balanced",
   subscription = null,
+  online = true,
 }: {
   model: string;
   cwd?: string;
@@ -34,33 +35,37 @@ export function StatusBar({
   cost?: number;
   width: number;
   mode?: "normal" | "auto-accept" | "plan";
-  effort?: "fast" | "balanced" | "max";
+  effort?: string;
   subscription?: string | null; // active CLI-backed subscription account label
+  online?: boolean;
 }) {
   const sep = `  ${glyph.bullet}  `;
   const modeLabel = mode === "auto-accept" ? "auto-accept" : mode; // "plan" / "auto-accept"
   const left = [
     model,
-    subscription ? null : `⚡${effort}`, // effort/reasoning doesn't apply on a CLI subscription
+    effort ? `effort ${effort}` : null,
     branch ? `${glyph.branch} ${branch}` : null,
-    ctxPct != null && ctxPct > 0 ? `${ctxPct}% ctx` : null,
     tokens > 0 ? `${fmtTokens(tokens)} tok` : null,
     cost >= 0.005 ? `$${cost.toFixed(2)}` : null,
   ].filter(Boolean) as string[];
+  const ctxColor = ctxPct == null || ctxPct < 70 ? color.faint : ctxPct < 90 ? color.accent : color.err;
 
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
-      <Text color={color.faint} wrap="truncate-end">
+      <Text color={color.dim} wrap="truncate-end">
         {mode !== "normal" ? <Text color={color.accent}>{modeLabel}{sep}</Text> : null}
-        {left.join(sep)}
+        {left.length ? <Text color={color.dim}>{left[0]}</Text> : null}
+        {left.slice(1).map((x) => <Text key={x} color={x.includes("tok") ? color.accentDim : color.faint}>{sep}{x}</Text>)}
+        {ctxPct != null && ctxPct > 0 ? <Text color={ctxColor}>{left.length ? sep : ""}{ctxPct}% ctx</Text> : null}
+        {!online ? <Text color={color.err} bold>{sep}⚠ offline</Text> : null}
       </Text>
       <Text color={color.faint} wrap="truncate-end">
-        {yolo ? <Text color={color.err} bold>⚡ yolo</Text> : null}
+        {yolo ? <Text color={color.err} bold>yolo</Text> : null}
         {yolo && (subscription || routing) ? `  ${glyph.bullet}  ` : null}
         {/* Active subscription account takes over the right side (no in-loop routing).
             The model name is already on the left, so the right reminds you of the
             one thing that's different: it runs its own tools/permissions. */}
-        {subscription ? <Text color={color.accent}>subscription {glyph.bullet} own tools/perms</Text> : null}
+        {subscription ? <Text><Text color={color.ok}>subscription</Text><Text color={color.faint}> {glyph.bullet} </Text><Text color={color.text}>own tools/perms</Text></Text> : null}
         {!subscription && routing ? <Text color={color.accentDim}>auto</Text> : null}
         {!subscription && routing ? ` ${glyph.bullet} ${routing}` : null}
       </Text>

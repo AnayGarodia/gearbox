@@ -27,3 +27,29 @@ test("highlightLine treats # as a comment only in hash-comment languages", () =>
   const js = highlightLine("a # b", "js");
   expect(js.some((s) => s.text === "# b")).toBe(false);
 });
+
+test("highlightLine gives editor-like colors to functions, types, operators, and brackets", () => {
+  const sp = highlightLine("def add(self, title, priority=3):", "python");
+  const fn = sp.find((s) => s.text === "add");
+  const open = sp.find((s) => s.text === "(");
+  const eq = sp.find((s) => s.text === "=");
+  const arg = sp.find((s) => s.text === "priority");
+
+  expect(fn?.color).toBeTruthy();
+  expect(fn?.bold).toBe(true);
+  expect(open?.color).toBeTruthy();
+  expect(open?.bold).toBe(true);
+  expect(eq?.color).toBeTruthy();
+  expect(arg?.color).toBeTruthy();
+  expect(new Set([fn?.color, open?.color, eq?.color, arg?.color]).size).toBe(4);
+
+  const cls = highlightLine("class TaskBoard:", "python").find((s) => s.text === "TaskBoard");
+  expect(cls?.color).toBeTruthy();
+  expect(cls?.bold).toBe(true);
+
+  const call = highlightLine("return sorted(open_items, key=lambda task: task.priority)[0]", "python");
+  const method = call.find((s) => s.text === "priority");
+  const brackets = call.filter((s) => ["(", ")", "[", "]"].includes(s.text));
+  expect(method?.color).toBeTruthy();
+  expect(new Set(brackets.map((s) => s.color)).size).toBeGreaterThan(1);
+});

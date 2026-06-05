@@ -10,10 +10,15 @@ export interface Usage {
 export type DiffLine = { sign: "+" | "-"; text: string };
 
 export type AgentEvent =
+  | { type: "model-pick"; model: string; provider: string; reason: string }
+  | { type: "phase"; label: string; detail?: string; state?: "running" | "ok" | "err" }
   | { type: "text"; text: string } // a chunk of assistant prose
   | { type: "tool-start"; id: string; name: string; arg: string } // tool call began (fires as input starts streaming)
   | { type: "tool-stream"; id: string; arg?: string; delta?: string } // tool input streaming: `arg` updates the head, `delta` appends streamed content (e.g. a file being written)
+  | { type: "tool-output"; id?: string; name?: string; arg?: string; stream: "stdout" | "stderr"; text: string }
   | { type: "tool-end"; id: string; ok: boolean; summary: string; diff?: DiffLine[] } // tool call finished
+  | { type: "verification"; command: string; ok: boolean; summary: string }
+  | { type: "preference-suggestion"; id: string; text: string; acceptCommand: string }
   | { type: "done"; usage: Usage } // turn complete
   | { type: "error"; message: string };
 

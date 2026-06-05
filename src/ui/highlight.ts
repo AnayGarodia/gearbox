@@ -21,13 +21,39 @@ const KEYWORDS = new Set(
     "select then end module require begin rescue ensure self nil echo local set unset"
   ).split(" "),
 );
+const BUILTINS = new Set(
+  (
+    "print input open len str int float list dict set tuple range enumerate zip map filter sum min max abs round sorted reversed " +
+    "json os sys re pathlib argparse datetime Counter defaultdict Any Optional Union Literal self cls False True None"
+  ).split(" "),
+);
 
 const HASH_COMMENT_LANGS = /^(py|python|sh|bash|zsh|fish|yaml|yml|rb|ruby|toml|ini|conf|cfg|makefile|make|dockerfile|r|pl|perl|nim|elixir|ex|exs)$/i;
+const TYPE_CONTEXT = new Set(["class", "interface", "type", "struct", "enum", "trait"]);
+const FN_CONTEXT = new Set(["def", "function", "func", "fn"]);
+const BRACKETS = new Set(["(", ")", "[", "]", "{", "}"]);
+const OPERATORS = new Set(["=", "+", "-", "*", "/", "%", "!", "<", ">", "&", "|", "^", "~", "?", ":"]);
+const bracketColor = (ch: string, depth: number) => {
+  const typeOffset = ch === "[" || ch === "]" ? 1 : ch === "{" || ch === "}" ? 2 : 0;
+  return [color.codeBracket, color.codeOperator, color.accent, color.codeType][(Math.abs(depth) + typeOffset) % 4]!;
+};
+
+const nextNonSpace = (line: string, i: number) => {
+  let j = i;
+  while (j < line.length && /\s/.test(line[j]!)) j++;
+  return line[j] ?? "";
+};
+
+const previousWord = (line: string, i: number) => {
+  const left = line.slice(0, i).trimEnd();
+  return left.match(/[A-Za-z_$][\w$]*$/)?.[0] ?? "";
+};
 
 /** Tokenize one line into colored spans. `lang` tweaks the comment marker. */
 export function highlightLine(line: string, lang = ""): HSpan[] {
   const out: HSpan[] = [];
   const hash = HASH_COMMENT_LANGS.test(lang);
+  let bracketDepth = 0;
   const push = (text: string, c?: string, extra?: Partial<HSpan>) => {
     if (text) out.push({ text, color: c, ...extra });
   };
@@ -37,8 +63,16 @@ export function highlightLine(line: string, lang = ""): HSpan[] {
     const prev = i > 0 ? line[i - 1]! : "";
     // line comment
     if ((c === "/" && line[i + 1] === "/") || (hash && c === "#") || (c === "-" && line[i + 1] === "-" && /^(lua|sql|hs|haskell)$/i.test(lang))) {
-      push(line.slice(i), color.faint);
+      push(line.slice(i), color.codeComment);
       break;
+    }
+    // decorators / annotations
+    if (c === "@" && /[A-Za-z_]/.test(line[i + 1] ?? "")) {
+      let j = i + 1;
+      while (j < line.length && /[\w.]/.test(line[j]!)) j++;
+      push(line.slice(i, j), color.codeFunction, { bold: true });
+      i = j;
+      continue;
     }
     // string (single-line; tolerates escapes)
     if (c === '"' || c === "'" || c === "`") {
@@ -48,7 +82,7 @@ export function highlightLine(line: string, lang = ""): HSpan[] {
         j++;
       }
       const end = Math.min(j + 1, line.length);
-      push(line.slice(i, end), color.ok);
+      push(line.slice(i, end), color.codeString);
       i = end;
       continue;
     }
@@ -56,7 +90,7 @@ export function highlightLine(line: string, lang = ""): HSpan[] {
     if (/[0-9]/.test(c) && !/[\w]/.test(prev)) {
       let j = i;
       while (j < line.length && /[0-9._xXa-fA-F]/.test(line[j]!)) j++;
-      push(line.slice(i, j), color.user);
+      push(line.slice(i, j), color.codeNumber);
       i = j;
       continue;
     }
@@ -65,12 +99,37 @@ export function highlightLine(line: string, lang = ""): HSpan[] {
       let j = i;
       while (j < line.length && /[\w$]/.test(line[j]!)) j++;
       const w = line.slice(i, j);
-      if (KEYWORDS.has(w)) push(w, color.accent, { bold: true });
+      const prevWord = previousWord(line, i);
+      const next = nextNonSpace(line, j);
+      const prevSig = line.slice(0, i).trimEnd().slice(-1);
+      const nextSig = line.slice(j).trimStart()[0] ?? "";
+      if (KEYWORDS.has(w)) push(w, color.codeKeyword, { bold: true });
+      else if (FN_CONTEXT.has(prevWord)) push(w, color.codeFunction, { bold: true });
+      else if (TYPE_CONTEXT.has(prevWord)) push(w, color.codeType, { bold: true });
+      else if (BUILTINS.has(w)) push(w, color.codeType);
+      else if (next === "(") push(w, color.codeFunction, prevSig === "." ? undefined : { bold: true });
+      else if (nextSig === "=" && prevSig !== "=" && line.slice(j).trimStart()[1] !== "=") push(w, color.path);
+      else if (prevSig === ".") push(w, color.codeType);
+      else if (/^[A-Z]/.test(w)) push(w, color.codeType);
       else push(w, color.text);
       i = j;
       continue;
     }
-    push(c, color.dim);
+    if (BRACKETS.has(c)) {
+      if (c === ")" || c === "]" || c === "}") bracketDepth = Math.max(0, bracketDepth - 1);
+      push(c, bracketColor(c, bracketDepth), { bold: true });
+      if (c === "(" || c === "[" || c === "{") bracketDepth++;
+      i++;
+      continue;
+    }
+    if (OPERATORS.has(c)) {
+      let j = i;
+      while (j < line.length && OPERATORS.has(line[j]!)) j++;
+      push(line.slice(i, j), color.codeOperator);
+      i = j;
+      continue;
+    }
+    push(c, color.codePunct);
     i++;
   }
   return out.length ? out : [{ text: line, dim: true }];

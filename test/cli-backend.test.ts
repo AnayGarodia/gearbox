@@ -1,5 +1,8 @@
 import { test, expect } from "bun:test";
-import { parseCliLines, buildCliArgs } from "../src/agent/cli-backend.ts";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseCliLines, buildCliArgs, runCliTask } from "../src/agent/cli-backend.ts";
 import type { AgentEvent } from "../src/agent/events.ts";
 
 // Fixtures lifted from experiments/cli-backend-spike.md (the real schemas).
@@ -30,7 +33,7 @@ test("claude stream maps to text/tool events + usage + cost + session", () => {
   expect(r.usage).toEqual({ inputTokens: 8861, outputTokens: 4 });
   expect(r.costUSD).toBe(0.19);
   expect(r.sessionId).toBe("sess-abc");
-  expect(r.rate).toMatchObject({ utilization: 0.81, type: "seven_day" }); // quota snapshot captured
+  expect(r.rates?.[0]).toMatchObject({ utilization: 0.81, type: "seven_day" }); // quota snapshot captured
 });
 
 test("codex stream maps agent_message + tool item + usage + thread id", () => {
@@ -59,10 +62,33 @@ test("buildCliArgs uses each binary's stream-json flags", () => {
   expect(x[0]).toBe("exec");
   expect(x).toContain("--json");
   expect(x).toContain("--skip-git-repo-check");
+  expect(x).toContain("--ignore-user-config");
+  expect(x).toContain("--sandbox");
+  expect(x).toContain("workspace-write");
+  expect(x).toContain("approval_policy=\"never\"");
+  expect(x).not.toContain("--ask-for-approval");
+  expect(x).not.toContain("--full-auto");
 
   // autoApprove flips the permission/sandbox flag
   expect(buildCliArgs("claude", "x", { autoApprove: true })).toContain("bypassPermissions");
   expect(buildCliArgs("codex", "x", { autoApprove: true })).toContain("--dangerously-bypass-approvals-and-sandbox");
   // session resume threads through
   expect(buildCliArgs("claude", "x", { sessionId: "s9" })).toContain("s9");
+  expect(buildCliArgs("claude", "x", { modelId: "claude-haiku-4-5" })).toContain("haiku");
+  expect(buildCliArgs("codex", "x", { modelId: "gpt-5.5" })).toContain("gpt-5.5");
+  expect(buildCliArgs("codex", "x", { effort: "xhigh" })).toContain('model_reasoning_effort="xhigh"');
+});
+
+test("runCliTask surfaces stderr when a CLI exits without JSON output", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "gearbox-fake-codex-"));
+  const bin = join(dir, "codex-fake");
+  writeFileSync(bin, "#!/bin/sh\necho 'boom from stderr' >&2\nexit 7\n");
+  chmodSync(bin, 0o755);
+  const ev: AgentEvent[] = [];
+  try {
+    await runCliTask({ binary: bin, prompt: "x", messages: [], onEvent: (e) => ev.push(e) });
+    expect(ev.some((e) => e.type === "error" && e.message.includes("boom from stderr"))).toBe(true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -2,66 +2,41 @@
 
 Gearbox is a multi-provider coding harness for the terminal: a beautiful, simple terminal agent that reads/writes code and runs commands, talking to any provider (Anthropic, OpenAI, Google, DeepSeek) through one clean loop.
 
-**The point of the project:** intelligent per-task *model routing* — automatically picking the right model for each task across every provider and account you pay for. Basic routing is live (`RoutingSelector` — classify → quality bar → cheapest winner); the richer engine (shadow-eval, credit/limit penalties, confidence display) layers on top of the same seam. See `DESIGN.md` for the full vision and `experiments/FINDINGS.md` for the validation behind it.
+**The point of the project (coming soon, do not break it):** intelligent per-task *model routing* — automatically picking the right model for each task across every provider and account you pay for. v0.1 is the harness only; routing lands on top. See `DESIGN.md` for the full vision and `experiments/FINDINGS.md` for the validation behind it.
 
 ## The one rule that matters
 
-**Keep the routing seam clean.** The agent must never hardcode a model. It asks a `ModelSelector` for the model to use. `RoutingSelector` is the live default (classify task → filter by quality bar → cheapest winner); `FixedSelector` is used only when a model is explicitly pinned (`--model` flag or `/model <name>`). Concretely:
+**Keep the routing seam clean.** The agent must never hardcode a model. It asks a `ModelSelector` for the model to use. Today the selector returns a fixed default; soon it becomes the router. Concretely:
 
 - `src/model/selector.ts` — the seam. `select(task) => ModelChoice`. Do not bypass it.
-- `src/model/router.ts` — `RoutingSelector`: classify prompt → quality bar → cost-sort candidates → respect `/prefer` preferences.
-- `src/model/profiles.ts` — the data corpus: quality, cost, latency, tokenizer calibration per model. Routing reads this.
 - `src/providers.ts` — maps a provider+model id to an AI SDK model instance. Already multi-provider. Adding a model is data, not code.
-- Every model call captures token usage (`src/agent/run.ts`) so the cost engine has data. Do not drop usage.
+- Every model call captures token usage (`src/agent/run.ts`) so the future cost engine has data. Do not drop usage.
 - The UI consumes a normalized `AgentEvent` stream (`src/agent/events.ts`), never the AI SDK's raw types. This decouples the UI from the provider layer and from routing.
 
-If you find yourself writing `anthropic('claude-...')` anywhere outside `providers.ts`, stop — route it through the selector.
+If you find yourself writing `anthropic('Codex-...')` anywhere outside `providers.ts`, stop — route it through the selector.
 
 ## Layout
 
 ```
 src/
-  cli.tsx            entry point; renders the Ink app; picks RoutingSelector by default
+  cli.tsx            entry point; renders the Ink app
   config.ts          minimal config (default model, provider from env)
   providers.ts       provider+model id -> AI SDK model  (multi-provider; contextWindow per model)
+  model/selector.ts  THE ROUTING SEAM (fixed model now, router later)
   commands.ts        slash-command metadata + pure helpers (fuzzy model match, /help, model list)
-  tools.ts           read / write / edit / list / search / glob / run_shell  (AI SDK tools)
-  model/
-    selector.ts      THE ROUTING SEAM — ModelSelector interface + FixedSelector (pinned model)
-    router.ts        RoutingSelector: classify → quality bar → cost-sort → preferences (the live default)
-    profiles.ts      model corpus: quality (SWE-bench), cost ($/Mtok), latency, tokenizer calibration
-    tokens.ts        calibrated token counting (js-tiktoken × per-model calibration factor)
-    preferences.ts   persist /prefer kind model choices to ~/.gearbox/routing-preferences.json
-    reasoning.ts     reasoning/thinking config helpers
-  context/
-    builder.ts       context engine: system + memory + repo map + retrieved files + curated history
-    retrieve.ts      BM25 lexical retrieval — top-K relevant files for a prompt (no model call)
-    repomap.ts       repo structure summary for the system prompt
-    memory.ts        project memory (GEARBOX.md / CLAUDE.md loaded into context)
-    compact.ts       context compaction (/compact)
-  accounts/
-    types.ts         Account + AuthMethod types (API key, AWS, Azure, Vertex, CLI, OpenAI-compat)
-    store.ts         accounts.json persistence (~/.gearbox/accounts.json)
-    catalog.ts       provider catalog (known providers, env vars, labels)
-    detect.ts        auto-detect env creds + cloud credentials
-    onboard.ts       interactive add/test account flows
-    resolve.ts       credential resolution (Account → ResolvedCreds, fetching secrets on demand)
-    usage.ts         per-account spend ledger + rate-limit snapshots + balance tracking
-    balance.ts       provider balance fetch helpers
+  tools.ts           read / write / edit / list / run_shell  (AI SDK tools)
   agent/
     events.ts        AgentEvent — normalized stream the UI consumes
     run.ts           real agent loop (AI SDK streamText -> AgentEvent), abort-aware
-    cli-backend.ts   claude/codex CLI subprocess backend (for Pro/Max subscriptions)
     mock.ts          scripted demo stream (runs with no API key; used by tests)
   ui/
     theme.ts         colors + glyphs (the look)
     input.ts         pure key→action reducer for the composer (tested)
     history.ts       pure ↑/↓ prompt-history nav (tested)
-    net.ts           background online probe; status bar shows ⚠ offline when down
     useTerminalSize.ts  reactive width on resize (everything reflows)
     git.ts           current branch for the status line
     App.tsx          the Ink app: state, useInput dispatch, commands, turns
-    components/      Banner, Transcript, Composer, CommandPalette, StatusBar, PermissionPrompt
+    components/      Banner, Transcript, Composer, CommandPalette, StatusBar
 test/                pure-logic + render tests (ink-testing-library); no keys
 DESIGN.md            full product vision (routing, requirements, UX)
 experiments/         prototypes that validated the architecture
@@ -77,16 +52,16 @@ The composer is custom (Ink `useInput` + `src/ui/input.ts`), not a third-party w
 
 Features: full markdown via **marked** (parse, `marked.lexer`) + **Ink** (render) in `Markdown.tsx` — headings, bold/italic/inline-code, tables, ordered+nested lists, blockquotes, code blocks. NO foreign ANSI in Ink (cli-highlight/marked-terminal were tried and removed — they corrupt Ink's width/wrapping; render marked's token tree as Ink elements instead). Markdown gets a `width` prop (threaded App→Transcript→Markdown) for table/rule sizing. Colored diffs under edits (`src/diff.ts`, edit/write tools return `{summary,diff}`), plan mode (read-only tools + plan prompt; `/plan` or shift+tab), `!cmd` runs a shell command directly (`src/shell.ts`), `@file` mentions (fuzzy picker `src/ui/mention.ts`+`files.ts`; expanded into the model message on send), live "working · Ns" timer.
 
-**Boo (the mascot).** A pixel ghost, now **parametric** (`src/ui/ghost/engine.ts`, ported from a Claude Design handoff). A 20×20 pixel sprite composited from composable layers — body (palette) + face (eyes/mouth) + accessory + persona + a frame-driven overlay (tears/dots/confetti/Z's/sparkle/hearts) — then FOLDED into half-block cells (`▀`/`▄`, top px → `t`/glyph color, bottom px → `b`/bg). `renderGhost(cfg)` is the source of truth for the **default blocks path**; it's pure + memoized. The data: 13 faces (`FACES`), 9 palettes (`PALETTES`), 6 accessories, 9 personas (personas/accessories ported but not yet surfaced in the live UI). Ink `color`/`backgroundColor` props only, NEVER raw ANSI (corrupts Ink's width math). PNG paths are **opt-in** via `GEARBOX_GHOST`:
+**Boo (the mascot).** A pixel ghost, now **parametric** (`src/ui/ghost/engine.ts`, ported from a Codex Design handoff). A 20×20 pixel sprite composited from composable layers — body (palette) + face (eyes/mouth) + accessory + persona + a frame-driven overlay (tears/dots/confetti/Z's/sparkle/hearts) — then FOLDED into half-block cells (`▀`/`▄`, top px → `t`/glyph color, bottom px → `b`/bg). `renderGhost(cfg)` is the source of truth for the **default blocks path**; it's pure + memoized. The data: 13 faces (`FACES`), 9 palettes (`PALETTES`), 6 accessories, 9 personas (personas/accessories ported but not yet surfaced in the live UI). Ink `color`/`backgroundColor` props only, NEVER raw ANSI (corrupts Ink's width math). PNG paths are **opt-in** via `GEARBOX_GHOST`:
 
 - `GEARBOX_GHOST=kitty` — real PNG via kitty graphics Unicode placeholders (`U+10EEEE`, fg encodes image id, diacritics encode row/col; PNGs transmitted once in `cli.tsx`). NOTE: the placeholder protocol is young and mis-rendered (squished) in Ghostty during testing — kept opt-in until that's solved.
 - `GEARBOX_GHOST=iterm` — OSC 1337 splash banner (iTerm2/WezTerm).
 
 `detectImageMode()` returns `blocks` unless `GEARBOX_GHOST` opts in. Baked PNGs live in `src/ui/mascot-png.ts`; `bun run scripts/ghost-preview.ts` previews the parametric engine (splash + all faces + the in-flow state crops). **Boo is animated but deliberately calm** on the blocks path (`AnimatedGhost` in `Mascot.tsx`): one shared, unhurried 240ms tick (leaf-local `useTick`, never lifted to App root); talk + overlays advance at half that (~480ms). There is NO idle bob/float and NO splash sparkle — motion is a quiet sign of life, not fidgeting (the splash just blinks every ~6s; in-flow only the state-meaningful overlay/talk moves). `GEARBOX_NO_MOTION=1` freezes to frame 0. `/ghost [mood]` cycles the skin (`skinToCfg` maps it to a cfg; `shades` is the cool face + shades accessory).
 
-**Layout: fullscreen by default; inline is opt-in.** **Fullscreen is the default** (alt-screen frame + virtualized scroll region + scrollbar + mouse wheel scroll); `--inline`, `GEARBOX_INLINE=1`, or `/config inline on` (pref `fullscreen: false`) opts into inline mode. `GEARBOX_FULLSCREEN=1` or `--fullscreen` forces fullscreen explicitly. The decision lives in `cli.tsx` (`wantsFullscreen`). Grabbing the mouse for wheel-scroll is exactly what disables native terminal selection, so in fullscreen mode text selection requires the terminal's modifier (e.g. Option-drag in Ghostty). **Inline mode** (the plain `Transcript` component): no alt-screen, no mouse grab — native click-drag selection / scrollback / copy all work with no modifier. The transcript is a **virtualized line buffer**: `src/ui/lines.ts` (`itemsToLines`) flattens items into styled `Line`s (markdown→lines, wrapping, diffs) — INVARIANT: every line ≤ width (tested), so nothing overflows. In fullscreen, `App` renders only the visible window via `Viewport` (`src/ui/components/Viewport.tsx`) at a computed `transcriptHeight = rows − header − footer` (footer over-estimated so the frame never exceeds the screen; alt-screen clips, so under-filling is safe). Fullscreen scroll: mouse wheel (SGR mouse reporting enabled in `cli.tsx`; parsed off raw stdin in `App` since Ink doesn't model mouse — buttons 64/65) and PgUp/PgDn; new output re-pins to the bottom (`atBottomRef`); a scrollbar sits on the right. (In fullscreen, mouse reporting means text selection needs the terminal's modifier, e.g. Option-drag in Ghostty — which is why inline is now the default.) The virtualized buffer replaced an earlier flex/overflow fullscreen that corrupted on tall output. Chrome spans full width; prose wraps ≤100 cols. The plain `Transcript` component is the inline-fallback renderer. `scripts/gen-mascot.ts` still bakes the PNGs + baked sprites (`mascot-sprite.ts` `GHOSTS`) — but those now feed **only the opt-in kitty/iTerm image path** (`image.ts`); the default blocks path renders the parametric engine instead. The splash scales to the terminal (big=2×/mini=1×/none by rows×cols, in `App.tsx`). The inline/working presence is the compact **state ghost** (see below) — a native-resolution head crop so Boo never dominates the transcript.
+**Layout: inline by default; fullscreen is opt-in.** **Inline is the default** (like Codex): no alt-screen, no mouse grab, so the terminal owns the screen and native click-drag selection / scrollback / copy all work with no modifier (the plain `Transcript` component renders this path). **Fullscreen** (alt-screen frame + virtualized scroll region + scrollbar) is opt-in via `--fullscreen`, `GEARBOX_FULLSCREEN=1`, or `/config inline off` (pref `fullscreen: true`); `GEARBOX_INLINE=1` forces inline. The decision lives in `cli.tsx` (`wantsFullscreen`). Grabbing the mouse for wheel-scroll is exactly what disables native selection, so it's only done in fullscreen. The transcript is a **virtualized line buffer**: `src/ui/lines.ts` (`itemsToLines`) flattens items into styled `Line`s (markdown→lines, wrapping, diffs) — INVARIANT: every line ≤ width (tested), so nothing overflows. In fullscreen, `App` renders only the visible window via `Viewport` (`src/ui/components/Viewport.tsx`) at a computed `transcriptHeight = rows − header − footer` (footer over-estimated so the frame never exceeds the screen; alt-screen clips, so under-filling is safe). Fullscreen scroll: mouse wheel (SGR mouse reporting enabled in `cli.tsx`; parsed off raw stdin in `App` since Ink doesn't model mouse — buttons 64/65) and PgUp/PgDn; new output re-pins to the bottom (`atBottomRef`); a scrollbar sits on the right. (In fullscreen, mouse reporting means text selection needs the terminal's modifier, e.g. Option-drag in Ghostty — which is why inline is now the default.) The virtualized buffer replaced an earlier flex/overflow fullscreen that corrupted on tall output. Chrome spans full width; prose wraps ≤100 cols. The plain `Transcript` component is the inline-fallback renderer. `scripts/gen-mascot.ts` still bakes the PNGs + baked sprites (`mascot-sprite.ts` `GHOSTS`) — but those now feed **only the opt-in kitty/iTerm image path** (`image.ts`); the default blocks path renders the parametric engine instead. The splash scales to the terminal (big=2×/mini=1×/none by rows×cols, in `App.tsx`). The inline/working presence is the compact **state ghost** (see below) — a native-resolution head crop so Boo never dominates the transcript.
 
-Commands are grouped in `/help` (models · conversation · accounts · save · modes · settings · other) and `src/commands.ts` carries plain-language descriptions: /model [name] (fuzzy — "haiku"; `/model auto` routes, `/model all` lists every provider) /effort [fast|balanced|max] /prefer [kind model] (remember a confirmed routing preference for a task type) /clear /resume /retry /compact /context /memory /account (unified: list/add/login/use/rm — `/accounts` and `/login` are hidden aliases) /cost /copy /export [file] /plan /yolo /theme /config (theme·vim·notify·inline; `/vim` is a hidden alias) /init /keys /help /exit. **Hidden** (work but not listed): /accounts /login /vim /ghost. **Removed:** /cwd (the working dir now shows in `/context`). `formatModelList` shows usable models first and collapses no-key providers to a one-line count.
+Commands are grouped in `/help` (models · conversation · accounts · save · modes · settings · other) and `src/commands.ts` carries plain-language descriptions: /model [name] (fuzzy — "haiku"; `/model auto` routes, `/model all` lists every provider) /effort [fast|balanced|max] /clear /resume /retry /compact /context /memory /account (unified: list/add/login/use/rm — `/accounts` and `/login` are hidden aliases) /cost /copy /export [file] /plan /yolo /theme /config (theme·vim·notify·inline; `/vim` is a hidden alias) /init /keys /help /exit. **Hidden** (work but not listed): /accounts /login /vim /ghost. **Removed:** /cwd (the working dir now shows in `/context`). `formatModelList` shows usable models first and collapses no-key providers to a one-line count.
 
 **Permission gate:** `write_file`/`edit_file`/`run_shell` block on a confirm before mutating. Broker: `src/permission.ts` (`requestPermission` in the tools; `setPermissionHandler` installed by `App`; no handler → allow, so tests/headless are unchanged). Decisions: **once** (1), **always** (2, grants that kind for the session), **all/yolo** (a, auto-approves everything until toggled), **deny** (3/esc). YOLO is also toggled by `/yolo` or started with `--yolo`; a `⚡ yolo` badge shows in the status. The `!` prefix is user-initiated so it is NOT gated. Search/nav tools: `search` (ripgrep, Bun-walk fallback) and `glob` (`Bun.Glob`), both read-only (also in plan mode). The working indicator IS Boo now (`components/Working.tsx`): a compact head-crop ghost whose face follows the agent state — thinking (dots) → streaming (talk) → tool (loading dots) → a clean-finish celebrate (party hat + confetti) → error (crying with falling tears). `App.tsx` derives `mascotState` from the `onEvent` stream; the success/error beat **lingers ~1.5s** after the turn (`linger` state — the working line gates on `busy || linger`, since it would otherwise unmount the instant `busy` goes false). Crops are per-state (`stateView`): head (rows 4–14), head+dots (2–14), head+hat (0–14) so overlays outside the head still read. This deliberately supersedes the earlier "Boo stays on the welcome splash only / in-flow movement reads as noise" decision — the compact, state-bearing ghost is the point of the design port.
 

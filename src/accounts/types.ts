@@ -30,6 +30,7 @@ export interface Account {
   models?: string[]; // which models this account can serve (esp. for cli accounts)
   baseUrl?: string; // openai-compat / gateway endpoint override
   extraHeaders?: Record<string, string>; // gateways (e.g. OpenRouter referer/title)
+  identity?: { key: string; label?: string; checkedAt: number }; // provider-exposed signed-in identity, when available
   enabled: boolean;
   addedAt: number;
   lastUsedAt?: number;

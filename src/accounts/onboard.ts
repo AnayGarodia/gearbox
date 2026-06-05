@@ -16,6 +16,13 @@ export interface AddResult {
   message: string;
 }
 
+export interface CliAuthStatus {
+  loggedIn: boolean;
+  detail?: string;
+  identity?: string;
+  identityLabel?: string;
+}
+
 /** Store an API-key (or openai-compat) account for `provider`. */
 export async function addApiKeyAccount(provider: string, key: string, opts: { id?: string; label?: string } = {}): Promise<AddResult> {
   const cat = catalogProvider(provider);
@@ -34,6 +41,65 @@ export async function addApiKeyAccount(provider: string, key: string, opts: { id
     exec: "in-loop",
     auth: cat.authKind === "openai-compat" ? { kind: "openai-compat", ref } : { kind: "api-key", ref },
     baseUrl: cat.baseUrl,
+    enabled: true,
+    addedAt: Date.now(),
+  };
+  putAccount(account);
+  return { ok: true, account, message: `added ${account.label} (${id})` };
+}
+
+function azureResourceName(input: string): string {
+  const s = input.trim();
+  try {
+    const host = new URL(s).hostname;
+    return host.split(".")[0] || s;
+  } catch {
+    return s;
+  }
+}
+
+function azureFoundryBaseUrl(endpoint: string): string {
+  const trimmed = endpoint.trim().replace(/\/+$/, "");
+  if (/\/openai\/v1$/i.test(trimmed)) return trimmed;
+  if (/\/openai$/i.test(trimmed)) return `${trimmed}/v1`;
+  return `${trimmed}/openai/v1`;
+}
+
+/** Store an Azure AI Foundry OpenAI-compatible endpoint account. */
+export async function addAzureFoundryAccount(endpoint: string, key: string, opts: { id?: string; label?: string } = {}): Promise<AddResult> {
+  if (!/^https?:\/\//i.test(endpoint) || !key.trim()) return { ok: false, message: "usage: /account add azure <foundry-endpoint> <api-key>" };
+  const host = new URL(endpoint).hostname;
+  const slug = host.split(".")[0]?.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || shortId();
+  const id = opts.id ?? `azure-foundry-${slug}`;
+  const ref = `${id}:api-key`;
+  await setSecret(ref, key.trim());
+  const account: Account = {
+    id,
+    label: opts.label ?? `Azure Foundry (${slug})`,
+    provider: "azure-foundry",
+    exec: "in-loop",
+    auth: { kind: "openai-compat", ref },
+    baseUrl: azureFoundryBaseUrl(endpoint),
+    enabled: true,
+    addedAt: Date.now(),
+  };
+  putAccount(account);
+  return { ok: true, account, message: `added ${account.label} (${id})` };
+}
+
+/** Store an Azure OpenAI / Azure AI Foundry resource account. */
+export async function addAzureAccount(resourceOrEndpoint: string, key: string, opts: { apiVersion?: string; id?: string; label?: string } = {}): Promise<AddResult> {
+  const resourceName = azureResourceName(resourceOrEndpoint);
+  if (!resourceName || !key.trim()) return { ok: false, message: "usage: /account add azure <resource-or-endpoint> <api-key> [api-version]" };
+  const id = opts.id ?? `azure-${resourceName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || shortId()}`;
+  const ref = `${id}:api-key`;
+  await setSecret(ref, key.trim());
+  const account: Account = {
+    id,
+    label: opts.label ?? `Azure (${resourceName})`,
+    provider: "azure",
+    exec: "in-loop",
+    auth: { kind: "azure", resourceName, ref, apiVersion: opts.apiVersion },
     enabled: true,
     addedAt: Date.now(),
   };
@@ -81,25 +147,42 @@ export function addCliAccount(provider: string, name?: string): AddResult {
 
 // Check whether the vendor CLI is signed in — fast, free, no model call.
 // claude: `claude auth status` (JSON). codex: `codex login status` (text).
-export async function cliAuthStatus(binary: string, profile?: string): Promise<{ loggedIn: boolean; detail?: string }> {
+export async function cliAuthStatus(binary: string, profile?: string): Promise<CliAuthStatus> {
   // Strip the API key from the env so we report the SUBSCRIPTION login, not an
   // env API key (which would otherwise shadow it — see cli-backend.subscriptionEnv).
   // `profile` scopes the check to a specific account's config dir (multi-account).
   const env = subscriptionEnv(binary, profile);
   // Read BOTH streams: codex prints its status to stderr, claude to stdout.
-  const readBoth = async (cmd: string[]): Promise<string> => {
-    const p = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", env });
-    const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
-    await p.exited;
-    return `${o}\n${e}`.trim();
+  const readBoth = async (cmd: string[], timeoutMs = 5_000): Promise<{ out: string; timedOut: boolean }> => {
+    const p = Bun.spawn(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        p.kill();
+      } catch {
+        /* already exited */
+      }
+    }, timeoutMs);
+    try {
+      const [o, e] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);
+      await p.exited.catch(() => {});
+      return { out: `${o}\n${e}`.trim(), timedOut };
+    } finally {
+      clearTimeout(timer);
+    }
   };
   try {
     if (binary === "codex") {
-      const out = await readBoth(["codex", "login", "status"]);
+      const { out, timedOut } = await readBoth(["codex", "login", "status"]);
+      if (timedOut) return { loggedIn: false, detail: "`codex login status` timed out" };
       const loggedIn = /logged in|signed in|account:|email|using chatgpt/i.test(out) && !/not logged in|not signed in/i.test(out);
-      return { loggedIn, detail: loggedIn ? (out.split("\n").map((l) => l.trim()).find((l) => /@|plan|chatgpt/i.test(l))?.slice(0, 60) || "ChatGPT") : undefined };
+      const email = out.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]?.toLowerCase();
+      const detail = loggedIn ? (out.split("\n").map((l) => l.trim()).find((l) => /@|plan|chatgpt/i.test(l))?.slice(0, 80) || "ChatGPT") : undefined;
+      return { loggedIn, detail, identity: email ? `codex:${email}` : undefined, identityLabel: email };
     }
-    const out = await readBoth(["claude", "auth", "status"]);
+    const { out, timedOut } = await readBoth(["claude", "auth", "status"]);
+    if (timedOut) return { loggedIn: false, detail: "`claude auth status` timed out" };
     // Extract the flat JSON object that carries loggedIn (robust to any noise).
     const m = out.match(/\{[^{}]*"loggedIn"[\s\S]*?\}/);
     try {
@@ -108,7 +191,8 @@ export async function cliAuthStatus(binary: string, profile?: string): Promise<{
       if (j.email) parts.push(j.email);
       if (j.subscriptionType) parts.push(`Claude ${String(j.subscriptionType).replace(/^\w/, (c: string) => c.toUpperCase())}`);
       else if (j.authMethod && j.authMethod !== "claude.ai") parts.push(`auth: ${j.authMethod}`);
-      return { loggedIn: !!j.loggedIn, detail: parts.join(" · ") || undefined };
+      const email = typeof j.email === "string" ? j.email.toLowerCase() : undefined;
+      return { loggedIn: !!j.loggedIn, detail: parts.join(" · ") || undefined, identity: email ? `claude:${email}` : undefined, identityLabel: email };
     } catch {
       return { loggedIn: /"loggedIn"\s*:\s*true/.test(out) };
     }

@@ -4,48 +4,52 @@ import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
 import { Transcript } from "./components/Transcript.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
-import { CommandPalette } from "./components/CommandPalette.tsx";
+import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer } from "./components/Composer.tsx";
-import { MascotSplash, SKINS, STATE_GHOST_ROWS, type GhostSkin, type MascotState } from "./components/Mascot.tsx";
+import { MascotSplash, SKINS, type GhostSkin, type MascotState } from "./components/Mascot.tsx";
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working } from "./components/Working.tsx";
-import { Viewport } from "./components/Viewport.tsx";
-import { itemsToLines } from "./lines.ts";
+import { Viewport, type ViewSelection } from "./components/Viewport.tsx";
+import { itemsToLines, type Line } from "./lines.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb } from "./character.ts";
 import { color, glyph, setTheme, THEME_NAMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
-import type { Item } from "./types.ts";
+import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
-import { RoutingSelector } from "../model/router.ts";
-import { findModel, estimateCost, type ModelSpec } from "../providers.ts";
+import { RoutingSelector, classify } from "../model/router.ts";
+import { confirmRoutingPreference, type PreferenceKind } from "../model/preferences.ts";
+import { effortLevels, normalizeEffort, type Effort } from "../model/reasoning.ts";
+import { MODELS, findModel, estimateCost, type ModelSpec } from "../providers.ts";
 import { runTask } from "../agent/run.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
-import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount } from "../accounts/store.ts";
+import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
-import { addApiKeyAccount, addByPastedKey, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
-import { detectProviderByKey } from "../accounts/catalog.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
+import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
-import { recordUsage, recordRateLimit, buildUsageView, type UsageView } from "../accounts/usage.ts";
+import { recordUsage, recordRateLimits, recordBalance, buildUsageView, type UsageView } from "../accounts/usage.ts";
+import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { runTaskMock } from "../agent/mock.ts";
-import { runShell } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel } from "../commands.ts";
-import { applyKey, type Edit } from "./input.ts";
+import { runShellStream } from "../shell.ts";
+import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug } from "../commands.ts";
+import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
 import { navHistory, searchHistory } from "./history.ts";
 import { currentMention, matchFiles, completeMention } from "./mention.ts";
 import { listProjectFiles, expandMentions } from "./files.ts";
 import { useTerminalSize } from "./useTerminalSize.ts";
+import { useOnline, isNetworkError } from "./net.ts";
 import { gitBranch } from "./git.ts";
-import { basename } from "node:path";
-import { existsSync } from "node:fs";
+import { basename, extname } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
 
 // Stateless: picks the active account per provider (reads the registry each call).
 const accountResolver = new AccountResolver();
@@ -64,9 +68,9 @@ const KEYS_HELP = [
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
   "  ⌃A / ⌃E line start / end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
   "  ⌃Y copy last reply · shift+tab cycle mode (normal · auto-accept · plan)",
-  "  tab @file complete · PgUp/PgDn or wheel to scroll · type while busy to queue",
+  "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · ? this help",
-  "  select & scroll with your mouse normally (run --fullscreen for the alt-screen frame)",
+  "  input stays fixed at the bottom; /config inline on uses terminal scrollback",
 ].join("\n");
 
 /** Serialize the transcript to Markdown for /export. */
@@ -77,10 +81,19 @@ function transcriptMarkdown(items: Item[]): string {
     else if (it.kind === "assistant") out.push("## Gearbox", "", it.text, "");
     else if (it.kind === "tool") out.push(`> \`${it.name}\` ${it.arg}${it.summary ? " — " + it.summary : ""}`, "");
     else if (it.kind === "notice") out.push(`_${it.text}_`, "");
+    else if (it.kind === "accounts") {
+      out.push("**accounts**", "", `current: ${it.view.current}`);
+      for (const r of it.view.rows) out.push(`- ${r.name} (${r.type}) — ${r.status} — /account ${r.alias}`);
+      out.push("");
+    }
     else if (it.kind === "usage") {
-      out.push("**cost · spend per account**", "");
-      for (const r of it.view.rows) out.push(`- ${r.name.trim()} — ${r.spend.trim()} · ${r.meta}${r.limitPct != null ? ` · ${r.limitLabel} ${r.limitPct}%` : ""}`);
-      out.push(`- total ${it.view.total.trim()}`, "");
+      out.push("**usage · spend & limits**", "");
+      for (const a of it.view.subscriptions) {
+        const limits = (a.limits ?? []).map((l) => `${l.label} ${l.pct}%`).join(" · ");
+        out.push(`- ${a.name} (subscription) — ${a.turns} turns${limits ? ` · ${limits}` : ""}`);
+      }
+      for (const a of it.view.apiKeys) out.push(`- ${a.name} (API key) — ${a.spend} · ${a.turns} turns · ${a.tok}`);
+      out.push(`- total API spend ${it.view.totalApiSpend}`, "");
     } else if (it.kind === "context") {
       out.push("**context · what's loaded**", "");
       for (const r of it.view.rows) out.push(`- ${r.label.trim()} — ${r.display.trim()}`);
@@ -88,6 +101,109 @@ function transcriptMarkdown(items: Item[]): string {
     } else if (it.kind === "error") out.push(`**error:** ${it.text}`, "");
   }
   return out.join("\n");
+}
+
+// Turn a raw error into something actionable. Network failures are the common
+// case worth special-casing: say "you appear to be offline" + a retry hint
+// instead of a stack-ish ENOTFOUND string.
+function friendlyError(msg: string): string {
+  if (isNetworkError(msg)) return `can't reach the provider — you appear to be offline. Check your connection, then /retry.`;
+  return msg;
+}
+
+function firstPath(text: string): string | null {
+  const m = text.match(/(?:^|\s)([./~\w-][^\s:]*\.[\w-]+)(?:\s|$)/);
+  return m?.[1] ?? null;
+}
+
+function uniq<T>(xs: T[]): T[] {
+  return [...new Set(xs)];
+}
+
+type CliModelChoice = { id: string; label: string; provider: string; efforts?: string[] };
+
+const FALLBACK_CODEX_MODELS: CliModelChoice[] = [
+  { id: "gpt-5.5", label: "gpt-5.5", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
+  { id: "gpt-5.4", label: "gpt-5.4", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
+  { id: "gpt-5.4-mini", label: "gpt-5.4-mini", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
+];
+let codexModelCache: CliModelChoice[] | null = null;
+
+function codexCliModels(): CliModelChoice[] {
+  if (codexModelCache) return codexModelCache;
+  try {
+    const r = Bun.spawnSync(["codex", "debug", "models"], { stdout: "pipe", stderr: "ignore" });
+    if (r.exitCode === 0) {
+      const text = new TextDecoder().decode(r.stdout);
+      const parsed = JSON.parse(text) as { models?: Array<{ slug?: string; visibility?: string; supported_reasoning_levels?: Array<{ effort?: string }> }> };
+      const models = (parsed.models ?? [])
+        .filter((m) => m.slug && m.visibility !== "hide")
+        .map((m) => ({ id: m.slug!, label: m.slug!, provider: "codex", efforts: (m.supported_reasoning_levels ?? []).map((e) => e.effort).filter(Boolean) as string[] }));
+      if (models.length) {
+        codexModelCache = models;
+        return models;
+      }
+    }
+  } catch {
+    /* fall back to the bundled Codex catalog below */
+  }
+  codexModelCache = FALLBACK_CODEX_MODELS;
+  return codexModelCache;
+}
+
+function effortDescription(level: string): string {
+  return ({
+    none: "no extra reasoning",
+    minimal: "minimal reasoning",
+    low: "lighter reasoning",
+    medium: "default reasoning",
+    high: "deeper reasoning",
+    xhigh: "extra-high reasoning",
+    max: "maximum reasoning",
+  } as Record<string, string>)[level] ?? "reasoning effort";
+}
+
+function previewLang(path: string): string {
+  const ext = extname(path).slice(1).toLowerCase();
+  return ({ tsx: "tsx", ts: "ts", jsx: "jsx", js: "js", py: "py", css: "css", json: "json", md: "md", sh: "sh" } as Record<string, string>)[ext] ?? ext;
+}
+
+function filePreview(path: string): { text: string; lines: number; lang: string } | null {
+  try {
+    if (!path || !existsSync(path)) return null;
+    const st = statSync(path);
+    if (!st.isFile() || st.size > 400_000) return null;
+    const raw = readFileSync(path, "utf8").replace(/\r\n?/g, "\n");
+    const lines = raw.split("\n");
+    return { text: raw, lines: lines.length, lang: previewLang(path) };
+  } catch {
+    return null;
+  }
+}
+
+function isWriteLikeTool(name: string): boolean {
+  const n = name.toLowerCase();
+  return n === "write_file" || n === "edit_file" || n === "write" || n === "edit" || n === "file_change";
+}
+
+function ActivityRail({ items, width }: { items: Item[]; width: number }) {
+  const lastUser = items.map((it, i) => ({ it, i })).reverse().find((x) => x.it.kind === "user")?.i ?? -1;
+  const turn = items.slice(lastUser + 1);
+  const model = [...turn].reverse().find((i) => i.kind === "model") as Extract<Item, { kind: "model" }> | undefined;
+  const phase = [...turn].reverse().find((i) => i.kind === "phase") as Extract<Item, { kind: "phase" }> | undefined;
+  const tools = turn.filter((i): i is Extract<Item, { kind: "tool" }> => i.kind === "tool").slice(-3);
+  const checks = turn.filter((i): i is Extract<Item, { kind: "verification" }> => i.kind === "verification").slice(-2);
+  if (!model && !phase && !tools.length && !checks.length) return null;
+  const spin = ["◐", "◓", "◑", "◒"][Math.floor(Date.now() / 160) % 4]!;
+  const toolText = tools.map((t) => `${t.status === "running" ? spin : t.status === "err" ? "!" : "✓"} ${t.name.replace(/_file$/, "").replace("run_shell", "shell")}`).join(" · ");
+  const checkText = checks.map((c) => `${c.ok ? "✓" : "!"} ${c.command}`).join(" · ");
+  const line = [model ? model.model : null, phase ? phase.label : null, toolText || null, checkText || null].filter(Boolean).join("  ·  ");
+  return (
+    <Box paddingX={1} marginTop={1} width={width}>
+      <Text color={color.accentDim}>activity </Text>
+      <Text color={color.faint}>{line.slice(0, Math.max(width - 10, 20))}</Text>
+    </Box>
+  );
 }
 
 export interface AppProps {
@@ -102,6 +218,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const { exit } = useApp();
   const { stdin, isRawModeSupported, setRawMode } = useStdin();
   const { columns, rows } = useTerminalSize();
+  const online = useOnline(20_000, !demo); // background reachability → "⚠ offline" (skipped in demo/tests)
   // Chrome (title bar, rules, composer, status) spans the full terminal width;
   // long prose wraps at a readable cap inside it (see Transcript).
   const width = columns;
@@ -117,9 +234,10 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const [tokens, setTokens] = useState(0);
   const [lastInput, setLastInput] = useState(0);
   const [edit, setEditState] = useState<Edit>({ value: "", cursor: 0 });
+  const [suggestion, setSuggestion] = useState<string | null>(null);
   const [selector, setSelector] = useState<ModelSelector>(initialSelector);
   const [mode, setMode] = useState<"normal" | "auto-accept" | "plan">("normal");
-  const [effort, setEffortState] = useState<"fast" | "balanced" | "max">("balanced");
+  const [effort, setEffortState] = useState<Effort>("medium");
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
   const [ghostSkin, setGhostSkinState] = useState<GhostSkin>("base");
@@ -139,18 +257,44 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // text is kept here and expanded back in on submit.
   const pasteStoreRef = useRef<Map<string, string>>(new Map());
   const pasteIdRef = useRef(0);
+  const copiedSelectionRef = useRef("");
+  const mouseAnchorRef = useRef<number | null>(null);
+  const transcriptMouseAnchorRef = useRef<{ line: number; col: number } | null>(null);
+  const transcriptRangeAnchorRef = useRef<{ line: number; col: number } | null>(null);
+  const lastComposerClickRef = useRef<{ time: number; x: number; y: number; count: number } | null>(null);
+  const lastTranscriptClickRef = useRef<{ time: number; x: number; y: number; count: number } | null>(null);
+  const linesRef = useRef<Line[]>([]);
+  const scrollTopLiveRef = useRef(0);
+  const transcriptHeightLiveRef = useRef(1);
+  const [transcriptSelection, setTranscriptSelectionState] = useState<ViewSelection | null>(null);
+  const transcriptSelectionRef = useRef<ViewSelection | null>(null);
+  const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const outCharsRef = useRef(0); // streamed output chars this turn (for a live tok/s estimate)
+  const [, bumpMotion] = useReducer((x: number) => x + 1, 0);
   const [yolo, setYoloState] = useState(isYolo());
   const [perm, setPermState] = useState<PermRequest | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [expandAll, setExpandAll] = useState(false); // ⌃O: show full diffs/tool output
   const [search, setSearchState] = useState<{ q: string; idx: number } | null>(null); // ⌃R reverse-i-search
+  const [paletteIndex, setPaletteIndexState] = useState(0);
   const [, bumpTheme] = useReducer((x: number) => x + 1, 0); // forces a re-render after setTheme mutates `color`
   const searchRef = useRef<{ q: string; idx: number } | null>(null);
+  const paletteIndexRef = useRef(0);
   const setSearch = (s: { q: string; idx: number } | null) => {
     searchRef.current = s;
     setSearchState(s);
   };
+  const setPaletteIndex = (n: number) => {
+    paletteIndexRef.current = n;
+    setPaletteIndexState(n);
+  };
+
+  useEffect(() => {
+    if (!busy && !linger) return;
+    const id = setInterval(() => bumpMotion(), 120);
+    return () => clearInterval(id);
+  }, [busy, linger]);
   const [vim, setVimState] = useState<"off" | "insert" | "normal">(loadPrefs().vim ? "insert" : "off"); // composer vim mode
   const vimRef = useRef(vim);
   const setVim = (v: "off" | "insert" | "normal") => {
@@ -209,11 +353,13 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // through the vendor binary (its own loop/tools/permissions), not the in-loop
   // path. cliSessionRef keeps the binary's session id for resume.
   const activeCliRef = useRef<{ id: string; binary: string; profile?: string } | null>(null);
+  const activeCliModelRef = useRef<string | undefined>(undefined);
   const cliSessionRef = useRef<string | undefined>(undefined);
+  const accountStatusCacheRef = useRef<Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>>({});
   // Which account ran the last turn + its provider-reported cost/limit (for the
   // per-account spend ledger; see src/accounts/usage.ts).
   const usedAccountRef = useRef<string | null>(null);
-  const cliMetaRef = useRef<{ costUSD?: number; rate?: { utilization: number; resetsAt?: number; type?: string } } | null>(null);
+  const cliMetaRef = useRef<{ costUSD?: number; rates?: { utilization: number; resetsAt?: number; type?: string }[] } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
   const ghostSkinRef = useRef<GhostSkin>("base");
@@ -251,6 +397,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     if (a && a.exec === "cli") {
       const bin = (a.auth as any).binary as string;
       activeCliRef.current = { id: a.id, binary: bin, profile: (a.auth as any).loginProfile };
+      if (activeCliModelRef.current && !cliSupportsModel(bin, activeCliModelRef.current)) setActiveCliModelId(undefined);
       setActiveCli({ id: a.id, label: bin });
     }
   }, [demo]);
@@ -281,19 +428,208 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     setScrollTop(ns);
   }, []);
 
-  // Mouse-wheel scrolling (SGR mouse reports; button 64 = up, 65 = down). Parsed
-  // off raw stdin so it works even though Ink doesn't model mouse events.
+  const copyWithFeedback = useCallback((text: string) => {
+    const clean = text.replace(/[ \t]+\n/g, "\n").trim();
+    if (!clean) return;
+    copyToClipboard(clean);
+    setCopiedNotice(`copied ${clean.length} chars to clipboard`);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopiedNotice(null), 1400);
+  }, []);
+  const flashStatus = useCallback((text: string) => {
+    setCopiedNotice(text);
+    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopiedNotice(null), 1200);
+  }, []);
+
+  const lineText = (line: Line) => line.map((s) => s.text).join("");
+  const textFromTranscriptSelection = (sel: ViewSelection): string => {
+    const aBeforeB = sel.startLine < sel.endLine || (sel.startLine === sel.endLine && sel.startCol <= sel.endCol);
+    const start = aBeforeB ? { line: sel.startLine, col: sel.startCol } : { line: sel.endLine, col: sel.endCol };
+    const end = aBeforeB ? { line: sel.endLine, col: sel.endCol } : { line: sel.startLine, col: sel.startCol };
+    const out: string[] = [];
+    for (let i = start.line; i <= end.line; i++) {
+      const text = lineText(linesRef.current[i] ?? []);
+      const from = i === start.line ? start.col : 0;
+      const to = i === end.line ? end.col : text.length;
+      out.push(text.slice(Math.max(0, from), Math.max(0, to)));
+    }
+    return out.join("\n");
+  };
+  const normalizedTranscriptSelection = (sel: ViewSelection): ViewSelection => {
+    const aBeforeB = sel.startLine < sel.endLine || (sel.startLine === sel.endLine && sel.startCol <= sel.endCol);
+    return aBeforeB ? sel : { startLine: sel.endLine, startCol: sel.endCol, endLine: sel.startLine, endCol: sel.startCol };
+  };
+  const transcriptWordRange = (point: { line: number; col: number }): ViewSelection => {
+    const text = lineText(linesRef.current[point.line] ?? []);
+    if (!text) return { startLine: point.line, startCol: 0, endLine: point.line, endCol: 0 };
+    const col = Math.max(0, Math.min(point.col, Math.max(0, text.length - 1)));
+    const isWord = (ch: string) => /[\p{L}\p{N}_$.-]/u.test(ch);
+    const targetWord = isWord(text[col] ?? "");
+    let start = col;
+    let end = col + 1;
+    while (start > 0 && isWord(text[start - 1] ?? "") === targetWord && !/\s/.test(text[start - 1]!)) start--;
+    while (end < text.length && isWord(text[end] ?? "") === targetWord && !/\s/.test(text[end]!)) end++;
+    if (!targetWord) {
+      while (start > 0 && /\s/.test(text[start - 1]!)) start--;
+      while (end < text.length && /\s/.test(text[end]!)) end++;
+    }
+    return { startLine: point.line, startCol: start, endLine: point.line, endCol: end };
+  };
+  const transcriptLineRange = (point: { line: number; col: number }): ViewSelection => {
+    const text = lineText(linesRef.current[point.line] ?? []);
+    return { startLine: point.line, startCol: 0, endLine: point.line, endCol: text.length };
+  };
+  const copyTranscriptSelection = (sel: ViewSelection) => {
+    const norm = normalizedTranscriptSelection(sel);
+    if (norm.startLine === norm.endLine && norm.startCol === norm.endCol) return;
+    copyWithFeedback(textFromTranscriptSelection(norm));
+  };
+  const transcriptClickCount = (x: number, y: number): number => {
+    const now = Date.now();
+    const prev = lastTranscriptClickRef.current;
+    const near = prev && now - prev.time < 500 && Math.abs(prev.x - x) <= 1 && prev.y === y;
+    const count = near ? Math.min(prev.count + 1, 3) : 1;
+    lastTranscriptClickRef.current = { time: now, x, y, count };
+    return count;
+  };
+
+  // SGR mouse handling. Wheel scrolls the transcript; drag inside the bottom
+  // composer selects input text so Backspace/Delete can edit it like a real field.
   useEffect(() => {
-    if (!stdin) return;
+    if (!stdin || process.env.GEARBOX_MOUSE === "0") return;
+    const composerOffset = (x: number, y: number): number | null => {
+      if (busyRef.current || permRef.current) return null;
+      const value = editRef.current.value;
+      const lineCount = Math.max(1, value.split("\n").length);
+      const firstInputRow = rows - lineCount + 1;
+      if (y < firstInputRow || y > rows) return null;
+      const lineIdx = y - firstInputRow;
+      const col = Math.max(0, x - 4); // 1 pad + prompt + space, SGR coords are 1-based
+      return offsetAt(value, lineIdx, col);
+    };
+    const viewportTop = 4; // Banner is 3 rows; viewport begins on row 4.
+    const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
+      const viewportBottom = viewportTop + transcriptHeightLiveRef.current - 1;
+      if (y < viewportTop || y > viewportBottom) return null;
+      const line = scrollTopLiveRef.current + (y - viewportTop);
+      const text = lineText(linesRef.current[line] ?? []);
+      return { line, col: Math.max(0, Math.min(text.length, x - 2)) };
+    };
     const onData = (d: Buffer | string) => {
       const s = d.toString();
       let delta = 0;
-      const re = /\[<(\d+);\d+;\d+[Mm]/g;
+      const re = /\x1b?\[<(\d+);(\d+);(\d+)([Mm])/g;
       let m: RegExpExecArray | null;
       while ((m = re.exec(s))) {
         const b = Number(m[1]);
+        const x = Number(m[2]);
+        const y = Number(m[3]);
+        const up = m[4] === "m";
         if (b === 64) delta -= 3;
         else if (b === 65) delta += 3;
+        else {
+          const off = composerOffset(x, y);
+          const point = transcriptPoint(x, y);
+          const isDrag = (b & 32) === 32;
+          const isPrimary = (b & 3) === 0;
+          if (isPrimary && isDrag && transcriptMouseAnchorRef.current && !point) {
+            const bottom = viewportTop + transcriptHeightLiveRef.current - 1;
+            if (y < viewportTop) scrollBy(-3);
+            else if (y > bottom) scrollBy(3);
+            const edgeLine = y < viewportTop ? scrollTopLiveRef.current : scrollTopLiveRef.current + transcriptHeightLiveRef.current - 1;
+            const edgeText = lineText(linesRef.current[edgeLine] ?? []);
+            setTranscriptSel({
+              startLine: transcriptMouseAnchorRef.current.line,
+              startCol: transcriptMouseAnchorRef.current.col,
+              endLine: edgeLine,
+              endCol: y < viewportTop ? 0 : edgeText.length,
+            });
+            continue;
+          }
+          if (up) {
+            if (transcriptMouseAnchorRef.current) {
+              const end = point;
+              const start = transcriptMouseAnchorRef.current;
+              transcriptMouseAnchorRef.current = null;
+              if (end && (end.line !== start.line || end.col !== start.col)) {
+                const sel = { startLine: start.line, startCol: start.col, endLine: end.line, endCol: end.col };
+                setTranscriptSel(sel);
+                copyWithFeedback(textFromTranscriptSelection(sel));
+              } else if (!end && transcriptSelectionRef.current) {
+                copyWithFeedback(textFromTranscriptSelection(transcriptSelectionRef.current));
+              }
+            }
+            mouseAnchorRef.current = null;
+          } else if (off != null && isPrimary && !isDrag) {
+            // Composer click: track timing for double/triple-click detection.
+            // SGR x is 1-based. composerOffset computes the 0-based col within
+            // the text (subtracts 4: 1 pad + "❯ " prompt + space). Re-derive the
+            // 0-based line index from y so applyMouse gets correct col/line.
+            const value = editRef.current.value;
+            const lineCount = Math.max(1, value.split("\n").length);
+            const firstInputRow = rows - lineCount + 1;
+            const lineIdx = y - firstInputRow;
+            const col = Math.max(0, x - 4);
+            const shift = (b & 4) !== 0;
+            const now = Date.now();
+            const prev = lastComposerClickRef.current;
+            let clickCount = 1;
+            if (prev && now - prev.time < 500 && prev.x === x && prev.y === y) {
+              clickCount = Math.min(prev.count, 3) + 1;
+            }
+            lastComposerClickRef.current = { time: now, x, y, count: clickCount };
+            const click: MouseClick = { line: lineIdx, col, count: clickCount, shift };
+            mouseAnchorRef.current = off;
+            transcriptMouseAnchorRef.current = null;
+            setTranscriptSel(null);
+            const action = applyMouse({ value, cursor: editRef.current.cursor, selectionAnchor: editRef.current.selectionAnchor }, click);
+            if (action.type === "edit") setEdit(action.state);
+            else setEdit({ value, cursor: off });
+          } else if (off != null && isDrag && mouseAnchorRef.current != null) {
+            // Extend selection from anchor, but only for single-click drags.
+            // Double/triple-click sets word/line selection; a drag event immediately
+            // after (common on trackpads with micro-motion) must not clobber it.
+            const lastCount = lastComposerClickRef.current?.count ?? 1;
+            if (lastCount === 1) {
+              setEdit({ value: editRef.current.value, cursor: off, selectionAnchor: mouseAnchorRef.current });
+            }
+          } else if (point && isPrimary && !isDrag) {
+            const shift = (b & 4) !== 0;
+            const clickCount = transcriptClickCount(x, y);
+            mouseAnchorRef.current = null;
+            setEdit({ ...editRef.current, selectionAnchor: undefined });
+            if (shift) {
+              const existing = transcriptSelectionRef.current ? normalizedTranscriptSelection(transcriptSelectionRef.current) : null;
+              const anchor = transcriptRangeAnchorRef.current ?? (existing ? { line: existing.startLine, col: existing.startCol } : point);
+              transcriptMouseAnchorRef.current = null;
+              transcriptRangeAnchorRef.current = anchor;
+              const sel = { startLine: anchor.line, startCol: anchor.col, endLine: point.line, endCol: point.col };
+              setTranscriptSel(sel);
+              copyTranscriptSelection(sel);
+            } else if (clickCount >= 3) {
+              const sel = transcriptLineRange(point);
+              const norm = normalizedTranscriptSelection(sel);
+              transcriptMouseAnchorRef.current = null;
+              transcriptRangeAnchorRef.current = { line: norm.startLine, col: norm.startCol };
+              setTranscriptSel(sel);
+              copyTranscriptSelection(sel);
+            } else if (clickCount === 2) {
+              const sel = transcriptWordRange(point);
+              const norm = normalizedTranscriptSelection(sel);
+              transcriptMouseAnchorRef.current = null;
+              transcriptRangeAnchorRef.current = { line: norm.startLine, col: norm.startCol };
+              setTranscriptSel(sel);
+              copyTranscriptSelection(sel);
+            } else {
+              transcriptMouseAnchorRef.current = point;
+              transcriptRangeAnchorRef.current = point;
+              setTranscriptSel({ startLine: point.line, startCol: point.col, endLine: point.line, endCol: point.col });
+            }
+          } else if (point && isDrag && transcriptMouseAnchorRef.current) {
+            setTranscriptSel({ startLine: transcriptMouseAnchorRef.current.line, startCol: transcriptMouseAnchorRef.current.col, endLine: point.line, endCol: point.col });
+          }
+        }
       }
       if (delta) scrollBy(delta);
     };
@@ -301,7 +637,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     return () => {
       stdin.off?.("data", onData);
     };
-  }, [stdin, scrollBy]);
+  }, [stdin, fullscreen, rows, scrollBy, copyWithFeedback]);
 
   // Save the current conversation (best-effort) — model-agnostic messages + the UI
   // transcript + per-turn model/usage, so it resumes faithfully and feeds routing.
@@ -345,12 +681,124 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   };
 
   const setEdit = (e: Edit) => {
+    const cleanValue = sanitizeInputText(e.value);
+    if (cleanValue !== e.value) {
+      const delta = e.value.length - cleanValue.length;
+      e = { ...e, value: cleanValue, cursor: Math.max(0, e.cursor - delta) };
+    }
     editRef.current = e;
+    const sel = selectionRange(e);
+    const selectedText = sel ? e.value.slice(sel[0], sel[1]) : "";
+    if (selectedText && selectedText !== copiedSelectionRef.current) {
+      copiedSelectionRef.current = selectedText;
+      copyWithFeedback(selectedText);
+    } else if (!selectedText) {
+      copiedSelectionRef.current = "";
+    }
     setEditState(e);
   };
   const setBusy = (b: boolean) => {
     busyRef.current = b;
     setBusyState(b);
+  };
+  const setTranscriptSel = (sel: ViewSelection | null) => {
+    transcriptSelectionRef.current = sel;
+    setTranscriptSelectionState(sel);
+  };
+  const cliCatalogId = (binary: string) => (binary.includes("codex") ? "codex-cli" : binary.includes("claude") ? "claude-cli" : "");
+  const cliModelChoices = (binary: string): CliModelChoice[] => {
+    if (binary.includes("codex")) return codexCliModels();
+    const provider = binary.includes("claude") ? "anthropic" : binary;
+    return (catalogProvider(cliCatalogId(binary))?.defaultModels ?? []).map((id) => {
+      const m = findModel(id);
+      return { id, label: m?.label ?? id, provider, efforts: m ? effortLevels(m) : undefined };
+    });
+  };
+  const cliSupportsModel = (binary: string, modelId: string) => {
+    return cliModelChoices(binary).some((m) => m.id === modelId);
+  };
+  const cliModelLabel = (modelId?: string) => (modelId ? findModel(modelId)?.label ?? modelId : null);
+  const effortTarget = (): { label: string; efforts: string[]; provider: string } | null => {
+    const cli = activeCliRef.current;
+    if (cli) {
+      const choices = cliModelChoices(cli.binary);
+      const model = choices.find((m) => m.id === activeCliModelRef.current) ?? choices[0];
+      return model ? { label: model.label, efforts: model.efforts ?? [], provider: model.provider } : null;
+    }
+    try {
+      const model = selectorRef.current.select({ prompt: "" }).model;
+      return { label: model.label, efforts: effortLevels(model), provider: model.provider };
+    } catch {
+      return null;
+    }
+  };
+  const effortRows = (): PaletteRow[] => {
+    const target = effortTarget();
+    if (!target?.efforts.length) return [];
+    return target.efforts.map((level) => ({ value: `/effort ${level}`, label: level, detail: `${target.label} / ${effortDescription(level)}` }));
+  };
+  const formatCliModelList = (binary: string, currentId: string | null): string => {
+    const models = cliModelChoices(binary);
+    const rows = [
+      "models · /model <name> pins one for this subscription · /model auto uses the subscription default",
+      "",
+      `${binary} subscription`,
+    ];
+    if (!models.length) rows.push("  no named subscription models exposed yet");
+    for (const m of models) rows.push(`  ${m.id === currentId ? glyph.on : glyph.off} ${m.label}`);
+    rows.push("", "API models are hidden while a subscription is active — /account off returns to API routing");
+    return rows.join("\n");
+  };
+  const resolveCliModel = (binary: string, query: string): { ok: true; modelId: string; label: string } | { ok: false; message: string } => {
+    const q = query.trim().toLowerCase();
+    const matches = cliModelChoices(binary).filter((m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
+    if (!matches.length) return { ok: false, message: `no ${binary} subscription model matching "${query}"` };
+    const exact = matches.find((m) => m.label.toLowerCase() === q || m.id.toLowerCase() === q);
+    const m = exact ?? (matches.length === 1 ? matches[0] : undefined);
+    if (!m) return { ok: false, message: `"${query}" matches ${matches.map((x) => x.label).join(", ")} — be more specific` };
+    return { ok: true, modelId: m.id, label: m.label };
+  };
+  const setActiveCliModelId = (modelId: string | undefined) => {
+    activeCliModelRef.current = modelId;
+    setActiveCliModel(cliModelLabel(modelId));
+  };
+
+  const commandPickerRows = (draft: string): PaletteRow[] => {
+    const [headRaw, ...rest] = draft.trimStart().split(/\s+/);
+    const head = (headRaw ?? "").toLowerCase();
+    const q = rest.join(" ").toLowerCase();
+    const take = (rows: PaletteRow[]) => rows.filter((r) => !q || `${r.label} ${r.detail ?? ""} ${r.value}`.toLowerCase().includes(q)).slice(0, 7);
+    if (head === "/model") {
+      const cli = activeCliRef.current;
+      const models = cli ? cliModelChoices(cli.binary) : MODELS;
+      return take([
+        { value: "/model auto", label: "auto", detail: cli ? "use subscription default" : "route per task" },
+        ...models.map((m) => ({ value: `/model ${m.label}`, label: m.label, detail: cli ? `${cli.binary} subscription` : `${m.provider} · ${m.id}` })),
+      ]);
+    }
+    if (head === "/account" || head === "/accounts") {
+      const rows = listAccounts().map((a) => ({ value: `/account ${accountSlug(a)}`, label: accountName(a), detail: a.exec === "cli" ? "subscription" : `${a.provider} API key` }));
+      return take([
+        { value: "/account off", label: "off", detail: "use API routing" },
+        ...rows,
+        { value: "/account add codex", label: "add codex", detail: "ChatGPT subscription" },
+        { value: "/account add codex work", label: "add codex work", detail: "second ChatGPT account" },
+        { value: "/account add claude", label: "add claude", detail: "Claude subscription" },
+        { value: "/account add claude work", label: "add claude work", detail: "second Claude account" },
+        { value: "/account add", label: "add key", detail: "paste an API key" },
+      ]);
+    }
+    if (head === "/theme") return take(THEME_NAMES.map((t) => ({ value: `/theme ${t}`, label: t, detail: t === loadPrefs().theme ? "active" : "theme" })));
+    if (head === "/effort") {
+      return take(effortRows());
+    }
+    if (head === "/resume") return take(listSessions().slice(0, 7).map((s, i) => ({ value: `/resume ${i + 1}`, label: `${i + 1}. ${s.title || "(untitled)"}`.slice(0, 42), detail: new Date(s.updatedAt).toLocaleDateString() })));
+    return [];
+  };
+  const isExactSlashCommand = (draft: string): boolean => {
+    const q = draft.trim();
+    if (!/^\/\S+$/.test(q)) return false;
+    return matchCommands(q).some((c) => c.name === q);
   };
 
   const branch = useMemo(() => gitBranch(), []);
@@ -367,17 +815,90 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // Mirrors activeCliRef as state so the status line re-renders when you /login
   // to (or leave) a subscription account.
   const [activeCli, setActiveCli] = useState<{ id: string; label: string } | null>(null);
+  const [activeCliModel, setActiveCliModel] = useState<string | null>(null);
   const model = lastPick?.model ?? choice?.model ?? null;
   // On a subscription, the status reflects the CLI account, not the in-loop model/routing.
-  const modelLabel = demo ? "demo · no key" : activeCli ? activeCli.label : (model?.label ?? "none");
+  const modelLabel = demo ? "demo · no key" : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}` : (model?.label ?? "none");
   const subscription = activeCli ? activeCli.label : null;
   const routing = demo || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
   const ctxPct = !activeCli && model && lastInput > 0 ? Math.round((lastInput / model.contextWindow) * 100) : null;
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
+  const pushPhase = (label: string, detail?: string) => {
+    const id = idRef.current++;
+    push({ kind: "phase", id, label, detail, state: "running" });
+    return id;
+  };
+  const updatePhase = (id: number, state: "running" | "ok" | "err", label: string, detail?: string) => {
+    setItems((prev) => prev.map((it) => (it.id === id && it.kind === "phase" ? { ...it, state, label, detail } : it)));
+  };
   const echo = (text: string) => push({ kind: "user", id: idRef.current++, text });
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
   const pushUsage = (view: UsageView) => push({ kind: "usage", id: idRef.current++, view });
+  const pushAccounts = (view: AccountView) => push({ kind: "accounts", id: idRef.current++, view });
+
+  const normalizeAccountRef = (s: string) =>
+    s.toLowerCase()
+      .replace(/[()]/g, " ")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  const accountAliases = (a: ReturnType<typeof listAccounts>[number], index: number) => {
+    const name = accountName(a);
+    const slug = accountSlug(a);
+    const aliases = new Set([String(index + 1), slug, normalizeAccountRef(name), normalizeAccountRef(a.label), normalizeAccountRef(a.id)]);
+    const nick = name.match(/\(([^)]+)\)/)?.[1];
+    if (nick) aliases.add(normalizeAccountRef(nick));
+    if (a.provider === "codex-cli") aliases.add("chatgpt");
+    if (a.provider === "claude-cli") aliases.add("claude");
+    return aliases;
+  };
+  const findAccountRef = (query: string, accounts = listAccounts()): { account?: (typeof accounts)[number]; error?: string } => {
+    const q = normalizeAccountRef(query);
+    if (!q) return { error: "which account? use /account <name-or-number>" };
+    const exact = accounts.map((a, i) => ({ a, aliases: accountAliases(a, i) })).filter(({ aliases }) => aliases.has(q));
+    if (exact.length === 1) return { account: exact[0]!.a };
+    if (exact.length > 1) return { error: `"${query}" matches ${exact.map(({ a }) => accountName(a)).join(", ")} — use the full alias` };
+    const fuzzy = accounts.map((a, i) => ({ a, aliases: [...accountAliases(a, i)] })).filter(({ aliases }) => aliases.some((x) => x.includes(q)));
+    if (fuzzy.length === 1) return { account: fuzzy[0]!.a };
+    if (fuzzy.length > 1) return { error: `"${query}" matches ${fuzzy.map(({ a }) => accountName(a)).join(", ")} — use the full alias` };
+    return { error: `no account matching "${query}"` };
+  };
+  const buildAccountView = (
+    accounts: ReturnType<typeof listAccounts>,
+    activeCliId: string | null,
+    importable: { provider: string; label: string; envVar: string }[],
+    statuses: Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>,
+  ): AccountView => {
+    const active = activeCliId ? accounts.find((a) => a.id === activeCliId) : null;
+    const rows = accounts.map((a, i) => {
+      const st = statuses[a.id];
+      const activeRow = a.id === activeCliId;
+      const status =
+        activeRow ? "active" :
+        st?.duplicateOf ? "duplicate" :
+        st?.signedIn === false ? "not signed in" :
+        st?.signedIn === true ? "signed in" :
+        a.exec === "cli" ? "not checked" :
+        "ready";
+      return {
+        name: accountName(a),
+        type: (a.exec === "cli" ? "subscription" : "API key") as "subscription" | "API key",
+        status,
+        active: activeRow,
+        alias: accountSlug(a),
+        number: i + 1,
+        detail: st?.signedIn ? st.detail : undefined,
+        duplicateOf: st?.duplicateOf,
+      };
+    });
+    return {
+      current: active ? accountLabel(active) : "API routing",
+      rows,
+      importable,
+      labelPad: Math.max(12, ...rows.map((r) => r.name.length)),
+      statusPad: Math.max(6, ...rows.map((r) => r.status.length)),
+    };
+  };
 
   const defaultRunner: Runner = useCallback(
     async ({ prompt, messages, onEvent, selector: sel, signal }) => {
@@ -389,9 +910,14 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       if (cli) {
         routedRef.current = null;
         usedAccountRef.current = cli.id;
-        const r = await runCliTask({ binary: cli.binary, prompt, messages, onEvent, signal, sessionId: cliSessionRef.current, autoApprove: isYolo(), profile: cli.profile });
+        const modelLabel = cliModelLabel(activeCliModelRef.current);
+        onEvent({ type: "phase", label: "using subscription", detail: `${cli.binary}${modelLabel ? ` · ${modelLabel}` : ""} owns tools and permissions`, state: "running" });
+        const cliChoices = cliModelChoices(cli.binary);
+        const cliChoice = cliChoices.find((m) => m.id === activeCliModelRef.current) ?? cliChoices[0];
+        const cliEffort = cliChoice ? normalizeEffort(effortRef.current, cliChoice.efforts ?? []) ?? undefined : undefined;
+        const r = await runCliTask({ binary: cli.binary, prompt, messages, onEvent, signal, sessionId: cliSessionRef.current, autoApprove: isYolo(), profile: cli.profile, modelId: activeCliModelRef.current, effort: cliEffort });
         cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
-        cliMetaRef.current = { costUSD: r.costUSD, rate: r.rate };
+        cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
         return { messages: r.messages, usage: r.usage };
       }
       const plan = modeRef.current === "plan";
@@ -400,6 +926,8 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       // and the turn ledger — not a re-classification with an empty prompt.
       routedRef.current = { model: choice.model, reason: choice.reason };
       setLastPick({ model: choice.model, reason: choice.reason });
+      onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+      onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
       // The Context Engine projects the full history into a bounded, model-aware
       // working set to SEND; the returned ledger stays the full source of truth.
       const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, model: choice.model, plan });
@@ -410,7 +938,8 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       usedAccountRef.current = account?.id ?? null;
       cliMetaRef.current = null;
       if (account) markUsed(account.id);
-      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: effortRef.current });
+      const modelEffort = normalizeEffort(effortRef.current, effortLevels(choice.model)) ?? undefined;
+      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: modelEffort });
       // r.messages = the sent context + the newly produced turn. Rebuild msgRef as
       // FULL history + the user message + only the new messages (never the curated
       // projection), and sanitize so an interrupted turn can't leave a dangling
@@ -462,43 +991,44 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // /plan jumps straight to/from plan mode (toggle), independent of the cycle.
   const togglePlan = () => setModeTo(modeRef.current === "plan" ? "normal" : "plan");
 
-  // Effort tier → which model the routing seam should prefer. Pins the model via
-  // the existing switch machinery so the status line + cost reflect it.
-  const EFFORT_MODEL: Record<"fast" | "balanced" | "max", string> = { fast: "haiku-4.5", balanced: "sonnet-4.6", max: "opus-4.8" };
   const effortRef = useRef(effort);
   effortRef.current = effort;
-  // Picking a model/effort is an in-loop (API) choice, so it implies leaving any
-  // active CLI subscription (which otherwise owns every turn and would make the
-  // choice a silent no-op). Returns a suffix to append to the notice if it acted.
+  // Picking an API model implies leaving any active CLI subscription, because a
+  // subscription account owns the whole turn through its vendor binary.
   const leaveSubscription = (): string => {
     if (!activeCliRef.current) return "";
     activeCliRef.current = null;
     cliSessionRef.current = undefined;
+    setActiveCliModelId(undefined);
     setActiveCli(null);
     updatePrefs({ activeAccount: null });
     return " (left the subscription)";
   };
-  const setEffort = (tier: "fast" | "balanced" | "max") => {
-    effortRef.current = tier;
-    setEffortState(tier);
-    const left = leaveSubscription();
-    const r = resolveModelSwitch(EFFORT_MODEL[tier]);
-    if (r.ok && r.modelId) {
-      setSelector(new FixedSelector(r.modelId));
-      setLastPick(null);
-      routedRef.current = null;
+  const setEffort = (raw: string) => {
+    const target = effortTarget();
+    if (!target?.efforts.length) {
+      notice("the active model does not expose reasoning efforts");
+      return;
     }
-    notice(`effort: ${tier}${r.ok && r.modelId ? ` · ${r.modelId}` : ""}${left}`);
+    const level = normalizeEffort(raw, target.efforts);
+    if (!level) {
+      notice(`${target.label} supports: ${target.efforts.join(", ")}`);
+      return;
+    }
+    effortRef.current = level;
+    setEffortState(level);
+    notice(`effort: ${level} — ${target.label}`);
   };
 
   // Hand the terminal to an interactive child (e.g. `claude auth login`'s OAuth
-  // flow): drop raw mode + leave the alt-screen/mouse so the child owns the TTY,
+  // flow): drop raw mode + leave the alt-screen so the child owns the TTY,
   // run it synchronously (Ink is frozen meanwhile, so it can't steal stdin), then
   // restore our screen. Returns the child's exit code (or null if it couldn't run).
   const runInteractive = (cmd: string, cmdArgs: string[], env?: Record<string, string>): number | null => {
     try {
       setRawMode?.(false);
-      if (fullscreen) process.stdout.write("\x1b[?1006l\x1b[?1000l\x1b[?1049l"); // mouse off, leave alt-screen
+      if (process.env.GEARBOX_MOUSE !== "0") process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l"); // mouse off
+      if (fullscreen) process.stdout.write("\x1b[?1049l"); // leave alt-screen
       process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, cursor on
       process.stdout.write(`\n→ running \`${cmd} ${cmdArgs.join(" ")}\` — follow the prompts…\n\n`);
       const r = Bun.spawnSync([cmd, ...cmdArgs], { stdio: ["inherit", "inherit", "inherit"], ...(env ? { env } : {}) });
@@ -506,8 +1036,9 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     } catch {
       return null;
     } finally {
-      if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H\x1b[?1000h\x1b[?1006h");
-      process.stdout.write("\x1b[?2004h");
+      if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H");
+      if (process.env.GEARBOX_MOUSE !== "0") process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+      process.stdout.write("\x1b[?2004l\x1b[?25l");
       setRawMode?.(true);
     }
   };
@@ -520,6 +1051,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       const { text: modelPrompt, attached } = expandMentions(prompt);
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
       setBusy(true);
+      setSuggestion(null);
       const turnStart = Date.now();
       outCharsRef.current = 0;
       if (lingerRef.current) clearTimeout(lingerRef.current);
@@ -531,10 +1063,70 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       const ac = new AbortController();
       abortRef.current = ac;
       const toolMap = new Map<string, number>();
+      const pendingToolStreams = new Map<number, { arg?: string; delta: string; lines: number }>();
+      let toolFlushTimer: ReturnType<typeof setTimeout> | null = null;
+      const changedFiles = new Set<string>();
+      const checks: string[] = [];
+      const failures: string[] = [];
       let hadError = false;
+      const finishAssistant = () => {
+        const id = curAsstRef.current;
+        if (id == null) return;
+        setItems((prev) => prev.map((i) => (i.id === id && i.kind === "assistant" ? { ...i, done: true } : i)));
+        curAsstRef.current = null;
+      };
+      const appendToolOutput = (toolId: number | undefined, text: string) => {
+        if (!text) return;
+        setItems((prev) => {
+          const fallback = toolId ?? [...prev].reverse().find((i) => i.kind === "tool" && i.status === "running" && i.name === "run_shell")?.id;
+          return prev.map((i) => {
+            if (i.id !== fallback || i.kind !== "tool") return i;
+            const lines = (text.match(/\n/g) || []).length + (text && !text.endsWith("\n") ? 1 : 0);
+            return {
+              ...i,
+              outputTail: ((i.outputTail ?? "") + text).slice(-3000),
+              outputLines: (i.outputLines ?? 0) + lines,
+            };
+          });
+        });
+      };
+      const flushToolStreams = () => {
+        if (toolFlushTimer) {
+          clearTimeout(toolFlushTimer);
+          toolFlushTimer = null;
+        }
+        if (!pendingToolStreams.size) return;
+        const pending = new Map(pendingToolStreams);
+        pendingToolStreams.clear();
+        setItems((prev) =>
+          prev.map((i) => {
+            if (i.kind !== "tool") return i;
+            const p = pending.get(i.id);
+            if (!p) return i;
+            if (!p.delta) return { ...i, arg: p.arg ?? i.arg };
+            const tail = ((i.stream ?? "") + p.delta).slice(-2400);
+            return { ...i, arg: p.arg ?? i.arg, stream: tail, streamCount: (i.streamCount ?? 0) + p.lines };
+          }),
+        );
+      };
+      const queueToolStream = (toolId: number | undefined, arg?: string, delta?: string) => {
+        if (toolId == null) return;
+        const prev = pendingToolStreams.get(toolId) ?? { delta: "", lines: 0 };
+        const text = delta ?? "";
+        pendingToolStreams.set(toolId, {
+          arg: arg ?? prev.arg,
+          delta: prev.delta + text,
+          lines: prev.lines + (text.match(/\n/g) || []).length,
+        });
+        if (!toolFlushTimer) toolFlushTimer = setTimeout(flushToolStreams, 45);
+      };
 
       const onEvent: OnEvent = (e) => {
-        if (e.type === "text") {
+        if (e.type === "model-pick") {
+          push({ kind: "model", id: idRef.current++, model: e.model, provider: e.provider, reason: e.reason });
+        } else if (e.type === "phase") {
+          push({ kind: "phase", id: idRef.current++, label: e.label, detail: e.detail, state: e.state ?? "running" });
+        } else if (e.type === "text") {
           setMascotState("streaming");
           outCharsRef.current += e.text.length;
           if (curAsstRef.current === null) {
@@ -547,35 +1139,54 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           }
         } else if (e.type === "tool-start") {
           setMascotState("tool");
-          curAsstRef.current = null;
+          finishAssistant();
           const id = idRef.current++;
           toolMap.set(e.id, id);
-          setItems((prev) => [...prev, { kind: "tool", id, callId: e.id, name: e.name, arg: e.arg, status: "running", summary: "" }]);
+          setItems((prev) => [...prev, { kind: "tool", id, callId: e.id, name: e.name, arg: e.arg, status: "running", summary: "", startedAt: Date.now() }]);
         } else if (e.type === "tool-stream") {
-          // The tool's input is streaming in: update the head label and/or append
-          // the streamed content (a file being written line by line). Keep only a
-          // bounded TAIL of the content — re-splitting a growing 2500-line string
-          // every token is O(n²) and freezes the UI (it would look "all at once").
           const id = toolMap.get(e.id);
-          setItems((prev) =>
-            prev.map((i) => {
-              if (i.id !== id || i.kind !== "tool") return i;
-              if (e.delta == null) return { ...i, arg: e.arg ?? i.arg };
-              const lines = (e.delta.match(/\n/g) || []).length;
-              const tail = ((i.stream ?? "") + e.delta).slice(-2000); // ~last 25 lines
-              return { ...i, arg: e.arg ?? i.arg, stream: tail, streamCount: (i.streamCount ?? 0) + lines };
-            }),
-          );
+          queueToolStream(id, e.arg, e.delta);
+        } else if (e.type === "tool-output") {
+          const id = e.id ? toolMap.get(e.id) : undefined;
+          appendToolOutput(id, e.text);
         } else if (e.type === "tool-end") {
           setMascotState("thinking"); // back to reasoning until the next text/tool
+          flushToolStreams();
           const id = toolMap.get(e.id);
-          setItems((prev) => prev.map((i) => (i.id === id && i.kind === "tool" ? { ...i, status: e.ok ? "ok" : "err", summary: e.summary, diff: e.diff, stream: undefined } : i)));
+          const endedAt = Date.now();
+          setItems((prev) => prev.map((i) => {
+            if (i.id !== id || i.kind !== "tool") return i;
+            const p = firstPath(i.arg);
+            const preview = e.ok && p && isWriteLikeTool(i.name) ? filePreview(p) : null;
+            if (isWriteLikeTool(i.name) && e.ok) {
+              if (p) changedFiles.add(p);
+            }
+            if (!e.ok) failures.push(`${i.name}: ${e.summary}`);
+            return {
+              ...i,
+              status: e.ok ? "ok" : "err",
+              summary: e.summary,
+              diff: e.diff,
+              stream: undefined,
+              endedAt,
+              durationMs: i.startedAt ? endedAt - i.startedAt : undefined,
+              ...(preview ? { preview: preview.text, previewLines: preview.lines, previewLang: preview.lang } : {}),
+            };
+          }));
+        } else if (e.type === "verification") {
+          checks.push(e.command);
+          if (!e.ok) failures.push(`${e.command}: ${e.summary}`);
+          push({ kind: "verification", id: idRef.current++, command: e.command, ok: e.ok, summary: e.summary });
+        } else if (e.type === "preference-suggestion") {
+          push({ kind: "preference", id: idRef.current++, text: e.text, acceptCommand: e.acceptCommand });
         } else if (e.type === "error") {
           hadError = true;
+          failures.push(e.message);
           setMascotState("error");
-          curAsstRef.current = null;
-          push({ kind: "error", id: idRef.current++, text: e.message });
+          finishAssistant();
+          push({ kind: "error", id: idRef.current++, text: friendlyError(e.message) });
         } else if (e.type === "done") {
+          finishAssistant();
           if (e.usage.inputTokens > 0) setLastInput(e.usage.inputTokens);
           setTokens((t) => t + e.usage.inputTokens + e.usage.outputTokens);
         }
@@ -603,7 +1214,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         const cm = cliMetaRef.current;
         const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
-        if (cm?.rate) recordRateLimit(acctId, cm.rate);
+        if (cm?.rates?.length) recordRateLimits(acctId, cm.rates);
         // Auto-compact: once the history approaches the budget, summarize old
         // turns (cheap delegated model) so the next turns stay bounded without
         // losing the gist. Best-effort and skipped on interrupt.
@@ -631,6 +1242,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           onEvent({ type: "error", message: err?.message ?? String(err) });
         }
       } finally {
+        flushToolStreams();
         abortRef.current = null;
         setBusy(false);
         persist();
@@ -644,6 +1256,14 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         // otherwise, so these states would never render). Skip on a user interrupt.
         if (!interrupted) {
           setMascotState(hadError ? "error" : "celebrate");
+          const changed = uniq([...changedFiles]);
+          const doneChecks = uniq(checks);
+          const failed = uniq(failures).slice(0, 4);
+          const next = failed.length ? "/retry" : changed.length && !doneChecks.length ? "run tests" : changed.length ? "commit changes" : "/context";
+          if (changed.length || doneChecks.length || failed.length) {
+            push({ kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next });
+          }
+          setSuggestion(next);
           setLinger(true);
           if (lingerRef.current) clearTimeout(lingerRef.current);
           lingerRef.current = setTimeout(() => setLinger(false), 1500);
@@ -682,7 +1302,11 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         const name = nameParts.join(" ").trim() || undefined;
         const provider = w === "codex" || w === "chatgpt" ? "codex-cli" : w === "claude" || !w ? "claude-cli" : null;
         if (!provider) {
-          notice("which subscription? /login claude [name]  ·  /login codex [name]");
+          notice("which subscription? /account add claude work  ·  /account add codex work");
+          return;
+        }
+        if (name && /^\[.*\]$/.test(name)) {
+          notice(`replace ${name} with a real nickname, e.g. /account add ${provider === "codex-cli" ? "codex" : "claude"} work`);
           return;
         }
         const res = addCliAccount(provider, name);
@@ -693,29 +1317,60 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
         const bin = (res.account.auth as any).binary as string;
         const profile = (res.account.auth as any).loginProfile as string | undefined;
         const acctId = res.account.id;
-        const shortLabel = name ? `${bin}·${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-")}` : bin;
+        const shortLabel = accountName(res.account);
+        const statusCmd = bin === "codex" ? "codex login status" : "claude auth status";
+        const phaseId = pushPhase(`${accountLabel(res.account)} sign-in`, `checking ${statusCmd}`);
         void (async () => {
-          let st = await cliAuthStatus(bin, profile);
-          if (!st.loggedIn) {
-            notice(`signing in to ${res.account!.label}…`);
-            // Run the vendor OAuth scoped to this account's own config dir.
-            const code = runInteractive(bin, cliLoginArgs(bin), subscriptionEnv(bin, profile));
-            if (code == null) {
-              notice(`couldn't launch \`${bin} ${cliLoginArgs(bin).join(" ")}\` — run it in a terminal, then try again`);
-              return;
-            }
-            st = await cliAuthStatus(bin, profile);
+          try {
+            let st = await cliAuthStatus(bin, profile);
             if (!st.loggedIn) {
-              notice(`sign-in didn't complete — try /login ${w || "claude"}${name ? " " + name : ""} again`);
-              return;
+              const detail = st.detail ? ` (${st.detail})` : "";
+              updatePhase(phaseId, "running", `${accountLabel(res.account!)} sign-in`, `opening ${bin} ${cliLoginArgs(bin).join(" ")}${detail}`);
+              // Run the vendor OAuth scoped to this account's own config dir.
+              const code = runInteractive(bin, cliLoginArgs(bin), subscriptionEnv(bin, profile));
+              if (code == null) {
+                updatePhase(phaseId, "err", `${accountLabel(res.account!)} sign-in`, `couldn't launch ${bin} ${cliLoginArgs(bin).join(" ")}; run it in a terminal, then try again`);
+                return;
+              }
+              st = await cliAuthStatus(bin, profile);
+              if (!st.loggedIn) {
+                const retryDetail = st.detail ? ` ${st.detail}.` : "";
+                updatePhase(phaseId, "err", `${accountLabel(res.account!)} sign-in`, `didn't complete.${retryDetail} Run ${bin} ${cliLoginArgs(bin).join(" ")}, then /account add ${bin === "codex" ? "codex" : "claude"}${name ? " " + name : ""}`);
+                return;
+              }
             }
+            const signed = st.identity ? { key: st.identity, label: st.identityLabel ?? st.detail, checkedAt: Date.now() } : undefined;
+            if (signed) {
+              for (const candidate of listAccounts().filter((a) => a.id !== acctId && a.exec === "cli" && (a.auth as any).binary === bin)) {
+                let key = candidate.identity?.key ?? accountStatusCacheRef.current[candidate.id]?.identity;
+                if (!key) {
+                  const other = await cliAuthStatus(bin, (candidate.auth as any).loginProfile);
+                  accountStatusCacheRef.current[candidate.id] = { signedIn: other.loggedIn, detail: other.detail, identity: other.identity };
+                  if (other.identity) {
+                    key = other.identity;
+                    putAccount({ ...candidate, identity: { key, label: other.identityLabel ?? other.detail, checkedAt: Date.now() } });
+                  }
+                }
+                if (key === signed.key) {
+                  await removeAccount(acctId);
+                  updatePhase(phaseId, "err", `${accountLabel(candidate)} already signed in`, `same identity${signed.label ? `: ${signed.label}` : ""}. Use /account ${accountSlug(candidate)}`);
+                  return;
+                }
+              }
+              putAccount({ ...res.account!, identity: signed });
+              accountStatusCacheRef.current[acctId] = { signedIn: true, detail: st.detail, identity: signed.key };
+            } else {
+              accountStatusCacheRef.current[acctId] = { signedIn: true, detail: st.detail };
+            }
+            activeCliRef.current = { id: acctId, binary: bin, profile };
+            cliSessionRef.current = undefined;
+            setLastPick(null);
+            setActiveCli({ id: acctId, label: shortLabel });
+            updatePrefs({ activeAccount: acctId }); // restore this subscription next launch
+            updatePhase(phaseId, "ok", `${accountLabel(res.account!)} active`, `using ${bin}${st.detail ? `; ${st.detail}` : ""}. Own tools/permissions; /account off returns to API routing`);
+          } catch (e: any) {
+            updatePhase(phaseId, "err", `${accountLabel(res.account!)} sign-in`, e?.message ?? String(e));
           }
-          activeCliRef.current = { id: acctId, binary: bin, profile };
-          cliSessionRef.current = undefined;
-          setLastPick(null);
-          setActiveCli({ id: acctId, label: shortLabel });
-          updatePrefs({ activeAccount: acctId }); // restore this subscription next launch
-          notice(`✓ ${res.account!.label} signed in${st.detail ? ` — ${st.detail}` : ""}. Runs via the ${bin} CLI (own tools/permissions). /account off to switch back.`);
         })();
       };
 
@@ -772,9 +1427,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           return;
         case "effort": {
           echo(text);
-          const tier = arg.toLowerCase();
-          if (tier === "fast" || tier === "balanced" || tier === "max") setEffort(tier);
-          else notice(`effort: ${effortRef.current} — use /effort fast|balanced|max`);
+          if (arg.trim()) {
+            setEffort(arg);
+          } else {
+            const target = effortTarget();
+            notice(target?.efforts.length ? `effort: ${effortRef.current} — ${target.label} supports ${target.efforts.join(", ")}` : "the active model does not expose reasoning efforts");
+          }
           return;
         }
         case "copy": {
@@ -834,7 +1492,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
                 `  theme   ${p.theme ?? "dark"}        colors — ${THEME_NAMES.join(" · ")}\n` +
                 `  vim     ${p.vim ? "on" : "off"}         vim keys in the composer\n` +
                 `  notify  ${p.notify === false ? "off" : "on"}          desktop ping when a long turn finishes\n` +
-                `  inline  ${p.fullscreen === true ? "off" : "on"}         native mouse select + scroll (default; off = alt-screen frame; restart to apply)\n` +
+                `  inline  ${p.fullscreen === false ? "on" : "off"}         terminal scrollback instead of fixed bottom input (restart to apply)\n` +
                 `  change one: /config <theme|vim|notify|inline> <value>`,
             );
             return;
@@ -896,11 +1554,20 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           echo(text);
           if (!arg || arg.toLowerCase() === "all") {
             const routing = selectorRef.current instanceof RoutingSelector;
-            const mode = routing ? "now: routing on — Gearbox picks per task" : `now: pinned to ${currentId ?? "one model"} — /model auto to route`;
-            notice(formatModelList(currentId, arg.toLowerCase() === "all") + `\n\n  ${mode}`);
+            const activeSub = activeCliRef.current;
+            const mode = activeSub
+              ? `now: ${activeSub.binary} subscription${activeCliModelRef.current ? ` · ${cliModelLabel(activeCliModelRef.current)}` : ""} — /account off for API routing`
+              : routing ? "now: routing on — Gearbox picks per task" : `now: pinned to ${currentId ?? "one model"} — /model auto to route`;
+            const list = activeSub ? formatCliModelList(activeSub.binary, activeCliModelRef.current ?? null) : formatModelList(currentId, arg.toLowerCase() === "all");
+            notice(list + `\n\n  ${mode}`);
             return;
           }
           if (arg.toLowerCase() === "auto" || arg.toLowerCase() === "route") {
+            if (activeCliRef.current) {
+              setActiveCliModelId(undefined);
+              notice(`subscription model cleared — ${activeCliRef.current.binary} will use its default. /account off for API routing`);
+              return;
+            }
             const left = leaveSubscription();
             setSelector(new RoutingSelector());
             setLastPick(null);
@@ -910,6 +1577,17 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           {
+            const cli = activeCliRef.current;
+            if (cli) {
+              const cr = resolveCliModel(cli.binary, arg);
+              if (!cr.ok) {
+                notice(cr.message);
+                return;
+              }
+              setActiveCliModelId(cr.modelId);
+              notice(`subscription model → ${cr.label} — using ${cli.binary}; tools and permissions still owned by the subscription`);
+              return;
+            }
             const r = resolveModelSwitch(arg);
             if (r.ok && r.modelId) {
               const left = leaveSubscription();
@@ -918,11 +1596,31 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
               routedRef.current = null;
               updatePrefs({ pinnedModel: r.modelId }); // persist the pin across sessions
               notice(`${r.message} — pinned (persists across sessions). /model auto to route per task again.` + left);
+              const kind = classify(lastPromptRef.current ?? "").replace("code", "code") as PreferenceKind;
+              push({ kind: "preference", id: idRef.current++, text: `Remember ${r.modelId} for ${kind} tasks?`, acceptCommand: `/prefer ${kind} ${r.modelId}` });
             } else {
               notice(r.message);
             }
           }
           return;
+        case "prefer": {
+          echo(text);
+          const [kindRaw, modelRaw] = arg.split(/\s+/);
+          const allowed = new Set(["code", "search", "summarize", "classify", "plan", "chat"]);
+          if (!kindRaw || !modelRaw || !allowed.has(kindRaw)) {
+            notice("usage: /prefer <code|plan|search|summarize|classify|chat> <model>");
+            return;
+          }
+          const r = resolveModelSwitch(modelRaw);
+          if (!r.ok || !r.modelId) {
+            notice(r.message);
+            return;
+          }
+          const pref = confirmRoutingPreference({ kind: kindRaw as PreferenceKind, modelId: r.modelId, repo: process.cwd() });
+          setSelector((s) => (s instanceof RoutingSelector ? new RoutingSelector() : s));
+          notice(`remembered: prefer ${pref.modelId} for ${pref.kind} tasks`);
+          return;
+        }
         case "memory": {
           echo(text);
           if (arg) {
@@ -957,7 +1655,40 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           const subL = (parts[0] || "").toLowerCase();
           const all = listAccounts();
           const activeId = activeCliRef.current?.id ?? null;
-          const showList = () => notice(formatAccounts(all, activeId, importableEnvCreds()));
+          const withDuplicateMarks = (accounts: typeof all, statuses: Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>) => {
+            const seen = new Map<string, string>();
+            for (const a of accounts) {
+              const st = statuses[a.id];
+              if (!st?.identity || st.signedIn === false) continue;
+              const first = seen.get(st.identity);
+              if (first) st.duplicateOf = accountName(accounts.find((x) => x.id === first) ?? a);
+              else seen.set(st.identity, a.id);
+            }
+            return statuses;
+          };
+          const checkCliAccounts = async (accounts: typeof all) => {
+            const statuses: Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }> = { ...accountStatusCacheRef.current };
+            await Promise.all(accounts.filter((a) => a.exec === "cli").map(async (a) => {
+              const bin = (a.auth as any).binary as string;
+              const profile = (a.auth as any).loginProfile as string | undefined;
+              const st = await cliAuthStatus(bin, profile);
+              statuses[a.id] = { signedIn: st.loggedIn, detail: st.detail, identity: st.identity };
+            }));
+            accountStatusCacheRef.current = withDuplicateMarks(accounts, statuses);
+            return accountStatusCacheRef.current;
+          };
+          const showList = () => {
+            void (async () => {
+              try {
+                const fresh = listAccounts();
+                const statuses = await checkCliAccounts(fresh);
+                pushAccounts(buildAccountView(fresh, activeCliRef.current?.id ?? null, importableEnvCreds(), statuses));
+              } catch (e: any) {
+                notice(`couldn't check subscription accounts — ${e?.message ?? String(e)}`);
+                pushAccounts(buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current));
+              }
+            })();
+          };
           const byNumber = (s?: string) => {
             const n = Number(s);
             return Number.isInteger(n) && n >= 1 && n <= all.length ? all[n - 1] : undefined;
@@ -968,20 +1699,34 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             if (a.exec === "cli") {
               const bin = (a.auth as any).binary as string;
               const profile = (a.auth as any).loginProfile as string | undefined;
+              const phaseId = pushPhase(`${accountLabel(a)} sign-in`, `checking ${bin === "codex" ? "codex login status" : "claude auth status"}`);
               void (async () => {
-                const st = await cliAuthStatus(bin, profile);
-                if (!st.loggedIn) {
-                  notice(`${accountLabel(a)} isn't signed in — run /account add ${bin === "codex" ? "codex" : "claude"} to sign in`);
-                  return;
+                try {
+                  const st = await cliAuthStatus(bin, profile);
+                  if (!st.loggedIn) {
+                    updatePhase(phaseId, "err", `${accountLabel(a)} sign-in`, `not signed in${st.detail ? `; ${st.detail}` : ""}. Run /account add ${bin === "codex" ? "codex" : "claude"}${accountName(a).includes("(") ? " " + accountName(a).replace(/^.*\((.*)\).*$/, "$1") : ""}`);
+                    accountStatusCacheRef.current[a.id] = { signedIn: false, detail: st.detail };
+                    return;
+                  }
+                  if (st.identity) {
+                    putAccount({ ...a, identity: { key: st.identity, label: st.identityLabel ?? st.detail, checkedAt: Date.now() } });
+                    accountStatusCacheRef.current[a.id] = { signedIn: true, detail: st.detail, identity: st.identity };
+                  } else {
+                    accountStatusCacheRef.current[a.id] = { signedIn: true, detail: st.detail };
+                  }
+                  activeCliRef.current = { id: a.id, binary: bin, profile };
+                  if (activeCliModelRef.current && !cliSupportsModel(bin, activeCliModelRef.current)) setActiveCliModelId(undefined);
+                  cliSessionRef.current = undefined;
+                  setActiveCli({ id: a.id, label: accountName(a) });
+                  updatePrefs({ activeAccount: a.id });
+                  updatePhase(phaseId, "ok", `switched to ${accountLabel(a)}`, st.detail);
+                } catch (e: any) {
+                  updatePhase(phaseId, "err", `${accountLabel(a)} sign-in`, e?.message ?? String(e));
                 }
-                activeCliRef.current = { id: a.id, binary: bin, profile };
-                cliSessionRef.current = undefined;
-                setActiveCli({ id: a.id, label: bin });
-                updatePrefs({ activeAccount: a.id });
-                notice(`switched to ${accountLabel(a)}${st.detail ? ` — ${st.detail}` : ""}`);
               })();
             } else {
               activeCliRef.current = null;
+              setActiveCliModelId(undefined);
               setActiveCli(null);
               setDefaultAccount(a.provider, a.id);
               updatePrefs({ activeAccount: null });
@@ -995,6 +1740,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           }
           if (subL === "off") {
             activeCliRef.current = null;
+            setActiveCliModelId(undefined);
             cliSessionRef.current = undefined;
             setActiveCli(null);
             updatePrefs({ activeAccount: null });
@@ -1012,12 +1758,31 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             notice(all.length ? `there's no account ${subL} — pick 1–${all.length}.\n\n` + formatAccounts(all, activeId, []) : "no accounts yet — /account add to add one");
             return;
           }
+          if (!["add", "remove", "rm", "import", "off"].includes(subL)) {
+            const ref = findAccountRef(arg, all);
+            if (ref.account) {
+              activate(ref.account);
+              return;
+            }
+            notice(`${ref.error}.\n\n` + formatAccounts(all, activeId, importableEnvCreds(), accountStatusCacheRef.current));
+            return;
+          }
           if (subL === "add") {
-            const first = (parts[1] ?? "").toLowerCase();
+            const rawFirst = parts[1] ?? "";
+            const first = rawFirst.toLowerCase();
+            const bracketedFirst = first.match(/^\[(.*)\]$/)?.[1] ?? first;
+            if (["claude/codex", "codex/claude", "claude|codex", "codex|claude"].includes(bracketedFirst)) {
+              notice("choose one provider: /account add claude work  ·  /account add codex work");
+              return;
+            }
             // Subscription sign-in (what people try first).
-            if (["claude", "codex", "chatgpt", "claude-cli", "codex-cli"].includes(first)) {
-              const provider = first.startsWith("codex") || first === "chatgpt" ? "codex" : "claude";
+            if (["claude", "codex", "chatgpt", "claude-cli", "codex-cli"].includes(bracketedFirst)) {
+              const provider = bracketedFirst.startsWith("codex") || bracketedFirst === "chatgpt" ? "codex" : "claude";
               signInCli(`${provider} ${parts.slice(2).join(" ")}`.trim());
+              return;
+            }
+            if (/^\[.*\]$/.test(rawFirst)) {
+              notice("replace placeholders with real values, e.g. /account add claude work or /account add codex work");
               return;
             }
             const key = parts[1] ?? "";
@@ -1029,7 +1794,9 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
                   "  /account add claude          Claude subscription (Pro/Max)\n" +
                   "  /account add claude <name>   a 2nd Claude account, e.g. /account add claude work\n" +
                   "  /account add codex           ChatGPT subscription (Plus/Pro)\n" +
-                  "  /account add codex <name>    a 2nd ChatGPT account\n" +
+                  "  /account add codex <name>    a 2nd ChatGPT account, e.g. /account add codex work\n" +
+                  "  /account add azure <foundry-endpoint> <api-key>\n" +
+                  "  /account add azure <resource-name> <api-key> [api-version]\n" +
                   "  /account add <api-key>       paste any provider key (auto-detected)\n" +
                   "  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter",
               );
@@ -1037,7 +1804,12 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             }
             void (async () => {
               let res;
-              if (provGiven) res = await addApiKeyAccount(provGiven, keyVal);
+              if (first === "azure") {
+                const resource = parts[2] ?? "";
+                const azureKey = parts[3] ?? "";
+                const apiVersion = parts[4];
+                res = /^https?:\/\//i.test(resource) ? await addAzureFoundryAccount(resource, azureKey) : await addAzureAccount(resource, azureKey, { apiVersion });
+              } else if (provGiven) res = await addApiKeyAccount(provGiven, keyVal);
               else if (detectProviderByKey(key)) res = await addByPastedKey(key);
               else {
                 notice(`"${key}" isn't a recognized key. Try /account add claude, /account add codex, or paste a full API key.`);
@@ -1054,15 +1826,17 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           if (subL === "remove" || subL === "rm") {
-            const a = byNumber(parts[1]);
+            const ref = findAccountRef(parts.slice(1).join(" "), all);
+            const a = ref.account;
             if (!a) {
-              notice(`which account? use its number:\n\n` + formatAccounts(all, activeId, []));
+              notice(`${ref.error ?? "which account?"}\n\n` + formatAccounts(all, activeId, importableEnvCreds(), accountStatusCacheRef.current));
               return;
             }
             const wasActive = activeCliRef.current?.id === a.id;
             void removeAccount(a.id).then(() => {
               if (wasActive) {
                 activeCliRef.current = null;
+                setActiveCliModelId(undefined);
                 setActiveCli(null);
               }
               notice(`removed ${accountLabel(a)}`);
@@ -1084,7 +1858,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
             return;
           }
           // Anything else → show the list (so a stray arg still helps).
-          notice(`didn't recognize "/account ${arg}".\n\n` + formatAccounts(all, activeId, importableEnvCreds()));
+          notice(`didn't recognize "/account ${arg}".\n\n` + formatAccounts(all, activeId, importableEnvCreds(), accountStatusCacheRef.current));
           return;
         }
         case "login": {
@@ -1093,17 +1867,44 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           return;
         }
         case "cost":
-        case "usage":
+        case "usage": {
           echo(text);
-          pushUsage(
-            buildUsageView(estimateCost(sessionRef.current.turns), (id) => {
-              const a = getAccount(id);
-              if (a) return accountLabel(a);
-              if (id === "unknown") return "(unattributed)";
-              return id; // a model id or env-derived label
-            }),
-          );
+          const accounts = listAccounts();
+          const resolve = (id: string) => {
+            const a = getAccount(id);
+            if (a) {
+              const bin = a.auth.kind === "cli" ? a.auth.binary : undefined;
+              return {
+                name: accountName(a),
+                kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api",
+                balanceExposed: a.exec !== "cli" && balanceExposed(a.provider),
+                limitNote: a.exec === "cli" ? `${bin === "codex" ? "Codex" : "Claude"} CLI has not reported quota windows yet` : undefined,
+              };
+            }
+            if (id === "unknown") return { name: "(unattributed)", kind: "api" as const };
+            return { name: id, kind: "api" as const }; // a model id or env-derived label
+          };
+          const session = estimateCost(sessionRef.current.turns);
+          // Providers that expose a remaining balance (OpenRouter, Vercel). For
+          // the rest the card shows spend, synchronously.
+          const withBalance = accounts.filter((a) => a.exec !== "cli" && balanceExposed(a.provider));
+          if (!withBalance.length) {
+            // No live fetch needed → push the complete card once. (Pushing then
+            // mutating wouldn't work: a finished card commits to <Static>, which
+            // never re-renders — the inline default.)
+            pushUsage(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id)));
+            return;
+          }
+          notice("checking balances…");
+          void (async () => {
+            for (const a of withBalance) {
+              const bal = await fetchBalance(a);
+              if (bal?.remainingUSD != null) recordBalance(a.id, bal);
+            }
+            pushUsage(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id))); // push ONCE, with balances in
+          })();
           return;
+        }
         case "compact": {
           echo(text);
           if (busyRef.current) {
@@ -1178,8 +1979,23 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           notice("run a shell command with !<command> — e.g. !git status");
           return;
         }
-        const r = runShell(cmd);
-        notice(r.output || "(no output)");
+        const id = idRef.current++;
+        const startedAt = Date.now();
+        push({ kind: "tool", id, callId: `direct:${id}`, name: "run_shell", arg: cmd, status: "running", summary: "", startedAt });
+        void (async () => {
+          const r = await runShellStream(cmd, {
+            onChunk: (c) => {
+              setItems((prev) =>
+                prev.map((i) => {
+                  if (i.id !== id || i.kind !== "tool") return i;
+                  const lines = (c.text.match(/\n/g) || []).length + (c.text && !c.text.endsWith("\n") ? 1 : 0);
+                  return { ...i, outputTail: ((i.outputTail ?? "") + c.text).slice(-3000), outputLines: (i.outputLines ?? 0) + lines };
+                }),
+              );
+            },
+          });
+          setItems((prev) => prev.map((i) => (i.id === id && i.kind === "tool" ? { ...i, status: r.ok ? "ok" : "err", summary: r.output.split("\n").find((l) => l.trim()) ?? "(no output)", endedAt: Date.now(), durationMs: Date.now() - startedAt, exitCode: r.exitCode } : i)));
+        })();
         return;
       }
       if (text.startsWith("#")) {
@@ -1294,6 +2110,59 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       }
       return; // swallow everything else while searching
     }
+    if (!busyRef.current && suggestion && !editRef.current.value && ((key.tab && !key.shift) || key.rightArrow)) {
+      setEdit({ value: suggestion, cursor: suggestion.length });
+      setSuggestion(null);
+      return;
+    }
+    if (!busyRef.current) {
+      const draft = editRef.current.value;
+      const cursor = editRef.current.cursor;
+      const mention = currentMention(draft, cursor);
+      const fileMatches = mention ? matchFiles(listProjectFiles(), mention.token) : [];
+      const pickerRows = commandPickerRows(draft);
+      const cmdMatches = draft.startsWith("/") ? matchCommands(draft) : [];
+      const activeCount = pickerRows.length || fileMatches.length || cmdMatches.length;
+      const exactPickerValue = pickerRows.length === 1 && pickerRows[0]!.value.trim() === draft.trim();
+      const paletteShouldOwnArrows = activeCount > 1 || (activeCount === 1 && !exactPickerValue && !isExactSlashCommand(draft));
+      if (key.return && isExactSlashCommand(draft)) {
+        setPaletteIndex(0);
+        submit(draft.trim());
+        return;
+      }
+      if (key.return && /^\/\S+\s+/.test(draft.trim()) && !pickerRows.length && !fileMatches.length) {
+        setPaletteIndex(0);
+        submit(draft.trim());
+        return;
+      }
+      if (paletteShouldOwnArrows && (key.upArrow || key.downArrow)) {
+        const delta = key.upArrow ? -1 : 1;
+        setPaletteIndex((paletteIndexRef.current + delta + activeCount) % activeCount);
+        return;
+      }
+      if (activeCount && ((key.tab && !key.shift) || key.return)) {
+        const idx = Math.min(paletteIndexRef.current, activeCount - 1);
+        if (pickerRows.length) {
+          const value = pickerRows[idx]!.value;
+          setPaletteIndex(0);
+          if (key.return) submit(value);
+          else setEdit({ value, cursor: value.length });
+          return;
+        }
+        if (fileMatches.length && mention) {
+          const r = completeMention(draft, mention, fileMatches[idx]!);
+          setEdit({ value: r.value, cursor: r.cursor });
+          setPaletteIndex(0);
+          return;
+        }
+        if (cmdMatches.length) {
+          const name = cmdMatches[idx]!.name + " ";
+          setEdit({ value: name, cursor: name.length });
+          setPaletteIndex(0);
+          return;
+        }
+      }
+    }
     // ? on an empty composer → shortcuts cheatsheet (still typeable mid-text).
     if (input === "?" && !editRef.current.value && !busyRef.current && !key.ctrl && !key.meta) {
       notice(KEYS_HELP);
@@ -1302,7 +2171,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     // ⌃O — toggle full diffs / tool output (un-truncate the 16-line cap).
     if (key.ctrl && input === "o") {
       setExpandAll((x) => {
-        notice(x ? "collapsed long output" : "expanded full diffs & output");
+        flashStatus(x ? "collapsed long output" : "expanded full diffs and output");
         return !x;
       });
       return;
@@ -1341,7 +2210,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     // File drag-drop: terminals paste the dropped file's path. If it's a real
     // file, turn it into an @mention so it gets read into the prompt.
     if (!busyRef.current && input.length > 3 && !input.includes("\n")) {
-      const p = input.replace(/\x1b\[20[01]~/g, "").trim().replace(/^'|'$/g, "").replace(/\\ /g, " ");
+      const p = sanitizeInputText(input).trim().replace(/^'|'$/g, "").replace(/\\ /g, " ");
       if (/[/\\.]/.test(p) && p.length < 1024 && existsSync(p)) {
         const e = editRef.current;
         const ins = `@${p} `;
@@ -1351,7 +2220,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     }
     // Large paste → collapse to a chip so it doesn't flood the composer.
     if (!busyRef.current && (input.includes("\x1b[200~") || (input.length > 240 && input.includes("\n")))) {
-      const clean = input.replace(/\x1b\[20[01]~/g, "").replace(/\r\n?/g, "\n");
+      const clean = sanitizeInputText(input);
       const lines = clean.split("\n").length;
       if (lines > 4 || clean.length > 400) {
         const id = ++pasteIdRef.current;
@@ -1372,6 +2241,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
     }
     switch (action.type) {
       case "edit":
+        if (suggestion) setSuggestion(null);
         setEdit(action.state);
         break;
       case "submit":
@@ -1409,8 +2279,27 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   const fileMatches = mention ? matchFiles(listProjectFiles(), mention.token) : [];
 
   const welcome = items.length === 0;
+  const pickerRows = commandPickerRows(edit.value);
   const cmdMatches = matchCommands(edit.value);
-  const shownFiles = fileMatches.slice(0, 8);
+  const paletteCount = pickerRows.length || fileMatches.length || cmdMatches.length;
+  const selectedPalette = paletteCount ? Math.min(paletteIndex, paletteCount - 1) : 0;
+  const paletteKey = [
+    pickerRows.length ? "picker" : fileMatches.length ? "files" : cmdMatches.length ? "commands" : "none",
+    edit.value,
+    ...(pickerRows.length ? pickerRows.map((r) => r.value) : fileMatches.length ? fileMatches : cmdMatches.map((c) => c.name)),
+  ].join("\0");
+
+  useEffect(() => {
+    if (paletteIndexRef.current !== 0) setPaletteIndex(0);
+  }, [paletteKey]);
+
+  useEffect(() => {
+    if (paletteCount === 0 && paletteIndexRef.current !== 0) {
+      setPaletteIndex(0);
+    } else if (paletteCount > 0 && paletteIndexRef.current >= paletteCount) {
+      setPaletteIndex(paletteCount - 1);
+    }
+  }, [paletteCount]);
 
   // The transcript as a flat styled-line buffer, wrapped to the full content width.
   const lineWidth = Math.max(width - 3, 20);
@@ -1419,18 +2308,23 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
   // Footer height — over-estimated so the fullscreen frame never exceeds the
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
   // clips the status bar). HEADER is the title bar (marginTop + title + rule).
+  const PALETTE_ROWS = pickerRows.length ? Math.min(7, pickerRows.length) : fileMatches.length ? Math.min(5, fileMatches.length) : cmdMatches.length ? Math.min(7, cmdMatches.length) : 0;
   let footer = 2; // status line + its top margin
   footer += perm ? 9 : 3; // permission card vs composer (rule + input + marginTop)
-  if (busy || linger) footer += STATE_GHOST_ROWS + 1; // the fixed-height ghost line (+ marginTop)
+  footer += PALETTE_ROWS;
+  if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
+  if (busy) footer += 2; // compact current-turn activity rail
   if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
-  if (cmdMatches.length) footer += cmdMatches.length + 1;
-  if (shownFiles.length) footer += shownFiles.length + 2;
+  if (copiedNotice) footer += 1;
   const HEADER = 3;
   const transcriptHeight = Math.max(1, rows - HEADER - footer);
   const maxScroll = Math.max(0, lines.length - transcriptHeight);
   const effScroll = atBottomRef.current ? maxScroll : Math.min(scrollTop, maxScroll);
+  linesRef.current = lines;
+  scrollTopLiveRef.current = effScroll;
+  transcriptHeightLiveRef.current = transcriptHeight;
   viewportHeightRef.current = transcriptHeight;
   maxScrollRef.current = maxScroll;
   scrollTopRef.current = effScroll;
@@ -1456,17 +2350,29 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
       {firstRunRef.current ? (
         <Box marginTop={1} flexDirection="column" alignItems="center">
           <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
-          <Text color={color.faint}>{demo ? "set ANTHROPIC_API_KEY (or another provider) to start — running in demo mode" : "/theme to restyle · select text with your mouse · --fullscreen for the alt-screen frame"}</Text>
+          <Text color={color.faint}>{demo ? "set ANTHROPIC_API_KEY (or another provider) to start — running in demo mode" : "/theme to restyle · /config inline on for terminal scrollback"}</Text>
         </Box>
       ) : null}
     </Box>
   );
 
+  const paletteJsx = pickerRows.length || cmdMatches.length || fileMatches.length ? (
+    <Box flexDirection="column">
+      <CommandPalette draft={edit.value} selected={selectedPalette} limit={7} rows={pickerRows} width={width} />
+      <FilePalette matches={fileMatches} selected={selectedPalette} limit={5} width={width} />
+    </Box>
+  ) : null;
+
+  const composerJsx = perm ? (
+    <PermissionPrompt req={perm} width={width} />
+  ) : (
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} />
+  );
+
   const footerJsx = (
     <>
       {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} tps={elapsed > 0 ? Math.round(outCharsRef.current / 4 / elapsed) : 0} linger={linger && !busy} width={width} /> : null}
-      <CommandPalette draft={edit.value} />
-      <FilePalette matches={shownFiles} />
+      {busy ? <ActivityRail items={items} width={width} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (
@@ -1487,12 +2393,21 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           <Text color={color.dim}>{searchHistory(historyRef.current, search.q, search.idx) ?? (search.q ? "(no match)" : "")}</Text>
         </Box>
       ) : null}
-      {perm ? (
-        <PermissionPrompt req={perm} width={width} />
-      ) : (
-        <Composer value={edit.value} cursor={edit.cursor} placeholder={mode === "plan" ? "describe what to plan…" : "ask anything"} busy={busy} width={width} vim={vim} />
-      )}
-      <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={effort} />
+      {copiedNotice ? (
+        <Box paddingX={1}>
+          <Text color={color.ok}>{glyph.notice} {copiedNotice}</Text>
+        </Box>
+      ) : null}
+      <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={effort} online={online} />
+      <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
+      {composerJsx}
+    </>
+  );
+
+  const inlineFooterJsx = (
+    <>
+      {paletteJsx}
+      {composerJsx}
     </>
   );
 
@@ -1506,7 +2421,7 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           </Box>
         ) : (
           <Box paddingX={1}>
-            <Viewport lines={lines} scrollTop={effScroll} height={transcriptHeight} width={width - 2} />
+            <Viewport lines={lines} scrollTop={effScroll} height={transcriptHeight} width={width - 2} selection={transcriptSelection} />
           </Box>
         )}
         {footerJsx}
@@ -1526,9 +2441,9 @@ export function App({ selector: initialSelector, demo, runner, fullscreen = fals
           <Box marginTop={1}>{hero}</Box>
         </>
       ) : (
-        <Transcript items={items} width={width} header={banner} />
+        <Transcript items={items} width={width} header={banner} expandAll={expandAll} />
       )}
-      {footerJsx}
+      {inlineFooterJsx}
     </Box>
   );
 }

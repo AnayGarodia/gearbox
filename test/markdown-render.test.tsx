@@ -44,3 +44,32 @@ test("renders headings, lists, tables, and inline without raw markdown markup", 
   expect(f).toContain("first");
   expect(f).toContain("const x = 1;");
 });
+
+test("renders unfenced source-looking output as a padded code block", () => {
+  const md = [
+    '"""A compact Python example."""',
+    "from dataclasses import dataclass",
+    "from random import Random",
+    "",
+    "@dataclass(frozen=True)",
+    "class Task:",
+    "    name: str",
+    "    effort: int",
+    "",
+    "    @property",
+    "    def score(self) -> int:",
+    "        return self.effort * 2",
+  ].join("\n");
+
+  const { lastFrame } = render(
+    <Box width={80}>
+      <Markdown text={md} width={80} />
+    </Box>,
+  );
+  const f = strip(lastFrame() ?? "");
+
+  expect(f).toContain("python");
+  expect(f).toContain("1 │ \"\"\"A compact Python example.\"\"\"");
+  expect(f).toContain("class Task:");
+  expect(f).not.toContain("```");
+});

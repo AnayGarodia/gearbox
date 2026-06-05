@@ -24,7 +24,7 @@ export interface CliResult {
   usage: Usage;
   sessionId?: string; // the binary's own session id, for resume
   costUSD?: number; // claude reports this; codex doesn't
-  rate?: CliRate; // claude's rate_limit_event (quota utilization)
+  rates?: CliRate[]; // claude's rate_limit_events — ONE per window (5-hour, 7-day)
 }
 
 // Accumulates across a stream so runCliTask can build the result.
@@ -33,12 +33,14 @@ interface CliState {
   usage: Usage;
   sessionId?: string;
   costUSD?: number;
-  rate?: CliRate;
+  // Keyed by window type so a 5-hour and a 7-day event don't overwrite each
+  // other (claude emits them as separate rate_limit_events).
+  rates: Map<string, CliRate>;
   toolNames: Map<string, string>;
 }
 
 function newState(): CliState {
-  return { text: "", usage: { inputTokens: 0, outputTokens: 0 }, toolNames: new Map() };
+  return { text: "", usage: { inputTokens: 0, outputTokens: 0 }, rates: new Map(), toolNames: new Map() };
 }
 
 // Map ONE parsed NDJSON object to AgentEvents + fold into state. Pure (no IO) so
@@ -81,8 +83,13 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
       if (obj.subtype === "init" && obj.session_id) state.sessionId = obj.session_id;
       break; // hook_* noise ignored
     case "rate_limit_event": {
+      // claude reports each window (five_hour, seven_day, …) in its own event;
+      // key by type so they accumulate instead of overwriting.
       const ri = obj.rate_limit_info;
-      if (ri && typeof ri.utilization === "number") state.rate = { utilization: ri.utilization, resetsAt: ri.resetsAt, type: ri.rateLimitType };
+      if (ri && typeof ri.utilization === "number") {
+        const type = ri.rateLimitType ?? "limit";
+        state.rates.set(type, { utilization: ri.utilization, resetsAt: ri.resetsAt, type });
+      }
       break;
     }
     case "assistant": {
@@ -154,17 +161,34 @@ export function subscriptionEnv(binary: string, profile?: string): Record<string
 
 /** Build the binary's argv. Flags are best-effort per the spike; may need
  *  per-version tuning. `autoApprove` mirrors Gearbox's yolo (the CLI self-governs). */
-export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean } = {}): string[] {
+function cliModelArg(binary: string, modelId?: string): string | undefined {
+  if (!modelId) return undefined;
+  if (binary.includes("claude")) {
+    if (modelId.includes("opus")) return "opus";
+    if (modelId.includes("sonnet")) return "sonnet";
+    if (modelId.includes("haiku")) return "haiku";
+  }
+  return modelId;
+}
+
+export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; modelId?: string; effort?: string } = {}): string[] {
+  const model = cliModelArg(binary, opts.modelId);
   if (binary.includes("codex")) {
-    const args = ["exec", "--json", "--skip-git-repo-check"];
+    // Auth still comes from CODEX_HOME, but user config can contain hooks/MCP
+    // settings that are stale or unsafe for this subprocess. Keep Gearbox's
+    // subscription bridge clean and let the Codex CLI own the actual turn.
+    const args = ["exec", "--json", "--skip-git-repo-check", "--ignore-user-config"];
+    if (model) args.push("--model", model);
+    if (opts.effort) args.push("-c", `model_reasoning_effort="${opts.effort}"`);
     if (opts.autoApprove) args.push("--dangerously-bypass-approvals-and-sandbox");
-    else args.push("--full-auto");
+    else args.push("--sandbox", "workspace-write", "-c", `approval_policy="never"`);
     if (opts.sessionId) args.push("resume", opts.sessionId); // best-effort
     args.push(prompt);
     return args;
   }
   // claude
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose"];
+  if (model) args.push("--model", model);
   args.push("--permission-mode", opts.autoApprove ? "bypassPermissions" : "acceptEdits");
   if (opts.sessionId) args.push("--resume", opts.sessionId);
   return args;
@@ -188,7 +212,21 @@ export function parseCliLines(binary: string, lines: string[], onEvent: OnEvent)
 }
 
 function finalize(state: CliState): CliResult {
-  return { messages: [], usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, rate: state.rate };
+  return { messages: [], usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, rates: [...state.rates.values()] };
+}
+
+function cleanCliStderr(text: string): string {
+  const cleaned = text
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .join("\n")
+    .slice(0, 1200);
+  if (/--full-auto.*deprecated/i.test(cleaned) || /unexpected argument '--ask-for-approval'/i.test(cleaned)) {
+    return "Gearbox passed a Codex CLI flag this installed Codex does not support. Update Gearbox and retry.";
+  }
+  return cleaned;
 }
 
 /** Run a turn through the vendor CLI subprocess, emitting AgentEvents. */
@@ -200,11 +238,13 @@ export async function runCliTask(opts: {
   signal?: AbortSignal;
   sessionId?: string;
   autoApprove?: boolean;
+  modelId?: string;
+  effort?: string;
   cwd?: string;
   profile?: string; // per-account config dir (multi-account); undefined = system default login
 }): Promise<CliResult> {
   const { binary, prompt, messages, onEvent, signal } = opts;
-  const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove });
+  const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove, modelId: opts.modelId, effort: opts.effort });
   const state = newState();
 
   let proc: ReturnType<typeof Bun.spawn>;
@@ -219,41 +259,67 @@ export async function runCliTask(opts: {
   const onAbort = () => proc.kill();
   signal?.addEventListener("abort", onAbort);
 
-  const dec = new TextDecoder();
+  const outDec = new TextDecoder();
+  const errDec = new TextDecoder();
   let buf = "";
+  let stderr = "";
+  let sawEvent = false;
   try {
-    for await (const chunk of proc.stdout as any) {
-      buf += dec.decode(chunk, { stream: true });
-      let nl: number;
-      while ((nl = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        const t = line.trim();
-        if (!t) continue;
-        try {
-          mapCliEvent(binary, JSON.parse(t), state, onEvent);
-        } catch {
-          /* non-JSON line */
+    const readStdout = async () => {
+      for await (const chunk of proc.stdout as any) {
+        buf += outDec.decode(chunk, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          const t = line.trim();
+          if (!t) continue;
+          try {
+            mapCliEvent(binary, JSON.parse(t), state, onEvent);
+            sawEvent = true;
+          } catch {
+            /* non-JSON line */
+          }
         }
       }
-    }
-    if (buf.trim()) {
-      try {
-        mapCliEvent(binary, JSON.parse(buf.trim()), state, onEvent);
-      } catch {
-        /* trailing non-JSON */
+      if (buf.trim()) {
+        try {
+          mapCliEvent(binary, JSON.parse(buf.trim()), state, onEvent);
+          sawEvent = true;
+        } catch {
+          /* trailing non-JSON */
+        }
       }
-    }
-    await proc.exited;
+    };
+    const readStderr = async () => {
+      for await (const chunk of proc.stderr as any) {
+        stderr += errDec.decode(chunk, { stream: true });
+        if (stderr.length > 4000) stderr = stderr.slice(-4000);
+      }
+    };
+    await Promise.all([readStdout(), readStderr(), proc.exited]);
   } catch (e: any) {
     if (!signal?.aborted) onEvent({ type: "error", message: e?.message ?? String(e) });
   } finally {
     signal?.removeEventListener("abort", onAbort);
+  }
+  if (!signal?.aborted) {
+    const err = cleanCliStderr(stderr);
+    if ((proc.exitCode ?? 0) !== 0) {
+      const hint = binary.includes("codex")
+        ? "Codex CLI failed before returning an assistant message. Check the line above, then /retry."
+        : `${binary} failed before returning an assistant message. Check the line above, then /retry.`;
+      onEvent({ type: "error", message: err ? `${hint} ${err}` : hint });
+    } else if (!state.text && !sawEvent && err) {
+      onEvent({ type: "error", message: `${binary} produced no JSON output: ${err}` });
+    } else if (!state.text && !sawEvent) {
+      onEvent({ type: "error", message: `${binary} finished without an assistant message` });
+    }
   }
 
   // Plain-text ledger entry (tool history isn't portable across binaries).
   const next: ModelMessage[] = [...messages, { role: "user", content: prompt }];
   if (state.text) next.push({ role: "assistant", content: state.text });
   onEvent({ type: "done", usage: state.usage });
-  return { messages: next, usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, rate: state.rate };
+  return { messages: next, usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, rates: [...state.rates.values()] };
 }

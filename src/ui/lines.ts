@@ -13,6 +13,11 @@ import type { Item } from "./types.ts";
 import { barCells } from "../accounts/usage.ts";
 
 const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
+const accountStateColor = (status: string) =>
+  status === "active" || status === "signed in" || status === "ready" ? color.ok :
+  status === "duplicate" ? color.accent :
+  status === "not signed in" ? color.run :
+  color.faint;
 
 export type Span = { text: string; color?: string; bold?: boolean; italic?: boolean; dim?: boolean; bg?: string };
 export type Line = Span[];
@@ -31,7 +36,120 @@ export function clipSpans(spans: Span[], width: number): Line {
   return out;
 }
 
+function lineWidth(line: Line): number {
+  return line.reduce((n, s) => n + s.text.length, 0);
+}
+
+function padBg(line: Line, width: number, bg: string): Line {
+  const len = lineWidth(line);
+  return len < width ? [...line, { text: " ".repeat(width - len), bg }] : line;
+}
+
 type Style = Omit<Span, "text">;
+
+const looseCodeLineRe =
+  /^(\s{2,}\S|from\s+|import\s+|class\s+|def\s+|async\s+def\s+|@\w|if\s+|elif\s+|else:|for\s+|while\s+|try:|except\s+|finally:|with\s+|return\s+|[A-Za-z_][\w.]*\s*=|[A-Za-z_][\w.]*\(|"""|'''|\/\/|#include\b|const\s+|let\s+|var\s+|function\s+|type\s+|interface\s+|export\s+|package\s+|func\s+)/;
+
+function looksLikeLooseCode(text: string): boolean {
+  const lines = text.split("\n").filter((l) => l.trim());
+  if (lines.length < 2) return false;
+  const hits = lines.filter((l) => looseCodeLineRe.test(l.trimStart() === l ? l.trim() : l)).length;
+  if (lines.length === 2) return hits === 2;
+  return hits / lines.length >= 0.55;
+}
+
+function guessCodeLang(text: string): string {
+  if (/^\s*(from|import|def|class|@dataclass)\b/m.test(text)) return "python";
+  if (/^\s*(const|let|var|function|type|interface|export|import)\b/m.test(text)) return "ts";
+  if (/^\s*(package|func)\b/m.test(text)) return "go";
+  return "";
+}
+
+function codeRow(line: string, lang: string): { sign: string; code: string; bg: string; fg: string; lang: string } {
+  const isDiff = /^(diff|patch)$/i.test(lang);
+  if ((isDiff || /^[+-]/.test(line)) && line.startsWith("+") && !line.startsWith("+++")) {
+    return { sign: "+", code: line.slice(1), bg: color.diffAddBg, fg: color.ok, lang: "" };
+  }
+  if ((isDiff || /^[+-]/.test(line)) && line.startsWith("-") && !line.startsWith("---")) {
+    return { sign: "−", code: line.slice(1), bg: color.diffDelBg, fg: color.err, lang: "" };
+  }
+  return { sign: "", code: line, bg: color.codeBg, fg: color.faint, lang };
+}
+
+function codeBlockLines(code: string, lang: string, width: number): Line[] {
+  const lines = code.replace(/\n$/, "").split("\n");
+  const lineNoWidth = Math.max(2, String(lines.length).length);
+  const blockWidth = Math.max(
+    24,
+    Math.min(
+      width,
+      Math.max(40, ...lines.map((l) => lineNoWidth + 3 + l.length), lang ? lang.length + 2 : 0),
+    ),
+  );
+  const out: Line[] = [];
+  if (lang) {
+    out.push(padBg([{ text: ` ${lang} `, color: color.accent, bold: true, bg: color.codeBg }], blockWidth, color.codeBg));
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const row = codeRow(lines[i]!, lang);
+    const prefix = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} │ `;
+    const spans: Span[] = [
+      { text: prefix, color: row.sign ? row.fg : color.faint, bold: Boolean(row.sign), bg: row.bg },
+      ...(highlightLine(row.code, row.lang) as Span[]).map((s) => ({ ...s, bg: row.bg })),
+    ];
+    out.push(padBg(clipSpans(spans, blockWidth), blockWidth, row.bg));
+  }
+  return out;
+}
+
+function proseSpans(text: string, base: Style = { color: color.text }): Span[] {
+  const out: Span[] = [];
+  const re = /(\/[^\s,.)]+|(?:^|\s)(?:python|bun|npm|pnpm|yarn|git|pytest|tsc|node|deno|cargo|go)\s+[^\n.]*|`[^`]+`|"[^"]+"|'[^']+'|\b\d+(?:\.\d+)?\b|^[A-Z][A-Za-z /_-]{1,32}:|\b[A-Za-z][\w /-]{1,28}:)/g;
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    const idx = m.index ?? 0;
+    const raw = m[0]!;
+    const leading = raw.match(/^\s+/)?.[0] ?? "";
+    const token = raw.slice(leading.length);
+    if (idx > last) out.push({ text: text.slice(last, idx), ...base });
+    if (leading) out.push({ text: leading, ...base });
+    const style =
+      token.startsWith("/") ? { color: color.path, bold: true, bg: color.accentBg } :
+      token.startsWith("`") ? { color: color.accent, bg: color.codeBg } :
+      token.startsWith('"') || token.startsWith("'") ? { color: color.codeString } :
+      /^\d/.test(token) ? { color: color.codeNumber } :
+      /:$/.test(token) ? { color: color.accent, bold: true } :
+      { color: color.user, bold: true };
+    out.push({ text: token, ...style });
+    last = idx + raw.length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last), ...base });
+  return out.length ? out : [{ text, ...base }];
+}
+
+function noticeSpans(text: string): Span[] {
+  const out: Span[] = [];
+  const re = /(\/[a-z][\w-]*(?:\s+[^\s]+)?|\b(?:Claude|ChatGPT|Anthropic|OpenAI|OpenRouter|subscription|API key|active|current|switch|add|remove|use)\b|\b\d+\.\b|\b\/account\s+\d+\b|`[^`]+`)/gi;
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    const idx = m.index ?? 0;
+    const token = m[0]!;
+    if (idx > last) out.push({ text: text.slice(last, idx), color: color.dim });
+    const low = token.toLowerCase();
+    const style =
+      token.startsWith("/") || low.startsWith("/account") ? { color: color.accent, bold: true, bg: color.accentBg } :
+      token.startsWith("`") ? { color: color.path, bg: color.codeBg } :
+      /^\d+\.$/.test(token) ? { color: color.accentDim, bold: true } :
+      low === "subscription" || low === "api key" ? { color: color.ok, bold: true } :
+      low === "active" || low === "current" ? { color: color.user, bold: true } :
+      low === "switch" || low === "add" || low === "remove" || low === "use" ? { color: color.accentDim, bold: true } :
+      { color: color.text, bold: true };
+    out.push({ text: token, ...style });
+    last = idx + token.length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last), color: color.dim });
+  return out.length ? out : [{ text, color: color.dim }];
+}
 
 /** Word-wrap a run of styled spans to `width`, preserving each span's style. */
 export function wrapSpans(spans: Span[], width: number): Line[] {
@@ -103,7 +221,7 @@ function inlineSpans(tokens: any[], base: Style): Span[] {
         out.push(...inlineSpans(t.tokens, { ...base, italic: true }));
         break;
       case "codespan":
-        out.push({ text: t.text, color: color.accent });
+        out.push({ text: t.text, color: /[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent, bg: color.codeBg });
         break;
       case "del":
         out.push(...inlineSpans(t.tokens, { ...base, dim: true }));
@@ -117,7 +235,7 @@ function inlineSpans(tokens: any[], base: Style): Span[] {
       case "escape":
       case "text":
       default:
-        out.push({ text: t.text ?? t.raw ?? "", ...base });
+        out.push(...proseSpans(t.text ?? t.raw ?? "", base));
     }
   }
   return out;
@@ -145,18 +263,21 @@ function blockLines(tok: any, width: number): Line[] {
       return wrapSpans(spans, width);
     }
     case "paragraph": {
+      const raw = String(tok.text ?? tok.raw ?? "");
+      if (looksLikeLooseCode(raw)) return codeBlockLines(raw, guessCodeLang(raw), width);
       const out: Line[] = [];
-      for (const run of splitHardBreaks(inlineSpans(tok.tokens, {}))) out.push(...wrapSpans(run.length ? run : BLANK, width));
+      for (const run of splitHardBreaks(inlineSpans(tok.tokens, { color: color.text }))) out.push(...wrapSpans(run.length ? run : BLANK, width));
       return out;
     }
     case "text": {
-      const spans = tok.tokens ? inlineSpans(tok.tokens, {}) : [{ text: tok.text ?? "" }];
+      const raw = String(tok.text ?? tok.raw ?? "");
+      if (looksLikeLooseCode(raw)) return codeBlockLines(raw, guessCodeLang(raw), width);
+      const spans = tok.tokens ? inlineSpans(tok.tokens, { color: color.text }) : [{ text: tok.text ?? "", color: color.text }];
       return wrapSpans(spans, width);
     }
     case "code": {
       const lang = String(tok.lang ?? "");
-      const lines = String(tok.text ?? "").split("\n");
-      return lines.map((l) => clipSpans(highlightLine(l, lang) as Span[], width));
+      return codeBlockLines(String(tok.text ?? ""), lang, width);
     }
     case "blockquote": {
       const inner: Line[] = (tok.tokens ?? []).flatMap((t: any) => blockLines(t, Math.max(width - 2, 1)));
@@ -170,7 +291,7 @@ function blockLines(tok: any, width: number): Line[] {
       let n = Number(tok.start || 1);
       for (const item of tok.items ?? []) {
         const marker = tok.ordered ? `${n++}. ` : `${glyph.bullet} `;
-        const itemSpans = inlineSpans(item.tokens?.find((x: any) => x.type === "text")?.tokens ?? [], {});
+        const itemSpans = inlineSpans(item.tokens?.find((x: any) => x.type === "text")?.tokens ?? [], { color: color.text });
         const wrapped = wrapSpans(itemSpans.length ? itemSpans : [{ text: item.text ?? "" }], Math.max(width - marker.length, 1));
         wrapped.forEach((l, i) => out.push([{ text: i === 0 ? marker : " ".repeat(marker.length), color: color.accentDim }, ...l]));
       }
@@ -208,26 +329,83 @@ export function markdownToLines(md: string, width: number): Line[] {
 }
 
 // ── transcript items → lines ──
+function diffStats(lines?: { sign: "+" | "-"; text: string }[]): string {
+  if (!lines?.length) return "";
+  const add = lines.filter((l) => l.sign === "+").length;
+  const del = lines.filter((l) => l.sign === "-").length;
+  return `+${add} -${del}`;
+}
+
 function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, expand = false): Line[] {
   const MAX = expand ? Infinity : 16;
   const shown = diff.slice(0, MAX);
-  const out: Line[] = shown.map((d) => [{ text: `${d.sign === "+" ? "+" : "−"} ${d.text}`.slice(0, width), color: d.sign === "+" ? color.ok : color.err }]);
+  const contentWidth = Math.max(width - 3, 1);
+  const out: Line[] = shown.map((d) => {
+    const bg = d.sign === "+" ? color.diffAddBg : color.diffDelBg;
+    const fg = d.sign === "+" ? color.ok : color.err;
+    return [
+      { text: "   ", bg },
+      ...padBg(clipSpans([
+      { text: d.sign === "+" ? "+ " : "− ", color: fg, bold: true, bg },
+      ...highlightLine(d.text).map((s) => ({ ...s, bg })),
+      ], contentWidth), contentWidth, bg),
+    ];
+  });
   if (diff.length > MAX) out.push([{ text: `… +${diff.length - MAX} more lines · ⌃O to expand`, color: color.faint }]);
-  return indent(out, 3);
+  return out;
 }
 
 // A file being written, streamed live: a scrolling TAIL window of the content so
 // the user watches it flow by instead of seeing it dumped (or truncated) at once.
 // `stream` is already a bounded tail (App caps it); `count` is the true total.
-function streamLines(stream: string, count: number, width: number): Line[] {
-  const TAIL = 14;
+function streamLines(stream: string, count: number, width: number, expand = false): Line[] {
+  const TAIL = expand ? 14 : 5;
   const all = stream.split("\n");
   const shown = all.slice(-TAIL);
   const out: Line[] = [];
-  if (count > shown.length) out.push([{ text: `… writing ${count} lines`, color: color.faint }]);
+  if (count > shown.length) out.push([{ text: `… writing ${count} lines${expand ? "" : " · ⌃O to expand"}`, color: color.faint }]);
   for (const l of shown) out.push([{ text: `+ ${l}`.slice(0, width), color: color.ok }]);
   return indent(out, 3);
 }
+
+function previewHighlight(line: string, lang: string | undefined, doc: { open: boolean }): Span[] {
+  const isPy = /^(py|python)$/i.test(lang ?? "");
+  const tripleCount = isPy ? (line.match(/("""|''')/g) ?? []).length : 0;
+  if (isPy && (doc.open || tripleCount > 0)) {
+    if (tripleCount % 2 === 1) doc.open = !doc.open;
+    return [{ text: line, color: color.codeString }];
+  }
+  return highlightLine(line, lang) as Span[];
+}
+
+const friendlyTool = (name: string) =>
+  name === "AskUserQuestion" ? "question" :
+  name === "Write" ? "write" :
+  name === "Edit" ? "edit" :
+  name === "Read" ? "read" :
+  name === "Bash" ? "shell" :
+  name === "read_file" ? "read" :
+  name === "write_file" ? "write" :
+  name === "edit_file" ? "edit" :
+  name === "run_shell" ? "shell" :
+  name === "command_execution" ? "shell" :
+  name === "file_change" ? "write" :
+  name === "list_dir" ? "list" :
+  name === "glob" ? "glob" :
+  name === "search" ? "search" :
+  name;
+
+const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+const motionFrame = () => Math.floor(Date.now() / 360);
+const spinnerFrame = () => ["●", "◌", "○", "◌"][motionFrame() % 4]!;
+const activePhrase = (label: string) => `${label}${["", ".", "..", "..."][motionFrame() % 4]}`;
+const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
+  it.name === "AskUserQuestion" ? color.accent :
+  it.status === "err" ? color.err :
+  it.status === "running" ? color.run :
+  it.name === "run_shell" || it.name === "command_execution" ? color.accent :
+  it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change" ? color.ok :
+  color.accentDim;
 
 /** Flatten the transcript into styled lines wrapped to `width`. A leading blank
  *  line separates turns (so the windowed view keeps its rhythm). */
@@ -237,8 +415,13 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
     out.push(BLANK);
     switch (it.kind) {
       case "user": {
-        const wrapped = wrapSpans([{ text: it.text, color: color.user }], Math.max(width - 2, 1));
-        wrapped.forEach((l, i) => out.push([{ text: i === 0 ? glyph.userBar + " " : "  ", color: color.user }, ...l]));
+        const wrapped = wrapSpans(proseSpans(it.text, { color: color.user, bold: true, bg: color.userBg }), Math.max(width - 4, 1));
+        wrapped.forEach((l, i) =>
+          out.push(padBg([
+            { text: i === 0 ? "▌ " : "  ", color: color.accent, bold: true, bg: color.userBg },
+            ...l.map((s) => ({ ...s, bg: color.userBg })),
+          ], width, color.userBg)),
+        );
         break;
       }
       case "assistant": {
@@ -247,24 +430,103 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "tool": {
-        const dot: Span = { text: glyph.tool, color: it.status === "err" ? color.err : color.accent };
-        const head: Line = [{ text: "  " }, dot, { text: "  " + it.name.padEnd(5), color: color.dim }];
-        const headUsed = 2 + 1 + 2 + 5; // pad + dot + spaces + name
-        if (it.arg) head.push({ text: " " + it.arg.slice(0, Math.max(width - headUsed - 1, 0)), color: color.text });
-        if (it.status === "running") head.push({ text: "  …", color: color.faint });
+        const dot: Span = { text: it.status === "running" ? spinnerFrame() : glyph.tool, color: toolColor(it) };
+        const name = friendlyTool(it.name);
+        const isShell = it.name === "run_shell" || it.name === "command_execution" || it.name === "Bash";
+        const isWrite = !isShell && (it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change");
+        const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: toolColor(it), bold: true }];
+        const headUsed = 2 + 1 + 2 + 6; // pad + dot + spaces + name
+        if (it.arg) head.push({ text: " " + it.arg.slice(0, Math.max(width - headUsed - 1, 0)), color: isShell ? color.text : color.path, bold: true });
+        if (it.status === "running") head.push({ text: "  " + activePhrase(isWrite ? "writing" : isShell ? "running" : "working"), color: color.run, bg: color.panelBg });
+        if (it.status !== "running" && it.durationMs != null) head.push({ text: "  " + fmtMs(it.durationMs), color: color.faint });
+        if (it.exitCode != null) head.push({ text: "  exit " + it.exitCode, color: it.exitCode === 0 ? color.faint : color.err });
+        if (it.diff?.length) head.push({ text: "  " + diffStats(it.diff), color: color.faint });
         out.push(head);
-        if (it.status === "running" && it.stream) out.push(...streamLines(it.stream, it.streamCount ?? 0, Math.max(width - 5, 1)));
+        if (it.status === "running" && !it.outputTail && !it.stream) {
+          out.push(...indent([[
+            { text: "└─ ", color: color.accentDim },
+            { text: activePhrase(isWrite ? "drafting file" : "waiting"), color: color.ok, bg: color.panelBg },
+            { text: " " + (isWrite ? "provider has not streamed code yet" : "waiting for tool output"), color: color.faint },
+          ]], 3));
+        }
+        if (it.preview) {
+          const lines = it.preview.split("\n");
+          const shown = expand ? lines : lines.slice(0, 8);
+          const codeWidth = Math.max(width - 6, 24);
+          const docState = { open: false };
+          out.push(...indent([padBg([
+            { text: "┌─ ", color: color.accentDim, bg: color.codeBg },
+            { text: expand ? "full code" : "preview", color: color.accent, bold: true, bg: color.codeBg },
+            { text: expand ? ` · ${it.previewLines ?? lines.length} lines` : ` · first ${shown.length} of ${it.previewLines ?? "?"} lines`, color: color.faint, bg: color.codeBg },
+          ], codeWidth, color.codeBg)], 3));
+          for (let i = 0; i < shown.length; i++) {
+            out.push(padBg(clipSpans([
+              { text: "   │ ", color: color.accentDim, bg: color.codeBg },
+              { text: String(i + 1).padStart(2) + " ", color: color.faint, bg: color.codeBg },
+              { text: "│ ", color: color.accentDim, bg: color.codeBg },
+              ...previewHighlight(shown[i]!, it.previewLang, docState).map((s) => ({ ...s, bg: color.codeBg })),
+            ], codeWidth), codeWidth, color.codeBg));
+          }
+          out.push(...indent([padBg([
+            { text: "└─ ", color: color.accentDim, bg: color.codeBg },
+            { text: (it.previewLines ?? 0) > shown.length ? "⌃O expands full code" : expand ? "⌃O collapses preview" : "", color: color.faint, bg: color.codeBg },
+          ], codeWidth, color.codeBg)], 3));
+        }
+        const outTail = it.outputTail ?? it.stream;
+        const outCount = it.outputLines ?? it.streamCount ?? 0;
+        if (outTail) {
+          if (it.name === "run_shell" || it.name === "command_execution") {
+            const tail = expand ? 14 : 5;
+            const shown = outTail.split("\n").filter(Boolean).slice(-tail);
+            if (outCount > shown.length) out.push(...indent([[{ text: `… ${outCount} lines${expand ? "" : " · ⌃O to expand"}`, color: color.faint }]], 3));
+            out.push(...indent(shown.map((l) => [{ text: `│ ${l}`.slice(0, Math.max(width - 5, 1)), color: color.dim }]), 3));
+          } else {
+            out.push(...streamLines(outTail, outCount, Math.max(width - 5, 1), expand));
+          }
+        }
         if (it.status !== "running" && it.summary) {
           out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: it.summary.slice(0, Math.max(width - 5, 1)), color: it.status === "err" ? color.err : color.dim }]);
         }
-        if (it.diff?.length) out.push(...diffLines(it.diff, Math.max(width - 5, 1), expand));
+        if (it.diff?.length) out.push(...diffLines(it.diff, width, expand));
+        break;
+      }
+      case "phase": {
+        const mark = it.state === "running" ? "◌ " : it.state === "ok" ? "✓ " : "▲ ";
+        const c = it.state === "err" ? color.err : it.state === "ok" ? color.ok : color.accentDim;
+        out.push(clipSpans([{ text: "  " }, { text: mark, color: c }, { text: it.label, color: it.state === "running" ? color.text : color.dim }, ...(it.detail ? [{ text: " · " + it.detail, color: color.faint }] : [])], width));
+        break;
+      }
+      case "model": {
+        out.push(clipSpans([{ text: "  ◇ ", color: color.accentDim }, { text: "using " + it.model, color: color.text }, { text: " · " + it.provider + " · " + it.reason, color: color.faint }], width));
+        break;
+      }
+      case "verification": {
+        out.push(clipSpans([{ text: "  " + (it.ok ? "✓ " : "▲ "), color: it.ok ? color.ok : color.err }, { text: "check", color: color.text }, { text: " · " + it.command + " · " + it.summary, color: color.faint }], width));
+        break;
+      }
+      case "preference": {
+        out.push(clipSpans([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: it.text, color: color.text }, { text: " · " + it.acceptCommand, color: color.faint }], width));
+        break;
+      }
+      case "summary": {
+        const bits: string[] = [];
+        if (it.changed.length) bits.push(`${it.changed.length} file${it.changed.length === 1 ? "" : "s"}`);
+        if (it.checks.length) bits.push(`${it.checks.length} check${it.checks.length === 1 ? "" : "s"}`);
+        if (it.failures.length) bits.push(`${it.failures.length} failed`);
+        out.push(clipSpans([
+          { text: "  " + (it.failures.length ? "◇ " : "✓ "), color: it.failures.length ? color.accentDim : color.ok },
+          { text: "turn summary", color: color.text },
+          ...(bits.length ? [{ text: " · " + bits.join(" · "), color: color.faint }] : []),
+        ], width));
+        if (it.changed.length) out.push(clipSpans([{ text: "    changed ", color: color.faint }, { text: it.changed.slice(0, 4).join(", ") + (it.changed.length > 4 ? ` +${it.changed.length - 4}` : ""), color: color.path }], width));
+        if (it.next) out.push(clipSpans([{ text: "    next ", color: color.dim }, { text: it.next, color: color.accent }], width));
         break;
       }
       case "notice": {
         // Preserve source newlines (e.g. `!cat file` output), wrapping long ones.
         let first = true;
         for (const para of it.text.split("\n")) {
-          const wrapped = wrapSpans([{ text: para, color: color.dim }], Math.max(width - 4, 1));
+          const wrapped = wrapSpans(noticeSpans(para), Math.max(width - 4, 1));
           wrapped.forEach((l) => {
             out.push([{ text: first ? "  " + glyph.notice + " " : "    ", color: color.accentDim }, ...l]);
             first = false;
@@ -272,29 +534,92 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         }
         break;
       }
-      case "usage": {
+      case "accounts": {
         const v = it.view;
-        out.push([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: "cost · spend per account ", color: color.text }, { text: "(all sessions)", color: color.faint }]);
-        out.push(BLANK);
-        for (const r of v.rows) {
-          const zero = r.spend.trim().startsWith("$0.00");
-          const { fill, empty } = barCells(r.spendFrac, v.barWidth);
-          const line: Line = [
-            { text: "  " + r.name, color: color.text },
-            { text: "  " + r.spend + "  ", color: zero ? color.faint : color.ok },
-            { text: fill, color: color.accent },
-            { text: empty, color: color.faint },
-            { text: "  " + r.meta, color: color.faint },
-          ];
-          if (r.limitPct != null) {
-            const lim = barCells(r.limitPct / 100, 6);
-            line.push({ text: "   " + (r.limitLabel ?? "") + " ", color: color.faint }, { text: lim.fill, color: limitColor(r.limitPct) }, { text: lim.empty, color: color.faint }, { text: " " + r.limitPct + "%", color: limitColor(r.limitPct) });
+        out.push([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: "accounts", color: color.text }, { text: " · current ", color: color.faint }, { text: v.current, color: color.text, bold: true }]);
+        const commandWidth = Math.max(18, ...v.rows.map((r) => `/account ${r.alias}`.length));
+        const emitGroup = (title: string, rows: typeof v.rows) => {
+          if (!rows.length) return;
+          out.push(BLANK);
+          out.push([{ text: "  " + title, color: color.faint }]);
+          for (const r of rows) {
+            const cmd = `/account ${r.alias}`;
+            out.push(clipSpans([
+              { text: r.active ? "  ● " : "    ", color: r.active ? color.ok : color.faint },
+              { text: r.name.padEnd(v.labelPad), color: color.text, bold: r.active },
+              { text: "  " + r.status.padEnd(v.statusPad), color: accountStateColor(r.status) },
+              { text: "  use ", color: color.faint },
+              { text: cmd.padEnd(commandWidth), color: color.accent, bold: true, bg: color.accentBg },
+              { text: "  or " + r.number, color: color.faint },
+            ], width));
+            if (r.duplicateOf) out.push(clipSpans([{ text: "      same login as ", color: color.faint }, { text: r.duplicateOf, color: color.text }], width));
+            else if (r.detail) out.push(clipSpans([{ text: "      " + r.detail, color: color.faint }], width));
           }
-          out.push(clipSpans(line, width));
+        };
+        emitGroup("subscriptions", v.rows.filter((r) => r.type === "subscription"));
+        emitGroup("api keys", v.rows.filter((r) => r.type === "API key"));
+        if (v.importable.length) {
+          out.push(BLANK);
+          out.push([{ text: "  importable", color: color.faint }]);
+          for (const c of v.importable) out.push(clipSpans([{ text: "    " + c.label, color: color.text }, { text: "  " + c.envVar + "  ", color: color.faint }, { text: "/account import", color: color.accent }], width));
         }
         out.push(BLANK);
-        const totalLine: Line = [{ text: "  total  ", color: color.dim }, { text: v.total.trim(), color: color.text }];
-        if (v.sessionUSD) totalLine.push({ text: "     this session (est): " + v.sessionUSD, color: color.faint });
+        out.push(clipSpans([{ text: "  add     ", color: color.faint }, { text: "/account add codex [name]", color: color.accent }, { text: "   /account add claude [name]", color: color.accent }, { text: "   /account add <api-key>", color: color.accent }], width));
+        out.push(clipSpans([{ text: "  remove  ", color: color.faint }, { text: "/account remove <name-or-number>", color: color.accent }], width));
+        break;
+      }
+      case "usage": {
+        const v = it.view;
+        out.push([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: "usage ", color: color.text }, { text: "· spend & limits (all sessions)", color: color.faint }]);
+        if (v.subscriptions.length) {
+          out.push(BLANK);
+          out.push([{ text: "  subscriptions", color: color.faint }]);
+          for (const a of v.subscriptions) {
+            const line: Line = [{ text: "    " + a.name.padEnd(v.labelPad), color: color.text }, { text: "  " + a.turns + " turn" + (a.turns === 1 ? "" : "s"), color: color.faint }];
+            if (a.limits?.length) {
+              const l = a.limits[0]!;
+              const lim = barCells(l.pct / 100, 10);
+              line.push({ text: "    " + l.label + " ", color: color.faint }, { text: lim.fill, color: limitColor(l.pct) }, { text: lim.empty, color: color.faint }, { text: " " + l.pct + "%", color: limitColor(l.pct) });
+              if (l.resetsIn) line.push({ text: " · " + l.resetsIn, color: color.faint });
+            } else {
+              line.push({ text: "    " + (a.limitNote ?? "limits not observed yet"), color: color.faint });
+            }
+            out.push(clipSpans(line, width));
+            for (const l of a.limits?.slice(1) ?? []) {
+              const lim = barCells(l.pct / 100, 10);
+              out.push(clipSpans([
+                { text: "    " + "".padEnd(v.labelPad), color: color.text },
+                { text: "       ", color: color.faint },
+                { text: "    " + l.label + " ", color: color.faint },
+                { text: lim.fill, color: limitColor(l.pct) },
+                { text: lim.empty, color: color.faint },
+                { text: " " + l.pct + "%", color: limitColor(l.pct) },
+                ...(l.resetsIn ? [{ text: " · " + l.resetsIn, color: color.faint }] : []),
+              ], width));
+            }
+          }
+        }
+        if (v.apiKeys.length) {
+          out.push(BLANK);
+          out.push([{ text: "  api keys", color: color.faint }]);
+          for (const a of v.apiKeys) {
+            out.push(
+              clipSpans(
+                [
+                  { text: "    " + a.name.padEnd(v.labelPad), color: color.text },
+                  { text: "  " + (a.spend ?? "").padStart(v.spendPad), color: a.spendPos ? color.ok : color.faint },
+                  { text: "   " + a.turns + " turn" + (a.turns === 1 ? "" : "s") + " · " + a.tok, color: color.faint },
+                  ...(a.balanceLeft ? [{ text: " · " + a.balanceLeft, color: color.faint }] : []),
+                  ...(a.balanceNote ? [{ text: " · " + a.balanceNote, color: color.faint }] : []),
+                ],
+                width,
+              ),
+            );
+          }
+        }
+        out.push(BLANK);
+        const totalLine: Line = [{ text: "  total API spend ", color: color.dim }, { text: v.totalApiSpend, color: color.text }];
+        if (v.sessionUSD) totalLine.push({ text: "   ·   this session " + v.sessionUSD, color: color.faint });
         out.push(clipSpans(totalLine, width));
         if (v.hasEstimate) out.push([{ text: "  ~ estimated (provider didn't report an exact cost)", color: color.faint }]);
         break;

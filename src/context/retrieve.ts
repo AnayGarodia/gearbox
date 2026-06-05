@@ -97,6 +97,7 @@ export function rankFiles(query: string, cwd = process.cwd()): { file: string; s
   const idx = index(cwd);
   const qt = terms(query);
   if (!qt.length) return [];
+  const asksModelSelection = qt.includes("model") && (qt.includes("default") || qt.includes("used") || qt.includes("change"));
   const scored = idx.files.map((f) => {
     const lc = idx.low.get(f)!;
     const fl = f.toLowerCase();
@@ -108,6 +109,7 @@ export function rankFiles(query: string, cwd = process.cwd()): { file: string; s
       if (fl.includes(t)) s += 4 * idf(idx, t); // path match (idf-scaled)
       if (defs.some((d) => d.includes(t))) s += 3 * idf(idx, t); // symbol-name match
     }
+    if (asksModelSelection && /(^|\/)(model\/selector|model\/router|config)\.ts$/.test(fl)) s += 8 * idf(idx, "model");
     return { file: f, score: s };
   });
   return scored.filter((x) => x.score > 0).sort((a, b) => b.score - a.score);

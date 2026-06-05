@@ -2,7 +2,7 @@
 
 A beautiful, simple coding harness for the terminal. It reads, edits, and runs your code through one clean agent loop, talking to any provider (Anthropic, OpenAI, Google, DeepSeek).
 
-> **What it's becoming:** the point of Gearbox is *intelligent per-task model routing* — automatically using the right model for each task across every provider and account you pay for, cheaply and transparently. **v0.1 is the harness only.** Routing lands on top of this, behind a seam that's already in place. See [`DESIGN.md`](./DESIGN.md).
+> **What it does:** the point of Gearbox is *intelligent per-task model routing* — automatically using the right model for each task across every provider and account you pay for, cheaply and transparently. Basic routing is live: it classifies each task, filters candidates by quality bar, and picks the cheapest one that fits. The richer engine (shadow-eval, credit/limit scoring, confidence display) layers on top. See [`DESIGN.md`](./DESIGN.md).
 
 ```
  ⚙   gearbox
@@ -78,4 +78,4 @@ bun run typecheck
 
 ## Status
 
-v0.1 — the harness: streaming agent loop, real file + shell tools, a polished Ink TUI, multi-provider support, and the routing seam. Intelligent routing is next (`DESIGN.md`).
+v0.1 — streaming agent loop, real file + shell tools, a polished Ink TUI, multi-provider support, accounts + spend ledger, BM25 context retrieval, and basic per-task routing (classify → quality bar → cheapest winner). The richer routing engine (shadow-eval, credit/limit/plan scoring, per-repo calibration) is next (`DESIGN.md`).

@@ -13,6 +13,7 @@ import { MODELS, providerAvailable, type ModelSpec } from "../providers.ts";
 import { profileFor } from "./profiles.ts";
 import { pickDefaultModel } from "../config.ts";
 import type { ModelSelector, Task, ModelChoice } from "./selector.ts";
+import { preferenceFor } from "./preferences.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -94,6 +95,12 @@ export class RoutingSelector implements ModelSelector {
     // Cheapest model that clears the bar; if nothing clears it, the best one we have.
     const clears = pool.filter((m) => qualityOf(m) >= bar);
     const candidates = clears.length ? clears : pool;
+    const pref = preferenceFor(kind);
+    const preferredPool = pref?.modelId ? pool.find((m) => m.id === pref.modelId) : pref?.provider ? pool.find((m) => m.provider === pref.provider) : undefined;
+    const preferred = pref?.modelId ? candidates.find((m) => m.id === pref.modelId) : pref?.provider ? candidates.find((m) => m.provider === pref.provider) : undefined;
+    if (preferred && qualityOf(preferred) >= bar) {
+      return { model: preferred, reason: `${kind} · remembered preference` };
+    }
     candidates.sort(
       (a, b) => costOf(a) - costOf(b) || tpsOf(b) - tpsOf(a) || qualityOf(b) - qualityOf(a),
     );
@@ -101,7 +108,8 @@ export class RoutingSelector implements ModelSelector {
 
     // Concise, user-facing: the task class + the per-Mtok rate. (The full
     // "why" scorecard lives behind the future routing UI, not the status line.)
-    const reason = `${kind} · $${costOf(model).toFixed(2)}/Mtok`;
+    const skipped = preferredPool && qualityOf(preferredPool) < bar ? ` · ${preferredPool.label} skipped below quality bar` : "";
+    const reason = `${kind} · $${costOf(model).toFixed(2)}/Mtok${skipped}`;
     return { model, reason };
   }
 }

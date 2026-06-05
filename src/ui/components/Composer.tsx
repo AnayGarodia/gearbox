@@ -1,8 +1,7 @@
-import React, { useRef, useCallback } from "react";
-import { Box, Text, useInput } from "ink";
+import React from "react";
+import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { caretPos, selectionRange, type Edit } from "../input.ts";
-import { mouseEventToAction } from "../terminal.ts";
 
 // Borderless composer: a hairline rule, then a `❯` prompt with the input and a
 // terminal-native block cursor (`inverse`). Multi-line aware — continuation lines
@@ -12,6 +11,7 @@ export function Composer({
   cursor,
   selectionAnchor,
   placeholder,
+  suggestion,
   busy,
   width,
   vim = "off",
@@ -21,46 +21,12 @@ export function Composer({
   cursor: number;
   selectionAnchor?: number;
   placeholder: string;
+  suggestion?: string | null;
   busy: boolean;
   width: number;
   vim?: "off" | "insert" | "normal";
   onEdit?: (edit: Edit) => void;
 }) {
-  // ── Mouse‑selection hook ────────────────────────────────────────────────
-  const lastClick = useRef<{ time: number; x: number; y: number; count?: number } | null>(null);
-
-  const handleMouse = useCallback(
-    (raw: { button: number; x: number; y: number; shift: boolean; meta: boolean; ctrl: boolean }) => {
-      if (!onEdit) return;
-      const now = Date.now();
-      const prev = lastClick.current;
-      let count = 1;
-      if (prev && now - prev.time < 500 && prev.x === raw.x && prev.y === raw.y) {
-        count = Math.min(prev.count ?? 1, 3) + 1;
-      }
-      lastClick.current = { time: now, x: raw.x, y: raw.y, count };
-      const action = mouseEventToAction(
-        { value, cursor, selectionAnchor },
-        raw,
-        count,
-      );
-      if (action.type === "edit") {
-        onEdit(action.state);
-      }
-    },
-    [value, cursor, selectionAnchor, onEdit],
-  );
-
-  useInput(
-    (_input: string, key: any) => {
-      // Mouse events come through `key.mouse` when `mouse` is enabled.
-      if (key.mouse) {
-        handleMouse(key.mouse);
-      }
-    },
-    { isActive: true, mouse: "all" },
-  );
-
   const lines = value.split("\n");
   const { lineIdx: curLine, col: curCol } = caretPos(value, cursor);
   const selected = selectionRange({ value, cursor, selectionAnchor });
@@ -78,17 +44,17 @@ export function Composer({
     const hasSel = selected && selStart < selEnd;
     const cursorHere = line === curLine;
     if (!hasSel) {
-      if (!cursorHere) return <Text>{ln}</Text>;
+      if (!cursorHere) return <Text backgroundColor={color.panelBg}>{ln}</Text>;
       return (
-        <Text>
+        <Text backgroundColor={color.panelBg}>
           {ln.slice(0, curCol)}
-          <Text inverse>{ln[curCol] ?? " "}</Text>
+          <Text inverse backgroundColor={color.panelBg}>{ln[curCol] ?? " "}</Text>
           {ln.slice(curCol + 1)}
         </Text>
       );
     }
     return (
-      <Text>
+      <Text backgroundColor={color.panelBg}>
         {ln.slice(0, selStart)}
         <Text inverse>{ln.slice(selStart, selEnd)}</Text>
         {ln.slice(selEnd)}
@@ -110,24 +76,24 @@ export function Composer({
       </Box>
       {busy ? (
         <Box paddingX={1}>
-          <Text color={color.faint} bold>
+          <Text color={color.faint} bold backgroundColor={color.panelBg}>
             {glyph.prompt}{" "}
           </Text>
-          <Text color={color.faint}>{value || "…"}</Text>
+          <Text color={color.faint} backgroundColor={color.panelBg}>{value || "…"}</Text>
         </Box>
       ) : value === "" ? (
         <Box paddingX={1}>
-          <Text color={color.accent} bold>
+          <Text color={color.accent} bold backgroundColor={color.panelBg}>
             {glyph.prompt}{" "}
           </Text>
-          <Text inverse> </Text>
-          <Text color={color.faint}>{placeholder}</Text>
+          <Text inverse backgroundColor={color.panelBg}> </Text>
+          <Text color={color.faint} backgroundColor={color.panelBg}>{suggestion ?? placeholder}</Text>
         </Box>
       ) : (
         <Box flexDirection="column" paddingX={1}>
           {lines.map((ln, i) => (
             <Box key={i}>
-              <Text color={color.accent} bold>{prefix(i)}</Text>
+              <Text color={color.accent} bold backgroundColor={color.panelBg}>{prefix(i)}</Text>
               {renderLine(ln, i)}
             </Box>
           ))}

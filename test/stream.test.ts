@@ -1,5 +1,7 @@
 import { test, expect } from "bun:test";
 import { FieldStreamer, readField, runTask } from "../src/agent/run.ts";
+import { createTools } from "../src/tools.ts";
+import { resetPermissions, setPermissionHandler, setYolo } from "../src/permission.ts";
 import type { AgentEvent } from "../src/agent/events.ts";
 
 // Feed a JSON object's text through the streamer in arbitrary chunk sizes and
@@ -95,4 +97,20 @@ test("a stream error becomes ONE clean line, never the raw error object", async 
   expect(err?.message).toBe("Your credit balance is too low to access the Anthropic API.");
   expect(err?.message).not.toContain("requestBodyValues");
   expect(err?.message).not.toContain("statusCode");
+});
+
+test("run_shell tool emits live tool-output events", async () => {
+  setPermissionHandler(null);
+  resetPermissions();
+  setYolo(true);
+  try {
+    const events: AgentEvent[] = [];
+    const t = createTools((e) => events.push(e)).run_shell as any;
+    const out = await t.execute({ command: "printf live" });
+    expect(out).toContain("live");
+    expect(events.some((e) => e.type === "tool-output" && e.text.includes("live"))).toBe(true);
+  } finally {
+    resetPermissions();
+    setPermissionHandler(null);
+  }
 });

@@ -24,7 +24,8 @@ export interface CommandMeta {
 export const COMMANDS: CommandMeta[] = [
   // models & routing — the product's point: pick the right model per task
   { name: "/model", usage: "/model [name]", desc: "list models · /model <name> pins one · /model auto routes per task", group: "models" },
-  { name: "/effort", usage: "/effort [tier]", desc: "quality vs speed: fast · balanced · max (used unless a model is pinned)", group: "models" },
+  { name: "/effort", usage: "/effort [level]", desc: "set the active model's reasoning level, e.g. low · high · xhigh · max", group: "models" },
+  { name: "/prefer", usage: "/prefer kind model", desc: "remember a confirmed model preference for a task type", group: "models" },
   // conversation
   { name: "/clear", usage: "/clear", desc: "start a fresh conversation", group: "chat" },
   { name: "/resume", usage: "/resume [n]", desc: "reopen a past conversation", group: "chat" },
@@ -91,16 +92,31 @@ export function helpText(): string {
   return out.join("\n");
 }
 
-// A plain-English label for an account — no ids. e.g. "Claude · subscription",
-// "Claude (work) · subscription", "Anthropic · API key", "OpenRouter · API key".
-export function accountLabel(a: { id: string; provider: string; exec: string; auth?: any }): string {
+// The bare account name, no type suffix — e.g. "Claude", "Claude (work)",
+// "ChatGPT", "Anthropic", "OpenRouter". Use under a group header that already
+// states the type; use accountLabel() when the type needs to be inline.
+export function accountName(a: { id: string; provider: string; exec: string; auth?: any }): string {
   if (a.exec === "cli") {
     const bin = a.auth?.binary;
     const base = bin === "codex" ? "ChatGPT" : "Claude";
     const named = a.id.match(/-cli-(.+)$/); // additional account: claude-cli-<name>
-    return `${named ? `${base} (${named[1]})` : base} · subscription`;
+    return named ? `${base} (${named[1]})` : base;
   }
-  return `${catalogProvider(a.provider)?.label ?? a.provider} · API key`;
+  return catalogProvider(a.provider)?.label ?? a.provider;
+}
+
+export function accountSlug(a: { id: string; provider: string; exec: string; auth?: any }): string {
+  return accountName(a)
+    .toLowerCase()
+    .replace(/[()]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+// A plain-English label with the type suffix — e.g. "Claude · subscription",
+// "Claude (work) · subscription", "Anthropic · API key".
+export function accountLabel(a: { id: string; provider: string; exec: string; auth?: any }): string {
+  return `${accountName(a)} · ${a.exec === "cli" ? "subscription" : "API key"}`;
 }
 
 /**
@@ -111,14 +127,30 @@ export function formatAccounts(
   accounts: { id: string; label: string; provider: string; exec: string; auth?: any }[],
   activeCliId: string | null,
   importable: { provider: string; label: string; envVar: string }[],
+  statuses: Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string }> = {},
 ): string {
   const lines: string[] = ["your accounts"];
   if (!accounts.length) {
     lines.push("  (none yet)");
   } else {
+    const active = activeCliId ? accounts.find((a) => a.id === activeCliId) : null;
+    if (active) lines.push(`  current: ${accountLabel(active)}`);
+    else lines.push("  current: API routing");
+    lines.push("");
     accounts.forEach((a, i) => {
       const mark = a.id === activeCliId ? glyph.on : " ";
-      lines.push(`  ${mark} ${String(i + 1).padStart(2)}.  ${accountLabel(a)}`);
+      const st = statuses[a.id];
+      const status =
+        a.id === activeCliId ? "active" :
+        st?.duplicateOf ? `same login as ${st.duplicateOf}` :
+        st?.signedIn === false ? "not signed in" :
+        st?.signedIn === true ? "signed in" :
+        a.exec === "cli" ? "not checked" :
+        "ready";
+      const alias = accountSlug(a);
+      lines.push(`  ${mark} ${accountLabel(a).padEnd(34)} ${status}`);
+      lines.push(`      use /account ${alias}${i + 1 ? `  (or ${i + 1})` : ""}`);
+      if (st?.detail && st.signedIn) lines.push(`      ${st.detail}`);
     });
     if (!activeCliId) lines.push("", "  no subscription active — your API keys auto-route per task");
   }
@@ -128,9 +160,9 @@ export function formatAccounts(
   }
   lines.push(
     "",
-    "  switch:   /account <number>",
-    "  add:      /account add        (Claude/ChatGPT sign-in, or paste an API key)",
-    accounts.length ? "  remove:   /account remove <number>" : "",
+    "  switch: /account <name-or-number>",
+    "  add:    /account add codex [name]  ·  /account add claude [name]  ·  /account add <api-key>",
+    accounts.length ? "  remove: /account remove <name-or-number>" : "",
   );
   return lines.filter(Boolean).join("\n");
 }
