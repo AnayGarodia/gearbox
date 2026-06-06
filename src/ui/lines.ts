@@ -409,26 +409,43 @@ const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
 
 /** Flatten the transcript into styled lines wrapped to `width`. A leading blank
  *  line separates turns (so the windowed view keeps its rhythm). */
+// Per-item line cache for the two markdown-heavy, static kinds (assistant, user).
+// Streaming re-runs itemsToLines on every token; without this, every prior reply's
+// markdown is re-parsed each token (super-linear with transcript length — the
+// cause of jittery streaming). Items keep a stable object reference across renders
+// when unchanged (setItems maps unchanged items to the same object), so a WeakMap
+// keyed by item reference hits for history and misses only for the changing tail.
+// Tool/phase/etc. items are NOT cached — they can animate (spinner) and are cheap.
+const staticLineCache = new WeakMap<object, { width: number; lines: Line[] }>();
+
+export function staticItemLines(it: Item, width: number): Line[] {
+  const hit = staticLineCache.get(it);
+  if (hit && hit.width === width) return hit.lines;
+  const lines: Line[] = [];
+  if (it.kind === "user") {
+    const wrapped = wrapSpans(proseSpans(it.text, { color: color.user, bold: true, bg: color.userBg }), Math.max(width - 4, 1));
+    wrapped.forEach((l, i) =>
+      lines.push(padBg([
+        { text: i === 0 ? "▌ " : "  ", color: color.accent, bold: true, bg: color.userBg },
+        ...l.map((s) => ({ ...s, bg: color.userBg })),
+      ], width, color.userBg)),
+    );
+  } else if (it.kind === "assistant" && it.text) {
+    lines.push(...indent(markdownToLines(it.text, Math.max(width - 2, 1)), 2));
+  }
+  staticLineCache.set(it, { width, lines });
+  return lines;
+}
+
 export function itemsToLines(items: Item[], width: number, expand = false): Line[] {
   const out: Line[] = [];
   for (const it of items) {
     out.push(BLANK);
+    if (it.kind === "user" || it.kind === "assistant") {
+      out.push(...staticItemLines(it, width));
+      continue;
+    }
     switch (it.kind) {
-      case "user": {
-        const wrapped = wrapSpans(proseSpans(it.text, { color: color.user, bold: true, bg: color.userBg }), Math.max(width - 4, 1));
-        wrapped.forEach((l, i) =>
-          out.push(padBg([
-            { text: i === 0 ? "▌ " : "  ", color: color.accent, bold: true, bg: color.userBg },
-            ...l.map((s) => ({ ...s, bg: color.userBg })),
-          ], width, color.userBg)),
-        );
-        break;
-      }
-      case "assistant": {
-        if (!it.text) break;
-        out.push(...indent(markdownToLines(it.text, Math.max(width - 2, 1)), 2));
-        break;
-      }
       case "tool": {
         const dot: Span = { text: it.status === "running" ? spinnerFrame() : glyph.tool, color: toolColor(it) };
         const name = friendlyTool(it.name);

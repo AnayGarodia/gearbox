@@ -1319,11 +1319,34 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const toolMap = new Map<string, number>();
       const pendingToolStreams = new Map<number, { arg?: string; delta: string; lines: number }>();
       let toolFlushTimer: ReturnType<typeof setTimeout> | null = null;
+      // Assistant text is coalesced like tool streams: buffer deltas and flush on a
+      // ~45ms timer instead of setItems-per-token. Per-token re-renders re-flatten
+      // and repaint the whole screen, which is what makes streaming scroll jitter.
+      let pendingText = "";
+      let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
       const changedFiles = new Set<string>();
       const checks: string[] = [];
       const failures: string[] = [];
       let hadError = false;
+      const flushText = () => {
+        if (textFlushTimer) {
+          clearTimeout(textFlushTimer);
+          textFlushTimer = null;
+        }
+        if (!pendingText) return;
+        const chunk = pendingText;
+        pendingText = "";
+        if (curAsstRef.current === null) {
+          const id = idRef.current++;
+          curAsstRef.current = id;
+          setItems((prev) => [...prev, { kind: "assistant", id, text: chunk, done: false }]);
+        } else {
+          const id = curAsstRef.current;
+          setItems((prev) => prev.map((i) => (i.id === id && i.kind === "assistant" ? { ...i, text: i.text + chunk } : i)));
+        }
+      };
       const finishAssistant = () => {
+        flushText(); // commit any buffered text before marking the item done
         const id = curAsstRef.current;
         if (id == null) return;
         setItems((prev) => prev.map((i) => (i.id === id && i.kind === "assistant" ? { ...i, done: true } : i)));
@@ -1383,14 +1406,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         } else if (e.type === "text") {
           setMascotState("streaming");
           outCharsRef.current += e.text.length;
-          if (curAsstRef.current === null) {
-            const id = idRef.current++;
-            curAsstRef.current = id;
-            setItems((prev) => [...prev, { kind: "assistant", id, text: e.text, done: false }]);
-          } else {
-            const id = curAsstRef.current;
-            setItems((prev) => prev.map((i) => (i.id === id && i.kind === "assistant" ? { ...i, text: i.text + e.text } : i)));
-          }
+          pendingText += e.text;
+          if (!textFlushTimer) textFlushTimer = setTimeout(flushText, 45);
         } else if (e.type === "tool-start") {
           setMascotState("tool");
           finishAssistant();
@@ -1506,6 +1523,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
       } finally {
         activeImagesRef.current = [];
+        flushText(); // commit any buffered text on interrupt (no done/error fired)
         flushToolStreams();
         abortRef.current = null;
         setBusy(false);
