@@ -10,3 +10,13 @@ test("status bar shows the offline chip only when offline", () => {
   const off = render(<StatusBar {...base} online={false} />).lastFrame() ?? "";
   expect(off).toContain("offline");
 });
+
+// The effort label renders only when an effort is given — no "balanced" default.
+// This keeps the render aligned with statusBarHit's clickable effort zone.
+test("status bar omits the effort label when effort is undefined", () => {
+  const base = { model: "claude", branch: "main", ctxPct: 10, tokens: 100, width: 100 };
+  const withEffort = render(<StatusBar {...base} effort="max" />).lastFrame() ?? "";
+  expect(withEffort).toContain("effort max");
+  const noEffort = render(<StatusBar {...base} effort={undefined} />).lastFrame() ?? "";
+  expect(noEffort).not.toContain("effort");
+});

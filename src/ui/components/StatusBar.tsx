@@ -7,6 +7,57 @@ function fmtTokens(n: number): string {
   return String(n);
 }
 
+const SEP = `  ${glyph.bullet}  `; // separator between left-segment fields (5 cols)
+
+export type StatusZone = [start: number, end: number]; // 0-based, half-open cols
+
+// Pure layout helper: where the clickable model/effort labels sit in the status
+// bar's left segment, in 0-based terminal columns. Single source of truth — the
+// StatusBar render and the mouse hit-test both derive from this so the rendered
+// position and the clickable position cannot drift. Mirrors the render:
+// paddingX(1) + optional "{mode}{SEP}" + model + optional "{SEP}effort {effort}".
+export function statusBarLayout({
+  model,
+  effort,
+  mode = "normal",
+}: {
+  model: string;
+  effort?: string;
+  mode?: "normal" | "auto-accept" | "plan";
+}): { modelZone: StatusZone; effortZone: StatusZone | null } {
+  const modeLabel = mode === "auto-accept" ? "auto-accept" : mode;
+  const modelStart = 1 + (mode !== "normal" ? modeLabel.length + SEP.length : 0);
+  const modelZone: StatusZone = [modelStart, modelStart + model.length];
+  if (!effort) return { modelZone, effortZone: null };
+  const effortText = `effort ${effort}`;
+  const effortStart = modelZone[1] + SEP.length;
+  return { modelZone, effortZone: [effortStart, effortStart + effortText.length] };
+}
+
+// Resolve a fullscreen SGR mouse click (1-based x/y) to the model/effort label,
+// or null. The status-bar row is measured up from the composer, which is pinned
+// to the bottom of the screen: composer = marginTop(1) + rule(1) + input(N), the
+// input's bottom line is the last terminal row, and the palette box sits between
+// the status bar and the composer. Pure so the fragile row math is testable.
+export function statusBarHit(args: {
+  x: number;
+  y: number;
+  termRows: number;
+  composerLines: number;
+  paletteRows: number;
+  model: string;
+  effort?: string;
+  mode?: "normal" | "auto-accept" | "plan";
+}): "model" | "effort" | null {
+  const statusRow = args.termRows - args.composerLines - args.paletteRows - 2;
+  if (args.y !== statusRow || !args.model) return null;
+  const { modelZone, effortZone } = statusBarLayout(args);
+  const col = args.x - 1; // SGR x is 1-based; zones are 0-based
+  if (col >= modelZone[0] && col < modelZone[1]) return "model";
+  if (effortZone && col >= effortZone[0] && col < effortZone[1]) return "effort";
+  return null;
+}
+
 // Bottom status line, full width. Left: model, branch, ctx, tokens (no "gearbox"
 // brand — the title bar already says it). Right: the routing pick — the product's
 // USP, where no other agent shows anything. A blank row above it keeps the
@@ -21,7 +72,7 @@ export function StatusBar({
   cost = 0,
   width,
   mode = "normal",
-  effort = "balanced",
+  effort,
   subscription = null,
   online = true,
 }: {
@@ -39,7 +90,7 @@ export function StatusBar({
   subscription?: string | null; // active CLI-backed subscription account label
   online?: boolean;
 }) {
-  const sep = `  ${glyph.bullet}  `;
+  const sep = SEP;
   const modeLabel = mode === "auto-accept" ? "auto-accept" : mode; // "plan" / "auto-accept"
   const left = [
     model,
