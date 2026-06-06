@@ -500,9 +500,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const now = Date.now();
       const stale = listAccounts().filter((a) => !isFresh(a.health, now));
       await Promise.all(stale.map(async (a) => {
-        const h = await checkHealth(a);
-        if (cancelled) return;
-        recordHealth(a, h.state, h.detail);
+        try {
+          const h = await checkHealth(a);
+          if (cancelled) return;
+          recordHealth(a, h.state, h.detail);
+        } catch { /* best-effort; never block boot */ }
       }));
     })();
     return () => { cancelled = true; };

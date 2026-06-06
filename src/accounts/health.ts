@@ -33,6 +33,20 @@ export function classifyError(_provider: string, err: unknown): HealthState {
 }
 
 export const HEALTH_TTL_MS = 5 * 60_000;
+export const HEALTH_CHECK_TIMEOUT_MS = 8_000;
+
+/** Resolve `p`, but if it doesn't settle within `ms`, resolve `fallback` instead.
+ *  Never rejects (a rejection from `p` propagates as usual — callers handle it). */
+export function withTimeout<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => { if (!done) { done = true; resolve(fallback); } }, ms);
+    p.then(
+      (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } },
+      (e) => { if (!done) { done = true; clearTimeout(timer); reject(e); } },
+    );
+  });
+}
 
 export function isFresh(h: AccountHealth | undefined, now: number): boolean {
   return !!h && now - h.checkedAt < HEALTH_TTL_MS;
@@ -45,20 +59,24 @@ export function recordHealth(account: Account, state: HealthState, detail?: stri
 }
 
 /** Live probe of an account's credential. Cheap, no model generation.
- *  Reuses testAccount's connectivity checks; maps the result to a state. */
-export async function checkHealth(account: Account): Promise<AccountHealth> {
+ *  Reuses testAccount's connectivity checks; maps the result to a state.
+ *  Always resolves within HEALTH_CHECK_TIMEOUT_MS — a hung endpoint never blocks callers. */
+export function checkHealth(account: Account): Promise<AccountHealth> {
   const at = Date.now();
-  try {
-    if (account.exec === "cli") {
-      const bin = (account.auth as any).binary as string;
-      const profile = (account.auth as any).loginProfile as string | undefined;
-      const st = await cliAuthStatus(bin, profile);
-      return { state: st.loggedIn ? "ok" : "expired", checkedAt: at, detail: st.detail };
+  const probe = (async (): Promise<AccountHealth> => {
+    try {
+      if (account.exec === "cli") {
+        const bin = (account.auth as any).binary as string;
+        const profile = (account.auth as any).loginProfile as string | undefined;
+        const st = await cliAuthStatus(bin, profile);
+        return { state: st.loggedIn ? "ok" : "expired", checkedAt: at, detail: st.detail };
+      }
+      const r = await testAccount(account);
+      if (r.ok) return { state: "ok", checkedAt: at };
+      return { state: classifyError(account.provider, { message: r.message }), checkedAt: at, detail: r.message };
+    } catch (e) {
+      return { state: classifyError(account.provider, e), checkedAt: at, detail: String((e as any)?.message ?? e) };
     }
-    const r = await testAccount(account);
-    if (r.ok) return { state: "ok", checkedAt: at };
-    return { state: classifyError(account.provider, { message: r.message }), checkedAt: at, detail: r.message };
-  } catch (e) {
-    return { state: classifyError(account.provider, e), checkedAt: at, detail: String((e as any)?.message ?? e) };
-  }
+  })();
+  return withTimeout(probe, HEALTH_CHECK_TIMEOUT_MS, { state: "unknown", checkedAt: at, detail: "health check timed out" });
 }
