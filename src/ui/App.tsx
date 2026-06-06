@@ -542,13 +542,50 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return () => setPermissionHandler(null);
   }, []);
 
-  // Scroll the transcript by `delta` lines; re-pin to the bottom when we reach it.
-  const scrollBy = useCallback((delta: number) => {
-    const cur = atBottomRef.current ? maxScrollRef.current : scrollTopRef.current;
-    const ns = Math.max(0, Math.min(maxScrollRef.current, cur + delta));
-    atBottomRef.current = ns >= maxScrollRef.current;
-    setScrollTop(ns);
+  // Smooth scrolling: a wheel notch (or a fast swipe's burst of events) sets a
+  // TARGET, and an easing loop glides scrollTop toward it a fraction of the
+  // remaining distance each frame — so big jumps decelerate instead of snapping,
+  // while a single line still moves immediately. The terminal grid is still
+  // line-quantized; this just makes the motion between rows continuous.
+  const scrollTargetRef = useRef<number | null>(null);
+  const scrollAnimRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const noMotion = process.env.GEARBOX_NO_MOTION === "1";
+  const stopScrollAnim = useCallback(() => {
+    if (scrollAnimRef.current) { clearInterval(scrollAnimRef.current); scrollAnimRef.current = null; }
   }, []);
+  const scrollBy = useCallback((delta: number) => {
+    const max = maxScrollRef.current;
+    const cur = atBottomRef.current ? max : scrollTopRef.current;
+    // Accumulate onto any in-flight target so a multi-event swipe adds up.
+    const target = Math.max(0, Math.min(max, (scrollTargetRef.current ?? cur) + delta));
+    if (noMotion) {
+      scrollTargetRef.current = null;
+      atBottomRef.current = target >= max;
+      setScrollTop(target);
+      return;
+    }
+    scrollTargetRef.current = target;
+    if (scrollAnimRef.current) return; // a glide is already running toward the new target
+    let pos = cur;
+    scrollAnimRef.current = setInterval(() => {
+      const m = maxScrollRef.current;
+      const tgt = Math.max(0, Math.min(m, scrollTargetRef.current ?? pos));
+      const diff = tgt - pos;
+      if (Math.abs(diff) < 1) {
+        pos = tgt;
+        scrollTargetRef.current = null;
+        stopScrollAnim();
+      } else {
+        // Ease: ~35% of the remaining distance per frame, at least one line.
+        const step = Math.sign(diff) * Math.max(1, Math.round(Math.abs(diff) * 0.35));
+        pos += step;
+        if ((diff > 0 && pos > tgt) || (diff < 0 && pos < tgt)) pos = tgt;
+      }
+      atBottomRef.current = pos >= m;
+      setScrollTop(pos);
+    }, 16);
+  }, [noMotion, stopScrollAnim]);
+  useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear the glide timer on unmount
 
   const copyWithFeedback = useCallback((text: string) => {
     const clean = text.replace(/[ \t]+\n/g, "\n").trim();

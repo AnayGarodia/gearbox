@@ -1,5 +1,13 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { matchCommands, helpText, formatModelList, resolveModelSwitch, COMMANDS } from "../src/commands.ts";
+
+// Isolate the account store so model availability depends ONLY on the env keys
+// each test sets — not on the developer's real ~/.gearbox accounts (e.g. a stored
+// Bedrock account would add a second "haiku" and make the fuzzy match ambiguous).
+process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-commands-"));
 
 test("matchCommands filters by prefix", () => {
   expect(matchCommands("/mo").map((c) => c.name)).toEqual(["/model"]);
