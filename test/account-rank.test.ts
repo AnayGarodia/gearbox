@@ -34,3 +34,20 @@ test("excludes accounts whose provider serves no model in the family", () => {
   const accts = [A({ id: "ds", slug: "ds", provider: "deepseek", health: { state: "ok", checkedAt: 1 } })];
   expect(rankCandidates(sonnet, accts)).toHaveLength(0);
 });
+
+test("the provider default leads its health tier", () => {
+  const accts = [
+    A({ id: "a", slug: "a", provider: "anthropic", health: { state: "ok", checkedAt: 1 } }),
+    A({ id: "b", slug: "b", provider: "anthropic", health: { state: "ok", checkedAt: 1 } }),
+  ];
+  // Without a default, input order wins (a first).
+  expect(rankCandidates(sonnet, accts).map((c) => c.account.id)).toEqual(["a", "b"]);
+  // With b set as the anthropic default, b leads.
+  expect(rankCandidates(sonnet, accts, { anthropic: "b" }).map((c) => c.account.id)).toEqual(["b", "a"]);
+  // A healthy default still loses to nothing, but an UNHEALTHY default does NOT jump the tier:
+  const mixed = [
+    A({ id: "good", slug: "good", provider: "anthropic", health: { state: "ok", checkedAt: 1 } }),
+    A({ id: "deaddefault", slug: "deaddefault", provider: "anthropic", health: { state: "invalid", checkedAt: 1 } }),
+  ];
+  expect(rankCandidates(sonnet, mixed, { anthropic: "deaddefault" }).map((c) => c.account.id)).toEqual(["good", "deaddefault"]);
+});

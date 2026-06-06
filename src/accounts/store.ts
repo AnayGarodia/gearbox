@@ -161,12 +161,6 @@ export function uniqueSlug(base: string, taken: string[]): string {
   }
 }
 
-export function accountBySlug(slug: string): Account | undefined {
-  const s = slug.trim().toLowerCase();
-  if (!s) return undefined;
-  return listAccounts().find((a) => (a.slug ?? "") === s);
-}
-
 // Base for a slug: derived from the human-facing label (already set on the Account).
 function deriveSlugBase(a: Account): string {
   return a.label;

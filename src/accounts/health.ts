@@ -3,7 +3,7 @@
 // and probe/cache an account's current health. Drives the /account badges and
 // the failover decision (src/agent/failover.ts). No background polling.
 import type { Account, AccountHealth, HealthState } from "./types.ts";
-import { putAccount } from "./store.ts";
+import { putAccount, getAccount } from "./store.ts";
 import { testAccount, cliAuthStatus } from "./onboard.ts";
 export type { AccountHealth, HealthState } from "./types.ts";
 
@@ -55,7 +55,8 @@ export function isFresh(h: AccountHealth | undefined, now: number): boolean {
 /** Persist a freshly observed state for an account (called on success/failure). */
 export function recordHealth(account: Account, state: HealthState, detail?: string): void {
   const at = Date.now();
-  putAccount({ ...account, health: { state, checkedAt: at, detail } });
+  const cur = getAccount(account.id) ?? account;
+  putAccount({ ...cur, health: { state, checkedAt: at, detail } });
 }
 
 /** Live probe of an account's credential. Cheap, no model generation.

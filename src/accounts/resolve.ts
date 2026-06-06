@@ -2,7 +2,7 @@
 // (secrets fetched from the store) that providers.resolveModel injects into the
 // AI SDK — keeping providers.ts the single SDK seam (it never touches the store).
 // CLI accounts have no in-loop creds; the App routes them to the cli backend.
-import { getSecret, listAccounts } from "./store.ts";
+import { getSecret, loadAccounts } from "./store.ts";
 import { catalogProvider } from "./catalog.ts";
 import type { Account, ResolvedCreds, HealthState } from "./types.ts";
 import { candidateModelsFor } from "../model/family.ts";
@@ -64,7 +64,7 @@ function healthRank(s: HealthState | undefined): number {
 
 /** Pure: given a target model and a set of accounts, return failover candidates
  *  best-first. Each candidate binds the account to the provider-specific spec. */
-export function rankCandidates(model: ModelSpec, accounts: Account[]): Candidate[] {
+export function rankCandidates(model: ModelSpec, accounts: Account[], defaults: Record<string, string> = {}): Candidate[] {
   const family = candidateModelsFor(model); // all specs in the family
   const byProvider = new Map<string, ModelSpec>();
   for (const m of family) if (!byProvider.has(m.provider)) byProvider.set(m.provider, m);
@@ -78,13 +78,18 @@ export function rankCandidates(model: ModelSpec, accounts: Account[]): Candidate
     if (!spec) continue; // this account's provider can't serve the family
     cands.push({ account: a, model: spec });
   }
-  // Stable sort by health; preserve input order within a tier (user order).
+  // Stable sort by health; the provider default leads its tier; then user order.
+  const isDefault = (a: Account) => (defaults[a.provider] === a.id ? 0 : 1);
   return cands.map((c, i) => ({ c, i }))
-    .sort((x, y) => healthRank(x.c.account.health?.state) - healthRank(y.c.account.health?.state) || x.i - y.i)
+    .sort((x, y) =>
+      healthRank(x.c.account.health?.state) - healthRank(y.c.account.health?.state) ||
+      isDefault(x.c.account) - isDefault(y.c.account) ||
+      x.i - y.i)
     .map(({ c }) => c);
 }
 
 /** Live ranking from the registry. */
 export function rank(model: ModelSpec): Candidate[] {
-  return rankCandidates(model, listAccounts());
+  const f = loadAccounts();
+  return rankCandidates(model, f.accounts, f.defaults);
 }
