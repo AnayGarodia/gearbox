@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { putAccount, setSecret } from "./store.ts";
 import { catalogProvider, CATALOG } from "./catalog.ts";
 import { normalizeProviderId } from "./onboarding.ts";
-import { sniffCredential } from "./sniff.ts";
+import { sniffCredential, type CredentialGuess } from "./sniff.ts";
 import { resolveCreds } from "./resolve.ts";
 import { subscriptionEnv } from "../agent/cli-backend.ts";
 import { which, spawnProc, readStream } from "../proc.ts";
@@ -147,7 +147,7 @@ export async function addBedrockAccount(accessKeyId: string, secretAccessKey: st
   if (!accessKeyId.trim() || !secretAccessKey.trim() || !region.trim()) {
     return { ok: false, message: "usage: /account add bedrock <access-key-id> <secret-access-key> <region>" };
   }
-  const id = opts.id ?? `bedrock-${slugify(region)}`;
+  const id = opts.id ?? `bedrock-${shortId()}`;
   const accessKeyIdRef = `${id}:aws-access-key-id`;
   const secretKeyRef = `${id}:aws-secret-access-key`;
   await setSecret(accessKeyIdRef, accessKeyId.trim());
@@ -162,7 +162,7 @@ export async function addBedrockAccount(accessKeyId: string, secretAccessKey: st
     addedAt: Date.now(),
   };
   putAccount(account);
-  return { ok: true, account, message: `added ${account.label}` };
+  return { ok: true, account, message: `added ${account.label} (${id})` };
 }
 
 /** Register a CLI-backed subscription account (claude-cli / codex-cli). No secret
@@ -278,7 +278,7 @@ export async function addByPastedKey(key: string): Promise<AddResult> {
 }
 
 // One-line instruction telling the user exactly what else to provide.
-function guidedMessageFor(g: import("./sniff.ts").CredentialGuess): string {
+function guidedMessageFor(g: CredentialGuess): string {
   if (g.kind === "aws") return `looks like AWS/Bedrock — provide all three: /account add bedrock <access-key-id> <secret> <region>`;
   if (g.kind === "azure") return `looks like Azure (${g.fields.resourceName ?? "resource"}) — add the key: /account add azure ${g.fields.endpoint ?? "<endpoint>"} <api-key>`;
   if (g.kind === "vertex") return `looks like a Vertex service account — use: /account add vertex (guided), project ${g.fields.project || "<project>"}`;

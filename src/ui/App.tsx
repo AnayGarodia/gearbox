@@ -2234,6 +2234,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                   "  /account add codex <name>    a 2nd ChatGPT account, e.g. /account add codex work\n" +
                   "  /account add azure <foundry-endpoint> <api-key>\n" +
                   "  /account add azure <resource-name> <api-key> [api-version]\n" +
+                  "  /account add bedrock <access-key-id> <secret> <region>\n" +
                   "  /account add openai-compat <name> <base-url> <api-key> <model> [model...]\n" +
                   "  /account add <api-key>       paste any provider key (auto-detected)\n" +
                   "  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter",
