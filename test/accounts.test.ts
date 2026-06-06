@@ -15,6 +15,7 @@ import { subscriptionEnv } from "../src/agent/cli-backend.ts";
 import { detectCloudCreds, importCloudCred } from "../src/accounts/detect.ts";
 import { recordUsage, recordRateLimits, loadUsage, accountUsage, totalSpent, buildUsageView } from "../src/accounts/usage.ts";
 import { MODELS, findModel, modelRegistry, resolveModel } from "../src/providers.ts";
+import { anyProviderAvailable } from "../src/config.ts";
 import type { Account } from "../src/accounts/types.ts";
 
 // Force the deterministic file store (the keychain path is OS-dependent / can
@@ -305,6 +306,20 @@ test("multiple API-key accounts for one provider coexist", async () => {
   const b = await addApiKeyAccount("anthropic", "sk-ant-two", { id: "anthropic-b" });
   expect(a.account!.id).not.toBe(b.account!.id);
   expect(accountsForProvider("anthropic").length).toBeGreaterThanOrEqual(2);
+});
+
+test("anyProviderAvailable counts a CLI subscription — subscription-only can launch", () => {
+  // Clear every provider env var so availability comes only from stored accounts.
+  const envVars = [...new Set(CATALOG.flatMap((p) => p.envVars))];
+  const saved: Record<string, string | undefined> = {};
+  for (const k of envVars) { saved[k] = process.env[k]; delete process.env[k]; }
+  try {
+    expect(anyProviderAvailable()).toBe(false); // fresh isolated home, no keys
+    addCliAccount("claude-cli"); // a Claude Max subscription, no API key
+    expect(anyProviderAvailable()).toBe(true); // the launch gate must accept it
+  } finally {
+    for (const k of envVars) if (saved[k] !== undefined) process.env[k] = saved[k];
+  }
 });
 
 test("secretRefs enumerates every secret an account owns", () => {
