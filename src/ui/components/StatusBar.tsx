@@ -49,6 +49,9 @@ export function statusBarHit(args: {
   effort?: string;
   mode?: "normal" | "auto-accept" | "plan";
 }): "model" | "effort" | null {
+  // The `- 2` is the composer chrome above its input (rule + marginTop). It is
+  // coupled to App.tsx's footer estimate (`footer += perm ? 9 : 3`, the 3 being
+  // input + those same 2 chrome rows) and to Composer.tsx's layout — keep in sync.
   const statusRow = args.termRows - args.composerLines - args.paletteRows - 2;
   if (args.y !== statusRow || !args.model) return null;
   const { modelZone, effortZone } = statusBarLayout(args);
