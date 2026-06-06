@@ -11,6 +11,13 @@
 # directory is not on PATH.
 set -euo pipefail
 
+# ANSI helpers (no-op when stdout is not a TTY or NO_COLOR is set)
+if [[ -t 1 && "${NO_COLOR:-}" == "" ]]; then
+  R=$'\033[0m' B=$'\033[1m' D=$'\033[2m' C=$'\033[36m' G=$'\033[32m' Y=$'\033[33m'
+else
+  R='' B='' D='' C='' G='' Y=''
+fi
+
 PACKAGE_NAME="${GEARBOX_PACKAGE:-gearbox-code}"
 VERSION="${GEARBOX_VERSION:-latest}"
 INSTALL_ROOT="${GEARBOX_INSTALL_DIR:-${HOME}/.local/share/gearbox}"
@@ -73,7 +80,7 @@ trap cleanup EXIT
 meta_url="https://registry.npmjs.org/${PACKAGE_NAME}/${VERSION}"
 meta_file="${tmp}/meta.json"
 
-echo "-> Fetching ${PACKAGE_NAME}@${VERSION}"
+printf "${D}  → fetching ${PACKAGE_NAME}@${VERSION}${R}\n"
 curl -fsSL "$meta_url" -o "$meta_file"
 
 resolved_version="$(node -e 'const fs=require("fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(j.version || "")' "$meta_file")"
@@ -88,7 +95,7 @@ target_dir="${INSTALL_ROOT}/${resolved_version}"
 archive="${tmp}/package.tgz"
 extract_dir="${tmp}/extract"
 
-echo "-> Downloading ${PACKAGE_NAME}@${resolved_version}"
+printf "${D}  → downloading ${PACKAGE_NAME}@${resolved_version}${R}\n"
 curl -fsSL "$tarball_url" -o "$archive"
 mkdir -p "$extract_dir" "$target_dir" "$BIN_DIR"
 tar -xzf "$archive" -C "$extract_dir"
@@ -111,37 +118,36 @@ exec node "${target_dir}/cli.mjs" "\$@"
 EOF
 chmod 0755 "${BIN_DIR}/gearbox"
 
-echo ""
-echo "Installed Gearbox ${resolved_version}"
-echo "  ${BIN_DIR}/gearbox"
-echo ""
+printf "\n"
+printf "${G}  ✓${R} ${B}gearbox ${resolved_version}${R} installed\n"
+printf "${D}    ${BIN_DIR}/gearbox${R}\n"
+printf "\n"
 
 case ":${PATH}:" in
   *":${BIN_DIR}:"*)
-    echo "Run it with: gearbox"
+    printf "  run ${C}gearbox${R} to start\n"
     ;;
   *)
     shell_name="$(basename "${SHELL:-sh}")"
     rc_file="${HOME}/.profile"
     if [[ "$shell_name" == "zsh" ]]; then rc_file="${HOME}/.zshrc"; fi
     if [[ "$shell_name" == "bash" ]]; then rc_file="${HOME}/.bashrc"; fi
-    echo "${BIN_DIR} is not on PATH yet."
-    echo "Add it with:"
-    echo "  echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ${rc_file}"
-    echo "  source ${rc_file}"
-    echo ""
-    echo "Then run: gearbox"
+    printf "${Y}  ! ${BIN_DIR} is not on PATH${R}\n"
+    printf "    echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ${rc_file}\n"
+    printf "    source ${rc_file}\n"
+    printf "\n"
+    printf "  then run ${C}gearbox${R}\n"
     ;;
 esac
 
 if [[ "${GEARBOX_SKIP_ONBOARD:-}" != "1" ]]; then
-  echo ""
-  echo "Starting setup..."
+  printf "\n"
+  printf "${D}  setting up …${R}\n"
   if [[ -t 1 && -e /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
     if ! "${BIN_DIR}/gearbox" onboard < /dev/tty > /dev/tty; then
-      echo "Setup did not complete. Run: ${BIN_DIR}/gearbox onboard"
+      printf "${Y}  setup incomplete — run: ${C}gearbox onboard${R}\n"
     fi
   else
-    echo "No interactive terminal detected. Run: ${BIN_DIR}/gearbox onboard"
+    printf "${D}  no interactive terminal — run: ${C}gearbox onboard${R}\n"
   fi
 fi
