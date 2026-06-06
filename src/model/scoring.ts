@@ -32,7 +32,9 @@ export interface ScoreWeights {
   wSwitch: number; // cold-model (cache-miss) surcharge as a FRACTION of the turn's cost
   wPlan: number; // subscription plan bonus (subtracted)
   wLimit: number; // extra push away from a seat in the rate-limit red zone
+  wApiThrottle: number; // push away from a metered key whose live API window is near-empty
   planHeadroomKnee: number; // headroom ≥ knee ⇒ seat treated as ~free; below, ramps
+  apiThrottleKnee: number; // API headroom ≥ knee ⇒ ignored (per-minute noise); below, ramps
   scarcityStaleMs: number; // a balance snapshot older than this is treated as unknown
 }
 
@@ -41,7 +43,9 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
   wSwitch: 0.15,
   wPlan: 1.0,
   wLimit: 2.0,
+  wApiThrottle: 0.5,
   planHeadroomKnee: 0.2,
+  apiThrottleKnee: 0.15,
   scarcityStaleMs: 15 * 60_000,
 };
 
@@ -59,6 +63,7 @@ export interface ScoreTerms {
   scarcity: number;
   switchPenalty: number;
   limitPenalty: number;
+  apiThrottlePenalty: number;
   planBonus: number; // subtracted in the score
   meteredEquiv: number; // what a subscription pick would have cost metered (for logging)
 }
@@ -100,11 +105,19 @@ export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCand
   }
 
   // Limit penalty: push away from a seat in the red zone so load spreads / fails
-  // over proactively. API-side limits stay reactive (handled on a real 429), so
-  // this only fires for subscriptions with an observed window below the knee.
+  // over proactively. Fires for subscriptions with an observed window below the knee.
   let limitPenalty = 0;
   if (a.isSubscription && a.rateHeadroom !== undefined && a.rateHeadroom < w.planHeadroomKnee) {
     limitPenalty = w.wLimit * ((w.planHeadroomKnee - a.rateHeadroom) / w.planHeadroomKnee);
+  }
+
+  // API throughput penalty: live RPM/TPM headroom from response headers. These
+  // refill in seconds–minutes, so we ONLY react when a window is genuinely
+  // near-empty (below the knee) — proactive failover before a 429, without
+  // flapping on normal per-minute fluctuation.
+  let apiThrottlePenalty = 0;
+  if (!a.isSubscription && a.apiThrottle !== undefined && a.apiThrottle < w.apiThrottleKnee) {
+    apiThrottlePenalty = w.wApiThrottle * ((w.apiThrottleKnee - a.apiThrottle) / w.apiThrottleKnee);
   }
 
   // Cache-locality nudge: a fraction of the turn's own cost, charged to cold
@@ -113,8 +126,8 @@ export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCand
   const warm = !!input.warm && input.warm.accountId === a.accountId && input.warm.modelId === c.id;
   const switchPenalty = input.warm && !warm ? w.wSwitch * costEst : 0;
 
-  const score = costEst + scarcity + switchPenalty + limitPenalty - planBonus;
-  return { candidate: c, score, costEst, terms: { costEst, scarcity, switchPenalty, limitPenalty, planBonus, meteredEquiv } };
+  const score = costEst + scarcity + switchPenalty + limitPenalty + apiThrottlePenalty - planBonus;
+  return { candidate: c, score, costEst, terms: { costEst, scarcity, switchPenalty, limitPenalty, apiThrottlePenalty, planBonus, meteredEquiv } };
 }
 
 /** Rank all candidates and return the best. Total-order tie-break keeps it

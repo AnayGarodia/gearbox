@@ -73,6 +73,19 @@ test("the switch penalty tips a tie toward the warm model but not against a clea
   expect(pickBest(input([cheaper, warm], { warm: { accountId: "k", modelId: "warm" } })).candidate.id).toBe("cheaper");
 });
 
+// ── live API throughput headroom (from response headers) ──
+test("a near-empty API window deprioritizes that key, but normal headroom is ignored", () => {
+  const cheapButThrottled = cand({ id: "a", inUSDPerMtok: 1, account: state({ accountId: "k1", apiThrottle: 0.02 }) });
+  const pricier = cand({ id: "b", inUSDPerMtok: 3, account: state({ accountId: "k2" }) });
+  // a is cheaper but almost out of per-minute quota → b wins (proactive failover).
+  expect(pickBest(input([cheapButThrottled, pricier])).candidate.id).toBe("b");
+
+  // At healthy headroom (0.5) the penalty is zero — no flapping; cheapest wins.
+  const healthy = cand({ id: "a", inUSDPerMtok: 1, account: state({ accountId: "k1", apiThrottle: 0.5 }) });
+  expect(pickBest(input([healthy, pricier])).candidate.id).toBe("a");
+  expect(scoreCandidate(healthy, input([healthy])).terms.apiThrottlePenalty).toBe(0);
+});
+
 // ── determinism ──
 test("identical scores resolve by tps→quality→id for a total order", () => {
   const base = () => state({ accountId: "k" });

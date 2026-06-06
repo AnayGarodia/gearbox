@@ -24,11 +24,16 @@ export interface AccountState {
   balanceTotalUSD?: number;
   balanceAt?: number; // staleness of the balance snapshot
 
-  // Subscription rate-limit headroom = min over all observed windows of
-  // (1 − utilization). 1 = fresh, 0 = exhausted. undefined when no window seen.
+  // Subscription rate-limit headroom = min over all observed SUBSCRIPTION windows
+  // of (1 − utilization). 1 = fresh, 0 = exhausted. undefined when no window seen.
   rateHeadroom?: number;
   bindingWindow?: { type?: string; utilization: number; resetsAt?: number };
   rateAt?: number; // staleness of the rate snapshot
+
+  // Live API throughput headroom = min over `api:*` windows parsed from response
+  // headers (RPM/TPM). These refill in seconds–minutes, so the scorer treats them
+  // gently — only a near-empty window deprioritizes a key. undefined when unknown.
+  apiThrottle?: number;
 }
 
 export interface RoutingContext {
@@ -38,18 +43,24 @@ export interface RoutingContext {
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-function headroomOf(u: AccountUsage | undefined): Pick<AccountState, "rateHeadroom" | "bindingWindow" | "rateAt"> {
+function headroomOf(u: AccountUsage | undefined): Pick<AccountState, "rateHeadroom" | "bindingWindow" | "rateAt" | "apiThrottle"> {
   const snaps: RateSnapshot[] = u?.rates ?? (u?.rate ? [u.rate] : []);
   let rateHeadroom: number | undefined;
   let bindingWindow: AccountState["bindingWindow"];
+  let apiThrottle: number | undefined;
   for (const r of snaps) {
     const h = 1 - clamp01(r.utilization);
+    if (r.type?.startsWith("api:")) {
+      // Short-term throughput windows from response headers — tracked separately.
+      if (apiThrottle === undefined || h < apiThrottle) apiThrottle = h;
+      continue;
+    }
     if (rateHeadroom === undefined || h < rateHeadroom) {
       rateHeadroom = h;
       bindingWindow = { type: r.type, utilization: r.utilization, resetsAt: r.resetsAt };
     }
   }
-  return { rateHeadroom, bindingWindow, rateAt: snaps[0]?.at };
+  return { rateHeadroom, bindingWindow, rateAt: snaps[0]?.at, apiThrottle };
 }
 
 export function buildRoutingContext(

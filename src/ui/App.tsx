@@ -21,6 +21,7 @@ import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
+import { parseRateHeaders } from "../model/rate-headers.ts";
 import { confirmRoutingPreference, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, type ModelSpec } from "../providers.ts";
@@ -1235,6 +1236,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       const modelEffort = _effortRaw ?? undefined;
       const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: modelEffort });
+      // Live API headroom: parse the response's rate-limit headers (Anthropic /
+      // OpenAI / Azure expose them) and stash them on the same channel the CLI
+      // path uses, so the turn ledger records them for THIS account. The router
+      // then deprioritizes / fails over a near-empty key proactively. Only useful
+      // for stored accounts (env-only turns have no AccountState to attach to).
+      if (account) {
+        const apiRates = r.headers ? parseRateHeaders(account.provider, r.headers, Date.now()) : [];
+        if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };
+      }
       // r.messages = the sent context + the newly produced turn. Rebuild msgRef as
       // FULL history + the user message + only the new messages (never the curated
       // projection), and sanitize so an interrupted turn can't leave a dangling

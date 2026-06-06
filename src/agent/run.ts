@@ -137,7 +137,7 @@ export async function runTask(opts: {
   creds?: ResolvedCreds; // per-account credentials (from the active account); env-default if absent
   effort?: Effort; // model-specific reasoning effort → per-provider providerOptions
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
-}): Promise<{ messages: ModelMessage[]; usage: Usage }> {
+}): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined> }> {
   const { model, messages, onEvent, signal, plan } = opts;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
@@ -300,17 +300,21 @@ export async function runTask(opts: {
   }
 
   let next = messages;
+  let headers: Record<string, string | undefined> | undefined;
   if (result) {
     try {
       const resp = await result.response;
       next = [...messages, ...(resp.messages as ModelMessage[])];
+      // Response rate-limit headers — the router reads these to estimate live API
+      // headroom (parsed by the caller, who knows the account/provider).
+      headers = (resp as any).headers as Record<string, string | undefined> | undefined;
     } catch {
       /* keep prior messages; multi-turn still works from input history */
     }
   }
   onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
   onEvent({ type: "done", usage });
-  return { messages: next, usage };
+  return { messages: next, usage, headers };
 }
 
 function friendlyToolPhase(name: string): string {

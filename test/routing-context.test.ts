@@ -64,6 +64,19 @@ test("falls back to the legacy single rate field when rates[] is absent", () => 
   expect(ctx.byAccountId.get("max")!.rateHeadroom).toBeCloseTo(0.6, 5);
 });
 
+test("api:* windows feed apiThrottle, kept separate from subscription headroom", () => {
+  const ctx = buildRoutingContext(1000, {
+    accounts: [acct({ id: "key", provider: "anthropic", exec: "in-loop" })],
+    usage: [usage({ accountId: "key", rates: [
+      { utilization: 0.95, type: "api:tokens", resetsAt: 60, at: 1 }, // near-empty per-minute window
+      { utilization: 0.3, type: "api:requests", at: 1 },
+    ] })],
+  });
+  const s = ctx.byAccountId.get("key")!;
+  expect(s.apiThrottle).toBeCloseTo(0.05, 5); // min(1-0.95, 1-0.3)
+  expect(s.rateHeadroom).toBeUndefined(); // api windows don't count as subscription headroom
+});
+
 test("skips disabled accounts and leaves headroom/balance undefined with no usage", () => {
   const ctx = buildRoutingContext(1000, {
     accounts: [acct({ id: "on", provider: "anthropic", exec: "in-loop" }), acct({ id: "off", provider: "openai", exec: "in-loop", enabled: false })],
