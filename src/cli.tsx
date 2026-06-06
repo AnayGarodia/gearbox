@@ -19,7 +19,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.22";
+const VERSION = "0.1.23";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -56,7 +56,7 @@ function ghostLines(cells: SpriteCell[][], pad = "  "): string[] {
 }
 
 function onboardingBoo(termWidth: number): string {
-  const cells = renderGhost({ palette: "default", face: "joy", scale: 1 });
+  const cells = renderGhost({ palette: "default", face: "happy", scale: 1 });
   const ghostW = cells[0]?.length ?? 20;
   const leftPad = Math.max(2, Math.floor((termWidth - ghostW) / 2));
   return ghostLines(cells, " ".repeat(leftPad)).join("\n");
