@@ -44,7 +44,8 @@ import { missingRequirements, type ModelRequirement } from "../model/capabilitie
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, badgeFor } from "../commands.ts";
+import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
@@ -491,6 +492,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       setActiveCli({ id: a.id, label: bin });
     }
   }, []);
+
+  // Boot: probe accounts whose health is stale so the first /account is accurate.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const now = Date.now();
+      const stale = listAccounts().filter((a) => !isFresh(a.health, now));
+      await Promise.all(stale.map(async (a) => {
+        const h = await checkHealth(a);
+        if (cancelled) return;
+        recordHealth(a, h.state, h.detail);
+      }));
+    })();
+    return () => { cancelled = true; };
+  }, []); // once on mount
 
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
   useEffect(() => {
@@ -1042,7 +1058,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         st?.signedIn === false ? "not signed in" :
         st?.signedIn === true ? "signed in" :
         a.exec === "cli" ? "not checked" :
-        "ready";
+        badgeFor(a.health?.state);
       return {
         name: accountName(a),
         type: (a.exec === "cli" ? "subscription" : "API key") as "subscription" | "API key",
@@ -1051,6 +1067,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         alias: accountSlug(a),
         detail: st?.signedIn ? st.detail : undefined,
         duplicateOf: st?.duplicateOf,
+        health: a.health?.state,
       };
     });
     return {
@@ -2071,7 +2088,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               try {
                 const fresh = listAccounts();
                 const statuses = await checkCliAccounts(fresh);
-                pushAccounts(buildAccountView(fresh, activeCliRef.current?.id ?? null, importableEnvCreds(), statuses));
+                // Best-effort probe of API-key accounts with stale health.
+                await Promise.all(
+                  fresh.filter((a) => a.exec !== "cli" && !isFresh(a.health, Date.now())).map(async (a) => {
+                    try { const h = await checkHealth(a); recordHealth(a, h.state, h.detail); } catch { /* best-effort */ }
+                  }),
+                );
+                // Re-read to get the freshly recorded health.
+                const withHealth = listAccounts();
+                pushAccounts(buildAccountView(withHealth, activeCliRef.current?.id ?? null, importableEnvCreds(), statuses));
               } catch (e: any) {
                 notice(`couldn't check subscription accounts — ${e?.message ?? String(e)}`);
                 pushAccounts(buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current));

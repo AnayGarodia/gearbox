@@ -5,9 +5,22 @@ import { catalogProvider } from "./accounts/catalog.ts";
 import { glyph } from "./ui/theme.ts";
 import { fuzzyRank } from "./ui/fuzzy.ts";
 import type { ContextView } from "./ui/types.ts";
+import type { HealthState } from "./accounts/types.ts";
 
 // The env var (or generic hint) to set for a provider, for "no key" messages.
 const envHint = (p: string): string => ENV_LABEL[p] ?? catalogProvider(p)?.envVars[0] ?? "an API key";
+
+/** Map a HealthState to a short human-readable badge string. */
+export function badgeFor(s: HealthState | undefined): string {
+  switch (s) {
+    case "ok": return "✓ ready";
+    case "expired": return "⚠ expired";
+    case "invalid": return "✗ invalid";
+    case "rate-limited": return "⏳ limited";
+    case "no-credit": return "✗ no credit";
+    default: return "— unknown";
+  }
+}
 
 // Commands are grouped so /help reads as a few short lists instead of one
 // 26-row wall. `usage` stays short (≤ ~14 chars) so the live palette and help

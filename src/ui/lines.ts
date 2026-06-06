@@ -14,9 +14,10 @@ import { barCells } from "../accounts/usage.ts";
 
 const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
 const accountStateColor = (status: string) =>
-  status === "active" || status === "signed in" || status === "ready" ? color.ok :
+  status === "active" || status === "signed in" || status === "ready" || status.startsWith("✓") ? color.ok :
   status === "duplicate" ? color.accent :
-  status === "not signed in" ? color.run :
+  status === "not signed in" || status.startsWith("✗") ? color.run :
+  status.startsWith("⚠") || status.startsWith("⏳") ? color.accent :
   color.faint;
 
 export type Span = { text: string; color?: string; bold?: boolean; italic?: boolean; dim?: boolean; bg?: string };

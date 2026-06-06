@@ -86,9 +86,10 @@ function UsageCard({ view }: { view: UsageView }) {
 }
 
 const accountStateColor = (status: string) =>
-  status === "active" || status === "signed in" || status === "ready" ? color.ok :
+  status === "active" || status === "signed in" || status === "ready" || status.startsWith("✓") ? color.ok :
   status === "duplicate" ? color.accent :
-  status === "not signed in" ? color.run :
+  status === "not signed in" || status.startsWith("✗") ? color.run :
+  status.startsWith("⚠") || status.startsWith("⏳") ? color.accent :
   color.faint;
 
 function AccountCard({ view }: { view: AccountView }) {

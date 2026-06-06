@@ -1,4 +1,5 @@
 import type { UsageView } from "../accounts/usage.ts";
+import type { HealthState } from "../accounts/types.ts";
 
 // Structured /context card: one bar per working-set section + a window-fill bar.
 export interface ContextRow {
@@ -24,6 +25,7 @@ export interface AccountRow {
   alias: string;
   detail?: string;
   duplicateOf?: string;
+  health?: HealthState;
 }
 export interface AccountView {
   current: string;
