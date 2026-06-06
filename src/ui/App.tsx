@@ -1723,7 +1723,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           signInCli(`${a.provider.replace(/-cli$/, "")}${nick ? ` ${nick}` : ""}`.trim());
           return;
         }
-        // Not a known CLI account — treat the arg as the provider form.
+        if (a && a.exec !== "cli") {
+          // An API-key account has nothing to re-login — point to switching instead.
+          notice(`${accountName(a)} is an API-key account — nothing to re-login. Use /account ${accountSlug(a)} to switch to it, or /account add ${a.provider} <key> to replace the key.`);
+          return;
+        }
+        // Not a known account — treat the arg as the provider form (claude/codex).
         signInCli(arg);
       };
 
