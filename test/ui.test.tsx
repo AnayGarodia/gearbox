@@ -190,6 +190,26 @@ test("app initial render: banner, onboarding setup, input", () => {
   expect(f).toContain("/onboard");
 });
 
+test("a large bracketed paste collapses to a chip, not a flood", async () => {
+  process.env.ANTHROPIC_API_KEY = "x";
+  try {
+    const { lastFrame, stdin } = render(
+      <App selector={new FixedSelector("claude-haiku-4-5")} fullscreen runner={async ({ messages }) => ({ messages, usage: { inputTokens: 0, outputTokens: 0 } })} />,
+    );
+    const flush = () => new Promise((r) => setTimeout(r, 40));
+    await flush();
+    const book = Array.from({ length: 12 }, (_, i) => `paragraph-${i} `.repeat(8)).join("\n");
+    stdin.write("\x1b[200~" + book + "\x1b[201~"); // a bracketed paste
+    await flush();
+    const f = lastFrame() ?? "";
+    expect(f).toContain("[Pasted #1"); // collapsed to a chip
+    expect(f).toContain("chars]"); // with a char count
+    expect(f).not.toContain("paragraph-5 paragraph-5"); // the raw text is NOT flooded into the UI
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+});
+
 test("/help opens a dismissable panel in fullscreen and esc closes it", async () => {
   process.env.ANTHROPIC_API_KEY = "x"; // skip setup-required so the app is live
   try {

@@ -346,6 +346,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
   // text is kept here and expanded back in on submit.
   const pasteStoreRef = useRef<Map<string, string>>(new Map());
+  const pasteBufRef = useRef<string | null>(null); // accumulates a bracketed paste (\x1b[200~ … \x1b[201~) across reads
   const pasteIdRef = useRef(0);
   const copiedSelectionRef = useRef("");
   const mouseAnchorRef = useRef<number | null>(null);
@@ -1578,7 +1579,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     } finally {
       if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H");
       if (process.env.GEARBOX_MOUSE !== "0") process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
-      process.stdout.write("\x1b[?2004l\x1b[?25l");
+      process.stdout.write("\x1b[?2004h\x1b[?25l"); // re-enable bracketed paste (and hide cursor) on return
       setRawMode?.(true);
     }
   };
@@ -2921,6 +2922,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // Swallow any stray mouse-report bytes so they never land in the composer
     // (the wheel is handled by the raw stdin listener above).
     if (/\[<\d+;\d+;\d+[Mm]/.test(input)) return;
+    // Bracketed-paste assembly: the terminal wraps a paste in \x1b[200~ … \x1b[201~.
+    // Buffer from the opener to the closer (possibly across several reads), then
+    // collapse the whole blob — big pastes become a [Pasted N lines · M chars] chip
+    // instead of flooding the composer or submitting on an embedded newline.
+    if (pasteBufRef.current !== null || input.includes("\x1b[200~")) {
+      pasteBufRef.current = (pasteBufRef.current ?? "") + input;
+      if (!pasteBufRef.current.includes("\x1b[201~")) return; // keep buffering
+      const clean = sanitizeInputText(pasteBufRef.current.replace(/\x1b\[20[01]~/g, ""));
+      pasteBufRef.current = null;
+      const e = editRef.current;
+      const lines = clean.split("\n").length;
+      if (clean.length > 400 || lines > 4) {
+        const id = ++pasteIdRef.current;
+        const ph = `[Pasted #${id}: ${lines} line${lines === 1 ? "" : "s"} · ${clean.length.toLocaleString()} chars]`;
+        pasteStoreRef.current.set(ph, clean);
+        setEdit({ value: e.value.slice(0, e.cursor) + ph + e.value.slice(e.cursor), cursor: e.cursor + ph.length });
+      } else {
+        setEdit({ value: e.value.slice(0, e.cursor) + clean + e.value.slice(e.cursor), cursor: e.cursor + clean.length });
+      }
+      return;
+    }
     // A pending permission request captures input until it's answered.
     if (permRef.current) {
       if (input === "1") resolvePerm("once");
@@ -3146,13 +3168,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return;
       }
     }
-    // Large paste → collapse to a chip so it doesn't flood the composer.
-    if (!busyRef.current && (input.includes("\x1b[200~") || (input.length > 240 && input.includes("\n")))) {
+    // Fallback for terminals that DON'T wrap pastes in bracketed markers: a single
+    // large multi-line chunk is almost certainly a paste — collapse it too.
+    if (!busyRef.current && input.length > 240 && input.includes("\n")) {
       const clean = sanitizeInputText(input);
       const lines = clean.split("\n").length;
       if (lines > 4 || clean.length > 400) {
         const id = ++pasteIdRef.current;
-        const ph = `[Pasted #${id}: ${lines} line${lines > 1 ? "s" : ""}]`;
+        const ph = `[Pasted #${id}: ${lines} line${lines === 1 ? "" : "s"} · ${clean.length.toLocaleString()} chars]`;
         pasteStoreRef.current.set(ph, clean);
         const e = editRef.current;
         setEdit({ value: e.value.slice(0, e.cursor) + ph + e.value.slice(e.cursor), cursor: e.cursor + ph.length });

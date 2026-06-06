@@ -557,9 +557,11 @@ const restore = () => {
 // Ensure restore runs even on uncaught errors or signals.
 process.once("exit", restore);
 process.once("SIGTERM", () => { restore(); process.exit(0); });
-// Keep bracketed paste OFF. Some Ink/terminal combinations deliver the paste
-// markers as literal "[200~" chunks; normal paste is less surprising.
-if (process.stdout.isTTY) process.stdout.write("\x1b[?2004l\x1b[?25l");
+// Bracketed paste ON: the terminal wraps a paste in \x1b[200~…\x1b[201~ so its
+// newlines are literal (not Enter-presses that submit mid-paste) and the whole
+// blob can be assembled + collapsed to a chip. The App strips the markers and
+// buffers across chunks (see the paste assembly in useInput).
+if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h\x1b[?25l");
 if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H");
 if (mouse) process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
 
