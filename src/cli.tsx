@@ -19,7 +19,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.21";
+const VERSION = "0.1.22";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -56,7 +56,7 @@ function ghostLines(cells: SpriteCell[][], pad = "  "): string[] {
 }
 
 function onboardingBoo(termWidth: number): string {
-  const cells = renderGhost({ palette: "default", face: "happy", scale: 1 });
+  const cells = renderGhost({ palette: "default", face: "joy", scale: 1 });
   const ghostW = cells[0]?.length ?? 20;
   const leftPad = Math.max(2, Math.floor((termWidth - ghostW) / 2));
   return ghostLines(cells, " ".repeat(leftPad)).join("\n");
@@ -129,12 +129,14 @@ async function runCliOnboarding(): Promise<boolean> {
 
   try {
     const termWidth = Math.min(process.stdout.columns || 80, 100);
+    const ruleW = Math.min(32, termWidth - 8);
     console.log("");
     console.log(onboardingBoo(termWidth));
     console.log("");
-    console.log(centerStr(bold("gearbox"), termWidth));
-    console.log(centerStr("set up one account — Gearbox routes from there", termWidth));
-    console.log(centerStr(dim("keys stay local, never sent anywhere"), termWidth));
+    console.log(centerStr(bold(accent("gearbox")), termWidth));
+    console.log(centerStr(dim("one terminal · every model you already pay for"), termWidth));
+    console.log("");
+    console.log(centerStr(dim("─".repeat(ruleW)), termWidth));
     console.log("");
 
     while (!anyProviderAvailable()) {
@@ -238,8 +240,10 @@ async function runCliOnboarding(): Promise<boolean> {
     }
 
     console.log("");
-    console.log(ok("Gearbox is ready."));
-    console.log(`Next: ${accent("cd ~/your-project")} and run ${accent("gearbox")}.`);
+    console.log(centerStr(ok("✓  you're all set"), termWidth));
+    console.log("");
+    console.log(centerStr(dim(`cd ~/your-project  →  ${accent("gearbox")}`), termWidth));
+    console.log("");
     return true;
   } finally {
     rl?.close();
