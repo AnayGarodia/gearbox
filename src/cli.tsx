@@ -19,7 +19,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.30";
+const VERSION = "0.1.31";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -62,134 +62,91 @@ function onboardingBanner(termWidth: number): void {
     return " ".repeat(pad) + s;
   };
 
-  // True-color helpers; fall back to nothing when ANSI is off.
-  const rgb = (r: number, g: number, b: number) =>
+  const RST  = supportsAnsi ? "\x1b[0m" : "";
+  const rgb  = (r: number, g: number, b: number) =>
     supportsAnsi ? `\x1b[38;2;${r};${g};${b}m` : "";
-  const RST = supportsAnsi ? "\x1b[0m" : "";
 
-  // Vertical gradient: bright aqua at top → rich cyan-blue at bottom.
-  const mainColor = (row: number): string => {
-    const t = row / 6;
-    const r = Math.round(80  + (0  - 80)  * t);
-    const g = Math.round(230 + (170 - 230) * t);
-    const b = Math.round(255 + (255 - 255) * t);
-    return rgb(r, g, b);
-  };
-  const SHADOW = rgb(0, 55, 85);   // dark teal — the 3-D depth face
+  // Two-tone 3-D: solid fills (█) are the bright lit face;
+  // box-drawing chars (╗╔╝╚║═) are the darker shadow/depth edge.
+  const FACE  = rgb(0, 215, 255);   // bright aqua
+  const DEPTH = rgb(0, 90, 145);    // dark teal
 
-  // 7-row pixel font, each letter exactly 8 chars wide.
+  const colorize = (s: string): string =>
+    s.split("").map(c =>
+      c === "█" ? FACE + c + RST :
+      c === " " ? " " :
+      DEPTH + c + RST
+    ).join("");
+
+  // ANSI-shadow figlet style — box-drawing corners create the 3-D depth.
   const F: Record<string, string[]> = {
     G: [
-      " ██████ ",
-      "██      ",
-      "██      ",
-      "██  ████",
-      "██    ██",
-      "██    ██",
-      " ██████ ",
+      " ██████╗ ",
+      "██╔════╝ ",
+      "██║  ███╗",
+      "██║   ██║",
+      "╚██████╔╝",
+      " ╚═════╝ ",
     ],
     E: [
-      "████████",
-      "██      ",
-      "██      ",
-      "██████  ",
-      "██      ",
-      "██      ",
-      "████████",
+      "███████╗",
+      "██╔════╝",
+      "█████╗  ",
+      "██╔══╝  ",
+      "███████╗",
+      "╚══════╝",
     ],
     A: [
-      "  ████  ",
-      " ██  ██ ",
-      "██    ██",
-      "████████",
-      "██    ██",
-      "██    ██",
-      "██    ██",
+      " █████╗ ",
+      "██╔══██╗",
+      "███████║",
+      "██╔══██║",
+      "██║  ██║",
+      "╚═╝  ╚═╝",
     ],
     R: [
-      "███████ ",
-      "██    ██",
-      "██    ██",
-      "███████ ",
-      "████    ",
-      "██  ██  ",
-      "██   ███",
+      "██████╗ ",
+      "██╔══██╗",
+      "██████╔╝",
+      "██╔══╗  ",
+      "██║  ██╗",
+      "╚═╝  ╚═╝",
     ],
     B: [
-      "███████ ",
-      "██    ██",
-      "██    ██",
-      "███████ ",
-      "██    ██",
-      "██    ██",
-      "███████ ",
+      "██████╗ ",
+      "██╔══██╗",
+      "██████╔╝",
+      "██╔══██╗",
+      "██████╔╝",
+      "╚═════╝ ",
     ],
     O: [
-      " ██████ ",
-      "██    ██",
-      "██    ██",
-      "██    ██",
-      "██    ██",
-      "██    ██",
-      " ██████ ",
+      " ██████╗ ",
+      "██╔═══██╗",
+      "██║   ██║",
+      "██║   ██║",
+      "╚██████╔╝",
+      " ╚═════╝ ",
     ],
     X: [
-      "██    ██",
-      " ██  ██ ",
-      "  ████  ",
-      "   ██   ",
-      "  ████  ",
-      " ██  ██ ",
-      "██    ██",
+      "██╗  ██╗",
+      "╚██╗██╔╝",
+      " ╚████╔╝",
+      " ██╔╗██ ",
+      "██╔╝╚██╗",
+      "╚═╝  ╚═╝",
     ],
   };
 
-  const LETTER_W = 8, GAP = 2, ROWS = 7;
   const letters = "GEARBOX".split("");
-  const totalCols = letters.length * LETTER_W + (letters.length - 1) * GAP;
-
-  // Build a 2-D boolean pixel grid for the whole wordmark.
-  const grid: boolean[][] = Array.from({ length: ROWS }, () => new Array(totalCols).fill(false));
-  let startCol = 0;
-  for (const ch of letters) {
-    const rows = F[ch] ?? [];
-    for (let r = 0; r < ROWS; r++) {
-      const row = rows[r] ?? "        ";
-      for (let c = 0; c < LETTER_W; c++) {
-        if (row[c] === "█") { const cell = grid[r]; if (cell) cell[startCol + c] = true; }
-      }
-    }
-    startCol += LETTER_W + GAP;
-  }
-
-  // Composite: main pixels at (r,c), shadow pixels at (r+SDY, c+SDX).
-  // Where they overlap, main wins. Result: letters appear extruded downward-right.
-  const SDX = 2, SDY = 2;
-  const renderW = totalCols + SDX;
-  const renderH = ROWS + SDY;
-  const leftPad = " ".repeat(Math.max(0, Math.floor((w - renderW) / 2)));
-
   console.log("");
-  for (let r = 0; r < renderH; r++) {
-    let line = "";
-    for (let c = 0; c < renderW; c++) {
-      const mainOn = r < ROWS && c < totalCols && grid[r]?.[c] === true;
-      const shadOn = (r - SDY) >= 0 && (c - SDX) >= 0 &&
-                     (r - SDY) < ROWS && (c - SDX) < totalCols &&
-                     grid[r - SDY]?.[c - SDX] === true;
-      if (mainOn) {
-        line += `${mainColor(r)}█${RST}`;
-      } else if (shadOn) {
-        line += `${SHADOW}█${RST}`;
-      } else {
-        line += " ";
-      }
-    }
-    console.log(leftPad + line.trimEnd());
+  for (let r = 0; r < 6; r++) {
+    const raw = letters.map(ch => F[ch]?.[r] ?? "").join("  ");
+    console.log(center(colorize(raw)));
   }
   console.log("");
-  console.log(center(`${rgb(0, 160, 200)}one terminal  ·  every model you pay for${RST}`));
-  console.log(center(`${rgb(0, 130, 170)}keys stay local · never sent anywhere${RST}`));
+  console.log(center(`${rgb(0, 155, 200)}one terminal  ·  every model you pay for${RST}`));
+  console.log(center(`${rgb(0, 125, 165)}keys stay local · never sent anywhere${RST}`));
   console.log("");
 }
 
