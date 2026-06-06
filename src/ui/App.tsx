@@ -35,6 +35,7 @@ import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordUsage, recordRateLimits, recordBalance, buildUsageView, type UsageView } from "../accounts/usage.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
+import { repoMap } from "../context/repomap.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { fetchUrlText, urlsInText } from "../fetch.ts";
@@ -1046,9 +1047,30 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const reloginCommand = cli.binary.includes("codex")
           ? `/account add codex${activeName ? ` ${activeName}` : ""}`
           : `/account add claude${activeName ? ` ${activeName}` : ""}`;
+        // On the first turn of a session, inject the repo map so the model
+        // doesn't waste tool calls on find/ls to discover the file structure.
+        // The CLI backend bypasses gearbox's context engine entirely, so this
+        // is the only way to give it structural context upfront.
+        let cliPrompt = prompt;
+        if (!cliSessionRef.current) {
+          try {
+            const cwd = process.cwd();
+            const allFiles = listProjectFiles(cwd).slice(0, 300);
+            const map = repoMap(cwd, 3000);
+            const fileList = allFiles.join("\n");
+            cliPrompt =
+              `<project-context cwd="${cwd}">\n` +
+              `<files>\n${fileList}\n</files>\n` +
+              (map ? `<signatures>\n${map}\n</signatures>\n` : "") +
+              `</project-context>\n\n` +
+              prompt;
+          } catch {
+            // non-critical — proceed with plain prompt
+          }
+        }
         const r = await runCliTask({
           binary: cli.binary,
-          prompt,
+          prompt: cliPrompt,
           messages,
           onEvent,
           signal,
