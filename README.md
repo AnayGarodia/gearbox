@@ -60,6 +60,7 @@ macOS, Linux, WSL:
 
 ```bash
 rm -f ~/.local/bin/gearbox
+rm -f ~/.bun/bin/gearbox
 rm -rf ~/.local/share/gearbox
 ```
 
@@ -73,6 +74,14 @@ If you previously installed with npm global:
 
 ```bash
 npm uninstall -g gearbox-code
+```
+
+If `gearbox` fails with `Unknown file extension ".tsx"`, an old Bun-linked
+shim is still first on PATH. Remove it and reinstall:
+
+```bash
+rm -f ~/.bun/bin/gearbox
+curl -fsSL https://unpkg.com/gearbox-code@latest/install.sh | bash
 ```
 
 ## What It Is

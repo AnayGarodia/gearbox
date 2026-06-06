@@ -3,7 +3,7 @@
 #
 # Installs the published npm package into user-owned directories:
 #   ~/.local/share/gearbox/<version>/cli.mjs
-#   ~/.local/bin/gearbox
+#   first user-owned PATH bin dir containing gearbox, or ~/.local/bin/gearbox
 #
 # This intentionally avoids `npm install -g`, sudo, /usr/local, and any system
 # prefix. It follows the same practical model as modern CLI installers: place a
@@ -13,8 +13,44 @@ set -euo pipefail
 
 PACKAGE_NAME="${GEARBOX_PACKAGE:-gearbox-code}"
 VERSION="${GEARBOX_VERSION:-latest}"
-BIN_DIR="${GEARBOX_BIN_DIR:-${HOME}/.local/bin}"
 INSTALL_ROOT="${GEARBOX_INSTALL_DIR:-${HOME}/.local/share/gearbox}"
+
+default_bin_dir() {
+  if [[ -n "${GEARBOX_BIN_DIR:-}" ]]; then
+    echo "$GEARBOX_BIN_DIR"
+    return
+  fi
+
+  # If an older user-owned gearbox shim is already first on PATH, replace it.
+  # This fixes stale Bun/npm links such as ~/.bun/bin/gearbox -> src/cli.tsx,
+  # which would otherwise keep shadowing the good ~/.local/bin installer shim.
+  local existing dir
+  existing="$(command -v gearbox 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    dir="$(dirname "$existing")"
+    if [[ "$dir" == "$HOME"/* && -d "$dir" && -w "$dir" ]]; then
+      echo "$dir"
+      return
+    fi
+  fi
+
+  local path_dir
+  IFS=':' read -r -a path_dirs <<< "${PATH:-}"
+  for path_dir in "${path_dirs[@]}"; do
+    if [[ "$path_dir" == "$HOME"/* && -d "$path_dir" && -w "$path_dir" ]]; then
+      case "$path_dir" in
+        "$HOME/.local/bin"|"$HOME/.bun/bin"|"$HOME/bin")
+          echo "$path_dir"
+          return
+          ;;
+      esac
+    fi
+  done
+
+  echo "${HOME}/.local/bin"
+}
+
+BIN_DIR="$(default_bin_dir)"
 
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
