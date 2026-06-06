@@ -2,7 +2,7 @@
 // (secrets fetched from the store) that providers.resolveModel injects into the
 // AI SDK — keeping providers.ts the single SDK seam (it never touches the store).
 // CLI accounts have no in-loop creds; the App routes them to the cli backend.
-import { getSecret, defaultAccount, listAccounts } from "./store.ts";
+import { getSecret, listAccounts } from "./store.ts";
 import { catalogProvider } from "./catalog.ts";
 import type { Account, ResolvedCreds, HealthState } from "./types.ts";
 import { candidateModelsFor } from "../model/family.ts";
@@ -47,15 +47,6 @@ export async function resolveCreds(account: Account): Promise<ResolvedCreds> {
   }
   // cli accounts run via the subprocess backend (no in-loop creds).
   return {};
-}
-
-// Picks WHICH account runs a given provider (separate from the ModelSelector,
-// which picks the model). v1: the provider's default account (explicit, else the
-// first enabled). Failover / round-robin / credit-awareness come later.
-export class AccountResolver {
-  pick(provider: string): Account | undefined {
-    return defaultAccount(provider);
-  }
 }
 
 export interface Candidate {
