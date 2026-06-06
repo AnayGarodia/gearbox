@@ -19,7 +19,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.20";
+const VERSION = "0.1.21";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -289,8 +289,8 @@ Options:
   --model <name>      e.g. sonnet-4.6, haiku, gemini-flash, deepseek
   -c, --continue      resume the most recent session here (/resume to pick one)
   --yolo              auto-approve writes/edits/shell (no permission prompts)
-  --fullscreen        fullscreen app frame with fixed footer (alt-screen)
-  --inline            terminal scrollback mode (default)
+  --inline            use terminal scrollback instead of the fullscreen frame
+  --fullscreen        fullscreen app frame (default)
   -v, --version       print version
   -h, --help          this help
 
@@ -453,21 +453,26 @@ setImageMode(imageMode);
 // the UI references them via cheap Unicode placeholders (a=T,U=1 draws nothing).
 if (process.stdout.isTTY && imageMode === "kitty") process.stdout.write(transmitAll());
 
-// Inline is the DEFAULT: output appears in terminal scrollback with no blank
-// screen on exit. Fullscreen available via --fullscreen or GEARBOX_FULLSCREEN=1.
+// Fullscreen is the DEFAULT: fixed frame + pinned composer, like a coding IDE.
+// Use --inline or /config inline on for terminal-scrollback mode.
 const uiPrefs = loadPrefs();
 const explicitInline = args.includes("--inline") || process.env.GEARBOX_INLINE === "1" || process.env.GEARBOX_FULLSCREEN === "0";
 const explicitFullscreen = args.includes("--fullscreen") || process.env.GEARBOX_FULLSCREEN === "1";
-const wantsInline = !explicitFullscreen && (explicitInline || uiPrefs.fullscreen !== true);
+const wantsInline = explicitInline || (!explicitFullscreen && uiPrefs.fullscreen === false);
 const wantsFullscreen = !wantsInline;
 const fullscreen = Boolean(process.stdout.isTTY) && wantsFullscreen;
 const mouse = Boolean(process.stdout.isTTY) && process.env.GEARBOX_MOUSE !== "0";
+let restored = false;
 const restore = () => {
-  if (!process.stdout.isTTY) return;
-  process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, native cursor back on
+  if (restored || !process.stdout.isTTY) return;
+  restored = true;
+  process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, cursor back on
   if (mouse) process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l");
-  if (fullscreen) process.stdout.write("\x1b[?1049l");
+  if (fullscreen) process.stdout.write("\x1b[?1049l\x1b[2J\x1b[H"); // exit alt-screen, clear, home
 };
+// Ensure restore runs even on uncaught errors or signals.
+process.once("exit", restore);
+process.once("SIGTERM", () => { restore(); process.exit(0); });
 // Keep bracketed paste OFF. Some Ink/terminal combinations deliver the paste
 // markers as literal "[200~" chunks; normal paste is less surprising.
 if (process.stdout.isTTY) process.stdout.write("\x1b[?2004l\x1b[?25l");
