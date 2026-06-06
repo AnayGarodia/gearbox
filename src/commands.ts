@@ -47,7 +47,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/context", usage: "/context", desc: "see what's loaded and how many tokens it uses", group: "chat" },
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
   // accounts & cost
-  { name: "/account", usage: "/account", desc: "list accounts; /account <name> to switch, /account add to add one", group: "accounts" },
+  { name: "/account", usage: "/account", desc: "list accounts; /account <name> switches, /account login <name> re-auths, /account add adds one", group: "accounts" },
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
   { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },

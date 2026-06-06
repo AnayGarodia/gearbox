@@ -1108,10 +1108,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         const cliEffort = _cliEffortRaw ?? undefined;
         const activeAccount = getAccount(cli.id);
-        const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
-        const reloginCommand = cli.binary.includes("codex")
-          ? `/account add codex${activeName ? ` ${activeName}` : ""}`
-          : `/account add claude${activeName ? ` ${activeName}` : ""}`;
+        const reloginCommand = `/account login ${activeAccount ? accountSlug(activeAccount) : (cli.binary.includes("codex") ? "codex" : "claude")}`;
         // On the first turn of a session, inject the repo map so the model
         // doesn't waste tool calls on find/ls to discover the file structure.
         // The CLI backend bypasses gearbox's context engine entirely, so this
@@ -1715,6 +1712,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         })();
       };
 
+      // Re-login by account NAME/slug (e.g. /account login claude-work). Resolves
+      // the account, then drives signInCli with its provider + nickname. Falls
+      // back to treating the arg as a provider word ("claude"/"codex [name]").
+      const reloginByRef = (arg: string) => {
+        const ref = findAccountRef(arg, listAccounts());
+        const a = ref.account ?? (activeCliRef.current ? getAccount(activeCliRef.current.id) : undefined);
+        if (a && a.exec === "cli") {
+          const nick = accountName(a).match(/\((.*)\)/)?.[1];
+          signInCli(`${a.provider.replace(/-cli$/, "")}${nick ? ` ${nick}` : ""}`.trim());
+          return;
+        }
+        // Not a known CLI account — treat the arg as the provider form.
+        signInCli(arg);
+      };
+
       // Every command runs inside this boundary: a bug in any handler becomes a
       // single clean notice, never a raw stack dumped over the UI or a crash.
       try {
@@ -2174,7 +2186,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             notice("left the subscription — back to your API keys");
             return;
           }
-          if (!["add", "remove", "rm", "import", "off"].includes(subL)) {
+          if (subL === "login") {
+            reloginByRef(parts.slice(1).join(" "));
+            return;
+          }
+          if (!["add", "remove", "rm", "import", "off", "login"].includes(subL)) {
             const ref = findAccountRef(arg, all);
             if (ref.account) {
               activate(ref.account);
@@ -2284,7 +2300,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         case "login": {
           echo(text);
-          signInCli(arg);
+          reloginByRef(arg);
           return;
         }
         case "cost":
