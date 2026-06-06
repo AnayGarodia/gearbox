@@ -321,7 +321,7 @@ export async function testAccount(a: Account): Promise<{ ok: boolean; message: s
       if (!region) return { ok: false, message: "bedrock: AWS_REGION is required" };
       const keyOk = /^(AKIA|ASIA)[A-Z0-9]{16}$/.test(accessKeyId);
       if (!keyOk) return { ok: false, message: `bedrock: access key ID looks malformed (expected AKIA… or ASIA…, got ${accessKeyId.slice(0, 8)}…)` };
-      return { ok: true, message: "credential fields present (Bedrock connectivity verified on first use)" };
+      return { ok: true, message: `credential fields present — Bedrock at ${bedrockListUrl(creds.aws.region)} (connectivity verified on first use)` };
     }
     // Vertex: validate project and location are set.
     if (a.provider === "vertex" && creds.vertex) {
@@ -339,6 +339,13 @@ export async function testAccount(a: Account): Promise<{ ok: boolean; message: s
   } catch (e: any) {
     return { ok: false, message: e?.message ?? "request failed" };
   }
+}
+
+/** The regional Bedrock control-plane endpoint for listing foundation models.
+ *  A live check needs SigV4 signing (not wired yet), so testAccount validates
+ *  the credential fields and verifies real connectivity on first use. */
+export function bedrockListUrl(region: string): string {
+  return `https://bedrock.${region}.amazonaws.com/foundation-models`;
 }
 
 /** Providers that can be added with a plain API key (for `/accounts catalog`). */
