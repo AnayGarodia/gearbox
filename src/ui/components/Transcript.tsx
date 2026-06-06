@@ -6,6 +6,8 @@ import { Markdown } from "./Markdown.tsx";
 import { highlightLine } from "../highlight.ts";
 import { barCells, type UsageView } from "../../accounts/usage.ts";
 import type { AccountView, ContextView } from "../types.ts";
+import { scorecardRows } from "../../commands.ts";
+import type { Scorecard } from "../../model/selector.ts";
 
 // Limit-utilization color: green when there's headroom, accent mid, coral when
 // you're nearly maxed (≥85%) so it reads as a warning.
@@ -550,6 +552,21 @@ function ContextCard({ view }: { view: ContextView }) {
   );
 }
 
+function ScorecardCard({ card }: { card: Scorecard }) {
+  const toneColor: Record<string, string> = { title: color.text, colhead: color.faint, chosen: color.accent, row: color.dim, dim: color.faint, note: color.faint };
+  const rows = scorecardRows(card);
+  return (
+    <Box flexDirection="column" marginTop={1} marginLeft={2}>
+      {rows.map((r, i) => (
+        <Box key={i}>
+          <Text color={color.accentDim}>{i === 0 ? glyph.notice + " " : "  "}</Text>
+          <Text color={toneColor[r.tone] ?? color.text}>{r.text}</Text>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
 // One transcript item → its element (no key; the caller supplies it).
 function Row({ item, width, expandAll = false }: { item: Item; width: number; expandAll?: boolean }) {
   switch (item.kind) {
@@ -575,6 +592,8 @@ function Row({ item, width, expandAll = false }: { item: Item; width: number; ex
       return <UsageCard view={item.view} />;
     case "context":
       return <ContextCard view={item.view} />;
+    case "scorecard":
+      return <ScorecardCard card={item.card} />;
     case "notice":
       return (
         <Box marginTop={1} marginLeft={2} flexDirection="column">

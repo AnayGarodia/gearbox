@@ -27,6 +27,7 @@ export interface CliResult {
   sessionId?: string; // the binary's own session id, for resume
   costUSD?: number; // claude reports this; codex doesn't
   rates?: CliRate[]; // claude's rate_limit_events — ONE per window (5-hour, 7-day)
+  failure?: { message: string }; // set when the turn errored (for failover); the caller decides whether to show it
 }
 
 // Accumulates across a stream so runCliTask can build the result.
@@ -260,18 +261,25 @@ export async function runCliTask(opts: {
   profile?: string; // per-account config dir (multi-account); undefined = system default login
   accountLabel?: string;
   reloginCommand?: string;
+  deferTerminal?: boolean; // suppress terminal error/done + return `failure` instead (caller drives failover)
 }): Promise<CliResult> {
   const { binary, prompt, messages, onEvent, signal } = opts;
   const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove, modelId: opts.modelId, effort: opts.effort });
   const state = newState();
+  let failureMessage: string | undefined;
+  const fail = (message: string) => {
+    if (failureMessage) return;
+    failureMessage = message;
+    if (!opts.deferTerminal) onEvent({ type: "error", message });
+  };
 
   let proc: Proc;
   try {
     proc = spawnProc([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd(), env: subscriptionEnv(binary, opts.profile) });
   } catch (e: any) {
-    onEvent({ type: "error", message: `couldn't start ${binary}: ${e?.message ?? e}` });
-    onEvent({ type: "done", usage: state.usage });
-    return finalize(state);
+    fail(`couldn't start ${binary}: ${e?.message ?? e}`);
+    if (!opts.deferTerminal) onEvent({ type: "done", usage: state.usage });
+    return { ...finalize(state), failure: { message: failureMessage! } };
   }
 
   const onAbort = () => proc.kill();
@@ -317,24 +325,24 @@ export async function runCliTask(opts: {
     };
     await Promise.all([readStdout(), readStderr(), proc.exited]);
   } catch (e: any) {
-    if (!signal?.aborted) onEvent({ type: "error", message: e?.message ?? String(e) });
+    if (!signal?.aborted) fail(e?.message ?? String(e));
   } finally {
     signal?.removeEventListener("abort", onAbort);
   }
   if (!signal?.aborted) {
     const err = cleanCliStderr(stderr);
     if ((proc.exitCode ?? 0) !== 0) {
-      onEvent({ type: "error", message: cliFailureMessage(binary, stderr, { accountLabel: opts.accountLabel, reloginCommand: opts.reloginCommand }) });
+      fail(cliFailureMessage(binary, stderr, { accountLabel: opts.accountLabel, reloginCommand: opts.reloginCommand }));
     } else if (!state.text && !sawEvent && err) {
-      onEvent({ type: "error", message: `${binary} produced no JSON output: ${err}` });
+      fail(`${binary} produced no JSON output: ${err}`);
     } else if (!state.text && !sawEvent) {
-      onEvent({ type: "error", message: `${binary} finished without an assistant message` });
+      fail(`${binary} finished without an assistant message`);
     }
   }
 
   // Plain-text ledger entry (tool history isn't portable across binaries).
   const next: ModelMessage[] = [...messages, { role: "user", content: prompt }];
   if (state.text) next.push({ role: "assistant", content: state.text });
-  onEvent({ type: "done", usage: state.usage });
-  return { messages: next, usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, rates: [...state.rates.values()] };
+  if (!opts.deferTerminal) onEvent({ type: "done", usage: state.usage });
+  return { messages: next, usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, rates: [...state.rates.values()], failure: failureMessage ? { message: failureMessage } : undefined };
 }

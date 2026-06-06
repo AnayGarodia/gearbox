@@ -152,11 +152,12 @@ export async function runTask(opts: {
   system?: string; // prebuilt by the Context Engine; falls back to SYSTEM
   creds?: ResolvedCreds; // per-account credentials (from the active account); env-default if absent
   effort?: Effort; // model-specific reasoning effort → per-provider providerOptions
+  deferTerminal?: boolean; // suppress terminal error/blocked/finished/done events + return `failure` instead (the caller drives failover and emits the final outcome)
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
-  reportErrors?: boolean; // when false, suppress the error event and return a structured failure instead
-}): Promise<{ messages: ModelMessage[]; usage: Usage; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
+}): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
   const { model, messages, onEvent, signal, plan } = opts;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+  let failureMessage: string | undefined;
   const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
 
   // One clean, one-line error path. The AI SDK surfaces errors three ways
@@ -170,9 +171,11 @@ export async function runTask(opts: {
   const emitErr = (err: unknown) => {
     if (errored || signal?.aborted) return;
     errored = true;
+    failureMessage = cleanError(err);
     failureRaw = err;
-    if (opts.reportErrors === false) return; // caller (failover) will decide
-    onEvent({ type: "error", message: unavailableModelHint(cleanError(err), model) });
+    // When the caller drives failover (deferTerminal), stay silent and hand back
+    // `failure` — a single red error line is wrong if the next account succeeds.
+    if (!opts.deferTerminal) onEvent({ type: "error", message: unavailableModelHint(failureMessage, model) });
   };
 
   onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
@@ -323,18 +326,24 @@ export async function runTask(opts: {
   }
 
   let next = messages;
+  let headers: Record<string, string | undefined> | undefined;
   if (result) {
     try {
       const resp = await result.response;
       next = [...messages, ...(resp.messages as ModelMessage[])];
+      // Response rate-limit headers — the router reads these to estimate live API
+      // headroom (parsed by the caller, who knows the account/provider).
+      headers = (resp as any).headers as Record<string, string | undefined> | undefined;
     } catch {
       /* keep prior messages; multi-turn still works from input history */
     }
   }
-  const failure = errored ? { message: cleanError(failureRaw), raw: failureRaw, producedOutput } : undefined;
-  onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
-  onEvent({ type: "done", usage });
-  return { messages: next, usage, failure };
+  const failure = errored ? { message: failureMessage ?? cleanError(failureRaw), raw: failureRaw, producedOutput } : undefined;
+  if (!opts.deferTerminal) {
+    onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
+    onEvent({ type: "done", usage });
+  }
+  return { messages: next, usage, headers, failure };
 }
 
 // A single, tool-less completion through the same provider seam as runTask —

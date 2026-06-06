@@ -6,6 +6,7 @@ import { glyph } from "./ui/theme.ts";
 import { fuzzyRank } from "./ui/fuzzy.ts";
 import type { ContextView } from "./ui/types.ts";
 import type { HealthState } from "./accounts/types.ts";
+import type { Scorecard } from "./model/selector.ts";
 
 // The env var (or generic hint) to set for a provider, for "no key" messages.
 const envHint = (p: string): string => ENV_LABEL[p] ?? catalogProvider(p)?.envVars[0] ?? "an API key";
@@ -39,6 +40,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/model", usage: "/model [name]", desc: "list models · /model <name> pins one · /model auto routes per task", group: "models" },
   { name: "/effort", usage: "/effort [level]", desc: "set the active model's reasoning level, e.g. low · high · xhigh · max", group: "models" },
   { name: "/prefer", usage: "/prefer kind model", desc: "remember a confirmed model preference for a task type", group: "models" },
+  { name: "/why", usage: "/why", desc: "show the routing scorecard: every candidate scored, and why this one won", group: "models" },
   // conversation
   { name: "/clear", usage: "/clear", desc: "start a fresh conversation", group: "chat" },
   { name: "/resume", usage: "/resume [n]", desc: "reopen a past conversation", group: "chat" },
@@ -52,6 +54,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
   { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },
+  { name: "/budget", usage: "/budget <provider> <amount> [monthly|total]", desc: "set a spend budget so routing can estimate remaining credit and preserve it", group: "accounts" },
   // save & copy
   { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard", group: "output" },
   { name: "/export", usage: "/export [file]", desc: "save the conversation to a file", group: "output" },
@@ -226,6 +229,43 @@ const ENV_LABEL: Record<ProviderId, string> = {
   google: "GOOGLE_GENERATIVE_AI_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
 };
+
+// Render the routing scorecard (`/why`) as a monospace table the UI prints. Pure
+// + shared by both renderers (fullscreen lines + inline Transcript), so the
+// columns line up identically. `tone` maps to a color at the render layer.
+export interface ScorecardLine {
+  text: string;
+  tone: "title" | "colhead" | "chosen" | "row" | "dim" | "note";
+}
+
+const provAbbrev = (src: string): string => (src === "measured" ? "meas" : src === "researched" ? "rsch" : "seed");
+
+export function scorecardRows(card: Scorecard): ScorecardLine[] {
+  const out: ScorecardLine[] = [];
+  out.push({ text: `why · ${card.kind} task · quality bar ${card.bar.toFixed(2)}`, tone: "title" });
+  if (card.prompt) out.push({ text: `"${card.prompt.length > 60 ? card.prompt.slice(0, 57) + "…" : card.prompt}"`, tone: "note" });
+  if (!card.entries.length) {
+    out.push({ text: card.note ?? "no candidates", tone: "note" });
+    return out;
+  }
+  const entries = card.entries.slice(0, 8);
+  const labelW = Math.min(20, Math.max(5, ...entries.map((e) => e.label.length)));
+  const qcol = (e: typeof entries[number]) => `${e.quality.toFixed(2)} ${provAbbrev(e.qualitySrc)}`;
+  const leftcol = (e: typeof entries[number]) => e.headroomText ?? e.balanceText ?? "—";
+  const lw = Math.max(4, ...entries.map((e) => leftcol(e).length));
+  const row = (label: string, q: string, cost: string, left: string, score: string, verdict: string) =>
+    `${label.padEnd(labelW).slice(0, labelW)}  ${q.padEnd(9)}  ${cost.padStart(7)}  ${left.padEnd(lw)}  ${score.padStart(5)}  ${verdict}`;
+  out.push({ text: row("model", "quality", "$/Mtok", "left", "score", "verdict"), tone: "colhead" });
+  for (const e of entries) {
+    const score = e.verdict === "below bar" ? "—" : e.score.toFixed(2);
+    out.push({
+      text: row(e.label, qcol(e), `$${e.estCostPerMtok.toFixed(2)}`, leftcol(e), score, e.verdict + (e.chosen ? "  ◀" : "")),
+      tone: e.chosen ? "chosen" : e.verdict === "below bar" ? "dim" : "row",
+    });
+  }
+  if (card.entries.length > entries.length) out.push({ text: `…and ${card.entries.length - entries.length} more`, tone: "note" });
+  return out;
+}
 
 /**
  * Model list. Usable models (you have an account for) come first; the long tail

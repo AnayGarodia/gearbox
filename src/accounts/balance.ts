@@ -26,15 +26,43 @@ const PROVIDERS: Record<string, { url: string; parse: (j: any) => Balance | null
   "vercel-gateway": {
     url: "https://ai-gateway.vercel.sh/v1/credits",
     parse: (j) => {
-      const bal = j?.balance ?? j?.credits?.balance;
-      return typeof bal === "number" ? { remainingUSD: bal } : null;
+      const bal = num(j?.balance ?? j?.credits?.balance); // USD as a string, e.g. "95.50"
+      return bal == null ? null : { remainingUSD: bal };
+    },
+  },
+  // DeepSeek → { is_available, balance_infos: [{ currency, total_balance, … }] }.
+  // Values are STRINGS; prefer the USD entry, else the first. The one mainstream
+  // metered API with a clean balance endpoint.
+  deepseek: {
+    url: "https://api.deepseek.com/user/balance",
+    parse: (j) => {
+      const infos: any[] = Array.isArray(j?.balance_infos) ? j.balance_infos : [];
+      const pick = infos.find((b) => b?.currency === "USD") ?? infos[0];
+      const remaining = num(pick?.total_balance);
+      return remaining == null ? null : { remainingUSD: remaining };
     },
   },
 };
 
+// Coerce a provider's balance field (number or numeric string) to a number.
+function num(v: unknown): number | undefined {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
 /** True if we have a balance reader for this provider. */
 export function balanceExposed(provider: string): boolean {
   return provider in PROVIDERS;
+}
+
+/** Parse a provider's balance response body (pure; exposed for tests). Returns
+ *  null when the provider is unknown or the shape doesn't carry a number. */
+export function parseBalance(provider: string, body: unknown): Balance | null {
+  return PROVIDERS[provider]?.parse(body) ?? null;
 }
 
 /** Fetch the remaining credit for an account, or null if unsupported / it fails.

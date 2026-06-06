@@ -6,6 +6,17 @@
 import { pickDefaultModel } from "../config.ts";
 import type { ModelSpec } from "../providers.ts";
 import type { ModelRequirement } from "./capabilities.ts";
+import type { Account } from "../accounts/types.ts";
+
+// How a chosen model is actually run. The router returns this so the runner can
+// dispatch to the right backend WITHOUT the agent loop ever knowing which it is:
+// `in-loop` = our own agent loop via the AI SDK (creds from `account`, or the
+// env default when absent); `cli` = a subscription seat run through the vendor
+// binary. Optional on ModelChoice so every existing caller is unchanged (absent
+// ⇒ in-loop, today's path).
+export type Backend =
+  | { kind: "in-loop"; account?: Account }
+  | { kind: "cli"; account: Account; binary: string; profile?: string };
 
 export interface Task {
   prompt: string;
@@ -22,10 +33,34 @@ export interface Task {
 export interface ModelChoice {
   model: ModelSpec;
   reason: string; // shown in the UI; becomes the routing scorecard later
+  backend?: Backend; // how to run it (absent ⇒ in-loop). Set by RoutingSelector.
+}
+
+// The full ranked "why" behind a routing decision — the data the ⌃tab / `/why`
+// scorecard renders. Lives on the seam so any selector can expose it.
+export interface ScorecardEntry {
+  label: string;
+  backend: "api" | "seat";
+  quality: number;
+  qualitySrc: string; // "measured" | "researched" | "seeded"
+  estCostPerMtok: number;
+  balanceText?: string; // "$12.50" / "$12 est" / undefined
+  headroomText?: string; // subscription "84% left" / "throttling"
+  score: number;
+  chosen: boolean;
+  verdict: string;
+}
+export interface Scorecard {
+  kind: NonNullable<Task["kind"]>;
+  bar: number;
+  prompt: string;
+  entries: ScorecardEntry[];
+  note?: string;
 }
 
 export interface ModelSelector {
   select(task: Task): ModelChoice;
+  explain?(task: Task): Scorecard; // optional: routing selectors expose the full scorecard
 }
 
 /** v0.1: always the configured/available default. The one place model choice happens. */

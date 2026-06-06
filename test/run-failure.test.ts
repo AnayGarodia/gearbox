@@ -9,11 +9,11 @@ async function* errStream() {
   yield { type: "error", error: { statusCode: 401, message: "invalid x-api-key" } };
 }
 
-test("with reportErrors:false, runTask returns a structured failure and emits no error event", async () => {
+test("with deferTerminal, runTask returns a structured failure and emits no error event", async () => {
   const events: any[] = [];
   const res = await runTask({
     model, messages: [], onEvent: (e) => events.push(e),
-    _stream: errStream(), reportErrors: false,
+    _stream: errStream(), deferTerminal: true,
   });
   expect(res.failure).toBeTruthy();
   expect(res.failure!.producedOutput).toBe(false);
@@ -29,7 +29,7 @@ test("producedOutput is true when text streamed before the error", async () => {
   const events: any[] = [];
   const res = await runTask({
     model, messages: [], onEvent: (e) => events.push(e),
-    _stream: mixed(), reportErrors: false,
+    _stream: mixed(), deferTerminal: true,
   });
   expect(res.failure).toBeTruthy();
   expect(res.failure!.producedOutput).toBe(true);
