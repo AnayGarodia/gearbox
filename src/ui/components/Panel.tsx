@@ -67,6 +67,10 @@ export function Panel({
                 <Text color={color.text} bold={r.active}>{r.name.padEnd(labelPad)}</Text>
                 <Text color={color.faint}>  {r.type}</Text>
                 <Text color={accountStateColor(r.status)}>  {r.status}</Text>
+                {r.detail ? <Text color={color.faint}>  · {r.detail}</Text> : null}
+                {r.type === "subscription" && !(r.detail && r.detail.includes("@")) ? (
+                  <Text color={color.accentDim}>  · /account login {r.alias} to identify</Text>
+                ) : null}
                 {r.active ? <Text color={color.ok}>  {glyph.on} current</Text> : null}
               </Text>
             );

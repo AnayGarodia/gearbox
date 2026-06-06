@@ -18,19 +18,23 @@ test("accounts panel marks the selected row and the current account", () => {
   const view: AccountView = {
     current: "Claude · subscription",
     rows: [
-      { name: "Claude", type: "subscription", status: "active", active: true, alias: "claude" },
+      { name: "Claude", type: "subscription", status: "active", active: true, alias: "claude", detail: "founders@aztea.ai · Claude Max" },
+      { name: "Claude (personal)", type: "subscription", status: "signed in", active: false, alias: "claude-personal", detail: "Claude Pro" },
       { name: "Anthropic", type: "API key", status: "ready", active: false, alias: "anthropic" },
     ],
     importable: [],
-    labelPad: 10,
+    labelPad: 17,
     statusPad: 8,
   };
   const panel: PanelState = { kind: "accounts", title: "accounts", index: 1 };
-  const out = render(<Panel panel={panel} width={80} height={12} accounts={view} />).lastFrame() ?? "";
+  const out = render(<Panel panel={panel} width={120} height={12} accounts={view} />).lastFrame() ?? "";
   expect(out).toContain("Claude");
   expect(out).toContain("Anthropic");
   expect(out).toContain("⏎ switch");
   expect(out).toContain("▶"); // selection marker on the second row
+  expect(out).toContain("founders@aztea.ai"); // identified seat shows its email
+  // an email-less subscription seat prompts to identify it
+  expect(out).toContain("/account login claude-personal to identify");
 });
 
 test("models panel filters and shows the filter prompt", () => {

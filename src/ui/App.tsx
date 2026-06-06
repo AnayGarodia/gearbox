@@ -1204,7 +1204,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         status,
         active: activeRow,
         alias: accountSlug(a),
-        detail: st?.signedIn ? st.detail : undefined,
+        // Who/what this account is — live sign-in detail (email · plan) if we just
+        // checked, else the identity we persisted on a prior login. Lets the user
+        // tell which Claude/ChatGPT account a subscription seat actually is.
+        detail: (st?.signedIn ? st.detail : undefined) ?? a.identity?.label,
         duplicateOf: st?.duplicateOf,
         health: a.health?.state,
       };
@@ -1217,6 +1220,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       statusPad: Math.max(6, ...rows.map((r) => r.status.length)),
     };
   };
+
+  // Refresh each subscription account's live identity (email · plan) into the
+  // status cache, persisting the email when the CLI exposes one so it survives
+  // future checks. Called when the /account panel opens so the user can see WHICH
+  // Claude/ChatGPT account a seat is — not just "subscription".
+  const refreshCliStatuses = useCallback(async () => {
+    const accounts = listAccounts().filter((a) => a.exec === "cli");
+    const statuses = { ...accountStatusCacheRef.current };
+    await Promise.all(accounts.map(async (a) => {
+      const bin = (a.auth as any).binary as string;
+      const profile = (a.auth as any).loginProfile as string | undefined;
+      try {
+        const st = await cliAuthStatus(bin, profile);
+        statuses[a.id] = { signedIn: st.loggedIn, detail: st.detail, identity: st.identity };
+        if (st.loggedIn && st.identityLabel) {
+          putAccount({ ...a, identity: { key: st.identity ?? a.id, label: st.identityLabel, checkedAt: Date.now() } });
+        }
+      } catch { /* keep prior status */ }
+    }));
+    accountStatusCacheRef.current = statuses;
+  }, []);
 
   // Set for the next turn to route it through the docs-grounded /ask path.
   const askModeRef = useRef(false);
@@ -2415,6 +2439,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // (/account 2, add, remove, refresh…) fall through to the inline path.
           if (!arg.trim() && fullscreen) {
             setPanel({ kind: "accounts", title: "accounts · ⏎ to switch", index: 0 });
+            // Refresh sign-in identities (email · plan) in the background, then
+            // re-render the open panel so it shows who each subscription seat is.
+            void refreshCliStatuses().then(() => {
+              if (panelRef.current?.kind === "accounts") setPanel({ ...panelRef.current });
+            });
             return;
           }
           echo(text);
