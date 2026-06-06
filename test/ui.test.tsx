@@ -189,3 +189,30 @@ test("app initial render: banner, onboarding setup, input", () => {
   expect(f).toContain("/account add <api-key>");
   expect(f).toContain("/onboard");
 });
+
+test("/help opens a dismissable panel in fullscreen and esc closes it", async () => {
+  process.env.ANTHROPIC_API_KEY = "x"; // skip setup-required so the app is live
+  try {
+    const { lastFrame, stdin } = render(
+      <App
+        selector={new FixedSelector("claude-haiku-4-5")}
+        fullscreen
+        runner={async ({ messages }) => ({ messages, usage: { inputTokens: 0, outputTokens: 0 } })}
+      />,
+    );
+    const flush = () => new Promise((r) => setTimeout(r, 40));
+    await flush();
+    stdin.write("/help");
+    await flush();
+    stdin.write("\r"); // submit
+    await flush();
+    const open = lastFrame() ?? "";
+    expect(open).toContain("esc to close"); // panel chrome
+    expect(open).toContain("conversation"); // a /help group heading (panel body)
+    stdin.write(""); // esc
+    await flush();
+    expect(lastFrame() ?? "").not.toContain("esc to close"); // closed
+  } finally {
+    delete process.env.ANTHROPIC_API_KEY;
+  }
+});

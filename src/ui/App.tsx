@@ -23,7 +23,9 @@ import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { confirmRoutingPreference, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
-import { findModel, estimateCost, modelRegistry, type ModelSpec } from "../providers.ts";
+import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
+import { Panel } from "./components/Panel.tsx";
+import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, type PanelState, type PanelModelRow } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
@@ -374,6 +376,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const setQuickPickerIndex = (n: number) => {
     quickPickerIndexRef.current = n;
     setQuickPickerIndexState(n);
+  };
+  // Dismissable command panel (fullscreen only): big info dumps + interactive
+  // account/model lists render here instead of in the transcript; esc closes.
+  const [panel, setPanelState] = useState<PanelState | null>(null);
+  const panelRef = useRef<PanelState | null>(null);
+  const setPanel = (p: PanelState | null) => {
+    panelRef.current = p;
+    setPanelState(p);
+  };
+  const panelMaxScrollRef = useRef(0); // max scroll for a static panel (set in render)
+  const panelAccountNumbersRef = useRef<number[]>([]); // row index → /account <n>, set in render
+  // Usable (API) models for the /model panel — same source + order as the live
+  // registry so the panel's selection index maps to the right model id.
+  const buildPanelModelRows = (cur?: string | null): PanelModelRow[] =>
+    modelRegistry().filter((m) => providerAvailable(m.provider)).map((m) => ({ id: m.id, label: m.label, provider: m.provider, current: m.id === cur }));
+  // Open a scrollable static info panel (fullscreen only). Returns false inline,
+  // so callers fall back to printing the item in the transcript. No echo in panel
+  // mode — the point is to keep the transcript uncluttered.
+  const openInfoPanel = (title: string, item: Item): boolean => {
+    if (!fullscreen) return false;
+    atBottomRef.current = true;
+    setPanel({ kind: "static", title, items: [item], scroll: 0 });
+    return true;
   };
   const setSearch = (s: { q: string; idx: number } | null) => {
     searchRef.current = s;
@@ -1789,10 +1814,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           loadInto(pick);
           return;
         }
-        case "help":
+        case "help": {
+          const it: Item = { kind: "notice", id: idRef.current++, text: helpText() };
+          if (openInfoPanel("help", it)) return;
           echo(text);
-          notice(helpText());
+          push(it);
           return;
+        }
         case "plan":
           echo(text);
           togglePlan();
@@ -1828,10 +1856,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             .catch((e: any) => notice(`couldn't write ${file}: ${e?.message ?? String(e)}`));
           return;
         }
-        case "keys":
+        case "keys": {
+          const it: Item = { kind: "notice", id: idRef.current++, text: KEYS_HELP };
+          if (openInfoPanel("keyboard shortcuts", it)) return;
           echo(text);
-          notice(KEYS_HELP);
+          push(it);
           return;
+        }
         case "vim": {
           echo(text);
           const on = vimRef.current === "off";
@@ -1923,6 +1954,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return;
         }
         case "model":
+          // Bare /model on an API setup → the interactive picker panel (fullscreen).
+          // Subscriptions keep the inline CLI list; /model <name> still pins inline.
+          if ((!arg || arg.toLowerCase() === "all") && !activeCliRef.current && fullscreen) {
+            setPanel({ kind: "models", title: "models · ⏎ to pin", index: 0, filter: "" });
+            return;
+          }
           echo(text);
           if (!arg || arg.toLowerCase() === "all") {
             const routing = selectorRef.current instanceof RoutingSelector;
@@ -2033,24 +2070,30 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return;
         }
         case "memory": {
-          echo(text);
           if (arg) {
+            echo(text);
             notice(appendFact(arg) ? "remembered" : "couldn't save that note");
             return;
           }
           const facts = loadFacts().trim();
-          notice(facts ? "remembered facts:\n" + facts : "no remembered facts yet — add one with #<note> or /memory <note>");
+          const it: Item = { kind: "notice", id: idRef.current++, text: facts ? "remembered facts:\n" + facts : "no remembered facts yet — add one with #<note> or /memory <note>" };
+          if (openInfoPanel("memory", it)) return;
+          echo(text);
+          push(it);
           return;
         }
         case "context": {
-          echo(text);
           const m = (() => { try { return selectorRef.current.select({ prompt: "" }).model; } catch { return null; } })();
           if (!m) {
+            echo(text);
             notice("no model available — add a provider first\n\n" + onboardingSummary(onboardingState));
             return;
           }
           const { sections } = buildContext({ history: msgRef.current, userText: lastPromptRef.current || "(your next message)", model: m, plan: modeRef.current === "plan" });
-          push({ kind: "context", id: idRef.current++, view: buildContextView(sections, m.contextWindow, process.cwd()) });
+          const it: Item = { kind: "context", id: idRef.current++, view: buildContextView(sections, m.contextWindow, process.cwd()) };
+          if (openInfoPanel("context", it)) return;
+          echo(text);
+          push(it);
           return;
         }
         case "onboard": {
@@ -2118,6 +2161,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         //   /account off          → leave the active subscription
         case "accounts":
         case "account": {
+          // Bare /account → the interactive panel (fullscreen). Subcommands
+          // (/account 2, add, remove, refresh…) fall through to the inline path.
+          if (!arg.trim() && fullscreen) {
+            setPanel({ kind: "accounts", title: "accounts · ⏎ to switch", index: 0 });
+            return;
+          }
           echo(text);
           const parts = arg.split(/\s+/).filter(Boolean);
           const subL = (parts[0] || "").toLowerCase();
@@ -2364,7 +2413,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         case "cost":
         case "usage": {
-          echo(text);
           const accounts = listAccounts();
           const resolve = (id: string) => {
             const a = getAccount(id);
@@ -2385,12 +2433,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // the rest the card shows spend, synchronously.
           const withBalance = accounts.filter((a) => a.exec !== "cli" && balanceExposed(a.provider));
           if (!withBalance.length) {
-            // No live fetch needed → push the complete card once. (Pushing then
+            // No live fetch needed → show the complete card. (Pushing then
             // mutating wouldn't work: a finished card commits to <Static>, which
             // never re-renders — the inline default.)
-            pushUsage(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id)));
+            const it: Item = { kind: "usage", id: idRef.current++, view: buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id)) };
+            if (openInfoPanel("cost", it)) return;
+            echo(text);
+            push(it);
             return;
           }
+          echo(text);
           notice("checking balances…");
           void (async () => {
             for (const a of withBalance) {
@@ -2621,6 +2673,40 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       ctrlCRef.current = now;
       notice("press ⌃C again to quit");
+      return;
+    }
+    // Dismissable command panel: while open it owns the keyboard. Esc closes it
+    // (taking precedence over the composer's esc-interrupt); navigation scrolls a
+    // static dump or moves the selection in an interactive list; ⏎ acts.
+    if (panelRef.current) {
+      const p = panelRef.current;
+      if (key.escape) { setPanel(null); return; }
+      if (p.kind === "static") {
+        if (input === "q") { setPanel(null); return; }
+        const max = panelMaxScrollRef.current;
+        const page = Math.max(1, panelBodyHeight(viewportHeightRef.current) - 1);
+        if (key.upArrow) setPanel({ ...p, scroll: clampScroll(p.scroll - 1, max) });
+        else if (key.downArrow) setPanel({ ...p, scroll: clampScroll(p.scroll + 1, max) });
+        else if (key.pageUp) setPanel({ ...p, scroll: clampScroll(p.scroll - page, max) });
+        else if (key.pageDown) setPanel({ ...p, scroll: clampScroll(p.scroll + page, max) });
+        return;
+      }
+      if (p.kind === "accounts") {
+        const nums = panelAccountNumbersRef.current;
+        const n = nums.length;
+        if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, n) });
+        else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, n) });
+        else if (key.return) { const num = nums[clampIndex(p.index, n)]; setPanel(null); if (num) handleCommand(`/account ${num}`); }
+        else if (/^[1-9]$/.test(input)) { const k = Number(input); if (k <= n) { setPanel(null); handleCommand(`/account ${k}`); } }
+        return;
+      }
+      // models: type-to-filter, ↑↓ select, ⏎ pin
+      const rows = filterModelRows(buildPanelModelRows(), p.filter);
+      if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, rows.length) });
+      else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, rows.length) });
+      else if (key.return) { const r = rows[clampIndex(p.index, rows.length)]; setPanel(null); if (r) handleCommand(`/model ${r.id}`); }
+      else if (key.backspace || key.delete) setPanel(backspaceFilter(p));
+      else if (input && !key.ctrl && !key.meta && !key.tab && input.length === 1 && input >= " ") setPanel(appendFilter(p, input));
       return;
     }
     // Reverse-i-search (⌃R): ⌃R opens / steps to the next older match; type to
@@ -2882,6 +2968,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   maxScrollRef.current = maxScroll;
   scrollTopRef.current = effScroll;
 
+  // Command-panel render data (fullscreen overlay). Computed here so the key
+  // handler and the renderer agree on line count / row numbers.
+  const panelW = width - 2;
+  const panelInnerW = Math.max(4, panelW - 2);
+  const panelCurrentModel = loadPrefs().pinnedModel ?? null;
+  let panelStaticLines: Line[] | undefined;
+  let panelAccountView: AccountView | undefined;
+  let panelModels: PanelModelRow[] | undefined;
+  if (panel?.kind === "static") {
+    panelStaticLines = itemsToLines(panel.items, panelInnerW);
+    panelMaxScrollRef.current = Math.max(0, panelStaticLines.length - panelBodyHeight(transcriptHeight));
+  } else if (panel?.kind === "accounts") {
+    panelAccountView = buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current);
+    panelAccountNumbersRef.current = panelAccountView.rows.map((r) => r.number);
+  } else if (panel?.kind === "models") {
+    panelModels = buildPanelModelRows(panelCurrentModel);
+  }
+
   // Keep scrollTop pinned to the bottom as new lines stream in (unless scrolled up).
   useEffect(() => {
     if (atBottomRef.current) setScrollTop(maxScroll);
@@ -2987,7 +3091,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return (
       <Box flexDirection="column" width={width} height={rows}>
         <Banner model={modelLabel} cwd={basename(process.cwd())} width={width} />
-        {welcome ? (
+        {panel ? (
+          <Box paddingX={1}>
+            <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} currentModelId={panelCurrentModel} staticLines={panelStaticLines} />
+          </Box>
+        ) : welcome ? (
           <Box height={transcriptHeight} flexDirection="column" justifyContent="center">
             {hero}
           </Box>
