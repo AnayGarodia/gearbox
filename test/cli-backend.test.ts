@@ -79,6 +79,22 @@ test("buildCliArgs uses each binary's stream-json flags", () => {
   expect(buildCliArgs("codex", "x", { effort: "xhigh" })).toContain('model_reasoning_effort="xhigh"');
 });
 
+// A fresh conversation (/clear) or a resumed session clears cliSessionRef to
+// undefined, so the next CLI turn must NOT ask the vendor binary to --resume the
+// conversation the user just cleared. This pins the downstream contract that the
+// App-side ref reset relies on: no session id → no resume flag.
+test("buildCliArgs omits the resume flag when there is no session id", () => {
+  const c = buildCliArgs("claude", "fresh start", { sessionId: undefined });
+  expect(c).not.toContain("--resume");
+
+  const x = buildCliArgs("codex", "fresh start", { sessionId: undefined });
+  expect(x).not.toContain("resume");
+
+  // And it DOES resume when a session id is present (the non-cleared path).
+  expect(buildCliArgs("claude", "x", { sessionId: "s9" })).toContain("--resume");
+  expect(buildCliArgs("codex", "x", { sessionId: "th-1" })).toContain("resume");
+});
+
 test("runCliTask surfaces stderr when a CLI exits without JSON output", async () => {
   const dir = mkdtempSync(join(tmpdir(), "gearbox-fake-codex-"));
   const bin = join(dir, "codex-fake");
