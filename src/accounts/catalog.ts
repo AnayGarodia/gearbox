@@ -25,6 +25,11 @@ export interface CatalogProvider {
   signupUrl?: string;
   defaultModels?: string[]; // a few well-known model ids (seeds; not the full list)
   binary?: string; // for cli group
+  // The callable model set is account/deployment-specific (Azure deployments,
+  // Foundry's per-resource catalog), so the `defaultModels` here are EXAMPLES,
+  // not a contract. Don't materialize them as selectable "ready to use" models —
+  // discovery (src/accounts/discover.ts) fills the real set onto the account.
+  discoverOnly?: boolean;
   notes?: string;
 }
 
@@ -58,12 +63,12 @@ export const CATALOG: CatalogProvider[] = [
   { id: "requesty", label: "Requesty", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["REQUESTY_API_KEY"], baseUrl: "https://router.requesty.ai/v1", signupUrl: "https://app.requesty.ai" },
   { id: "portkey", label: "Portkey", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["PORTKEY_API_KEY"], baseUrl: "https://api.portkey.ai/v1", signupUrl: "https://app.portkey.ai", notes: "Config-driven routing via x-portkey-* headers." },
   { id: "litellm", label: "LiteLLM proxy", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["LITELLM_API_KEY"], signupUrl: "https://docs.litellm.ai/docs/simple_proxy", notes: "Self-hosted; set baseUrl to your proxy." },
-  { id: "azure-foundry", label: "Azure AI Foundry", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["AZURE_AI_FOUNDRY_API_KEY", "AZURE_AI_INFERENCE_API_KEY"], signupUrl: "https://ai.azure.com", defaultModels: ["gpt-5.5", "gpt-5.5-mini", "gpt-4.1", "o4-mini"], notes: "OpenAI-compatible Foundry endpoint. Use baseUrl ending in /openai/v1." },
+  { id: "azure-foundry", label: "Azure AI Foundry", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["AZURE_AI_FOUNDRY_API_KEY", "AZURE_AI_INFERENCE_API_KEY"], signupUrl: "https://ai.azure.com", defaultModels: ["gpt-5.5", "gpt-5.5-mini", "gpt-4.1", "o4-mini"], discoverOnly: true, notes: "OpenAI-compatible Foundry endpoint. Use baseUrl ending in /openai/v1. Real model ids are discovered per resource." },
 
   // ── cloud (credential chains; native packages added in P2) ──
   { id: "bedrock", label: "Amazon Bedrock", group: "cloud", exec: "in-loop", authKind: "aws", envVars: ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION", "AWS_PROFILE"], keyPrefix: ["AKIA", "ASIA"], signupUrl: "https://console.aws.amazon.com/bedrock", defaultModels: ["anthropic.claude-sonnet-4-20250514-v1:0", "anthropic.claude-haiku-4-5-20251001-v1:0", "anthropic.claude-opus-4-20250514-v1:0", "amazon.nova-pro-v1:0", "amazon.nova-lite-v1:0", "amazon.nova-micro-v1:0", "meta.llama4-maverick-17b-instruct-v1:0", "meta.llama4-scout-17b-instruct-v1:0"], notes: "AWS IAM credentials or ~/.aws profile. Enable models in the Bedrock console first." },
   { id: "vertex", label: "Google Vertex AI", group: "cloud", exec: "in-loop", authKind: "vertex", envVars: ["GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION", "GOOGLE_APPLICATION_CREDENTIALS"], signupUrl: "https://console.cloud.google.com/vertex-ai", defaultModels: ["gemini-3.1-pro-preview", "gemini-3.5-flash", "gemini-3.1-flash-lite"], notes: "ADC (gcloud auth application-default login) or a service-account JSON." },
-  { id: "azure", label: "Azure OpenAI", group: "cloud", exec: "in-loop", authKind: "azure", envVars: ["AZURE_API_KEY", "AZURE_RESOURCE_NAME"], signupUrl: "https://oai.azure.com", defaultModels: ["gpt-5.5", "gpt-5.5-mini", "gpt-4.1"], notes: "resourceName (e.g. my-resource) + API key. Model IDs are your deployment names." },
+  { id: "azure", label: "Azure OpenAI", group: "cloud", exec: "in-loop", authKind: "azure", envVars: ["AZURE_API_KEY", "AZURE_RESOURCE_NAME"], signupUrl: "https://oai.azure.com", defaultModels: ["gpt-5.5", "gpt-5.5-mini", "gpt-4.1"], discoverOnly: true, notes: "resourceName (e.g. my-resource) + API key. Model IDs are your deployment NAMES — discovered per resource, not the base model ids." },
 
   // ── local (OpenAI-compatible servers; usually no key) ──
   { id: "ollama", label: "Ollama (local)", group: "local", exec: "in-loop", authKind: "openai-compat", envVars: [], baseUrl: "http://localhost:11434/v1", signupUrl: "https://ollama.com", defaultModels: ["qwen2.5-coder:7b", "llama3.3"], notes: "No key; runs on your machine." },

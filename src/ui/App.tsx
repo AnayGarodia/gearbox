@@ -24,11 +24,13 @@ import { RoutingSelector, classify } from "../model/router.ts";
 import { confirmRoutingPreference, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, type ModelSpec } from "../providers.ts";
-import { runTask } from "../agent/run.ts";
+import { runTask, runCompletion } from "../agent/run.ts";
+import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
 import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
+import { discoverModels } from "../accounts/discover.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
@@ -44,7 +46,7 @@ import { missingRequirements, type ModelRequirement } from "../model/capabilitie
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP } from "../commands.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
@@ -490,6 +492,33 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (activeCliModelRef.current && !cliSupportsModel(bin, activeCliModelRef.current)) setActiveCliModelId(undefined);
       setActiveCli({ id: a.id, label: bin });
     }
+  }, []);
+
+  // One-time, best-effort model discovery for in-loop accounts that have never
+  // been discovered (added before discovery existed, or imported from env). Keeps
+  // the model list honest without making the user run /account refresh. Persists
+  // the real set; marks "discovered, none" as [] so it doesn't re-run every launch;
+  // leaves a failed discovery undefined to retry next time.
+  const discoveryRanRef = useRef(false);
+  useEffect(() => {
+    if (discoveryRanRef.current) return;
+    discoveryRanRef.current = true;
+    void (async () => {
+      const targets = listAccounts().filter((a) => a.enabled && a.exec !== "cli" && a.models === undefined);
+      let learned = 0;
+      for (const a of targets) {
+        try {
+          const d = await discoverModels(a);
+          if (d.ok) {
+            putAccount({ ...a, models: d.models });
+            if (d.models.length) learned++;
+          }
+        } catch {
+          /* best-effort; retry next launch */
+        }
+      }
+      if (learned) notice(`loaded the real model list for ${learned} account${learned === 1 ? "" : "s"} — /model to see them`);
+    })();
   }, []);
 
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
@@ -1063,8 +1092,36 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     };
   };
 
+  // Set for the next turn to route it through the docs-grounded /ask path.
+  const askModeRef = useRef(false);
   const defaultRunner: Runner = useCallback(
     async ({ prompt, messages, onEvent, selector: sel, signal }) => {
+      // /ask (and auto-detected meta-questions): answer from the bundled Gearbox
+      // docs via a cheap routed model, NO tools, and don't pollute the coding
+      // history. Read-and-clear so it only applies to this one turn. Runs before
+      // the CLI branch so it always uses an API model via the seam.
+      const isAsk = askModeRef.current;
+      askModeRef.current = false;
+      if (isAsk) {
+        const docs = loadGearboxDocs();
+        if (!docs) {
+          onEvent({ type: "error", message: "Gearbox docs aren't bundled with this install — can't answer from them." });
+          return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
+        }
+        const choice = sel.select({ prompt, kind: "search" });
+        routedRef.current = { model: choice.model, reason: choice.reason };
+        setLastPick({ model: choice.model, reason: choice.reason });
+        onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+        const acct = accountResolver.pick(choice.model.provider);
+        const creds = acct ? await resolveCreds(acct) : undefined;
+        usedAccountRef.current = acct?.id ?? null;
+        cliMetaRef.current = null;
+        if (acct) markUsed(acct.id);
+        const r = await runCompletion({ model: choice.model, system: buildAskSystem(docs), prompt, onEvent, signal, creds });
+        // Ephemeral Q&A: keep the model history unchanged so it doesn't leak into
+        // later coding turns (the visible answer is already an items-stream entry).
+        return { messages, usage: r.usage };
+      }
       // Active CLI subscription account: delegate the whole turn to the vendor
       // binary (account-first; the model selector doesn't apply). Plain-text
       // transcript carries across; the binary self-governs tools/permissions.
@@ -1844,6 +1901,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }
           void runTurn(lastPromptRef.current);
           return;
+        case "ask": {
+          const question = arg.trim();
+          if (!question) {
+            echo(text);
+            notice("usage: /ask <question about Gearbox>  ·  e.g. /ask how do I add Azure?");
+            return;
+          }
+          if (busyRef.current) {
+            echo(text);
+            notice("finish the current turn first, then /ask");
+            return;
+          }
+          // Route the next turn through the docs-grounded path; echo just the
+          // question so it reads like a normal exchange.
+          askModeRef.current = true;
+          void runTurn(question);
+          return;
+        }
         case "model":
           echo(text);
           if (!arg || arg.toLowerCase() === "all") {
@@ -2148,7 +2223,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             notice(all.length ? `there's no account ${subL} — pick 1–${all.length}.\n\n` + formatAccounts(all, activeId, []) : "no accounts yet — /account add to add one");
             return;
           }
-          if (!["add", "remove", "rm", "import", "off"].includes(subL)) {
+          if (!["add", "remove", "rm", "import", "off", "refresh"].includes(subL)) {
             const ref = findAccountRef(arg, all);
             if (ref.account) {
               activate(ref.account);
@@ -2179,18 +2254,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const provGiven = parts[2] ? key : "";
             const keyVal = parts[2] ?? "";
             if (!key) {
-              notice(
-                "add an account:\n" +
-                  "  /account add claude          Claude subscription (Pro/Max)\n" +
-                  "  /account add claude <name>   a 2nd Claude account, e.g. /account add claude work\n" +
-                  "  /account add codex           ChatGPT subscription (Plus/Pro)\n" +
-                  "  /account add codex <name>    a 2nd ChatGPT account, e.g. /account add codex work\n" +
-                  "  /account add azure <foundry-endpoint> <api-key>\n" +
-                  "  /account add azure <resource-name> <api-key> [api-version]\n" +
-                  "  /account add openai-compat <name> <base-url> <api-key> <model> [model...]\n" +
-                  "  /account add <api-key>       paste any provider key (auto-detected)\n" +
-                  "  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter",
-              );
+              notice(ACCOUNT_ADD_HELP);
               return;
             }
             void (async () => {
@@ -2217,6 +2281,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               notice(`${res.message} — testing…`);
               const t = await testAccount(res.account);
               notice(t.ok ? `✓ added · ${t.message}` : `added, but the key test failed: ${t.message}`);
+              // Discover the models this account can actually serve (Azure
+              // deployments / Foundry catalog / gateway list) and persist them,
+              // so the model list reflects reality instead of catalog seeds.
+              const d = await discoverModels(res.account);
+              if (d.models.length) {
+                putAccount({ ...res.account, models: d.models });
+                notice(`found ${d.models.length} model${d.models.length === 1 ? "" : "s"} on this account — /model to pick one`);
+              } else if (d.note) {
+                notice(d.note);
+              }
             })();
             return;
           }
@@ -2249,6 +2323,30 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               for (const c of keys) await importEnvCred(c);
               for (const c of cloud) await importCloudCred(c);
               showList();
+            })();
+            return;
+          }
+          if (subL === "refresh") {
+            // Re-discover the real model set for in-loop accounts (Azure
+            // deployments / Foundry / gateway lists) and persist it. Lets accounts
+            // added before discovery — or after you create a new deployment — pick
+            // up their actual models without re-adding.
+            void (async () => {
+              const targets = listAccounts().filter((a) => a.enabled && a.exec !== "cli");
+              if (!targets.length) {
+                notice("no API/cloud accounts to refresh — /account add to add one");
+                return;
+              }
+              notice(`refreshing models for ${targets.length} account${targets.length === 1 ? "" : "s"}…`);
+              for (const a of targets) {
+                const d = await discoverModels(a);
+                if (d.models.length) {
+                  putAccount({ ...a, models: d.models });
+                  notice(`${accountName(a)}: ${d.models.length} model${d.models.length === 1 ? "" : "s"}`);
+                } else {
+                  notice(`${accountName(a)}: ${d.note ?? "no models discovered"}`);
+                }
+              }
             })();
             return;
           }
@@ -2429,6 +2527,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         setQueued([...queueRef.current]);
         notice(`queued (${queueRef.current.length}) — sends when the current turn finishes`);
         return;
+      }
+      // Auto-detect a question ABOUT Gearbox and answer it from the docs, with a
+      // visible affordance so it never silently hijacks a real coding prompt.
+      if (looksLikeGearboxQuestion(text)) {
+        notice("↳ answering from Gearbox's own docs · rephrase as a task, or /help, to run it as a normal turn");
+        askModeRef.current = true;
       }
       void runTurn(text);
     },

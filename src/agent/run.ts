@@ -120,6 +120,22 @@ function cleanError(err: any): string {
   return msg.length > 240 ? msg.slice(0, 240) + "…" : msg;
 }
 
+// "model/deployment does not exist" is opaque on ANY provider: the id you called
+// isn't actually served by your account (Azure deployment names, a retired gateway
+// model, a Bedrock model you haven't enabled, …). Rewrite it into one actionable
+// line, naming the id that failed and pointing at discovery. Native providers have
+// a stable, curated id set, so we leave their errors untouched.
+const NATIVE_PROVIDERS = new Set(["anthropic", "openai", "google", "deepseek"]);
+const MODEL_NOT_SERVED = /does not exist|not found|no such model|model_not_found|unknown model|invalid model|deployment.*(does not exist|not)|resource not found/i;
+
+export function unavailableModelHint(message: string, model: ModelSpec): string {
+  if (NATIVE_PROVIDERS.has(model.provider)) return message;
+  if (MODEL_NOT_SERVED.test(message)) {
+    return `“${model.sdkId}” isn't available on your ${model.provider} account. Run /account refresh to see what is, then /model <name>. (${message})`;
+  }
+  return message;
+}
+
 const resultSummary = (out: any): string => {
   const s = typeof out === "string" ? out : JSON.stringify(out);
   const first = s.split("\n").find((l) => l.trim()) ?? "";
@@ -151,7 +167,7 @@ export async function runTask(opts: {
   const emitErr = (err: unknown) => {
     if (errored || signal?.aborted) return;
     errored = true;
-    onEvent({ type: "error", message: cleanError(err) });
+    onEvent({ type: "error", message: unavailableModelHint(cleanError(err), model) });
   };
 
   onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
@@ -311,6 +327,65 @@ export async function runTask(opts: {
   onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
   onEvent({ type: "done", usage });
   return { messages: next, usage };
+}
+
+// A single, tool-less completion through the same provider seam as runTask —
+// used for grounded Q&A (e.g. /ask over the bundled docs) where the model should
+// answer from the system prompt, never call tools or loop. Emits the same text/
+// finish/done events so the UI's streaming render + usage capture work unchanged.
+export async function runCompletion(opts: {
+  model: ModelSpec;
+  system: string;
+  prompt: string;
+  onEvent: OnEvent;
+  signal?: AbortSignal;
+  creds?: ResolvedCreds;
+  effort?: Effort;
+  _stream?: AsyncIterable<any>; // test seam
+}): Promise<{ text: string; usage: Usage }> {
+  const { model, system, prompt, onEvent, signal } = opts;
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+  const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
+  let errored = false;
+  const emitErr = (err: unknown) => {
+    if (errored || signal?.aborted) return;
+    errored = true;
+    onEvent({ type: "error", message: unavailableModelHint(cleanError(err), model) });
+  };
+
+  onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
+  const result = opts._stream
+    ? null
+    : streamText({
+        model: resolveModel(model, opts.creds),
+        system,
+        messages: [{ role: "user", content: prompt }],
+        abortSignal: signal,
+        onError: ({ error }) => emitErr(error),
+        ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
+      });
+  const parts: AsyncIterable<any> = opts._stream ?? (result!.fullStream as AsyncIterable<any>);
+
+  let text = "";
+  try {
+    for await (const part of parts) {
+      if (part.type === "text-delta") {
+        const t = part.text ?? part.textDelta ?? "";
+        if (t) { text += t; onEvent({ type: "text", text: t }); }
+      } else if (part.type === "error") {
+        emitErr(part.error);
+      } else if (part.type === "finish") {
+        const u = part.totalUsage ?? part.usage ?? {};
+        usage.inputTokens = u.inputTokens ?? u.promptTokens ?? 0;
+        usage.outputTokens = u.outputTokens ?? u.completionTokens ?? 0;
+      }
+    }
+  } catch (e: any) {
+    if (!signal?.aborted) emitErr(e);
+  }
+  onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
+  onEvent({ type: "done", usage });
+  return { text, usage };
 }
 
 function friendlyToolPhase(name: string): string {

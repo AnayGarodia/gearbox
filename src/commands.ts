@@ -32,6 +32,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/retry", usage: "/retry", desc: "send your last message again", group: "chat" },
   { name: "/compact", usage: "/compact", desc: "shrink the conversation to free up room", group: "chat" },
   { name: "/context", usage: "/context", desc: "see what's loaded and how many tokens it uses", group: "chat" },
+  { name: "/ask", usage: "/ask <q>", desc: "ask about Gearbox itself — answered from its own docs", group: "chat" },
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
   // accounts & cost
   { name: "/account", usage: "/account", desc: "list accounts; /account <number> to switch, /account add to add one", group: "accounts" },
@@ -79,6 +80,21 @@ const GROUP_TITLES: { id: Group; title: string }[] = [
   { id: "settings", title: "settings" },
   { id: "other", title: "other" },
 ];
+
+// The account-add reference — single source of truth, shown by `/account add`
+// and fed into the /ask docs corpus so "how do I add X" answers are exact.
+export const ACCOUNT_ADD_HELP =
+  "add an account:\n" +
+  "  /account add claude          Claude subscription (Pro/Max)\n" +
+  "  /account add claude <name>   a 2nd Claude account, e.g. /account add claude work\n" +
+  "  /account add codex           ChatGPT subscription (Plus/Pro)\n" +
+  "  /account add codex <name>    a 2nd ChatGPT account, e.g. /account add codex work\n" +
+  "  /account add azure <foundry-endpoint> <api-key>            Azure AI Foundry (pass the full https:// endpoint)\n" +
+  "  /account add azure <resource-name> <api-key> [api-version] Azure OpenAI (pass the bare resource name)\n" +
+  "  /account add openai-compat <name> <base-url> <api-key> <model> [model...]\n" +
+  "  /account add <api-key>       paste any provider key (auto-detected)\n" +
+  "  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter\n" +
+  "After adding, /account refresh discovers the models the account can actually serve.";
 
 export function helpText(): string {
   const visible = COMMANDS.filter((c) => !HIDDEN.has(c.name));
@@ -164,6 +180,7 @@ export function formatAccounts(
     "  switch: /account <name-or-number>",
     "  add:    /account add codex [name]  ·  /account add claude [name]  ·  /account add <api-key>",
     accounts.length ? "  remove: /account remove <name-or-number>" : "",
+    accounts.length ? "  refresh models: /account refresh" : "",
   );
   return lines.filter(Boolean).join("\n");
 }
@@ -209,7 +226,19 @@ export function formatModelList(currentId: string | null, showAll = false): stri
 
   if (usable.length) {
     rows.push("", "ready to use");
-    for (const m of usable) rows.push(line(m));
+    // Cap each provider's list — a discovered account (e.g. Azure Foundry) can
+    // serve 100+ models, which would bury everything else. `/model all` or a
+    // fuzzy `/model <name>` still reaches the rest.
+    const CAP = 8;
+    const shown = new Map<string, number>();
+    let hidden = 0;
+    for (const m of usable) {
+      const n = shown.get(m.provider) ?? 0;
+      if (!showAll && n >= CAP) { hidden++; continue; }
+      shown.set(m.provider, n + 1);
+      rows.push(line(m));
+    }
+    if (hidden) rows.push(`  + ${hidden} more on your accounts — /model all to list · /model <name> to pick`);
   } else {
     rows.push("", "no accounts yet — /account to add one");
   }

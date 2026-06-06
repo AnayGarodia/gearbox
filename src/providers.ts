@@ -88,9 +88,17 @@ function generatedModels(): ModelSpec[] {
   const out: ModelSpec[] = [];
   for (const p of CATALOG) {
     if (p.group === "cli") continue;
+    // discoverOnly providers (Azure, Foundry): the catalog `defaultModels` are
+    // examples, not callable ids — advertising them as "ready to use" is exactly
+    // the deployment-404 bug. Their real set comes from discovery → account.models.
+    if (p.discoverOnly) continue;
     for (const m of p.defaultModels ?? []) {
       if (CURATED.some((c) => c.provider === p.id && c.sdkId === m)) continue;
-      out.push({ id: `${p.id}/${m}`, provider: p.id, sdkId: m, label: m.length > 24 ? m.slice(0, 24) : m, contextWindow: 128_000 });
+      // `seeded`: a catalog EXAMPLE, not confirmed against any account. Once an
+      // account for this provider has a discovered model set, these are dropped
+      // in favour of the real list (see modelRegistry) — that's what keeps the
+      // "listed model 404s" bug from recurring on ANY provider, not just Azure.
+      out.push({ id: `${p.id}/${m}`, provider: p.id, sdkId: m, label: m.length > 24 ? m.slice(0, 24) : m, contextWindow: 128_000, capabilities: { source: "seeded" } });
     }
   }
   return out;
@@ -104,7 +112,10 @@ function accountModelSpecs(): ModelSpec[] {
     if (!account.enabled || account.exec === "cli") continue;
     for (const sdkId of account.models ?? []) {
       if (!sdkId) continue;
-      if (MODELS.some((m) => m.provider === account.provider && m.sdkId === sdkId)) continue;
+      // Don't pre-filter against MODELS here — modelRegistry dedups, and a
+      // discovered model that shares an id with a seed must still win once its
+      // provider's seeds are dropped.
+      if (CURATED.some((m) => m.provider === account.provider && m.sdkId === sdkId)) continue;
       const id = `${account.provider}/${sdkId}`;
       out.push({
         id,
@@ -112,17 +123,32 @@ function accountModelSpecs(): ModelSpec[] {
         sdkId,
         label: sdkId.length > 24 ? sdkId.slice(0, 24) : sdkId,
         contextWindow: 128_000,
-        capabilities: { source: "user-configured", tools: "unknown", images: "unknown", jsonSchema: "unknown", usage: "partial" },
+        capabilities: { source: "api-discovered", tools: "unknown", images: "unknown", jsonSchema: "unknown", usage: "partial" },
       });
     }
   }
   return out;
 }
 
+// Providers whose seed examples should be hidden: deployment-named ones always
+// (discoverOnly), plus any provider where an account has a real, discovered model
+// set — there, the discovered list is the truth and the seeds are stale guesses.
+function seedSuppressedProviders(): Set<string> {
+  const s = new Set<string>();
+  for (const p of CATALOG) if (p.discoverOnly) s.add(p.id);
+  for (const a of listAccounts()) {
+    if (a.enabled && a.exec !== "cli" && (a.models?.length ?? 0) > 0) s.add(a.provider);
+  }
+  return s;
+}
+
 export function modelRegistry(): ModelSpec[] {
+  const suppressed = seedSuppressedProviders();
+  // Drop seed examples for any provider that now has a real (discovered) list.
+  const base = MODELS.filter((m) => !(m.capabilities?.source === "seeded" && suppressed.has(m.provider)));
   const seen = new Set<string>();
   const out: ModelSpec[] = [];
-  for (const m of [...MODELS, ...accountModelSpecs()]) {
+  for (const m of [...base, ...accountModelSpecs()]) {
     const key = `${m.provider}\0${m.sdkId}`;
     if (seen.has(key)) continue;
     seen.add(key);
