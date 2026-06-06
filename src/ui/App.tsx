@@ -25,7 +25,8 @@ import { confirmRoutingPreference, type PreferenceKind } from "../model/preferen
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, type ModelSpec } from "../providers.ts";
 import { runTask } from "../agent/run.ts";
-import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
+import { resolveCreds, rank } from "../accounts/resolve.ts";
+import { runWithFailover } from "../agent/failover.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
 import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
@@ -61,9 +62,6 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile } from "node:fs/promises";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
-
-// Stateless: picks the active account per provider (reads the registry each call).
-const accountResolver = new AccountResolver();
 
 export type Runner = (opts: {
   prompt: string;
@@ -1170,14 +1168,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // working set to SEND; the returned ledger stays the full source of truth.
       const userContent = imageContent(prompt, activeImagesRef.current);
       const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
-      // Pick the active account for this model's provider and inject its creds.
-      // No account → env-default for users who have opted to keep keys in env.
-      // Durable accounts remain the preferred onboarding path.
-      const account = accountResolver.pick(choice.model.provider);
-      const creds = account ? await resolveCreds(account) : undefined;
-      usedAccountRef.current = account?.id ?? null;
       cliMetaRef.current = null;
-      if (account) markUsed(account.id);
+      // Validate the requested effort against the chosen model up front (clear
+      // error if the user pinned an effort the model can't do).
       const _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
       if (_effortRaw === null && effortRef.current !== "medium") {
         const supported = effortLevels(choice.model);
@@ -1186,7 +1179,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
       }
       const modelEffort = _effortRaw ?? undefined;
-      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: modelEffort });
+
+      // Failover pool: every healthy account that can serve this model's family,
+      // best-first. A credential failure (expired/invalid/no-credit/rate-limited)
+      // before any output transparently advances to the next account.
+      const candidates = rank(choice.model);
+      let r: Awaited<ReturnType<typeof runTask>>;
+      if (!candidates.length) {
+        // No stored account matches — fall back to env-default creds (single run).
+        usedAccountRef.current = null;
+        r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, effort: modelEffort });
+      } else {
+        const fo = await runWithFailover({
+          candidates,
+          onEvent,
+          recordHealth,
+          resolveCreds,
+          runOne: async ({ account, model, creds }) =>
+            runTask({ model, messages: ctx, onEvent, signal, plan, system, creds, effort: modelEffort, reportErrors: false }),
+        });
+        usedAccountRef.current = fo.usedAccountId ?? null;
+        if (fo.usedAccountId) markUsed(fo.usedAccountId);
+        r = fo;
+      }
       // r.messages = the sent context + the newly produced turn. Rebuild msgRef as
       // FULL history + the user message + only the new messages (never the curated
       // projection), and sanitize so an interrupted turn can't leave a dangling
