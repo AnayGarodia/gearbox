@@ -768,6 +768,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     setItems(s.items);
     msgRef.current = s.messages;
     sessionRef.current = { id: s.id, createdAt: s.createdAt, title: s.title, turns: s.turns ?? [] };
+    // Resumed history is plain text, not a vendor session id (we don't persist
+    // one). Clear any stale CLI session so a subscription turn starts the binary
+    // fresh with this history rather than --resume-ing whatever was last open.
+    cliSessionRef.current = undefined;
     notice(`resumed · ${s.items.length} messages · ${new Date(s.updatedAt).toLocaleString()}`);
   };
 
@@ -1672,6 +1676,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           setLastInput(0);
           curAsstRef.current = null;
           routedRef.current = null;
+          // Drop the vendor binary's session id too: on a CLI subscription the
+          // next turn would otherwise pass --resume <old-id> and the binary
+          // would continue the conversation the user just cleared.
+          cliSessionRef.current = undefined;
           sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
           notice("started a fresh conversation");
           return;
