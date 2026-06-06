@@ -492,6 +492,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     }
   }, []);
 
+  // Keep metered-credit balances fresh for the router's scarcity term. Only a
+  // few providers expose a balance (DeepSeek / OpenRouter / Vercel); for those,
+  // refresh on launch and every 5 min so a near-empty key is deprioritized
+  // BEFORE it dead-ends. Best-effort: fetchBalance is timeout-guarded and never
+  // throws, and routing treats a missing/stale balance as neutral (no penalty).
+  useEffect(() => {
+    let alive = true;
+    const refresh = async () => {
+      const targets = listAccounts().filter((a) => a.enabled && a.exec !== "cli" && balanceExposed(a.provider));
+      for (const a of targets) {
+        if (!alive) return;
+        const bal = await fetchBalance(a);
+        if (bal?.remainingUSD != null) recordBalance(a.id, bal);
+      }
+    };
+    void refresh();
+    const t = setInterval(() => void refresh(), 5 * 60_000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
   useEffect(() => {
     setPermissionHandler(

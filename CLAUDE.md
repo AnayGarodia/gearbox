@@ -8,9 +8,11 @@ Gearbox is a multi-provider coding harness for the terminal: a beautiful, simple
 
 **Keep the routing seam clean.** The agent must never hardcode a model. It asks a `ModelSelector` for the model to use. `RoutingSelector` is the live default (classify task → filter by quality bar → cheapest winner); `FixedSelector` is used only when a model is explicitly pinned (`--model` flag or `/model <name>`). Concretely:
 
-- `src/model/selector.ts` — the seam. `select(task) => ModelChoice`. Do not bypass it.
-- `src/model/router.ts` — `RoutingSelector`: classify prompt → quality bar → cost-sort candidates → respect `/prefer` preferences.
-- `src/model/profiles.ts` — the data corpus: quality, cost, latency, tokenizer calibration per model. Routing reads this.
+- `src/model/selector.ts` — the seam. `select(task) => ModelChoice` (now carrying an optional `Backend` so the runner can dispatch in-loop vs a subscription seat). Do not bypass it.
+- `src/model/router.ts` — `RoutingSelector` is **account-aware**: it scores `(model, account)` PAIRS, not just models. Candidates = in-loop registry models × the accounts that serve them + flat-rate subscription **seats** (`providers.subscriptionSeats()`, a seat mirrors a canonical model but runs via the vendor binary). Flow: classify → quality bar → context fit → global/`/prefer` preference filter → score → return `{model, reason, backend}`. A seat is ~free until its rate limit, so it wins by default and fails over to metered API as the window fills. `SubscriptionPinSelector`/`FixedSelector` are hard pins (explicit `/account use` or `/model`) that beat auto-routing.
+- `src/model/scoring.ts` — the PURE scorer: `score = costEst + scarcity + switchPenalty + limitPenalty − planBonus`, argmin tie-broken deterministically. No I/O; fixture-tested. Every account-state term is active only where the provider exposes the signal, neutral otherwise (no errors per provider).
+- `src/model/routing-context.ts` — `buildRoutingContext()`: the per-turn account-state snapshot (balance where exposed, subscription rate headroom = min over the 5h/weekly windows) read from disk-cached `usage.json`. No network on the hot path; balances refreshed in the background (App effect).
+- `src/model/profiles.ts` — the data corpus: quality, cost, latency, tokenizer calibration, **and the per-model effort vocabulary** (`efforts`) per the provider research. Routing reads this; effort is clamped/omitted against the chosen model's set, never sent unsupported.
 - `src/providers.ts` — maps a provider+model id to an AI SDK model instance. Already multi-provider. Adding a model is data, not code.
 - Every model call captures token usage (`src/agent/run.ts`) so the cost engine has data. Do not drop usage.
 - The UI consumes a normalized `AgentEvent` stream (`src/agent/events.ts`), never the AI SDK's raw types. This decouples the UI from the provider layer and from routing.
@@ -27,9 +29,11 @@ src/
   commands.ts        slash-command metadata + pure helpers (fuzzy model match, /help, model list)
   tools.ts           read / write / edit / list / search / glob / run_shell  (AI SDK tools)
   model/
-    selector.ts      THE ROUTING SEAM — ModelSelector interface + FixedSelector (pinned model)
-    router.ts        RoutingSelector: classify → quality bar → cost-sort → preferences (the live default)
-    profiles.ts      model corpus: quality (SWE-bench), cost ($/Mtok), latency, tokenizer calibration
+    selector.ts      THE ROUTING SEAM — ModelSelector + ModelChoice.backend + FixedSelector (pinned model)
+    router.ts        RoutingSelector (account-aware): scores (model, account) pairs incl. subscription seats; SubscriptionPinSelector
+    scoring.ts       PURE scorer: cost + scarcity + limit − plan bonus; deterministic, fixture-tested
+    routing-context.ts per-turn account-state snapshot (balance + subscription rate headroom) from usage.json
+    profiles.ts      model corpus: quality (SWE-bench), cost ($/Mtok), latency, tokenizer calibration, per-model effort vocab
     tokens.ts        calibrated token counting (js-tiktoken × per-model calibration factor)
     preferences.ts   persist /prefer kind model choices to ~/.gearbox/routing-preferences.json
     reasoning.ts     reasoning/thinking config helpers
