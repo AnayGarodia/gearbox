@@ -23,6 +23,7 @@ export type AuthKind = AuthMethod["kind"];
 
 export interface Account {
   id: string; // stable, e.g. "anthropic-work"
+  slug?: string; // stable human reference for /account <slug>; unique across accounts
   label: string; // human-facing, e.g. "Anthropic (work)"
   provider: string; // catalog provider id, e.g. "anthropic", "openrouter", "claude-cli"
   exec: ExecMode;

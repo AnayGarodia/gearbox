@@ -106,7 +106,8 @@ export function accountName(a: { id: string; provider: string; exec: string; aut
   return catalogProvider(a.provider)?.label ?? a.provider;
 }
 
-export function accountSlug(a: { id: string; provider: string; exec: string; auth?: any }): string {
+export function accountSlug(a: { id: string; provider: string; exec: string; auth?: any; slug?: string }): string {
+  if (a.slug) return a.slug;
   return accountName(a)
     .toLowerCase()
     .replace(/[()]/g, "")
