@@ -218,84 +218,64 @@ function ActivityRail({ items, width }: { items: Item[]; width: number }) {
 }
 
 function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingState; width: number; skin: GhostSkin; splashSize: "big" | "mini" | "none" }) {
-  const providers = featuredApiKeyProviders().slice(0, width >= 92 ? 12 : 8);
-  const left = providers.filter((_, i) => i % 2 === 0);
-  const right = providers.filter((_, i) => i % 2 === 1);
   const detected = state.importable.length + state.cloudImportable.length;
-  const panelWidth = Math.min(Math.max(width - 4, 12), 104);
-  const showTwoCols = panelWidth >= 82;
-  const firstColumn = showTwoCols ? left : providers;
-  const secondColumn = showTwoCols ? right : [];
-  const providerLine = (id: string, label: string) => (
-    <Text key={id} color={color.dim}>
-      <Text color={color.accent}>/account add {id}</Text>
-      <Text color={color.faint}>  {label}</Text>
-    </Text>
-  );
+  const panelWidth = Math.min(Math.max(width - 4, 30), 58);
 
   return (
     <Box flexDirection="column" alignItems="center">
       <MascotSplash skin={skin} size={splashSize} />
+
       <Box marginTop={1} flexDirection="column" alignItems="center">
-        <Text color={color.accent} bold>GEARBOX</Text>
-        <Text color={color.text}>one terminal, every model account you already pay for</Text>
-        <Text color={color.faint}>Set up one provider. Gearbox routes from there.</Text>
+        <Text color={color.accent} bold>gearbox</Text>
+        <Text color={color.dim}>one terminal · every model you already pay for</Text>
       </Box>
 
-      <Box marginTop={1} width={panelWidth} borderStyle="round" borderColor={color.accentDim} paddingX={2} paddingY={1} flexDirection="column">
-        <Box justifyContent="space-between">
-          <Text color={color.text} bold>start here</Text>
-          <Text color={detected ? color.ok : color.faint}>{detected ? `${detected} detected` : "no account yet"}</Text>
-        </Box>
-
-        {detected ? (
-          <Box marginTop={1}>
-            <Text color={color.ok}>{glyph.on} </Text>
-            <Text color={color.text}>Credentials found on this machine: </Text>
-            <Text color={color.accent}>/account import</Text>
-          </Box>
-        ) : null}
-
-        <Box marginTop={1} flexDirection={showTwoCols ? "row" : "column"}>
-          <Box flexDirection="column" width={showTwoCols ? Math.floor((panelWidth - 6) / 2) : undefined}>
-            <Text color={color.faint}>API key</Text>
-            <Text color={color.text}><Text color={color.accent}>/account add &lt;api-key&gt;</Text>  auto-detect when possible</Text>
-            <Text color={color.text}><Text color={color.accent}>/account add &lt;provider&gt; &lt;api-key&gt;</Text></Text>
-          </Box>
-          <Box flexDirection="column" marginLeft={showTwoCols ? 4 : 0} marginTop={showTwoCols ? 0 : 1}>
-            <Text color={color.faint}>Subscriptions and cloud</Text>
-            <Text color={color.text}><Text color={color.accent}>/account add azure &lt;endpoint&gt; &lt;api-key&gt;</Text></Text>
-            <Text color={color.text}>
-              <Text color={color.accent}>/account add claude</Text>
-              <Text color={color.faint}>  </Text>
-              <Text color={color.accent}>/account add codex</Text>
-            </Text>
-          </Box>
-        </Box>
-
-        <Box marginTop={1}>
-          <Text color={color.faint}>{glyph.rule.repeat(Math.max(panelWidth - 6, 20))}</Text>
-        </Box>
-
-        <Box marginTop={1} flexDirection={showTwoCols ? "row" : "column"}>
-          <Box flexDirection="column" width={showTwoCols ? Math.floor((panelWidth - 6) / 2) : undefined}>
-            <Text color={color.faint}>Common providers</Text>
-            {firstColumn.map((p) => providerLine(p.id, p.label))}
-          </Box>
-          {secondColumn.length ? (
-            <Box flexDirection="column" marginLeft={4}>
-              <Text color={color.faint}> </Text>
-              {secondColumn.map((p) => providerLine(p.id, p.label))}
+      <Box marginTop={2} width={panelWidth} borderStyle="round" borderColor={color.faint} paddingX={2} paddingY={1} flexDirection="column">
+        {detected > 0 ? (
+          <>
+            <Box>
+              <Text color={color.ok}>{glyph.on} </Text>
+              <Text color={color.text}>{detected} credential{detected > 1 ? "s" : ""} found on this machine</Text>
             </Box>
-          ) : null}
-        </Box>
+            <Box marginTop={1}>
+              <Text color={color.accent}>/account import</Text>
+              <Text color={color.dim}>  connect automatically</Text>
+            </Box>
+            <Box marginTop={1}>
+              <Text color={color.faint}>or add a different key: </Text>
+              <Text color={color.accent}>/account add &lt;api-key&gt;</Text>
+            </Box>
+          </>
+        ) : (
+          <>
+            <Text color={color.dim}>paste or type a key to get started</Text>
+            <Box marginTop={1}>
+              <Text color={color.accent}>/account add &lt;api-key&gt;</Text>
+            </Box>
+          </>
+        )}
 
-        <Box marginTop={1} justifyContent="space-between">
-          <Text color={color.faint}>Full catalog: </Text>
-          <Text color={color.accent}>/onboard providers</Text>
-          <Text color={color.faint}>  Help: </Text>
-          <Text color={color.accent}>/account</Text>
-        </Box>
+        {(state.hasClaudeCli || state.hasCodexCli) && (
+          <Box marginTop={2} flexDirection="column">
+            <Text color={color.faint}>subscriptions detected</Text>
+            {state.hasClaudeCli && (
+              <Box>
+                <Text color={color.accent}>/account add claude</Text>
+                <Text color={color.faint}>  Claude Pro / Max</Text>
+              </Box>
+            )}
+            {state.hasCodexCli && (
+              <Box>
+                <Text color={color.accent}>/account add codex</Text>
+                <Text color={color.faint}>   ChatGPT Plus</Text>
+              </Box>
+            )}
+          </Box>
+        )}
+      </Box>
+
+      <Box marginTop={1}>
+        <Text color={color.faint}>/onboard  ·  /account  ·  /help</Text>
       </Box>
     </Box>
   );

@@ -186,6 +186,6 @@ test("app initial render: banner, onboarding setup, input", () => {
   const f = lastFrame() ?? "";
   expect(f).toContain("gearbox");
   expect(f).toContain("setup required");
-  expect(f).toContain("/account add <provider> <api-key>");
-  expect(f).toContain("/onboard providers");
+  expect(f).toContain("/account add <api-key>");
+  expect(f).toContain("/onboard");
 });
