@@ -361,6 +361,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const outCharsRef = useRef(0); // streamed output chars this turn (for a live tok/s estimate)
+  const firstOutputAtRef = useRef(0); // when the FIRST output token arrived — tok/s is measured from here, not turn start (so thinking time doesn't drag the rate to ~1/s)
   const [, bumpMotion] = useReducer((x: number) => x + 1, 0);
   const [yolo, setYoloState] = useState(isYolo());
   const [perm, setPermState] = useState<PermRequest | null>(null);
@@ -1244,6 +1245,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   // Set for the next turn to route it through the docs-grounded /ask path.
   const askModeRef = useRef(false);
+  // Provenance is shown in full only when the route CHANGES (a switch, a model
+  // change, a failover hop) — not on every unchanged turn. `routeChanged` returns
+  // true the first time it sees a given (backend·account·model) key.
+  const lastRouteRef = useRef("");
+  const routeChanged = (key: string) => {
+    const changed = key !== lastRouteRef.current;
+    lastRouteRef.current = key;
+    return changed;
+  };
 
   // Run a turn through a vendor subscription binary (claude/codex). Shared by the
   // EXPLICIT pin (`/account use`) and an AUTO-routed seat the RoutingSelector
@@ -1258,6 +1268,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       label?: string; // model label for the phase line
       pinned: boolean; // true ⇒ explicit pin (no routing reason to show)
       deferTerminal?: boolean; // caller drives failover: suppress terminal events, return failure
+      showProvenance?: boolean; // emit the "using subscription · …" line (only when the route changed)
       prompt: string;
       messages: ModelMessage[];
       onEvent: OnEvent;
@@ -1265,10 +1276,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     }): Promise<{ messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string } }> => {
       const { binary, profile, modelId, accountId, efforts, label, pinned, prompt, messages, onEvent, signal } = args;
       usedAccountRef.current = accountId;
-      const detail = pinned
-        ? `${binary}${label ? ` · ${label}` : ""} owns tools and permissions`
-        : `${binary}${label ? ` · ${label}` : ""} subscription · seat (~free) owns tools and permissions`;
-      onEvent({ type: "phase", label: "using subscription", detail, state: "running" });
+      // Full provenance only when the route just changed; unchanged turns stay quiet
+      // (the working strip + reply are enough — no per-turn "owns tools" repetition).
+      if (args.showProvenance !== false) {
+        const detail = pinned
+          ? `${binary}${label ? ` · ${label}` : ""} owns tools and permissions`
+          : `${binary}${label ? ` · ${label}` : ""} subscription seat · own tools/permissions`;
+        onEvent({ type: "phase", label: "using subscription", detail, state: "running" });
+      }
       // Effort is validated against THIS model's supported set and clamped/omitted
       // — never sent unsupported (provider effort vocabularies differ).
       const _cliEffortRaw = normalizeEffort(effortRef.current, efforts);
@@ -1375,7 +1390,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return runCliBackend({
           binary: pin.binary, profile: pin.profile, modelId: activeCliModelRef.current, accountId: pin.id,
           efforts: cliChoice?.efforts ?? [], label: cliModelLabel(activeCliModelRef.current) || undefined,
-          pinned: true, prompt, messages, onEvent, signal,
+          pinned: true, showProvenance: routeChanged(`pin:${pin.id}:${activeCliModelRef.current ?? pin.binary}`), prompt, messages, onEvent, signal,
         });
       }
 
@@ -1400,11 +1415,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (imagesPresent) return { ...cliImageGuard(), failure: { message: "image attachments need an API-backed model" }, cooldownKey: acct.id };
           routedRef.current = { model: choice.model, reason: choice.reason };
           setLastPick({ model: choice.model, reason: choice.reason });
-          onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+          const showCli = routeChanged(`cli:${acct.id}:${choice.model.id}`);
+          if (showCli) onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
           const out = await runCliBackend({
             binary: choice.backend.binary, profile: choice.backend.profile, modelId: choice.model.sdkId, accountId: acct.id,
             efforts: choice.model.efforts ?? [], label: choice.model.label,
-            pinned: false, deferTerminal: true, prompt, messages, onEvent, signal,
+            pinned: false, deferTerminal: true, showProvenance: showCli, prompt, messages, onEvent, signal,
           });
           return { messages: out.messages, usage: out.usage, failure: out.failure, cooldownKey: acct.id };
         }
@@ -1413,7 +1429,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (missing.length) throw new Error(`${choice.model.label} cannot run this turn (${missing.join(", ")} unsupported). Use /model auto or pick a compatible model.`);
         routedRef.current = { model: choice.model, reason: choice.reason };
         setLastPick({ model: choice.model, reason: choice.reason });
-        onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+        if (routeChanged(`api:${choice.model.provider}:${choice.model.id}`)) {
+          onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+        }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
         const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
@@ -1613,6 +1631,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       setSuggestion(null);
       const turnStart = Date.now();
       outCharsRef.current = 0;
+      firstOutputAtRef.current = 0;
       if (lingerRef.current) clearTimeout(lingerRef.current);
       setLinger(false);
       setMascotState("thinking");
@@ -1710,6 +1729,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           push({ kind: "phase", id: idRef.current++, label: e.label, detail: e.detail, state: e.state ?? "running" });
         } else if (e.type === "text") {
           setMascotState("streaming");
+          if (firstOutputAtRef.current === 0) firstOutputAtRef.current = Date.now();
           outCharsRef.current += e.text.length;
           pendingText += e.text;
           if (!textFlushTimer) textFlushTimer = setTimeout(flushText, 45);
@@ -3319,7 +3339,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const footerJsx = (
     <>
-      {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} tps={elapsed > 0 ? Math.round(outCharsRef.current / 4 / elapsed) : 0} linger={linger && !busy} width={width} /> : null}
+      {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} tps={(() => { const t0 = firstOutputAtRef.current; if (!t0) return 0; const secs = (Date.now() - t0) / 1000; return secs > 0.7 ? Math.round(outCharsRef.current / 4 / secs) : 0; })()} linger={linger && !busy} width={width} /> : null}
       {busy ? <ActivityRail items={items} width={width} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">

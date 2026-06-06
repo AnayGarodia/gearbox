@@ -47,15 +47,18 @@ export function Working({
   const spinner = linger ? "●" : spinFrame(state);
   const f = Math.floor(Date.now() / 360);
   const dots = ["", ".", "..", "..."][f % 4]!;
-  const phase = state === "tool" ? "using tools" : state === "streaming" ? "writing" : "thinking";
+  // One verb only — the gear-themed flavour word IS the activity; don't also stack
+  // the literal "thinking". Boo's face already carries the state.
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
       <Text color={labelColor}>
         <Text color={dotColor}>{spinner} </Text>
         {label}
-        {!linger ? <Text color={color.accentDim}> · {phase}{dots}</Text> : null}
+        {!linger ? <Text color={color.accentDim}>{dots}</Text> : null}
       </Text>
-      {!linger ? <Text><Text color={color.accentDim}>{elapsed}s</Text><Text color={color.faint}>{tps > 0 ? ` · ~${tps} tok/s` : ""} · esc to interrupt</Text></Text> : <Text color={color.faint}> </Text>}
+      {/* tok/s only shows once it's a real streaming rate (App measures from the
+          first output token, not total elapsed — otherwise it reads as ~1/s). */}
+      {!linger ? <Text><Text color={color.accentDim}>{elapsed}s</Text><Text color={color.faint}>{tps >= 5 ? ` · ~${tps} tok/s` : ""} · esc to interrupt</Text></Text> : <Text color={color.faint}> </Text>}
     </Box>
   );
 }

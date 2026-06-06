@@ -40,7 +40,7 @@ export const color: Theme = {
   user: "#BAE6FD", ok: "#4ADE80", err: "#F87171", run: "#818CF8", navy: "#111111",
   userBg: "#0D2137", codeBg: "#0D0D0D", panelBg: "#161616", accentBg: "#0A1628",
   path: "#7DD3FC",
-  codeKeyword: "#7DD3FC", codeString: "#A7F3D0", codeNumber: "#FDA4AF",
+  codeKeyword: "#7DD3FC", codeString: "#A7F3D0", codeNumber: "#A5B4FC",
   codeComment: "#4B5563", codePunct: "#6B7280",
   codeFunction: "#93C5FD", codeType: "#C4B5FD", codeOperator: "#6B7280", codeBracket: "#60A5FA",
   diffAddBg: "#052E16", diffDelBg: "#2D0A0A", diffContextBg: "#0D0D0D",

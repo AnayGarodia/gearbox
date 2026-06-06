@@ -20,11 +20,12 @@ import { App } from "../src/ui/App.tsx";
 import { FixedSelector } from "../src/model/selector.ts";
 import type { Item } from "../src/ui/types.ts";
 
-test("banner shows brand + model", () => {
-  const { lastFrame } = render(<Banner model="sonnet-4.6" />);
+test("banner shows brand + working dir (model lives in the status bar, not here)", () => {
+  const { lastFrame } = render(<Banner cwd="my-project" />);
   const f = lastFrame() ?? "";
   expect(f).toContain("gearbox");
-  expect(f).toContain("sonnet-4.6");
+  expect(f).toContain("my-project");
+  expect(f).not.toContain("sonnet-4.6"); // model is NOT duplicated in the title bar
 });
 
 test("transcript renders user, assistant, tools, error with the right glyphs", () => {
@@ -185,8 +186,7 @@ test("app initial render: banner, onboarding setup, input", () => {
   );
   const f = lastFrame() ?? "";
   expect(f).toContain("gearbox");
-  expect(f).toContain("setup required");
-  expect(f).toContain("/account add <api-key>");
+  expect(f).toContain("/account add <api-key>"); // onboarding splash conveys the setup state
   expect(f).toContain("/onboard");
 });
 
