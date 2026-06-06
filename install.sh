@@ -101,6 +101,10 @@ fi
 cp "${extract_dir}/package/dist/cli.mjs" "${target_dir}/cli.mjs"
 chmod 0755 "${target_dir}/cli.mjs"
 
+# Replace stale symlinks instead of following them. Old Bun-linked installs can
+# leave ~/.bun/bin/gearbox -> .../src/cli.tsx; `cat > symlink` would overwrite
+# the target and keep the broken link in place.
+rm -f "${BIN_DIR}/gearbox"
 cat > "${BIN_DIR}/gearbox" <<EOF
 #!/usr/bin/env sh
 exec node "${target_dir}/cli.mjs" "\$@"
@@ -133,8 +137,10 @@ esac
 if [[ "${GEARBOX_SKIP_ONBOARD:-}" != "1" ]]; then
   echo ""
   echo "Starting setup..."
-  if [[ -r /dev/tty && -w /dev/tty ]]; then
-    "${BIN_DIR}/gearbox" onboard < /dev/tty > /dev/tty
+  if [[ -t 1 && -e /dev/tty && -r /dev/tty && -w /dev/tty ]]; then
+    if ! "${BIN_DIR}/gearbox" onboard < /dev/tty > /dev/tty; then
+      echo "Setup did not complete. Run: ${BIN_DIR}/gearbox onboard"
+    fi
   else
     echo "No interactive terminal detected. Run: ${BIN_DIR}/gearbox onboard"
   fi
