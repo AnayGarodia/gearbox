@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { imageContent, imagePathsInText, loadImageAttachment } from "../src/image.ts";
+import { imageChipLabel, imageContent, imagePathsInText, loadImageAttachment, replaceImagePathWithMarker } from "../src/image.ts";
 import { buildContext } from "../src/context/builder.ts";
 import { findModel } from "../src/providers.ts";
 import { formatSearchResults } from "../src/websearch.ts";
@@ -26,6 +26,15 @@ test("dragged or pasted image paths become model image parts", () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("image path markers hide the dragged absolute path", () => {
+  const path = "/tmp/Gearbox Screenshots/Screenshot 2026-06-06 at 13.04.04.png";
+  const marker = imageChipLabel(path);
+  expect(marker).toBe("[image: Screenshot 2026-06-06 at 13.04.04.png]");
+  const shown = replaceImagePathWithMarker(`fix "${path}" please`, path, marker);
+  expect(shown).toBe(`fix ${marker} please`);
+  expect(shown).not.toContain("/tmp/Gearbox");
 });
 
 test("buildContext preserves multimodal user content as the current turn", () => {

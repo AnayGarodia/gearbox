@@ -23,12 +23,12 @@ import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { confirmRoutingPreference, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, type Effort } from "../model/reasoning.ts";
-import { MODELS, findModel, estimateCost, type ModelSpec } from "../providers.ts";
+import { findModel, estimateCost, modelRegistry, type ModelSpec } from "../providers.ts";
 import { runTask } from "../agent/run.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
-import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
@@ -38,12 +38,13 @@ import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { fetchUrlText, urlsInText } from "../fetch.ts";
-import { imageContent, imagePathsInText, loadImageAttachment, type ImageAttachment } from "../image.ts";
+import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug } from "../commands.ts";
+import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
@@ -53,7 +54,7 @@ import { listProjectFiles, expandMentions } from "./files.ts";
 import { useTerminalSize } from "./useTerminalSize.ts";
 import { useOnline, isNetworkError } from "./net.ts";
 import { gitBranch } from "./git.ts";
-import { basename, extname } from "node:path";
+import { basename, extname, resolve } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile } from "node:fs/promises";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
@@ -130,6 +131,7 @@ function uniq<T>(xs: T[]): T[] {
 
 type CliModelChoice = { id: string; label: string; provider: string; efforts?: string[] };
 
+const CLAUDE_CLI_EFFORTS = ["low", "medium", "high", "max"];
 const FALLBACK_CODEX_MODELS: CliModelChoice[] = [
   { id: "gpt-5.5", label: "gpt-5.5", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
   { id: "gpt-5.4", label: "gpt-5.4", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
@@ -441,6 +443,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const activeCliModelRef = useRef<string | undefined>(undefined);
   const cliSessionRef = useRef<string | undefined>(undefined);
   const activeImagesRef = useRef<ImageAttachment[]>([]);
+  const imageChipPathsRef = useRef<Map<string, string>>(new Map());
   const accountStatusCacheRef = useRef<Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>>({});
   // Which account ran the last turn + its provider-reported cost/limit (for the
   // per-account spend ledger; see src/accounts/usage.ts).
@@ -611,8 +614,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const x = Number(m[2]);
         const y = Number(m[3]);
         const up = m[4] === "m";
-        if (b === 64) delta -= 3;
-        else if (b === 65) delta += 3;
+        if (b === 64) delta -= 1;
+        else if (b === 65) delta += 1;
         else {
           const off = composerOffset(x, y);
           const point = transcriptPoint(x, y);
@@ -620,8 +623,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const isPrimary = (b & 3) === 0;
           if (isPrimary && isDrag && transcriptMouseAnchorRef.current && !point) {
             const bottom = viewportTop + transcriptHeightLiveRef.current - 1;
-            if (y < viewportTop) scrollBy(-3);
-            else if (y > bottom) scrollBy(3);
+            if (y < viewportTop) scrollBy(-2);
+            else if (y > bottom) scrollBy(2);
             const edgeLine = y < viewportTop ? scrollTopLiveRef.current : scrollTopLiveRef.current + transcriptHeightLiveRef.current - 1;
             const edgeText = lineText(linesRef.current[edgeLine] ?? []);
             setTranscriptSel({
@@ -789,13 +792,33 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     transcriptSelectionRef.current = sel;
     setTranscriptSelectionState(sel);
   };
+  const imageMarkerFor = (path: string): string => {
+    for (const [marker, existing] of imageChipPathsRef.current) {
+      if (existing === path) return marker;
+    }
+    let idx = 1;
+    let marker = imageChipLabel(path);
+    while (imageChipPathsRef.current.has(marker)) {
+      idx++;
+      marker = imageChipLabel(path, idx);
+    }
+    imageChipPathsRef.current.set(marker, path);
+    return marker;
+  };
+  const chipImagePathsIn = (text: string): string[] => {
+    const paths: string[] = [];
+    for (const [marker, path] of imageChipPathsRef.current) {
+      if (text.includes(marker)) paths.push(path);
+    }
+    return paths;
+  };
   const cliCatalogId = (binary: string) => (binary.includes("codex") ? "codex-cli" : binary.includes("claude") ? "claude-cli" : "");
   const cliModelChoices = (binary: string): CliModelChoice[] => {
     if (binary.includes("codex")) return codexCliModels();
     const provider = binary.includes("claude") ? "anthropic" : binary;
     return (catalogProvider(cliCatalogId(binary))?.defaultModels ?? []).map((id) => {
       const m = findModel(id);
-      return { id, label: m?.label ?? id, provider, efforts: m ? effortLevels(m) : undefined };
+      return { id, label: m?.label ?? id, provider, efforts: binary.includes("claude") ? CLAUDE_CLI_EFFORTS : m ? effortLevels(m) : undefined };
     });
   };
   const cliSupportsModel = (binary: string, modelId: string) => {
@@ -854,7 +877,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const take = (rows: PaletteRow[]) => rows.filter((r) => !q || `${r.label} ${r.detail ?? ""} ${r.value}`.toLowerCase().includes(q)).slice(0, 7);
     if (head === "/model") {
       const cli = activeCliRef.current;
-      const models = cli ? cliModelChoices(cli.binary) : MODELS;
+      const models = cli ? cliModelChoices(cli.binary) : modelRegistry();
       return take([
         { value: "/model auto", label: "auto", detail: cli ? "use subscription default" : "route per task" },
         ...models.map((m) => ({ value: `/model ${m.label}`, label: m.label, detail: cli ? `${cli.binary} subscription` : `${m.provider} · ${m.id}` })),
@@ -1175,26 +1198,32 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const runTurn = useCallback(
     async (prompt: string) => {
-      echo(prompt);
-      lastPromptRef.current = prompt;
       setVerb(nextVerb());
       activeImagesRef.current = [];
       let { text: modelPrompt, attached } = expandMentions(prompt);
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
-      const imagePaths = imagePathsInText(modelPrompt);
+      const imagePaths = uniq([...chipImagePathsIn(modelPrompt), ...imagePathsInText(modelPrompt)]);
+      let displayPrompt = prompt;
+      for (const path of imagePaths) {
+        const marker = imageMarkerFor(path);
+        modelPrompt = replaceImagePathWithMarker(modelPrompt, path, marker);
+        displayPrompt = replaceImagePathWithMarker(displayPrompt, path, marker);
+      }
       const images: ImageAttachment[] = [];
       for (const path of imagePaths) {
         try {
           images.push(loadImageAttachment(path));
         } catch (e: any) {
-          notice(`couldn't attach ${path}: ${(e?.message ?? String(e)).split("\n")[0]}`);
+          notice(`couldn't attach ${basename(path)}: ${(e?.message ?? String(e)).split("\n")[0]}`);
         }
       }
       activeImagesRef.current = images;
       if (images.length) {
-        const names = images.map((img) => basename(img.path)).join(", ");
+        const names = images.map((img) => imageMarkerFor(img.path)).join(", ");
         notice(`attached ${images.length} image${images.length === 1 ? "" : "s"}: ${names}`);
       }
+      echo(displayPrompt);
+      lastPromptRef.current = displayPrompt;
       const urls = urlsInText(modelPrompt);
       if (urls.length) {
         const fetched: string[] = [];
@@ -1805,6 +1834,53 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }
           return;
         }
+        case "mcp": {
+          echo(text);
+          const parts = shellSplit(arg);
+          const sub = (parts[0] ?? "list").toLowerCase();
+          if (sub === "list" || sub === "servers") {
+            notice(formatMcpConfigList());
+            return;
+          }
+          if (sub === "tools") {
+            notice("checking MCP servers…");
+            void mcpToolSummary().then(notice).catch((e: any) => notice(`couldn't list MCP tools: ${e?.message ?? String(e)}`));
+            return;
+          }
+          if (sub === "paths") {
+            notice(mcpConfigPaths().join("\n"));
+            return;
+          }
+          if (sub === "add") {
+            const global = parts[1] === "--global";
+            const offset = global ? 2 : 1;
+            const serverName = parts[offset] ?? "";
+            const command = parts[offset + 1] ?? "";
+            const commandArgs = parts.slice(offset + 2);
+            try {
+              notice(addMcpServer(serverName, command, commandArgs, { scope: global ? "global" : "project" }) + "\nRestarting is not required; new turns can use the tools.");
+            } catch (e: any) {
+              notice(`${e?.message ?? String(e)}\nExample: /mcp add github npx -y @modelcontextprotocol/server-github`);
+            }
+            return;
+          }
+          if (sub === "remove" || sub === "rm") {
+            const global = parts[1] === "--global";
+            const name = parts[global ? 2 : 1] ?? "";
+            notice(removeMcpServer(name, { scope: global ? "global" : undefined }));
+            return;
+          }
+          notice(
+            "MCP commands:\n" +
+              "  /mcp list\n" +
+              "  /mcp tools\n" +
+              "  /mcp add <name> <command> [args...]\n" +
+              "  /mcp add --global <name> <command> [args...]\n" +
+              "  /mcp remove <name>\n" +
+              "  /mcp paths",
+          );
+          return;
+        }
         // Everything account-related, addressed by NUMBER (never an id):
         //   /account              → numbered list
         //   /account <n>          → switch to account #n
@@ -1960,6 +2036,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                   "  /account add codex <name>    a 2nd ChatGPT account, e.g. /account add codex work\n" +
                   "  /account add azure <foundry-endpoint> <api-key>\n" +
                   "  /account add azure <resource-name> <api-key> [api-version]\n" +
+                  "  /account add openai-compat <name> <base-url> <api-key> <model> [model...]\n" +
                   "  /account add <api-key>       paste any provider key (auto-detected)\n" +
                   "  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter",
               );
@@ -1972,6 +2049,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 const azureKey = parts[3] ?? "";
                 const apiVersion = parts[4];
                 res = /^https?:\/\//i.test(resource) ? await addAzureFoundryAccount(resource, azureKey) : await addAzureAccount(resource, azureKey, { apiVersion });
+              } else if (["openai-compat", "openai-compatible", "custom", "proxy"].includes(first)) {
+                res = await addOpenAICompatAccount(parts[2] ?? "", parts[3] ?? "", parts[4] ?? "", parts.slice(5));
+              } else if (catalogProvider(first)?.authKind === "openai-compat" && !catalogProvider(first)?.baseUrl && /^https?:\/\//i.test(parts[2] ?? "")) {
+                res = await addOpenAICompatAccount(first, parts[2] ?? "", parts[3] ?? "", parts.slice(4));
               } else if (provGiven) res = await addApiKeyAccount(provGiven, keyVal);
               else if (detectProviderByKey(key)) res = await addByPastedKey(key);
               else {
@@ -2394,8 +2475,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // file, turn it into an @mention so it gets read into the prompt.
     if (!busyRef.current && input.length > 3 && !input.includes("\n")) {
       const p = sanitizeInputText(input).trim().replace(/^'|'$/g, "").replace(/\\ /g, " ");
-      if (/[/\\.]/.test(p) && p.length < 1024 && existsSync(p)) {
+      const abs = p.startsWith("~") ? p.replace(/^~/, process.env.HOME ?? "~") : resolve(process.cwd(), p);
+      if (/[/\\.]/.test(p) && p.length < 1024 && existsSync(abs)) {
         const e = editRef.current;
+        if (isImageFilePath(abs)) {
+          const marker = imageMarkerFor(abs);
+          setEdit({ value: e.value.slice(0, e.cursor) + marker + " " + e.value.slice(e.cursor), cursor: e.cursor + marker.length + 1 });
+          flashStatus(`attached ${basename(abs)}`);
+          return;
+        }
         const ins = `@${p} `;
         setEdit({ value: e.value.slice(0, e.cursor) + ins + e.value.slice(e.cursor), cursor: e.cursor + ins.length });
         return;

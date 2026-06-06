@@ -9,7 +9,7 @@
 // This is intentionally heuristic and call-free (no classifier model) — "basic".
 // The richer router (shadow-eval, credit/limit penalties, confidence) layers on
 // top without changing this interface.
-import { MODELS, providerAvailable, type ModelSpec } from "../providers.ts";
+import { modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
 import { profileFor } from "./profiles.ts";
 import { pickDefaultModel } from "../config.ts";
 import type { ModelSelector, Task, ModelChoice } from "./selector.ts";
@@ -77,7 +77,7 @@ export class RoutingSelector implements ModelSelector {
     const bar = BAR[kind];
 
     const required = task.requires ?? [];
-    const available = MODELS.filter((m) => providerAvailable(m.provider) && profileFor(m.id));
+    const available = modelRegistry().filter((m) => providerAvailable(m.provider));
     const capable = required.length ? available.filter((m) => supportsRequirements(m, required)) : available;
     if (available.length > 0 && capable.length === 0) {
       const missing = available

@@ -3,6 +3,7 @@ import { effortLevels, normalizeEffort, reasoningOptions } from "../src/model/re
 import { findModel } from "../src/providers.ts";
 
 const opus = findModel("claude-opus-4-8")!;
+const sonnet = findModel("claude-sonnet-4-6")!;
 const gpt = findModel("gpt-5.5")!;
 const gpro = findModel("gemini-3.1-pro-preview")!;
 const haiku = findModel("claude-haiku-4-5")!;
@@ -18,6 +19,8 @@ test("effort maps to each provider's documented reasoning option", () => {
   expect(effortLevels(opus)).toContain("max");
   expect(reasoningOptions(opus, "max")).toEqual({ anthropic: { effort: "max" } });
   expect(reasoningOptions(opus, "xhigh")).toEqual({ anthropic: { effort: "xhigh" } });
+  expect(effortLevels(sonnet)).not.toContain("xhigh");
+  expect(reasoningOptions(sonnet, "xhigh")).toEqual({});
   expect(normalizeEffort("extra high", effortLevels(gpt))).toBe("xhigh");
   expect(normalizeEffort("balanced", effortLevels(gpt))).toBe("medium");
 });

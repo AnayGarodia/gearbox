@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { tool, jsonSchema } from "ai";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -21,6 +21,7 @@ export interface McpConfig {
 }
 
 type Connected = { name: string; config: McpServerConfig; client: Client; tools: any[] };
+type McpScope = "global" | "project";
 
 let connectedPromise: Promise<Connected[]> | null = null;
 
@@ -33,6 +34,11 @@ function readConfigFile(path: string): McpConfig {
   } catch {
     return {};
   }
+}
+
+function writeConfigFile(path: string, config: McpConfig): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
 }
 
 function expandEnv(value: string): string {
@@ -89,6 +95,10 @@ async function connected(): Promise<Connected[]> {
   return connectedPromise;
 }
 
+export function reloadMcpConnections(): void {
+  connectedPromise = null;
+}
+
 function formatMcpResult(result: any): string {
   const content = result?.content ?? [];
   if (!Array.isArray(content) || !content.length) return JSON.stringify(result ?? {});
@@ -105,6 +115,121 @@ export async function mcpToolSummary(): Promise<string> {
   const rows = await connected();
   if (!rows.length) return "No MCP servers connected. Configure ~/.gearbox/mcp.json or .gearbox/mcp.json.";
   return rows.flatMap((s) => s.tools.map((t) => `${safeToolName(s.name, t.name).padEnd(34)} ${t.description ?? ""}`)).join("\n");
+}
+
+export function mcpConfigPath(scope: McpScope = "project", cwd = process.cwd()): string {
+  return scope === "global" ? join(HOME(), "mcp.json") : join(cwd, ".gearbox", "mcp.json");
+}
+
+export function configuredMcpServers(cwd = process.cwd()): Array<{ name: string; scope: McpScope | "compat"; config: McpServerConfig }> {
+  const paths: Array<{ scope: McpScope | "compat"; path: string }> = [
+    { scope: "global", path: join(HOME(), "mcp.json") },
+    { scope: "compat", path: join(cwd, ".mcp.json") },
+    { scope: "project", path: join(cwd, ".gearbox", "mcp.json") },
+  ];
+  const rows: Array<{ name: string; scope: McpScope | "compat"; config: McpServerConfig }> = [];
+  for (const p of paths) {
+    const file = readConfigFile(p.path);
+    for (const [name, config] of Object.entries(file.mcpServers ?? file.servers ?? {})) {
+      if (!config?.command) continue;
+      rows.push({ name, scope: p.scope, config });
+    }
+  }
+  return rows;
+}
+
+export function formatMcpConfigList(cwd = process.cwd()): string {
+  const rows = configuredMcpServers(cwd);
+  if (!rows.length) {
+    return [
+      "MCP servers",
+      "  none configured",
+      "",
+      "Add one:",
+      "  /mcp add github npx -y @modelcontextprotocol/server-github",
+      "  /mcp add --global linear npx -y @modelcontextprotocol/server-linear",
+    ].join("\n");
+  }
+  return [
+    "MCP servers",
+    ...rows.map((r) => {
+      const args = r.config.args?.length ? " " + r.config.args.join(" ") : "";
+      const off = r.config.disabled ? " · disabled" : "";
+      return `  ${r.name.padEnd(18)} ${r.scope.padEnd(7)} ${r.config.command}${args}${off}`;
+    }),
+    "",
+    "Tools: /mcp tools",
+    "Remove: /mcp remove <name>",
+  ].join("\n");
+}
+
+export function shellSplit(input: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let quote: "'" | '"' | null = null;
+  let esc = false;
+  for (const ch of input) {
+    if (esc) {
+      cur += ch;
+      esc = false;
+      continue;
+    }
+    if (ch === "\\") {
+      esc = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (cur) {
+        out.push(cur);
+        cur = "";
+      }
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+function cleanServerName(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+export function addMcpServer(name: string, command: string, args: string[] = [], opts: { scope?: McpScope; cwd?: string } = {}): string {
+  const serverName = cleanServerName(name);
+  if (!serverName || !command) throw new Error("usage: /mcp add <name> <command> [args...]");
+  const path = mcpConfigPath(opts.scope ?? "project", opts.cwd ?? process.cwd());
+  const file = readConfigFile(path);
+  const servers = { ...(file.mcpServers ?? file.servers ?? {}) };
+  servers[serverName] = { command, args };
+  writeConfigFile(path, { mcpServers: servers });
+  reloadMcpConnections();
+  return `connected ${serverName} (${opts.scope ?? "project"})`;
+}
+
+export function removeMcpServer(name: string, opts: { scope?: McpScope; cwd?: string } = {}): string {
+  const serverName = cleanServerName(name);
+  const scopes: McpScope[] = opts.scope ? [opts.scope] : ["project", "global"];
+  for (const scope of scopes) {
+    const path = mcpConfigPath(scope, opts.cwd ?? process.cwd());
+    const file = readConfigFile(path);
+    const servers = { ...(file.mcpServers ?? file.servers ?? {}) };
+    if (!(serverName in servers)) continue;
+    delete servers[serverName];
+    writeConfigFile(path, { mcpServers: servers });
+    reloadMcpConnections();
+    return `removed ${serverName} (${scope})`;
+  }
+  return `no MCP server named ${serverName}`;
 }
 
 export async function mcpTools(onEvent?: OnEvent, readOnly = false): Promise<Record<string, any>> {

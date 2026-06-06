@@ -10,11 +10,11 @@ import {
 import { CATALOG, catalogProvider, detectProviderByKey } from "../src/accounts/catalog.ts";
 import { importEnvCred, importableEnvCreds } from "../src/accounts/detect.ts";
 import { resolveCreds } from "../src/accounts/resolve.ts";
-import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addCliAccount } from "../src/accounts/onboard.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addCliAccount, addOpenAICompatAccount } from "../src/accounts/onboard.ts";
 import { subscriptionEnv } from "../src/agent/cli-backend.ts";
 import { detectCloudCreds, importCloudCred } from "../src/accounts/detect.ts";
 import { recordUsage, recordRateLimits, loadUsage, accountUsage, totalSpent, buildUsageView } from "../src/accounts/usage.ts";
-import { MODELS, findModel, resolveModel } from "../src/providers.ts";
+import { MODELS, findModel, modelRegistry, resolveModel } from "../src/providers.ts";
 import type { Account } from "../src/accounts/types.ts";
 
 // Force the deterministic file store (the keychain path is OS-dependent / can
@@ -159,6 +159,14 @@ test("addByPastedKey detects the provider and stores a usable account", async ()
   const groq = await addApiKeyAccount("groq", "gsk_pasted");
   expect(groq.account?.auth.kind).toBe("openai-compat");
   expect((await resolveCreds(groq.account!)).baseURL).toContain("groq.com");
+});
+
+test("custom OpenAI-compatible accounts add selectable user-declared models", async () => {
+  const res = await addOpenAICompatAccount("Acme Router", "https://llm.acme.test/v1", "acme-key", ["acme-coder", "acme-fast"]);
+  expect(res.ok).toBe(true);
+  expect(res.account?.provider).toBe("custom-acme-router");
+  expect((await resolveCreds(res.account!)).baseURL).toBe("https://llm.acme.test/v1");
+  expect(modelRegistry().some((m) => m.id === "custom-acme-router/acme-coder" && m.provider === "custom-acme-router")).toBe(true);
 });
 
 test("common provider aliases normalize during account add", async () => {

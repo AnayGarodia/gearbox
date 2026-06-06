@@ -12,14 +12,14 @@ import { App } from "./ui/App.tsx";
 import { FixedSelector } from "./model/selector.ts";
 import { RoutingSelector } from "./model/router.ts";
 import { anyProviderAvailable } from "./config.ts";
-import { MODELS } from "./providers.ts";
+import { modelRegistry } from "./providers.ts";
 import { detectImageMode, setImageMode, transmitAll } from "./ui/image.ts";
 import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.15";
+const VERSION = "0.1.16";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -271,7 +271,8 @@ Usage:
   gearbox onboard         set up a provider before opening the app
   gearbox --model <name>  start with a specific model
   gearbox --continue      resume the most recent session in this directory
-  gearbox mcp list        show configured MCP tools
+  gearbox mcp list        show configured MCP servers
+  gearbox mcp add <name> <command> [args...]
   gearbox doctor models   show provider/model capability matrix
   gearbox upgrade         pull the latest version + reinstall deps
 
@@ -288,11 +289,12 @@ Set up at least one provider first:
   gearbox onboard
   gearbox auth add <api-key>
   gearbox auth add <provider> <api-key>
+  gearbox auth add openai-compat <name> <base-url> <api-key> <model>
   gearbox auth add codex [name]
   gearbox auth add claude [name]
   gearbox auth import
 
-Models: ${MODELS.map((m) => m.label).join(", ")}
+Models: ${modelRegistry().map((m) => m.label).join(", ")}
 In-app: / for commands, @ for files, !cmd for shell, shift+tab for plan mode.`);
   process.exit(0);
 }
@@ -308,14 +310,28 @@ if (args[0] === "onboard" || args[0] === "setup") {
 }
 
 if (args[0] === "mcp") {
-  const { mcpToolSummary, mcpConfigPaths } = await import("./mcp.ts");
+  const { addMcpServer, formatMcpConfigList, mcpToolSummary, mcpConfigPaths, removeMcpServer } = await import("./mcp.ts");
   const sub = args[1] ?? "list";
   if (sub === "list" || sub === "tools") {
-    console.log(await mcpToolSummary());
+    if (sub === "tools") console.log(await mcpToolSummary());
+    else console.log(formatMcpConfigList());
   } else if (sub === "paths") {
     console.log(mcpConfigPaths().join("\n"));
+  } else if (sub === "add") {
+    const global = args[2] === "--global";
+    const offset = global ? 3 : 2;
+    try {
+      console.log(addMcpServer(args[offset] ?? "", args[offset + 1] ?? "", args.slice(offset + 2), { scope: global ? "global" : "project" }));
+    } catch (e: any) {
+      console.log(e?.message ?? String(e));
+      console.log("example: gearbox mcp add github npx -y @modelcontextprotocol/server-github");
+      process.exit(1);
+    }
+  } else if (sub === "remove" || sub === "rm") {
+    const global = args[2] === "--global";
+    console.log(removeMcpServer(args[global ? 3 : 2] ?? "", { scope: global ? "global" : undefined }));
   } else {
-    console.log("gearbox mcp [list|paths]");
+    console.log("gearbox mcp [list|tools|paths|add <name> <command> [args...]|remove <name>]");
   }
   process.exit(0);
 }
@@ -336,7 +352,7 @@ if (args[0] === "doctor") {
 if (args[0] === "auth") {
   const { listAccounts, loadAccounts, removeAccount } = await import("./accounts/store.ts");
   const { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } = await import("./accounts/detect.ts");
-  const { addApiKeyAccount, addByPastedKey, testAccount, addableProviders, addCliAccount, cliAuthStatus, cliLoginArgs } = await import("./accounts/onboard.ts");
+  const { addApiKeyAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addableProviders, addCliAccount, cliAuthStatus, cliLoginArgs } = await import("./accounts/onboard.ts");
   const { subscriptionEnv } = await import("./agent/cli-backend.ts");
   const { detectProviderByKey } = await import("./accounts/catalog.ts");
   const sub = args[1];
@@ -359,11 +375,13 @@ if (args[0] === "auth") {
     const cliProvider = head === "codex" || head === "chatgpt" ? "codex-cli" : head === "claude" ? "claude-cli" : "";
     const res = cliProvider
       ? addCliAccount(cliProvider, rest.slice(1).join(" ").trim() || undefined)
+      : ["openai-compat", "openai-compatible", "custom", "proxy"].includes(head)
+        ? await addOpenAICompatAccount(rest[1] ?? "", rest[2] ?? "", rest[3] ?? "", rest.slice(4))
       : rest[0] && !rest[1] && detectProviderByKey(rest[0])
         ? await addByPastedKey(rest[0])
         : rest[0] && rest[1]
           ? await addApiKeyAccount(rest[0], rest[1])
-          : { ok: false, message: "usage: gearbox auth add <key>   |   gearbox auth add <provider> <key>   |   gearbox auth add codex [name]" };
+          : { ok: false, message: "usage: gearbox auth add <key>   |   gearbox auth add <provider> <key>   |   gearbox auth add openai-compat <name> <base-url> <key> <model>   |   gearbox auth add codex [name]" };
     console.log(res.message);
     if (res.ok && res.account) {
       if (res.account.exec === "cli" && res.account.auth.kind === "cli") {

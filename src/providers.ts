@@ -9,7 +9,7 @@ import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createVertex } from "@ai-sdk/google-vertex";
 import { createAzure } from "@ai-sdk/azure";
 import type { LanguageModel } from "ai";
-import { accountsForProvider } from "./accounts/store.ts";
+import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
 import type { ResolvedCreds } from "./accounts/types.ts";
 
@@ -32,6 +32,14 @@ export interface ModelSpec {
   quality?: number; // 0–1, e.g. SWE-bench Verified
   reasoning?: boolean; // supports a reasoning/thinking-effort control (see model/reasoning.ts)
   efforts?: string[]; // model/provider-specific reasoning effort values, e.g. low/high/xhigh/max
+  capabilities?: {
+    tools?: boolean | "unknown";
+    images?: boolean | "unknown";
+    jsonSchema?: boolean | "unknown";
+    systemPrompt?: boolean | "unknown";
+    usage?: "exact" | "partial" | "none";
+    source?: "official" | "api-discovered" | "user-configured" | "seeded";
+  };
 }
 
 // The registry. Adding a model is data, not code. Routing will score over this list.
@@ -44,7 +52,7 @@ const CURATED: ModelSpec[] = [
   // Anthropic (native). Opus 4.8 is the flagship; all support adaptive thinking
   // except Haiku. Sonnet/Opus now carry a 1M context window.
   { id: "claude-opus-4-8", provider: "anthropic", sdkId: "claude-opus-4-8", label: "opus-4.8", contextWindow: 1_000_000, cost: { inUSDPerMtok: 5, outUSDPerMtok: 25 }, reasoning: true, efforts: ["low", "medium", "high", "xhigh", "max"] },
-  { id: "claude-sonnet-4-6", provider: "anthropic", sdkId: "claude-sonnet-4-6", label: "sonnet-4.6", contextWindow: 1_000_000, cost: { inUSDPerMtok: 3, outUSDPerMtok: 15 }, reasoning: true, efforts: ["low", "medium", "high", "xhigh", "max"] },
+  { id: "claude-sonnet-4-6", provider: "anthropic", sdkId: "claude-sonnet-4-6", label: "sonnet-4.6", contextWindow: 1_000_000, cost: { inUSDPerMtok: 3, outUSDPerMtok: 15 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
   { id: "claude-haiku-4-5", provider: "anthropic", sdkId: "claude-haiku-4-5", label: "haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 1, outUSDPerMtok: 5 } },
   // OpenAI (native). GPT-5.5 reasoning effort: none/minimal/low/medium/high/xhigh.
   { id: "gpt-5.5", provider: "openai", sdkId: "gpt-5.5", label: "gpt-5.5", contextWindow: 400_000, cost: { inUSDPerMtok: 2.5, outUSDPerMtok: 10 }, reasoning: true, efforts: ["none", "minimal", "low", "medium", "high", "xhigh"] },
@@ -75,6 +83,39 @@ function generatedModels(): ModelSpec[] {
 }
 
 export const MODELS: ModelSpec[] = [...CURATED, ...generatedModels()];
+
+function accountModelSpecs(): ModelSpec[] {
+  const out: ModelSpec[] = [];
+  for (const account of listAccounts()) {
+    if (!account.enabled || account.exec === "cli") continue;
+    for (const sdkId of account.models ?? []) {
+      if (!sdkId) continue;
+      if (MODELS.some((m) => m.provider === account.provider && m.sdkId === sdkId)) continue;
+      const id = `${account.provider}/${sdkId}`;
+      out.push({
+        id,
+        provider: account.provider,
+        sdkId,
+        label: sdkId.length > 24 ? sdkId.slice(0, 24) : sdkId,
+        contextWindow: 128_000,
+        capabilities: { source: "user-configured", tools: "unknown", images: "unknown", jsonSchema: "unknown", usage: "partial" },
+      });
+    }
+  }
+  return out;
+}
+
+export function modelRegistry(): ModelSpec[] {
+  const seen = new Set<string>();
+  const out: ModelSpec[] = [];
+  for (const m of [...MODELS, ...accountModelSpecs()]) {
+    const key = `${m.provider}\0${m.sdkId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(m);
+  }
+  return out;
+}
 
 const ENV_KEY: Record<NativeProviderId, string> = {
   anthropic: "ANTHROPIC_API_KEY",
@@ -117,14 +158,14 @@ export function providerAvailable(p: ProviderId): boolean {
 }
 
 export function findModel(idOrLabel: string): ModelSpec | undefined {
-  return MODELS.find((m) => m.id === idOrLabel || m.label === idOrLabel);
+  return modelRegistry().find((m) => m.id === idOrLabel || m.label === idOrLabel);
 }
 
 /** Approximate USD cost of a set of turns, from each turn's model + token usage. */
 export function estimateCost(turns: { model: string; inputTokens: number; outputTokens: number }[]): number {
   let usd = 0;
   for (const t of turns) {
-    const c = MODELS.find((m) => m.id === t.model)?.cost;
+    const c = modelRegistry().find((m) => m.id === t.model)?.cost;
     if (!c) continue;
     usd += (t.inputTokens / 1e6) * c.inUSDPerMtok + (t.outputTokens / 1e6) * c.outUSDPerMtok;
   }

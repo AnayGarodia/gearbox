@@ -1,6 +1,6 @@
 // Slash commands: metadata (for /help + the live palette) and pure helpers
 // (for model list/switch) kept testable and separate from the UI.
-import { MODELS, providerAvailable, findModel, type ProviderId } from "./providers.ts";
+import { modelRegistry, providerAvailable, findModel, type ProviderId } from "./providers.ts";
 import { catalogProvider } from "./accounts/catalog.ts";
 import { glyph } from "./ui/theme.ts";
 import { fuzzyRank } from "./ui/fuzzy.ts";
@@ -36,6 +36,7 @@ export const COMMANDS: CommandMeta[] = [
   // accounts & cost
   { name: "/account", usage: "/account", desc: "list accounts; /account <number> to switch, /account add to add one", group: "accounts" },
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
+  { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
   { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },
   // save & copy
   { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard", group: "output" },
@@ -201,6 +202,7 @@ const ENV_LABEL: Record<ProviderId, string> = {
  * short and actionable. `/model all` passes showAll to spell them all out.
  */
 export function formatModelList(currentId: string | null, showAll = false): string {
+  const MODELS = modelRegistry();
   const line = (m: (typeof MODELS)[number]) => `  ${m.id === currentId ? glyph.on : glyph.off} ${m.label.padEnd(18)} ${m.provider}`;
   const usable = MODELS.filter((m) => providerAvailable(m.provider));
   const rest = MODELS.filter((m) => !providerAvailable(m.provider));
@@ -234,6 +236,7 @@ export function resolveModelSwitch(query: string): SwitchResult {
   const q = query.trim().toLowerCase();
   if (!q) return { ok: false, message: "usage: /model <name>" };
 
+  const MODELS = modelRegistry();
   const matches = MODELS.filter((m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
   if (matches.length === 0) return { ok: false, message: `no model matching “${query}” — /model to list` };
 

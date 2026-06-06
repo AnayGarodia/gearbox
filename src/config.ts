@@ -1,6 +1,6 @@
 // Minimal config for v0.1. Kept tiny on purpose; the routing config (tiers,
 // prices, budgets, bars) arrives with the router and will live alongside this.
-import { MODELS, providerAvailable, findModel, type ModelSpec } from "./providers.ts";
+import { providerAvailable, findModel, modelRegistry, type ModelSpec } from "./providers.ts";
 
 export interface Config {
   defaultModelId: string;
@@ -19,9 +19,9 @@ export function pickDefaultModel(preferredId?: string): ModelSpec | undefined {
   const pref = preferredId ?? config.defaultModelId;
   const wanted = findModel(pref);
   if (wanted && providerAvailable(wanted.provider)) return wanted;
-  return MODELS.find((m) => providerAvailable(m.provider));
+  return modelRegistry().find((m) => providerAvailable(m.provider));
 }
 
 export function anyProviderAvailable(): boolean {
-  return MODELS.some((m) => providerAvailable(m.provider));
+  return modelRegistry().some((m) => providerAvailable(m.provider));
 }

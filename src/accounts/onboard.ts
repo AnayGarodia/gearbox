@@ -25,6 +25,10 @@ export interface CliAuthStatus {
   identityLabel?: string;
 }
 
+function slugify(input: string): string {
+  return input.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || shortId();
+}
+
 /** Store an API-key (or openai-compat) account for `provider`. */
 export async function addApiKeyAccount(provider: string, key: string, opts: { id?: string; label?: string } = {}): Promise<AddResult> {
   provider = normalizeProviderId(provider);
@@ -49,6 +53,32 @@ export async function addApiKeyAccount(provider: string, key: string, opts: { id
   };
   putAccount(account);
   return { ok: true, account, message: `added ${account.label} (${id})` };
+}
+
+/** Store any OpenAI-compatible API endpoint. This is the generic escape hatch
+ * for LiteLLM, self-hosted gateways, enterprise proxies, and new providers. */
+export async function addOpenAICompatAccount(name: string, baseUrl: string, key: string, models: string[], opts: { id?: string; label?: string } = {}): Promise<AddResult> {
+  if (!/^https?:\/\//i.test(baseUrl) || !models.length) {
+    return { ok: false, message: "usage: /account add openai-compat <name> <base-url> <api-key> <model> [model...]" };
+  }
+  const known = catalogProvider(normalizeProviderId(name));
+  const provider = known?.authKind === "openai-compat" ? known.id : `custom-${slugify(name)}`;
+  const id = opts.id ?? `${provider}-${shortId()}`;
+  const ref = `${id}:api-key`;
+  await setSecret(ref, key.trim());
+  const account: Account = {
+    id,
+    label: opts.label ?? (known?.label ?? (name.trim() || "OpenAI-compatible")),
+    provider,
+    exec: "in-loop",
+    auth: { kind: "openai-compat", ref },
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    models,
+    enabled: true,
+    addedAt: Date.now(),
+  };
+  putAccount(account);
+  return { ok: true, account, message: `added ${account.label} (${models.length} model${models.length === 1 ? "" : "s"})` };
 }
 
 function azureResourceName(input: string): string {
@@ -94,7 +124,7 @@ export async function addAzureFoundryAccount(endpoint: string, key: string, opts
 export async function addAzureAccount(resourceOrEndpoint: string, key: string, opts: { apiVersion?: string; id?: string; label?: string } = {}): Promise<AddResult> {
   const resourceName = azureResourceName(resourceOrEndpoint);
   if (!resourceName || !key.trim()) return { ok: false, message: "usage: /account add azure <resource-or-endpoint> <api-key> [api-version]" };
-  const id = opts.id ?? `azure-${resourceName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || shortId()}`;
+  const id = opts.id ?? `azure-${slugify(resourceName)}`;
   const ref = `${id}:api-key`;
   await setSecret(ref, key.trim());
   const account: Account = {

@@ -1,4 +1,4 @@
-import { MODELS, type ModelSpec } from "../providers.ts";
+import { modelRegistry, type ModelSpec } from "../providers.ts";
 import { catalogProvider } from "../accounts/catalog.ts";
 import { profileFor } from "./profiles.ts";
 import { effortLevels } from "./reasoning.ts";
@@ -24,12 +24,14 @@ export interface ModelCapabilities {
 }
 
 function providerSource(spec: ModelSpec): CapabilitySource {
+  if (spec.capabilities?.source) return spec.capabilities.source;
   const group = catalogProvider(spec.provider)?.group;
   if (group === "gateway" || group === "openai-compat" || group === "local") return "seeded";
   return "seeded";
 }
 
 function exactUsage(spec: ModelSpec): UsageSupport {
+  if (spec.capabilities?.usage) return spec.capabilities.usage;
   if (spec.provider === "anthropic" || spec.provider === "openai" || spec.provider === "google" || spec.provider === "deepseek") return "exact";
   const group = catalogProvider(spec.provider)?.group;
   if (group === "cloud" || group === "gateway" || group === "openai-compat") return "partial";
@@ -37,6 +39,7 @@ function exactUsage(spec: ModelSpec): UsageSupport {
 }
 
 function toolSupport(spec: ModelSpec): CapabilityValue {
+  if (spec.capabilities?.tools != null) return spec.capabilities.tools;
   const group = catalogProvider(spec.provider)?.group;
   if (spec.provider === "anthropic" || spec.provider === "openai" || spec.provider === "google" || spec.provider === "deepseek") return true;
   if (spec.provider === "bedrock" || spec.provider === "vertex" || spec.provider === "azure") return "unknown";
@@ -45,12 +48,14 @@ function toolSupport(spec: ModelSpec): CapabilityValue {
 }
 
 function imageSupport(spec: ModelSpec): CapabilityValue {
+  if (spec.capabilities?.images != null) return spec.capabilities.images;
   if (spec.provider === "anthropic" || spec.provider === "openai" || spec.provider === "google" || spec.provider === "vertex") return true;
   if (spec.provider === "deepseek") return false;
   return "unknown";
 }
 
 function schemaSupport(spec: ModelSpec): CapabilityValue {
+  if (spec.capabilities?.jsonSchema != null) return spec.capabilities.jsonSchema;
   if (spec.provider === "openai" || spec.provider === "google" || spec.provider === "anthropic") return true;
   if (spec.provider === "deepseek") return "unknown";
   return "unknown";
@@ -76,7 +81,7 @@ export function capabilitiesFor(spec: ModelSpec): ModelCapabilities {
     images: imageSupport(spec),
     jsonSchema: schemaSupport(spec),
     reasoningEffort: efforts.length ? efforts : false,
-    systemPrompt: true,
+    systemPrompt: spec.capabilities?.systemPrompt ?? true,
     usage: exactUsage(spec),
     contextWindow: profile?.contextWindow ?? spec.contextWindow,
     maxOutputTokens: profile?.maxOutput,
@@ -106,7 +111,7 @@ function cell(v: CapabilityValue | boolean | string[] | false | UsageSupport | u
   return String(v ?? "");
 }
 
-export function formatCapabilityMatrix(models: ModelSpec[] = MODELS): string {
+export function formatCapabilityMatrix(models: ModelSpec[] = modelRegistry()): string {
   const rows = models.map((m) => {
     const c = capabilitiesFor(m);
     return {
