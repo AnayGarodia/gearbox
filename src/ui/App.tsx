@@ -508,7 +508,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Restore the active subscription account from a prior session (persisted in
   // prefs.activeAccount), so /account choices survive restarts.
   useEffect(() => {
-    const acctId = loadPrefs().activeAccount;
+    let acctId = loadPrefs().activeAccount;
+    // First-run / subscription-only: onboarding adds the CLI account but doesn't
+    // activate it. If nothing is active and there's no usable API model, activate
+    // the first enabled subscription so the app works out of the box (otherwise the
+    // model reads "none", turns fail, and /model shows an empty list).
+    if (!acctId && buildPanelModelRows().length === 0) {
+      acctId = listAccounts().find((a) => a.enabled && a.exec === "cli")?.id;
+    }
     if (!acctId) return;
     const a = getAccount(acctId);
     if (a && a.exec === "cli") {
@@ -516,6 +523,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       activeCliRef.current = { id: a.id, binary: bin, profile: (a.auth as any).loginProfile };
       if (activeCliModelRef.current && !cliSupportsModel(bin, activeCliModelRef.current)) setActiveCliModelId(undefined);
       setActiveCli({ id: a.id, label: bin });
+      updatePrefs({ activeAccount: a.id }); // persist the auto-activation
     }
   }, []);
 
@@ -793,7 +801,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }
         }
       }
-      if (delta) scrollBy(delta);
+      if (delta) {
+        // While a command panel is open, the wheel scrolls IT (the transcript is
+        // hidden underneath), matching the keyboard ↑↓ behaviour.
+        const p = panelRef.current;
+        if (p) {
+          if (p.kind === "static") setPanel({ ...p, scroll: clampScroll(p.scroll + delta, panelMaxScrollRef.current) });
+          else if (p.kind === "accounts") setPanel({ ...p, index: clampIndex(p.index + delta, panelAccountNumbersRef.current.length) });
+          else setPanel({ ...p, index: clampIndex(p.index + delta, filterModelRows(buildPanelModelRows(), p.filter).length) });
+        } else scrollBy(delta);
+      }
     };
     stdin.on("data", onData);
     return () => {
@@ -1956,7 +1973,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         case "model":
           // Bare /model on an API setup → the interactive picker panel (fullscreen).
           // Subscriptions keep the inline CLI list; /model <name> still pins inline.
-          if ((!arg || arg.toLowerCase() === "all") && !activeCliRef.current && fullscreen) {
+          // Only open the panel when there are API models to show (else fall through
+          // to the inline path, which explains how to add a provider).
+          if ((!arg || arg.toLowerCase() === "all") && !activeCliRef.current && fullscreen && buildPanelModelRows().length > 0) {
             setPanel({ kind: "models", title: "models · ⏎ to pin", index: 0, filter: "" });
             return;
           }
