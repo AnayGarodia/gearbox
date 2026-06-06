@@ -17,11 +17,12 @@ import { detectImageMode, setImageMode, transmitAll } from "./ui/image.ts";
 import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
+import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.14";
+const VERSION = "0.1.15";
 const args = process.argv.slice(2);
 
-const supportsAnsi = process.env.NO_COLOR !== "1" && process.env.TERM !== "dumb" && (process.stdout.isTTY || process.env.FORCE_COLOR === "1");
+const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
 const ansi = (code: string) => supportsAnsi ? `\x1b[${code}m` : "";
 const paint = (code: string, text: string) => `${ansi(code)}${text}${ansi("0")}`;
 const bold = (text: string) => paint("1", text);
@@ -34,18 +35,28 @@ const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 const visibleLength = (text: string) => stripAnsi(text).length;
 const padVisible = (text: string, width: number) => text + " ".repeat(Math.max(width - visibleLength(text), 0));
 
+const hexRgb = (h: string) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+const trueFg = (h: string) => `\x1b[38;2;${hexRgb(h).join(";")}m`;
+const trueBg = (h: string) => `\x1b[48;2;${hexRgb(h).join(";")}m`;
+
+function ghostLines(cells: SpriteCell[][], pad = "  "): string[] {
+  return cells.map((row) => {
+    let line = pad;
+    for (const { t, b } of row) {
+      if (supportsAnsi && t && b) line += trueFg(t) + trueBg(b) + "▀" + ansi("0");
+      else if (supportsAnsi && t) line += trueFg(t) + "▀" + ansi("0");
+      else if (supportsAnsi && b) line += trueFg(b) + "▄" + ansi("0");
+      else if (t && b) line += "█";
+      else if (t) line += "▀";
+      else if (b) line += "▄";
+      else line += " ";
+    }
+    return line;
+  });
+}
+
 function onboardingBoo(): string {
-  return [
-    "        .-''''-.",
-    "      .'  .--.  '.",
-    "     /   (    )   \\",
-    "    |  .-.    .-.  |",
-    "    |  |_|    |_|  |",
-    "    |      __      |",
-    "     \\   .'  '.   /",
-    "      '._\\____/_.'",
-    "        /|    |\\",
-  ].join("\n");
+  return ghostLines(renderGhost({ palette: "default", face: "happy", scale: 1 })).join("\n");
 }
 
 function box(title: string, lines: string[]): void {
@@ -110,8 +121,7 @@ async function runCliOnboarding(): Promise<boolean> {
 
   try {
     console.log("");
-    if (supportsAnsi) console.log(paint("38;5;117", onboardingBoo()));
-    else console.log(onboardingBoo());
+    console.log(onboardingBoo());
     console.log("");
     console.log(bold("Gearbox setup"));
     console.log("Boo needs one model account before the coding app opens.");
