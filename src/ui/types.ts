@@ -1,4 +1,5 @@
 import type { UsageView } from "../accounts/usage.ts";
+import type { Scorecard } from "../model/selector.ts";
 
 // Structured /context card: one bar per working-set section + a window-fill bar.
 export interface ContextRow {
@@ -68,4 +69,5 @@ export type Item =
   | { kind: "accounts"; id: number; view: AccountView }
   | { kind: "usage"; id: number; view: UsageView } // structured /usage card (colored bars)
   | { kind: "context"; id: number; view: ContextView } // structured /context card (colored bars)
+  | { kind: "scorecard"; id: number; card: Scorecard } // structured /why routing scorecard
   | { kind: "error"; id: number; text: string };

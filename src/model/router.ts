@@ -17,11 +17,11 @@ import { modelRegistry, providerAvailable, subscriptionSeats, type ModelSpec } f
 import { profileFor } from "./profiles.ts";
 import { pickDefaultModel } from "../config.ts";
 import { accountsForProvider } from "../accounts/store.ts";
-import type { ModelSelector, Task, ModelChoice, Backend } from "./selector.ts";
+import type { ModelSelector, Task, ModelChoice, Backend, Scorecard, ScorecardEntry } from "./selector.ts";
 import { preferenceFor, globalPreference } from "./preferences.ts";
 import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
-import { pickBest, type ScoreCandidate } from "./scoring.ts";
+import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -124,64 +124,129 @@ export class RoutingSelector implements ModelSelector {
     return out;
   }
 
-  select(task: Task): ModelChoice {
+  // Everything select() and explain() share: build the snapshot, enumerate, gate
+  // by capability/context/global-preference, and identify the bar-clearing set.
+  // Throws the same errors select() used to (no capable model). Returns
+  // `fallback` when there are no enumerated candidates at all.
+  private prepare(task: Task): {
+    kind: Kind; bar: number; required: string[]; ctx: RoutingContext;
+    pool: Candidate[]; clears: Candidate[]; estInputTokens: number;
+    fallback?: ModelSpec;
+  } {
     const kind = task.kind ?? classify(task.prompt);
     const bar = BAR[kind];
     const required = task.requires ?? [];
     const ctx = buildRoutingContext(ctx_now());
+    const estInputTokens = task.estTokens || NOMINAL_INPUT_TOKENS;
 
     const all = this.enumerate(ctx);
     if (all.length === 0) {
       const m = pickDefaultModel(this.fallbackId);
-      if (!m) {
-        throw new Error(
-          "No model available. Set a key: ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / DEEPSEEK_API_KEY",
-        );
-      }
-      return { model: m, reason: "only model with a key", backend: { kind: "in-loop" } };
+      return { kind, bar, required, ctx, pool: [], clears: [], estInputTokens, fallback: m ?? undefined };
     }
-
-    // Capability gate (vision, tools, …) — never route a turn to a model that
-    // can't run it, even if cheaper.
     const capable = required.length ? all.filter((c) => supportsRequirements(c.spec, required)) : all;
     if (capable.length === 0) {
-      const missing = all
-        .slice(0, 4)
-        .map((c) => `${c.spec.label}: ${missingRequirements(c.spec, required).join(", ")}`)
-        .join("; ");
+      const missing = all.slice(0, 4).map((c) => `${c.spec.label}: ${missingRequirements(c.spec, required).join(", ")}`).join("; ");
       throw new Error(`No configured model supports this turn (${required.join(", ")} required). ${missing}`);
     }
-
-    // Context-window guard, then global hard-preference filter (subscription/api,
-    // account, provider) — each relaxes if it would empty the pool.
     const need = (task.estTokens ?? 0) * 1.2;
     const fits = need > 0 ? capable.filter((c) => c.spec.contextWindow >= need) : capable;
     let pool = fits.length ? fits : capable;
     pool = applyGlobalPreference(pool);
-
-    // Quality bar: the candidates that clear it (else the best we have).
     const clears = pool.filter((c) => qualityOf(c) >= bar);
-    const candidates = clears.length ? clears : pool;
+    return { kind, bar, required, ctx, pool, clears, estInputTokens };
+  }
 
-    // A confirmed per-kind preference wins when it still clears the bar (the
-    // remembered-routing path), checked across the bar-clearing set.
+  // The per-kind remembered preference, when it's present in the candidate set.
+  private preferredIn(kind: Kind, candidates: Candidate[]): Candidate | undefined {
     const pref = preferenceFor(kind);
-    const preferred = pref?.modelId
+    return pref?.modelId
       ? candidates.find((c) => c.canonicalId === pref.modelId || c.spec.id === pref.modelId)
       : pref?.provider
         ? candidates.find((c) => c.spec.provider === pref.provider)
         : undefined;
-    if (preferred) return { model: preferred.spec, reason: `${kind} · remembered preference`, backend: preferred.backend };
-
-    // Otherwise score every candidate (cost + scarcity + limits − plan bonus).
-    const best = pickBest({
-      candidates: candidates.map(toScoreCandidate),
-      now: ctx.now,
-      estInputTokens: task.estTokens || NOMINAL_INPUT_TOKENS,
-    });
-    const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
-    return { model: winner.spec, reason: reasonFor(winner, kind, required), backend: winner.backend };
   }
+
+  select(task: Task): ModelChoice {
+    const p = this.prepare(task);
+    if (p.pool.length === 0) {
+      if (!p.fallback) {
+        throw new Error("No model available. Set a key: ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / DEEPSEEK_API_KEY");
+      }
+      return { model: p.fallback, reason: "only model with a key", backend: { kind: "in-loop" } };
+    }
+    const candidates = p.clears.length ? p.clears : p.pool;
+    const preferred = this.preferredIn(p.kind, candidates);
+    if (preferred) return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
+
+    const best = pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens });
+    const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required), backend: winner.backend };
+  }
+
+  // The full ranked "why": every candidate scored, with the per-term breakdown,
+  // quality provenance, and balance/headroom — the data the ⌃tab scorecard shows.
+  // Pure read; no side effects. Mirrors select()'s winner exactly.
+  explain(task: Task): Scorecard {
+    const p = this.prepare(task);
+    const entries: ScorecardEntry[] = [];
+    if (p.pool.length === 0) {
+      return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: p.fallback ? `only ${p.fallback.label} has a key` : "no model available" };
+    }
+    const candidates = p.clears.length ? p.clears : p.pool;
+    const preferred = this.preferredIn(p.kind, candidates);
+
+    // Score the WHOLE pool (incl. below-bar) for display; the winner is chosen
+    // only from the bar-clearing set, matching select().
+    const scored = new Map<string, ScoredCandidate>();
+    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c), { candidates: [], now: p.ctx.now, estInputTokens: p.estInputTokens }))) scored.set(s.candidate.id, s);
+    const winnerId = preferred
+      ? preferred.spec.id
+      : pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens }).candidate.id;
+
+    for (const c of p.pool) {
+      const s = scored.get(c.spec.id)!;
+      const clears = qualityOf(c) >= p.bar;
+      const chosen = c.spec.id === winnerId;
+      entries.push({
+        label: c.spec.label,
+        backend: c.backend.kind === "cli" ? "seat" : "api",
+        quality: qualityOf(c),
+        qualitySrc: profileFor(c.canonicalId ?? c.spec.id)?.quality.src ?? "seeded",
+        estCostPerMtok: costPerMtok(c),
+        balanceText: balanceText(c.state),
+        headroomText: headroomText(c.state),
+        score: s.score,
+        chosen,
+        verdict: chosen ? (preferred ? "preferred" : "chosen") : !clears ? "below bar" : verdictFor(c, s),
+      });
+    }
+    // Best first: chosen, then bar-clearing by score, then below-bar.
+    entries.sort((a, b) => Number(b.chosen) - Number(a.chosen) || Number(b.verdict !== "below bar") - Number(a.verdict !== "below bar") || a.score - b.score);
+    return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries };
+  }
+}
+
+function costPerMtok(c: Candidate): number {
+  const { inUSDPerMtok, outUSDPerMtok } = costPair(c);
+  return inUSDPerMtok + 0.2 * outUSDPerMtok;
+}
+function balanceText(s: AccountState): string | undefined {
+  if (s.isSubscription || s.balanceRemainingUSD === undefined) return undefined;
+  const v = s.balanceRemainingUSD;
+  const amt = v >= 100 ? `$${Math.round(v)}` : `$${v.toFixed(2)}`;
+  return s.balanceEstimated ? `${amt} est` : amt;
+}
+function headroomText(s: AccountState): string | undefined {
+  if (s.isSubscription && s.rateHeadroom !== undefined) return `${Math.round(s.rateHeadroom * 100)}% left`;
+  if (!s.isSubscription && s.apiThrottle !== undefined && s.apiThrottle < 0.15) return "throttling";
+  return undefined;
+}
+function verdictFor(c: Candidate, s: ScoredCandidate): string {
+  if (c.state.isSubscription) return "seat ~free";
+  if (s.terms.scarcity > s.terms.costEst) return "scarce credit";
+  if (s.terms.apiThrottlePenalty > 0) return "near limit";
+  return "ok";
 }
 
 // Global preference as a hard filter, relaxed if it would leave nothing.

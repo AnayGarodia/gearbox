@@ -11,6 +11,7 @@ import { glyph } from "./theme.ts";
 import { highlightLine } from "./highlight.ts";
 import type { Item } from "./types.ts";
 import { barCells } from "../accounts/usage.ts";
+import { scorecardRows } from "../commands.ts";
 
 const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
 const accountStateColor = (status: string) =>
@@ -667,6 +668,17 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         }
         out.push(clipSpans(totalLine, width));
         if (v.cwd) out.push(clipSpans([{ text: "  working directory: " + v.cwd, color: color.faint }], width));
+        break;
+      }
+      case "scorecard": {
+        const toneColor: Record<string, string> = { title: color.text, colhead: color.faint, chosen: color.accent, row: color.dim, dim: color.faint, note: color.faint };
+        let first = true;
+        for (const r of scorecardRows(it.card)) {
+          const prefix = first ? "  " + glyph.notice + " " : "    ";
+          out.push(clipSpans([{ text: prefix, color: color.accentDim }, { text: r.text, color: toneColor[r.tone] ?? color.text }], width));
+          if (first) out.push(BLANK);
+          first = false;
+        }
         break;
       }
       case "error": {

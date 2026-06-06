@@ -2094,6 +2094,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           push({ kind: "context", id: idRef.current++, view: buildContextView(sections, m.contextWindow, process.cwd()) });
           return;
         }
+        case "why": {
+          echo(text);
+          const sel = selectorRef.current;
+          if (!sel.explain) {
+            notice("routing is off — a model or subscription is pinned. Use /model auto to route per task, then /why.");
+            return;
+          }
+          try {
+            const card = sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : undefined });
+            push({ kind: "scorecard", id: idRef.current++, card });
+          } catch (e: any) {
+            notice(e?.message ?? "couldn't build the scorecard");
+          }
+          return;
+        }
         case "onboard": {
           echo(text);
           if (arg.trim().toLowerCase() === "providers") {
