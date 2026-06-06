@@ -136,10 +136,12 @@ export async function runTask(opts: {
   system?: string; // prebuilt by the Context Engine; falls back to SYSTEM
   creds?: ResolvedCreds; // per-account credentials (from the active account); env-default if absent
   effort?: Effort; // model-specific reasoning effort → per-provider providerOptions
+  deferTerminal?: boolean; // suppress terminal error/blocked/finished/done events + return `failure` instead (the caller drives failover and emits the final outcome)
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
-}): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined> }> {
+}): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string } }> {
   const { model, messages, onEvent, signal, plan } = opts;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
+  let failureMessage: string | undefined;
   const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
 
   // One clean, one-line error path. The AI SDK surfaces errors three ways
@@ -151,7 +153,10 @@ export async function runTask(opts: {
   const emitErr = (err: unknown) => {
     if (errored || signal?.aborted) return;
     errored = true;
-    onEvent({ type: "error", message: cleanError(err) });
+    failureMessage = cleanError(err);
+    // When the caller drives failover, stay silent and hand back `failure` —
+    // a single red error line is wrong if the next account succeeds.
+    if (!opts.deferTerminal) onEvent({ type: "error", message: failureMessage });
   };
 
   onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
@@ -312,9 +317,11 @@ export async function runTask(opts: {
       /* keep prior messages; multi-turn still works from input history */
     }
   }
-  onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
-  onEvent({ type: "done", usage });
-  return { messages: next, usage, headers };
+  if (!opts.deferTerminal) {
+    onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
+    onEvent({ type: "done", usage });
+  }
+  return { messages: next, usage, headers, failure: errored ? { message: failureMessage ?? "request failed" } : undefined };
 }
 
 function friendlyToolPhase(name: string): string {

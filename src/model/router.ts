@@ -22,6 +22,7 @@ import { preferenceFor, globalPreference } from "./preferences.ts";
 import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
+import { coolingDown } from "./cooldown.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -121,7 +122,11 @@ export class RoutingSelector implements ModelSelector {
       const state = ctx.byAccountId.get(seat.account.id) ?? { accountId: seat.account.id, provider: seat.account.provider, exec: "cli" as const, isSubscription: true };
       out.push({ spec: seat.spec, canonicalId: seat.canonicalId, backend: { kind: "cli", account: seat.account, binary: seat.binary, profile: seat.profile }, state });
     }
-    return out;
+    // Drop accounts on a failover cooldown (just hit a 429 / out of quota) so the
+    // router routes AROUND them — relaxed if that would leave nothing (a cooling
+    // account beats no model at all).
+    const live = out.filter((c) => !coolingDown(c.state.accountId, ctx.now));
+    return live.length ? live : out;
   }
 
   // Everything select() and explain() share: build the snapshot, enumerate, gate

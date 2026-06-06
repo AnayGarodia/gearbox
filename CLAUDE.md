@@ -33,6 +33,7 @@ src/
     router.ts        RoutingSelector (account-aware): scores (model, account) pairs incl. subscription seats; SubscriptionPinSelector
     scoring.ts       PURE scorer: cost + scarcity + limit − plan bonus; deterministic, fixture-tested
     routing-context.ts per-turn account-state snapshot (balance + subscription rate headroom) from usage.json
+    cooldown.ts      reactive-failover support: classify a failure + park an exhausted account so the router routes around it
     profiles.ts      model corpus: quality (SWE-bench), cost ($/Mtok), latency, tokenizer calibration, per-model effort vocab
     tokens.ts        calibrated token counting (js-tiktoken × per-model calibration factor)
     preferences.ts   persist /prefer kind model choices to ~/.gearbox/routing-preferences.json

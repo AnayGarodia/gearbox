@@ -19,7 +19,8 @@ import { color, glyph } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
-import { FixedSelector, type ModelSelector } from "../model/selector.ts";
+import { FixedSelector, type ModelSelector, type ModelChoice } from "../model/selector.ts";
+import { classifyFailure, markExhausted, DEFAULT_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
 import { confirmRoutingPreference, setBudget, loadBudgets, type PreferenceKind } from "../model/preferences.ts";
@@ -141,6 +142,16 @@ const FALLBACK_CODEX_MODELS: CliModelChoice[] = [
   { id: "gpt-5.4", label: "gpt-5.4", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
 ];
+// A short, human category for a failover narration ("sonnet rate-limited → …").
+function shortFailure(message: string): string {
+  const m = (message || "").toLowerCase();
+  if (/\b402\b|credit|payment|billing|out of credit/.test(m)) return "out of credit";
+  if (/over(loaded|capacity)|\b529\b/.test(m)) return "overloaded";
+  if (/usage.?limit/.test(m)) return "at its usage limit";
+  if (/quota|insufficient_quota/.test(m)) return "out of quota";
+  return "rate-limited";
+}
+
 let codexModelCache: CliModelChoice[] | null = null;
 
 function codexCliModels(): CliModelChoice[] {
@@ -1096,11 +1107,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       efforts: string[];
       label?: string; // model label for the phase line
       pinned: boolean; // true ⇒ explicit pin (no routing reason to show)
+      deferTerminal?: boolean; // caller drives failover: suppress terminal events, return failure
       prompt: string;
       messages: ModelMessage[];
       onEvent: OnEvent;
       signal?: AbortSignal;
-    }): Promise<{ messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number } }> => {
+    }): Promise<{ messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string } }> => {
       const { binary, profile, modelId, accountId, efforts, label, pinned, prompt, messages, onEvent, signal } = args;
       usedAccountRef.current = accountId;
       const detail = pinned
@@ -1154,10 +1166,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         effort: cliEffort,
         accountLabel: activeAccount ? accountLabel(activeAccount) : accountId,
         reloginCommand,
+        deferTerminal: args.deferTerminal,
       });
       cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
       cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
-      return { messages: r.messages, usage: r.usage };
+      return { messages: r.messages, usage: r.usage, failure: r.failure };
     },
     [],
   );
@@ -1190,71 +1203,83 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
       const plan = modeRef.current === "plan";
       const requires: ModelRequirement[] = ["tools", ...(imagesPresent ? ["images" as const] : [])];
-      const choice = sel.select({ prompt: prompt, kind: plan ? "plan" : undefined, requires });
 
-      // The selector may auto-pick a subscription SEAT — dispatch it like a pin,
-      // but record the routing reason (this WAS a routing decision).
-      if (choice.backend?.kind === "cli") {
-        if (imagesPresent) return cliImageGuard();
+      // Emit the terminal events the inner runners deferred, for the FINAL outcome
+      // (mirrors run.ts: error → blocked → done, or finished → done). One per turn.
+      const emitTerminal = (errored: boolean, message: string | undefined, usage: { inputTokens: number; outputTokens: number }) => {
+        if (errored && message) onEvent({ type: "error", message });
+        onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
+        onEvent({ type: "done", usage });
+      };
+
+      // Run ONE attempt of a chosen backend (terminal events deferred so the loop
+      // owns the final outcome). Returns the produced ledger + a cooldown key so a
+      // failure can park that account and re-route around it.
+      type Attempt = { messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string }; cooldownKey: string };
+      const runAttempt = async (choice: ModelChoice): Promise<Attempt> => {
+        if (choice.backend?.kind === "cli") {
+          const acct = choice.backend.account;
+          if (imagesPresent) return { ...cliImageGuard(), failure: { message: "image attachments need an API-backed model" }, cooldownKey: acct.id };
+          routedRef.current = { model: choice.model, reason: choice.reason };
+          setLastPick({ model: choice.model, reason: choice.reason });
+          onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+          const out = await runCliBackend({
+            binary: choice.backend.binary, profile: choice.backend.profile, modelId: choice.model.sdkId, accountId: acct.id,
+            efforts: choice.model.efforts ?? [], label: choice.model.label,
+            pinned: false, deferTerminal: true, prompt, messages, onEvent, signal,
+          });
+          return { messages: out.messages, usage: out.usage, failure: out.failure, cooldownKey: acct.id };
+        }
+
+        const missing = missingRequirements(choice.model, requires);
+        if (missing.length) throw new Error(`${choice.model.label} cannot run this turn (${missing.join(", ")} unsupported). Use /model auto or pick a compatible model.`);
         routedRef.current = { model: choice.model, reason: choice.reason };
         setLastPick({ model: choice.model, reason: choice.reason });
         onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
-        return runCliBackend({
-          binary: choice.backend.binary, profile: choice.backend.profile, modelId: choice.model.sdkId, accountId: choice.backend.account.id,
-          efforts: choice.model.efforts ?? [], label: choice.model.label,
-          pinned: false, prompt, messages, onEvent, signal,
-        });
-      }
+        onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
+        const userContent = imageContent(prompt, activeImagesRef.current);
+        const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || accountResolver.pick(choice.model.provider);
+        const creds = account ? await resolveCreds(account) : undefined;
+        usedAccountRef.current = account?.id ?? null;
+        cliMetaRef.current = null;
+        if (account) markUsed(account.id);
+        const _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
+        if (_effortRaw === null && effortRef.current !== "medium") {
+          const supported = effortLevels(choice.model);
+          const { level: nearest } = clampEffort(effortRef.current, supported);
+          const hint = supported.length ? ` — try /effort ${nearest}` : "";
+          throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
+        }
+        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true });
+        if (account && r.headers) {
+          const apiRates = parseRateHeaders(account.provider, r.headers, Date.now());
+          if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };
+        }
+        const produced = r.messages.slice(ctx.length);
+        const imageNote = activeImagesRef.current.length ? `\n\n[Attached images: ${activeImagesRef.current.map((img) => basename(img.path)).join(", ")}]` : "";
+        const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt + imageNote }, ...produced]);
+        return { messages: ledger, usage: r.usage, failure: r.failure, cooldownKey: account?.id ?? `env:${choice.model.provider}` };
+      };
 
-      const missing = missingRequirements(choice.model, requires);
-      if (missing.length) {
-        throw new Error(`${choice.model.label} cannot run this turn (${missing.join(", ")} unsupported). Use /model auto or pick a compatible model.`);
+      // Reactive same-turn failover: try the routed pick; if it fails because the
+      // account is out of quota/credit/rate, park it (the router then routes
+      // around it), narrate plainly, re-select, and continue — up to MAX hops.
+      const MAX_FAILOVERS = 2;
+      let choice = sel.select({ prompt, kind: plan ? "plan" : undefined, requires });
+      for (let hop = 0; ; hop++) {
+        const a = await runAttempt(choice);
+        if (!a.failure) { emitTerminal(false, undefined, a.usage); return { messages: a.messages, usage: a.usage }; }
+        const exhausted = classifyFailure(a.failure.message) === "exhausted";
+        if (!exhausted || hop >= MAX_FAILOVERS) { emitTerminal(true, a.failure.message, a.usage); return { messages: a.messages, usage: a.usage }; }
+        markExhausted(a.cooldownKey, DEFAULT_COOLDOWN_MS, a.failure.message);
+        let next: ModelChoice | null = null;
+        try { next = sel.select({ prompt, kind: plan ? "plan" : undefined, requires }); } catch { next = null; }
+        const nextKey = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
+        if (!next || nextKey === a.cooldownKey) { emitTerminal(true, a.failure.message, a.usage); return { messages: a.messages, usage: a.usage }; }
+        onEvent({ type: "phase", label: "failover", detail: `${choice.model.label} ${shortFailure(a.failure.message)} → ${next.model.label}, continuing`, state: "running" });
+        choice = next;
       }
-      // Record the ACTUAL pick (routing varies it per task) for the status line
-      // and the turn ledger — not a re-classification with an empty prompt.
-      routedRef.current = { model: choice.model, reason: choice.reason };
-      setLastPick({ model: choice.model, reason: choice.reason });
-      onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
-      onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
-      // The Context Engine projects the full history into a bounded, model-aware
-      // working set to SEND; the returned ledger stays the full source of truth.
-      const userContent = imageContent(prompt, activeImagesRef.current);
-      const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
-      // Prefer the account the router chose (it scored that key's balance/limits);
-      // else the provider default; else env creds for env-only users.
-      const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || accountResolver.pick(choice.model.provider);
-      const creds = account ? await resolveCreds(account) : undefined;
-      usedAccountRef.current = account?.id ?? null;
-      cliMetaRef.current = null;
-      if (account) markUsed(account.id);
-      const _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
-      if (_effortRaw === null && effortRef.current !== "medium") {
-        const supported = effortLevels(choice.model);
-        const { level: nearest } = clampEffort(effortRef.current, supported);
-        const hint = supported.length ? ` — try /effort ${nearest}` : "";
-        throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
-      }
-      const modelEffort = _effortRaw ?? undefined;
-      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: modelEffort });
-      // Live API headroom: parse the response's rate-limit headers (Anthropic /
-      // OpenAI / Azure expose them) and stash them on the same channel the CLI
-      // path uses, so the turn ledger records them for THIS account. The router
-      // then deprioritizes / fails over a near-empty key proactively. Only useful
-      // for stored accounts (env-only turns have no AccountState to attach to).
-      if (account) {
-        const apiRates = r.headers ? parseRateHeaders(account.provider, r.headers, Date.now()) : [];
-        if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };
-      }
-      // r.messages = the sent context + the newly produced turn. Rebuild msgRef as
-      // FULL history + the user message + only the new messages (never the curated
-      // projection), and sanitize so an interrupted turn can't leave a dangling
-      // tool_use that 400s the next request.
-      const produced = r.messages.slice(ctx.length);
-      const imageNote = activeImagesRef.current.length
-        ? `\n\n[Attached images: ${activeImagesRef.current.map((img) => basename(img.path)).join(", ")}]`
-        : "";
-      const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt + imageNote }, ...produced]);
-      return { messages: ledger, usage: r.usage };
     },
     [],
   );
