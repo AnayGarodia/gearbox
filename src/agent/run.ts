@@ -242,7 +242,7 @@ export async function runTask(opts: {
           const chunk = part.inputTextDelta ?? part.delta ?? "";
           if (!chunk) break;
           const st = streams.get(id) ?? openStream(id, names.get(id) ?? "tool");
-          if (!started.has(id)) { started.add(id); onEvent({ type: "tool-start", id, name: st.name, arg: "" }); }
+          if (!started.has(id)) { started.add(id); producedOutput = true; onEvent({ type: "tool-start", id, name: st.name, arg: "" }); }
           st.rawBuf += chunk;
           const head = readField(st.rawBuf, st.headField);
           if (head != null && head !== st.lastHead) { st.lastHead = head; onEvent({ type: "tool-stream", id, arg: head }); }

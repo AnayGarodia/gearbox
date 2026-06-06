@@ -20,3 +20,17 @@ test("with reportErrors:false, runTask returns a structured failure and emits no
   expect(res.failure!.raw).toMatchObject({ statusCode: 401 });
   expect(events.find((e) => e.type === "error")).toBeUndefined();
 });
+
+test("producedOutput is true when text streamed before the error", async () => {
+  async function* mixed() {
+    yield { type: "text-delta", text: "hello" };
+    yield { type: "error", error: { statusCode: 429, message: "rate limit" } };
+  }
+  const events: any[] = [];
+  const res = await runTask({
+    model, messages: [], onEvent: (e) => events.push(e),
+    _stream: mixed(), reportErrors: false,
+  });
+  expect(res.failure).toBeTruthy();
+  expect(res.failure!.producedOutput).toBe(true);
+});
