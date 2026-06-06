@@ -1108,9 +1108,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           onEvent({ type: "error", message: "Gearbox docs aren't bundled with this install — can't answer from them." });
           return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
         }
-        const choice = sel.select({ prompt, kind: "search" });
+        // /ask always routes to the cheapest working model via RoutingSelector,
+        // independent of any pinned (and possibly broken) coding model — a docs
+        // helper must work even when /model is pinned to something that 404s.
+        // Set routedRef (cost ledger) but NOT setLastPick (keep the visible pin).
+        const choice = new RoutingSelector().select({ prompt, kind: "search" });
         routedRef.current = { model: choice.model, reason: choice.reason };
-        setLastPick({ model: choice.model, reason: choice.reason });
         onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
         const acct = accountResolver.pick(choice.model.provider);
         const creds = acct ? await resolveCreds(acct) : undefined;

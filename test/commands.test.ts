@@ -1,5 +1,20 @@
-import { test, expect } from "bun:test";
+import { test, expect, beforeEach, afterAll } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { matchCommands, helpText, formatModelList, resolveModelSwitch, COMMANDS } from "../src/commands.ts";
+
+// Isolate the account store so model resolution is deterministic and never reads
+// the developer's real ~/.gearbox (whose discovered accounts would change which
+// models a fuzzy name matches — e.g. an Azure account that also serves Haiku).
+beforeEach(() => {
+  process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-cmd-"));
+  process.env.GEARBOX_SECRET_STORE = "file";
+});
+afterAll(() => {
+  delete process.env.GEARBOX_HOME;
+  delete process.env.GEARBOX_SECRET_STORE;
+});
 
 test("matchCommands filters by prefix", () => {
   expect(matchCommands("/mo").map((c) => c.name)).toEqual(["/model"]);
