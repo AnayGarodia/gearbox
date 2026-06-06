@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Gearbox installer — downloads the pre-built binary from GitHub Releases.
+# Public Gearbox installer.
 #
-# Installs to:
+# Installs the published npm package into user-owned directories:
 #   ~/.local/share/gearbox/<version>/cli.mjs
-#   first user-owned PATH bin dir, or ~/.local/bin/gearbox
+#   first user-owned PATH bin dir containing gearbox, or ~/.local/bin/gearbox
 #
-# No npm, no sudo, no system prefix.
+# This intentionally avoids `npm install -g`, sudo, /usr/local, and any system
+# prefix. It follows the same practical model as modern CLI installers: place a
+# small executable shim in a user bin directory and tell the user if that
+# directory is not on PATH.
 set -euo pipefail
 
-REPO="AnayGarodia/gearbox"
+PACKAGE_NAME="${GEARBOX_PACKAGE:-gearbox-code}"
 VERSION="${GEARBOX_VERSION:-latest}"
 INSTALL_ROOT="${GEARBOX_INSTALL_DIR:-${HOME}/.local/share/gearbox}"
 
@@ -18,7 +21,9 @@ default_bin_dir() {
     return
   fi
 
-  # Replace stale user-owned shim if one is already on PATH.
+  # If an older user-owned gearbox shim is already first on PATH, replace it.
+  # This fixes stale Bun/npm links such as ~/.bun/bin/gearbox -> src/cli.tsx,
+  # which would otherwise keep shadowing the good ~/.local/bin installer shim.
   local existing dir
   existing="$(command -v gearbox 2>/dev/null || true)"
   if [[ -n "$existing" ]]; then
@@ -50,42 +55,55 @@ BIN_DIR="$(default_bin_dir)"
 need() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "Gearbox installer needs '$1'." >&2
+    echo "Install Node.js first, then rerun this installer." >&2
     exit 1
   fi
 }
 
-need curl
 need node
+need curl
+need tar
 
 tmp="$(mktemp -d)"
-cleanup() { rm -rf "$tmp"; }
+cleanup() {
+  rm -rf "$tmp"
+}
 trap cleanup EXIT
 
-# Resolve version from GitHub Releases API.
-if [[ "$VERSION" == "latest" ]]; then
-  echo "-> Fetching latest release info"
-  meta_file="${tmp}/release.json"
-  curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" -o "$meta_file"
-  resolved_version="$(grep '"tag_name"' "$meta_file" | head -1 | sed 's/.*"tag_name": *"v*\([^"]*\)".*/\1/')"
-else
-  resolved_version="${VERSION#v}"
-fi
+meta_url="https://registry.npmjs.org/${PACKAGE_NAME}/${VERSION}"
+meta_file="${tmp}/meta.json"
 
-if [[ -z "$resolved_version" ]]; then
-  echo "Could not determine release version." >&2
+echo "-> Fetching ${PACKAGE_NAME}@${VERSION}"
+curl -fsSL "$meta_url" -o "$meta_file"
+
+resolved_version="$(node -e 'const fs=require("fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(j.version || "")' "$meta_file")"
+tarball_url="$(node -e 'const fs=require("fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(j.dist && j.dist.tarball || "")' "$meta_file")"
+
+if [[ -z "$resolved_version" || -z "$tarball_url" ]]; then
+  echo "Could not resolve ${PACKAGE_NAME}@${VERSION} from npm." >&2
   exit 1
 fi
 
 target_dir="${INSTALL_ROOT}/${resolved_version}"
-mkdir -p "$target_dir" "$BIN_DIR"
+archive="${tmp}/package.tgz"
+extract_dir="${tmp}/extract"
 
-echo "-> Downloading gearbox v${resolved_version}"
-curl -fsSL \
-  "https://github.com/${REPO}/releases/download/v${resolved_version}/cli.mjs" \
-  -o "${target_dir}/cli.mjs"
+echo "-> Downloading ${PACKAGE_NAME}@${resolved_version}"
+curl -fsSL "$tarball_url" -o "$archive"
+mkdir -p "$extract_dir" "$target_dir" "$BIN_DIR"
+tar -xzf "$archive" -C "$extract_dir"
+
+if [[ ! -f "${extract_dir}/package/dist/cli.mjs" ]]; then
+  echo "Package did not contain dist/cli.mjs." >&2
+  exit 1
+fi
+
+cp "${extract_dir}/package/dist/cli.mjs" "${target_dir}/cli.mjs"
 chmod 0755 "${target_dir}/cli.mjs"
 
-# Replace any stale shim.
+# Replace stale symlinks instead of following them. Old Bun-linked installs can
+# leave ~/.bun/bin/gearbox -> .../src/cli.tsx; `cat > symlink` would overwrite
+# the target and keep the broken link in place.
 rm -f "${BIN_DIR}/gearbox"
 cat > "${BIN_DIR}/gearbox" <<EOF
 #!/usr/bin/env sh
@@ -94,7 +112,7 @@ EOF
 chmod 0755 "${BIN_DIR}/gearbox"
 
 echo ""
-echo "Installed Gearbox v${resolved_version}"
+echo "Installed Gearbox ${resolved_version}"
 echo "  ${BIN_DIR}/gearbox"
 echo ""
 
@@ -107,8 +125,10 @@ case ":${PATH}:" in
     rc_file="${HOME}/.profile"
     if [[ "$shell_name" == "zsh" ]]; then rc_file="${HOME}/.zshrc"; fi
     if [[ "$shell_name" == "bash" ]]; then rc_file="${HOME}/.bashrc"; fi
-    echo "${BIN_DIR} is not on PATH yet. Add it:"
-    echo "  echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ${rc_file} && source ${rc_file}"
+    echo "${BIN_DIR} is not on PATH yet."
+    echo "Add it with:"
+    echo "  echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ${rc_file}"
+    echo "  source ${rc_file}"
     echo ""
     echo "Then run: gearbox"
     ;;
