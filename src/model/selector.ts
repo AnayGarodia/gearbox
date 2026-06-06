@@ -6,6 +6,17 @@
 import { pickDefaultModel } from "../config.ts";
 import type { ModelSpec } from "../providers.ts";
 import type { ModelRequirement } from "./capabilities.ts";
+import type { Account } from "../accounts/types.ts";
+
+// How a chosen model is actually run. The router returns this so the runner can
+// dispatch to the right backend WITHOUT the agent loop ever knowing which it is:
+// `in-loop` = our own agent loop via the AI SDK (creds from `account`, or the
+// env default when absent); `cli` = a subscription seat run through the vendor
+// binary. Optional on ModelChoice so every existing caller is unchanged (absent
+// ⇒ in-loop, today's path).
+export type Backend =
+  | { kind: "in-loop"; account?: Account }
+  | { kind: "cli"; account: Account; binary: string; profile?: string };
 
 export interface Task {
   prompt: string;
@@ -22,6 +33,7 @@ export interface Task {
 export interface ModelChoice {
   model: ModelSpec;
   reason: string; // shown in the UI; becomes the routing scorecard later
+  backend?: Backend; // how to run it (absent ⇒ in-loop). Set by RoutingSelector.
 }
 
 export interface ModelSelector {

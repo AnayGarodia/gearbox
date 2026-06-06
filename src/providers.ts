@@ -11,7 +11,7 @@ import { createAzure } from "@ai-sdk/azure";
 import type { LanguageModel } from "ai";
 import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
-import type { ResolvedCreds } from "./accounts/types.ts";
+import type { Account, ResolvedCreds } from "./accounts/types.ts";
 
 // Provider id is catalog-driven (open string) — the four below are "native"
 // (first-party SDK packages); every other provider talks the OpenAI wire.
@@ -127,6 +127,46 @@ export function modelRegistry(): ModelSpec[] {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(m);
+  }
+  return out;
+}
+
+// A subscription seat the router can score as a candidate: the canonical model
+// (so quality/cost/efforts come from ONE source of truth — the profile/registry)
+// surfaced as a `cli:<binary>` candidate that runs through the vendor binary. The
+// seat's marginal cost is ≈0 until its rate limit; the scorer's plan bonus, not a
+// faked cost, is what makes it preferred — so `canonicalId` keeps the real metered
+// price available for the "what it would have cost" comparison. Not added to
+// modelRegistry() (which must stay resolvable-only — it feeds resolveModel /
+// estimateCost). Empty unless a cli account is configured (default users unaffected).
+export interface SubscriptionSeat {
+  spec: ModelSpec; // display spec: id `cli:<accountId>:<sdkId>`, provider `cli:<binary>`
+  canonicalId?: string; // the registry model id this seat mirrors (profile lookup)
+  account: Account;
+  binary: string;
+  profile?: string; // login profile / config dir for multi-account
+}
+
+export function subscriptionSeats(): SubscriptionSeat[] {
+  const out: SubscriptionSeat[] = [];
+  for (const a of listAccounts()) {
+    if (!a.enabled || a.exec !== "cli") continue;
+    const binary = (a.auth.kind === "cli" ? a.auth.binary : undefined) ?? catalogProvider(a.provider)?.binary;
+    if (!binary) continue;
+    const profile = a.auth.kind === "cli" ? a.auth.loginProfile : undefined;
+    const sdkIds = a.models ?? catalogProvider(a.provider)?.defaultModels ?? [];
+    for (const sdkId of sdkIds) {
+      if (!sdkId) continue;
+      const canon = CURATED.find((c) => c.sdkId === sdkId && NATIVE.has(c.provider));
+      const spec: ModelSpec = {
+        ...(canon ?? { contextWindow: 200_000 }),
+        id: `cli:${a.id}:${sdkId}`,
+        provider: `cli:${binary}`,
+        sdkId,
+        label: canon?.label ?? sdkId,
+      };
+      out.push({ spec, canonicalId: canon?.id, account: a, binary, profile });
+    }
   }
   return out;
 }

@@ -20,6 +20,17 @@ export interface RoutingPreference {
 interface PreferenceFile {
   version: 1;
   byKind: Partial<Record<PreferenceKind, RoutingPreference>>;
+  global?: GlobalPreference;
+}
+
+// A standing, task-independent routing bias the user sets explicitly. `prefer`
+// is a hard filter (use only subscription seats, or only metered API, when that
+// still leaves a bar-clearing candidate); `accountId`/`provider` pin routing to
+// one account/provider when it can do the job. All optional.
+export interface GlobalPreference {
+  prefer?: "subscription" | "api";
+  accountId?: string;
+  provider?: string;
 }
 
 const home = () => process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
@@ -32,11 +43,23 @@ function empty(): PreferenceFile {
 export function loadRoutingPreferences(): PreferenceFile {
   try {
     const f = JSON.parse(readFileSync(file(), "utf8"));
-    if (f?.byKind) return { version: 1, byKind: f.byKind };
+    if (f?.byKind) return { version: 1, byKind: f.byKind, global: f.global };
   } catch {
     /* none yet */
   }
   return empty();
+}
+
+export function globalPreference(): GlobalPreference | undefined {
+  return loadRoutingPreferences().global;
+}
+
+/** Set/merge the standing global routing preference. Pass {} to clear a field. */
+export function setGlobalPreference(global: GlobalPreference | null): GlobalPreference | undefined {
+  const prefs = loadRoutingPreferences();
+  prefs.global = global ?? undefined;
+  save(prefs);
+  return prefs.global;
 }
 
 function save(prefs: PreferenceFile): void {
