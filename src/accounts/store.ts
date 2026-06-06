@@ -7,6 +7,7 @@
 // obfuscation against casual leakage (a stray `cat`, accidental commit),
 // NOT protection against a local attacker who can read your home dir.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -47,7 +48,33 @@ export async function getSecret(ref: string): Promise<string | null> {
       if (mode() === "keychain") return null;
     }
   }
-  return fileGet(ref);
+  const f = fileGet(ref);
+  if (f != null) return f;
+  // Cross-runtime recovery: keys added under Bun (dev) land in the OS keychain,
+  // but the PUBLISHED binary runs under node, where `Bun.secrets` is unavailable —
+  // so it would otherwise never see them. On macOS, read the keychain via the
+  // `security` CLI as a fallback. (Bun already reads the file store via the line
+  // above, so the reverse direction — node-added file keys under Bun — works too.)
+  if (typeof Bun === "undefined" && mode() !== "file") {
+    return keychainCliGet(ref);
+  }
+  return null;
+}
+
+// macOS `security` CLI read of a Bun.secrets-stored item (service=gearbox,
+// account=ref). Best-effort: returns null off-darwin, on miss, or on any error.
+function keychainCliGet(ref: string): string | null {
+  if (process.platform !== "darwin") return null;
+  try {
+    const out = execFileSync("security", ["find-generic-password", "-s", SERVICE, "-a", ref, "-w"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const v = out.replace(/\n+$/, "");
+    return v.length ? v : null;
+  } catch {
+    return null; // not found / not on keychain
+  }
 }
 
 export async function deleteSecret(ref: string): Promise<void> {
