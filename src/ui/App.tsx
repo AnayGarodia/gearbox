@@ -1780,6 +1780,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           {
             const cli = activeCliRef.current;
             if (cli) {
+              // If the query contains a digit (version-specific like "sonnet-4.6", "gpt-4o"),
+              // try the API registry first — versioned names are API-specific, not subscription
+              // tier shortcuts. Subscription shortcuts ("sonnet", "haiku", "opus") have no digits.
+              const looksVersioned = /\d/.test(arg);
+              if (looksVersioned) {
+                const r = resolveModelSwitch(arg);
+                if (r.ok && r.modelId) {
+                  const left = leaveSubscription();
+                  setSelector(new FixedSelector(r.modelId));
+                  setLastPick(null);
+                  routedRef.current = null;
+                  updatePrefs({ pinnedModel: r.modelId });
+                  const newSpec2 = findModel(r.modelId);
+                  const effortSuffix2 = applyEffortClamp(newSpec2 ? effortLevels(newSpec2) : []);
+                  notice(`${r.message} — pinned (left subscription).${left}${effortSuffix2}`);
+                  const kind = classify(lastPromptRef.current ?? "").replace("code", "code") as PreferenceKind;
+                  push({ kind: "preference", id: idRef.current++, text: `Remember ${r.modelId} for ${kind} tasks?`, acceptCommand: `/prefer ${kind} ${r.modelId}` });
+                  return;
+                }
+              }
               const cr = resolveCliModel(cli.binary, arg);
               if (!cr.ok) {
                 // Not a subscription model — try the full API registry (e.g. /model haiku while on a subscription).
