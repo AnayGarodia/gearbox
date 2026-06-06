@@ -2,17 +2,10 @@
 // Account health: classify a provider error into a known state (pure, tested),
 // and probe/cache an account's current health. Drives the /account badges and
 // the failover decision (src/agent/failover.ts). No background polling.
-import type { Account } from "./types.ts";
-
-// "real-error" is the sentinel for "not a credential problem" — the failover
-// loop must NOT advance the pool on it (network blip, model bug, 500).
-export type HealthState = "ok" | "expired" | "invalid" | "no-credit" | "rate-limited" | "unknown" | "real-error";
-
-export interface AccountHealth {
-  state: HealthState;
-  checkedAt: number;
-  detail?: string;
-}
+import type { Account, AccountHealth, HealthState } from "./types.ts";
+import { putAccount } from "./store.ts";
+import { testAccount, cliAuthStatus } from "./onboard.ts";
+export type { AccountHealth, HealthState } from "./types.ts";
 
 // Credential-class states are the only ones that trigger failover.
 export function isCredentialFailure(s: HealthState): boolean {
@@ -37,4 +30,35 @@ export function classifyError(_provider: string, err: unknown): HealthState {
   if (status === 429 || /rate.?limit|too many requests|overloaded|capacity/.test(t)) return "rate-limited";
   if (status === 401 || status === 403 || /invalid.*(api.?key|x-api-key|credential|token)|incorrect api key|unauthorized|authentication.?fail|permission denied/.test(t)) return "invalid";
   return "real-error";
+}
+
+export const HEALTH_TTL_MS = 5 * 60_000;
+
+export function isFresh(h: AccountHealth | undefined, now: number): boolean {
+  return !!h && now - h.checkedAt < HEALTH_TTL_MS;
+}
+
+/** Persist a freshly observed state for an account (called on success/failure). */
+export function recordHealth(account: Account, state: HealthState, detail?: string): void {
+  const at = Date.now();
+  putAccount({ ...account, health: { state, checkedAt: at, detail } });
+}
+
+/** Live probe of an account's credential. Cheap, no model generation.
+ *  Reuses testAccount's connectivity checks; maps the result to a state. */
+export async function checkHealth(account: Account): Promise<AccountHealth> {
+  const at = Date.now();
+  try {
+    if (account.exec === "cli") {
+      const bin = (account.auth as any).binary as string;
+      const profile = (account.auth as any).loginProfile as string | undefined;
+      const st = await cliAuthStatus(bin, profile);
+      return { state: st.loggedIn ? "ok" : "expired", checkedAt: at, detail: st.detail };
+    }
+    const r = await testAccount(account);
+    if (r.ok) return { state: "ok", checkedAt: at };
+    return { state: classifyError(account.provider, { message: r.message }), checkedAt: at, detail: r.message };
+  } catch (e) {
+    return { state: classifyError(account.provider, e), checkedAt: at, detail: String((e as any)?.message ?? e) };
+  }
 }

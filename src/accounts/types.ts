@@ -11,6 +11,16 @@
 // the ToS-clean way to use a Pro/Max/Plus subscription (never token extraction).
 export type ExecMode = "in-loop" | "cli";
 
+// "real-error" is the sentinel for "not a credential problem" — the failover
+// loop must NOT advance the pool on it (network blip, model bug, 500).
+export type HealthState = "ok" | "expired" | "invalid" | "no-credit" | "rate-limited" | "unknown" | "real-error";
+
+export interface AccountHealth {
+  state: HealthState;
+  checkedAt: number;
+  detail?: string;
+}
+
 export type AuthMethod =
   | { kind: "api-key"; ref: string; organization?: string; project?: string }
   | { kind: "aws"; accessKeyIdRef: string; secretKeyRef: string; sessionTokenRef?: string; region: string; profile?: string }
@@ -35,6 +45,7 @@ export interface Account {
   enabled: boolean;
   addedAt: number;
   lastUsedAt?: number;
+  health?: AccountHealth; // last observed credential health (cached; see health.ts)
 }
 
 // The non-secret registry persisted at ~/.gearbox/accounts.json.
