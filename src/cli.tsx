@@ -19,7 +19,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.18";
+const VERSION = "0.1.19";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -55,9 +55,17 @@ function ghostLines(cells: SpriteCell[][], pad = "  "): string[] {
   });
 }
 
-function onboardingBoo(): string {
-  return ghostLines(renderGhost({ palette: "default", face: "happy", scale: 1 })).join("\n");
+function onboardingBoo(termWidth: number): string {
+  const cells = renderGhost({ palette: "default", face: "happy", scale: 1 });
+  const ghostW = cells[0]?.length ?? 20;
+  const leftPad = Math.max(2, Math.floor((termWidth - ghostW) / 2));
+  return ghostLines(cells, " ".repeat(leftPad)).join("\n");
 }
+
+const centerStr = (text: string, width: number): string => {
+  const pad = Math.max(0, Math.floor((width - visibleLength(text)) / 2));
+  return " ".repeat(pad) + text;
+};
 
 function box(title: string, lines: string[]): void {
   const width = Math.min(78, Math.max(title.length + 4, ...lines.map((l) => visibleLength(l) + 4)));
@@ -120,12 +128,13 @@ async function runCliOnboarding(): Promise<boolean> {
   };
 
   try {
+    const termWidth = Math.min(process.stdout.columns || 80, 100);
     console.log("");
-    console.log(onboardingBoo());
+    console.log(onboardingBoo(termWidth));
     console.log("");
-    console.log(bold("Gearbox setup"));
-    console.log("Boo needs one model account before the coding app opens.");
-    console.log(dim("Your credentials stay local. API keys are stored in Gearbox's credential store; subscription sign-ins stay inside the vendor CLI."));
+    console.log(centerStr(bold("gearbox"), termWidth));
+    console.log(centerStr("set up one account — Gearbox routes from there", termWidth));
+    console.log(centerStr(dim("keys stay local, never sent anywhere"), termWidth));
     console.log("");
 
     while (!anyProviderAvailable()) {
@@ -280,8 +289,8 @@ Options:
   --model <name>      e.g. sonnet-4.6, haiku, gemini-flash, deepseek
   -c, --continue      resume the most recent session here (/resume to pick one)
   --yolo              auto-approve writes/edits/shell (no permission prompts)
-  --inline            use terminal scrollback instead of the fullscreen app frame
-  --fullscreen        fullscreen app frame (default when stdout is a TTY)
+  --fullscreen        fullscreen app frame with fixed footer (alt-screen)
+  --inline            terminal scrollback mode (default)
   -v, --version       print version
   -h, --help          this help
 
@@ -444,13 +453,12 @@ setImageMode(imageMode);
 // the UI references them via cheap Unicode placeholders (a=T,U=1 draws nothing).
 if (process.stdout.isTTY && imageMode === "kitty") process.stdout.write(transmitAll());
 
-// Fullscreen is the DEFAULT: the app owns a stable frame and the composer stays
-// pinned to the bottom, like the coding CLIs users expect. Inline remains
-// available when terminal scrollback is more important than a fixed footer.
+// Inline is the DEFAULT: output appears in terminal scrollback with no blank
+// screen on exit. Fullscreen available via --fullscreen or GEARBOX_FULLSCREEN=1.
 const uiPrefs = loadPrefs();
 const explicitInline = args.includes("--inline") || process.env.GEARBOX_INLINE === "1" || process.env.GEARBOX_FULLSCREEN === "0";
 const explicitFullscreen = args.includes("--fullscreen") || process.env.GEARBOX_FULLSCREEN === "1";
-const wantsInline = explicitInline || (!explicitFullscreen && uiPrefs.fullscreen === false);
+const wantsInline = !explicitFullscreen && (explicitInline || uiPrefs.fullscreen !== true);
 const wantsFullscreen = !wantsInline;
 const fullscreen = Boolean(process.stdout.isTTY) && wantsFullscreen;
 const mouse = Boolean(process.stdout.isTTY) && process.env.GEARBOX_MOUSE !== "0";
