@@ -1063,81 +1063,128 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     };
   };
 
+  // Run a turn through a vendor subscription binary (claude/codex). Shared by the
+  // EXPLICIT pin (`/account use`) and an AUTO-routed seat the RoutingSelector
+  // chose — the dispatch is the same; only where the seat came from differs.
+  const runCliBackend = useCallback(
+    async (args: {
+      binary: string;
+      profile?: string;
+      modelId?: string; // the sdk model id the binary understands (no cli: prefix)
+      accountId: string;
+      efforts: string[];
+      label?: string; // model label for the phase line
+      pinned: boolean; // true ⇒ explicit pin (no routing reason to show)
+      prompt: string;
+      messages: ModelMessage[];
+      onEvent: OnEvent;
+      signal?: AbortSignal;
+    }): Promise<{ messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number } }> => {
+      const { binary, profile, modelId, accountId, efforts, label, pinned, prompt, messages, onEvent, signal } = args;
+      usedAccountRef.current = accountId;
+      const detail = pinned
+        ? `${binary}${label ? ` · ${label}` : ""} owns tools and permissions`
+        : `${binary}${label ? ` · ${label}` : ""} subscription · seat (~free) owns tools and permissions`;
+      onEvent({ type: "phase", label: "using subscription", detail, state: "running" });
+      // Effort is validated against THIS model's supported set and clamped/omitted
+      // — never sent unsupported (provider effort vocabularies differ).
+      const _cliEffortRaw = normalizeEffort(effortRef.current, efforts);
+      if (_cliEffortRaw === null && effortRef.current !== "medium") {
+        const { level: nearest } = clampEffort(effortRef.current, efforts);
+        const hint = efforts.length ? ` — try /effort ${nearest}` : "";
+        throw new Error(`effort "${effortRef.current}" is not supported by ${label ?? binary} (supports: ${efforts.join(", ") || "none"}${hint})`);
+      }
+      const cliEffort = _cliEffortRaw ?? undefined;
+      const activeAccount = getAccount(accountId);
+      const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
+      const reloginCommand = binary.includes("codex")
+        ? `/account add codex${activeName ? ` ${activeName}` : ""}`
+        : `/account add claude${activeName ? ` ${activeName}` : ""}`;
+      // On the first turn of a session, inject the repo map so the model doesn't
+      // waste tool calls discovering structure. The CLI backend bypasses gearbox's
+      // context engine entirely, so this is the only upfront structural context.
+      let cliPrompt = prompt;
+      if (!cliSessionRef.current) {
+        try {
+          const cwd = process.cwd();
+          const allFiles = listProjectFiles(cwd).slice(0, 300);
+          const map = repoMap(cwd, 3000);
+          const fileList = allFiles.join("\n");
+          cliPrompt =
+            `<project-context cwd="${cwd}">\n` +
+            `<files>\n${fileList}\n</files>\n` +
+            (map ? `<signatures>\n${map}\n</signatures>\n` : "") +
+            `</project-context>\n\n` +
+            prompt;
+        } catch {
+          // non-critical — proceed with plain prompt
+        }
+      }
+      const r = await runCliTask({
+        binary,
+        prompt: cliPrompt,
+        messages,
+        onEvent,
+        signal,
+        sessionId: cliSessionRef.current,
+        autoApprove: isYolo(),
+        profile,
+        modelId,
+        effort: cliEffort,
+        accountLabel: activeAccount ? accountLabel(activeAccount) : accountId,
+        reloginCommand,
+      });
+      cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
+      cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
+      return { messages: r.messages, usage: r.usage };
+    },
+    [],
+  );
+
   const defaultRunner: Runner = useCallback(
     async ({ prompt, messages, onEvent, selector: sel, signal }) => {
-      // Active CLI subscription account: delegate the whole turn to the vendor
-      // binary (account-first; the model selector doesn't apply). Plain-text
-      // transcript carries across; the binary self-governs tools/permissions.
-      const cli = activeCliRef.current;
-      if (cli) {
-        if (activeImagesRef.current.length) {
-          onEvent({
-            type: "error",
-            message: "image attachments need an API-backed model in Gearbox right now. Use `/account off` or an API-key account, then retry with the image path.",
-          });
-          return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
-        }
-        routedRef.current = null;
-        usedAccountRef.current = cli.id;
-        const modelLabel = cliModelLabel(activeCliModelRef.current);
-        onEvent({ type: "phase", label: "using subscription", detail: `${cli.binary}${modelLabel ? ` · ${modelLabel}` : ""} owns tools and permissions`, state: "running" });
-        const cliChoices = cliModelChoices(cli.binary);
-        const cliChoice = cliChoices.find((m) => m.id === activeCliModelRef.current) ?? cliChoices[0];
-        const _cliEffortRaw = cliChoice ? normalizeEffort(effortRef.current, cliChoice.efforts ?? []) : null;
-        if (_cliEffortRaw === null && effortRef.current !== "medium") {
-          const supported = cliChoice?.efforts ?? [];
-          const { level: nearest } = clampEffort(effortRef.current, supported);
-          const hint = supported.length ? ` — try /effort ${nearest}` : "";
-          throw new Error(`effort "${effortRef.current}" is not supported by ${cliChoice?.label ?? cli.binary} (supports: ${supported.join(", ") || "none"}${hint})`);
-        }
-        const cliEffort = _cliEffortRaw ?? undefined;
-        const activeAccount = getAccount(cli.id);
-        const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
-        const reloginCommand = cli.binary.includes("codex")
-          ? `/account add codex${activeName ? ` ${activeName}` : ""}`
-          : `/account add claude${activeName ? ` ${activeName}` : ""}`;
-        // On the first turn of a session, inject the repo map so the model
-        // doesn't waste tool calls on find/ls to discover the file structure.
-        // The CLI backend bypasses gearbox's context engine entirely, so this
-        // is the only way to give it structural context upfront.
-        let cliPrompt = prompt;
-        if (!cliSessionRef.current) {
-          try {
-            const cwd = process.cwd();
-            const allFiles = listProjectFiles(cwd).slice(0, 300);
-            const map = repoMap(cwd, 3000);
-            const fileList = allFiles.join("\n");
-            cliPrompt =
-              `<project-context cwd="${cwd}">\n` +
-              `<files>\n${fileList}\n</files>\n` +
-              (map ? `<signatures>\n${map}\n</signatures>\n` : "") +
-              `</project-context>\n\n` +
-              prompt;
-          } catch {
-            // non-critical — proceed with plain prompt
-          }
-        }
-        const r = await runCliTask({
-          binary: cli.binary,
-          prompt: cliPrompt,
-          messages,
-          onEvent,
-          signal,
-          sessionId: cliSessionRef.current,
-          autoApprove: isYolo(),
-          profile: cli.profile,
-          modelId: activeCliModelRef.current,
-          effort: cliEffort,
-          accountLabel: activeAccount ? accountLabel(activeAccount) : cli.id,
-          reloginCommand,
+      const imagesPresent = activeImagesRef.current.length > 0;
+      const cliImageGuard = () => {
+        onEvent({
+          type: "error",
+          message: "image attachments need an API-backed model in Gearbox right now. Use `/account off` or an API-key account, then retry with the image path.",
         });
-        cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
-        cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
-        return { messages: r.messages, usage: r.usage };
+        return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
+      };
+
+      // An EXPLICIT subscription pin (`/account use`) bypasses routing entirely.
+      const pin = activeCliRef.current;
+      if (pin) {
+        if (imagesPresent) return cliImageGuard();
+        routedRef.current = null;
+        cliMetaRef.current = null;
+        const choices = cliModelChoices(pin.binary);
+        const cliChoice = choices.find((m) => m.id === activeCliModelRef.current) ?? choices[0];
+        return runCliBackend({
+          binary: pin.binary, profile: pin.profile, modelId: activeCliModelRef.current, accountId: pin.id,
+          efforts: cliChoice?.efforts ?? [], label: cliModelLabel(activeCliModelRef.current) || undefined,
+          pinned: true, prompt, messages, onEvent, signal,
+        });
       }
+
       const plan = modeRef.current === "plan";
-      const requires: ModelRequirement[] = ["tools", ...(activeImagesRef.current.length ? ["images" as const] : [])];
+      const requires: ModelRequirement[] = ["tools", ...(imagesPresent ? ["images" as const] : [])];
       const choice = sel.select({ prompt: prompt, kind: plan ? "plan" : undefined, requires });
+
+      // The selector may auto-pick a subscription SEAT — dispatch it like a pin,
+      // but record the routing reason (this WAS a routing decision).
+      if (choice.backend?.kind === "cli") {
+        if (imagesPresent) return cliImageGuard();
+        routedRef.current = { model: choice.model, reason: choice.reason };
+        setLastPick({ model: choice.model, reason: choice.reason });
+        onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+        return runCliBackend({
+          binary: choice.backend.binary, profile: choice.backend.profile, modelId: choice.model.sdkId, accountId: choice.backend.account.id,
+          efforts: choice.model.efforts ?? [], label: choice.model.label,
+          pinned: false, prompt, messages, onEvent, signal,
+        });
+      }
+
       const missing = missingRequirements(choice.model, requires);
       if (missing.length) {
         throw new Error(`${choice.model.label} cannot run this turn (${missing.join(", ")} unsupported). Use /model auto or pick a compatible model.`);
@@ -1152,10 +1199,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // working set to SEND; the returned ledger stays the full source of truth.
       const userContent = imageContent(prompt, activeImagesRef.current);
       const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
-      // Pick the active account for this model's provider and inject its creds.
-      // No account → env-default for users who have opted to keep keys in env.
-      // Durable accounts remain the preferred onboarding path.
-      const account = accountResolver.pick(choice.model.provider);
+      // Prefer the account the router chose (it scored that key's balance/limits);
+      // else the provider default; else env creds for env-only users.
+      const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || accountResolver.pick(choice.model.provider);
       const creds = account ? await resolveCreds(account) : undefined;
       usedAccountRef.current = account?.id ?? null;
       cliMetaRef.current = null;
@@ -1670,12 +1716,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             } else {
               accountStatusCacheRef.current[acctId] = { signedIn: true, detail: st.detail };
             }
-            activeCliRef.current = { id: acctId, binary: bin, profile };
             cliSessionRef.current = undefined;
             setLastPick(null);
-            setActiveCli({ id: acctId, label: shortLabel });
-            updatePrefs({ activeAccount: acctId }); // restore this subscription next launch
-            updatePhase(phaseId, "ok", `${accountLabel(res.account!)} active`, `using ${bin}${st.detail ? `; ${st.detail}` : ""}. Own tools/permissions; /account off returns to API routing`);
+            // With 2+ usable backends, let routing decide (subscription-first by
+            // default): the seat is now a candidate the RoutingSelector prefers
+            // until its limit, then falls back to your API keys. Only pin it when
+            // it's the sole usable backend (routing over one seat == pinning).
+            const otherUsable =
+              listAccounts().some((a) => a.enabled && a.id !== acctId) ||
+              [process.env.ANTHROPIC_API_KEY, process.env.OPENAI_API_KEY, process.env.GOOGLE_GENERATIVE_AI_API_KEY, process.env.DEEPSEEK_API_KEY].some(Boolean);
+            if (otherUsable) {
+              activeCliRef.current = null;
+              setActiveCli(null);
+              updatePrefs({ activeAccount: null });
+              updatePhase(phaseId, "ok", `${accountLabel(res.account!)} added`, `routing will prefer this seat (~free) and fall back to your API keys at its limit. /account ${accountSlug(res.account!)} to pin it; /account off anytime.`);
+            } else {
+              activeCliRef.current = { id: acctId, binary: bin, profile };
+              setActiveCli({ id: acctId, label: shortLabel });
+              updatePrefs({ activeAccount: acctId }); // restore this subscription next launch
+              updatePhase(phaseId, "ok", `${accountLabel(res.account!)} active`, `using ${bin}${st.detail ? `; ${st.detail}` : ""}. Own tools/permissions; /account off returns to API routing`);
+            }
           } catch (e: any) {
             updatePhase(phaseId, "err", `${accountLabel(res.account!)} sign-in`, e?.message ?? String(e));
           }
