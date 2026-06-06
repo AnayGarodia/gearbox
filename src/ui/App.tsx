@@ -22,7 +22,7 @@ import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
-import { confirmRoutingPreference, type PreferenceKind } from "../model/preferences.ts";
+import { confirmRoutingPreference, setBudget, loadBudgets, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, type ModelSpec } from "../providers.ts";
 import { runTask } from "../agent/run.ts";
@@ -2042,6 +2042,35 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const pref = confirmRoutingPreference({ kind: kindRaw as PreferenceKind, modelId: r.modelId, repo: process.cwd() });
           setSelector((s) => (s instanceof RoutingSelector ? new RoutingSelector() : s));
           notice(`remembered: prefer ${pref.modelId} for ${pref.kind} tasks`);
+          return;
+        }
+        case "budget": {
+          echo(text);
+          const parts = arg.split(/\s+/).filter(Boolean);
+          if (parts.length === 0) {
+            const b = loadBudgets();
+            const keys = Object.keys(b);
+            notice(
+              keys.length
+                ? "budgets (estimates remaining = budget − tracked spend):\n" + keys.map((k) => `  ${k}: $${b[k]!.amountUSD} ${b[k]!.period}`).join("\n")
+                : "no budgets set. /budget <provider|account> <amount> [monthly|total] — lets routing estimate remaining credit for providers that don't expose a balance",
+            );
+            return;
+          }
+          const [target, amountRaw, periodRaw] = parts;
+          if (amountRaw && /^off$/i.test(amountRaw)) {
+            setBudget(target!, null);
+            notice(`cleared budget for ${target}`);
+            return;
+          }
+          const amount = Number(amountRaw);
+          if (!target || !amountRaw || !Number.isFinite(amount) || amount <= 0) {
+            notice("usage: /budget <provider|account> <amountUSD> [monthly|total]  ·  /budget <target> off");
+            return;
+          }
+          const period = periodRaw && /^total$/i.test(periodRaw) ? "total" : "monthly";
+          setBudget(target, { amountUSD: amount, period });
+          notice(`budget set: ${target} → $${amount} ${period}. Routing will preserve it as it runs low (estimated from your spend).`);
           return;
         }
         case "memory": {

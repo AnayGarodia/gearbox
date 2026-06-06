@@ -34,6 +34,8 @@ export interface AccountUsage {
   estimated: boolean; // true if any spend was an estimate (not a provider-reported figure)
   firstAt: number;
   lastAt: number;
+  monthKey?: string; // "YYYY-MM" of the current calendar month being accumulated
+  monthSpentUSD?: number; // spend within monthKey (resets when the month rolls over)
   rate?: RateSnapshot; // legacy single window (read for back-compat, written into rates)
   rates?: RateSnapshot[]; // one snapshot per limit window (5-hour, 7-day, …)
   balance?: BalanceSnapshot; // remaining API credit, where the provider exposes it
@@ -81,8 +83,24 @@ export function recordUsage(opts: {
   u.turns += 1;
   u.estimated = u.estimated || opts.estimated;
   u.lastAt = now;
+  // Calendar-month spend, so a self-accounted "monthly" budget can estimate the
+  // remaining balance providers don't expose. Resets when the month rolls over.
+  const mk = monthKeyOf(now);
+  if (u.monthKey !== mk) { u.monthKey = mk; u.monthSpentUSD = 0; }
+  u.monthSpentUSD = (u.monthSpentUSD ?? 0) + opts.costUSD;
   f.accounts[opts.accountId] = u;
   save(f);
+}
+
+function monthKeyOf(now: number): string {
+  return new Date(now).toISOString().slice(0, 7); // "YYYY-MM"
+}
+
+/** Spend in the budget period: cumulative for a prepaid "total" budget, or just
+ *  the current calendar month for a "monthly" one. */
+export function spentInPeriod(u: AccountUsage, period: "total" | "monthly", now: number): number {
+  if (period === "total") return u.spentUSD;
+  return u.monthKey === monthKeyOf(now) ? (u.monthSpentUSD ?? 0) : 0;
 }
 
 /** Record the latest rate-limit snapshots for an account (claude CLI emits one

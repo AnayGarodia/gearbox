@@ -38,6 +38,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
   { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },
+  { name: "/budget", usage: "/budget <provider> <amount> [monthly|total]", desc: "set a spend budget so routing can estimate remaining credit and preserve it", group: "accounts" },
   // save & copy
   { name: "/copy", usage: "/copy", desc: "copy the last reply to the clipboard", group: "output" },
   { name: "/export", usage: "/export [file]", desc: "save the conversation to a file", group: "output" },

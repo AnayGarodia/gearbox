@@ -9,7 +9,8 @@
 // the no-arg path reads the real store.
 import type { Account, ExecMode } from "../accounts/types.ts";
 import { listAccounts } from "../accounts/store.ts";
-import { loadUsage, type AccountUsage, type RateSnapshot } from "../accounts/usage.ts";
+import { loadUsage, spentInPeriod, type AccountUsage, type RateSnapshot } from "../accounts/usage.ts";
+import { loadBudgets, type BudgetConfig } from "./preferences.ts";
 
 export interface AccountState {
   accountId: string;
@@ -17,12 +18,15 @@ export interface AccountState {
   exec: ExecMode;
   isSubscription: boolean; // exec === "cli": a flat-rate seat (~0 marginal until its limit)
 
-  // Metered API headroom — undefined when the provider does not expose a balance
-  // (the common case: Anthropic/OpenAI/Google/Bedrock/Vertex/Azure). Absence is
-  // NOT scarcity; the scorer leaves the scarcity term at 0 when this is unset.
+  // Metered API headroom. A live figure where the provider exposes one
+  // (DeepSeek/OpenRouter/Vercel); otherwise ESTIMATED from a self-declared budget
+  // minus our tracked spend, so scarcity still works for the providers that
+  // expose nothing. undefined only when there's neither a live balance nor a
+  // budget — and then the scorer leaves scarcity at 0 (no penalty).
   balanceRemainingUSD?: number;
   balanceTotalUSD?: number;
   balanceAt?: number; // staleness of the balance snapshot
+  balanceEstimated?: boolean; // true ⇒ derived from budget − spend, not a live API figure
 
   // Subscription rate-limit headroom = min over all observed SUBSCRIPTION windows
   // of (1 − utilization). 1 = fresh, 0 = exhausted. undefined when no window seen.
@@ -65,10 +69,11 @@ function headroomOf(u: AccountUsage | undefined): Pick<AccountState, "rateHeadro
 
 export function buildRoutingContext(
   now: number,
-  opts?: { accounts?: Account[]; usage?: AccountUsage[] },
+  opts?: { accounts?: Account[]; usage?: AccountUsage[]; budgets?: Record<string, BudgetConfig> },
 ): RoutingContext {
   const accounts = opts?.accounts ?? listAccounts();
   const usageById = new Map((opts?.usage ?? loadUsage()).map((u) => [u.accountId, u]));
+  const budgets = opts?.budgets ?? loadBudgets();
   const byAccountId = new Map<string, AccountState>();
 
   for (const acct of accounts) {
@@ -79,11 +84,33 @@ export function buildRoutingContext(
       provider: acct.provider,
       exec: acct.exec,
       isSubscription: acct.exec === "cli",
-      balanceRemainingUSD: u?.balance?.remainingUSD,
-      balanceTotalUSD: u?.balance?.totalUSD,
-      balanceAt: u?.balance?.at,
+      ...balanceOf(acct, u, budgets, now),
       ...headroomOf(u),
     });
   }
   return { now, byAccountId };
+}
+
+// Resolve an account's metered balance: a live snapshot wins; else, if the user
+// declared a budget for this account/provider, estimate remaining = budget −
+// spend-in-period (subscriptions never carry a $ balance).
+function balanceOf(
+  acct: Account,
+  u: AccountUsage | undefined,
+  budgets: Record<string, BudgetConfig>,
+  now: number,
+): Pick<AccountState, "balanceRemainingUSD" | "balanceTotalUSD" | "balanceAt" | "balanceEstimated"> {
+  if (acct.exec === "cli") return {};
+  if (u?.balance?.remainingUSD !== undefined) {
+    return { balanceRemainingUSD: u.balance.remainingUSD, balanceTotalUSD: u.balance.totalUSD, balanceAt: u.balance.at };
+  }
+  const budget = budgets[acct.id] ?? budgets[acct.provider];
+  if (!budget) return {};
+  const spent = u ? spentInPeriod(u, budget.period, now) : 0;
+  return {
+    balanceRemainingUSD: Math.max(0, budget.amountUSD - spent),
+    balanceTotalUSD: budget.amountUSD,
+    balanceAt: now, // computed from our own ledger ⇒ always fresh
+    balanceEstimated: true,
+  };
 }

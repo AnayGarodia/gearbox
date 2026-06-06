@@ -1,7 +1,14 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { buildRoutingContext } from "../src/model/routing-context.ts";
 import type { Account } from "../src/accounts/types.ts";
 import type { AccountUsage } from "../src/accounts/usage.ts";
+
+// Isolate the store so loadBudgets() (the default when opts.budgets is omitted)
+// reads an empty dir instead of the developer's real prefs.
+process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-rctx-"));
 
 // buildRoutingContext distills accounts.json + usage.json into a pure per-account
 // snapshot the scorer reads. Tested by INJECTING fixtures (no disk), so the core
@@ -62,6 +69,38 @@ test("falls back to the legacy single rate field when rates[] is absent", () => 
     usage: [usage({ accountId: "max", rate: { utilization: 0.4, type: "five_hour", at: 1 } })],
   });
   expect(ctx.byAccountId.get("max")!.rateHeadroom).toBeCloseTo(0.6, 5);
+});
+
+test("estimates a balance from a budget − spend when the provider exposes none", () => {
+  const ctx = buildRoutingContext(1000, {
+    accounts: [acct({ id: "oai", provider: "openai", exec: "in-loop" })],
+    usage: [usage({ accountId: "oai", spentUSD: 7.5, monthKey: "1970-01", monthSpentUSD: 7.5 })],
+    budgets: { openai: { amountUSD: 20, period: "total" } }, // keyed by provider
+  });
+  const s = ctx.byAccountId.get("oai")!;
+  expect(s.balanceRemainingUSD).toBe(12.5); // 20 − 7.5
+  expect(s.balanceTotalUSD).toBe(20);
+  expect(s.balanceEstimated).toBe(true);
+});
+
+test("a live balance wins over a budget estimate", () => {
+  const ctx = buildRoutingContext(1000, {
+    accounts: [acct({ id: "or", provider: "openrouter", exec: "in-loop" })],
+    usage: [usage({ accountId: "or", spentUSD: 5, balance: { remainingUSD: 99, totalUSD: 100, at: 50 } })],
+    budgets: { or: { amountUSD: 20, period: "total" } },
+  });
+  const s = ctx.byAccountId.get("or")!;
+  expect(s.balanceRemainingUSD).toBe(99); // the real figure, not 15
+  expect(s.balanceEstimated).toBeUndefined();
+});
+
+test("an account-id budget beats a provider budget, and clamps at 0", () => {
+  const ctx = buildRoutingContext(1000, {
+    accounts: [acct({ id: "oai", provider: "openai", exec: "in-loop" })],
+    usage: [usage({ accountId: "oai", spentUSD: 30 })],
+    budgets: { oai: { amountUSD: 20, period: "total" }, openai: { amountUSD: 999, period: "total" } },
+  });
+  expect(ctx.byAccountId.get("oai")!.balanceRemainingUSD).toBe(0); // 20 − 30, clamped
 });
 
 test("api:* windows feed apiThrottle, kept separate from subscription headroom", () => {
