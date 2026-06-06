@@ -19,7 +19,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.23";
+const VERSION = "0.1.24";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -55,11 +55,17 @@ function ghostLines(cells: SpriteCell[][], pad = "  "): string[] {
   });
 }
 
-function onboardingBoo(termWidth: number): string {
-  const cells = renderGhost({ palette: "default", face: "happy", scale: 1 });
-  const ghostW = cells[0]?.length ?? 20;
-  const leftPad = Math.max(2, Math.floor((termWidth - ghostW) / 2));
-  return ghostLines(cells, " ".repeat(leftPad)).join("\n");
+function onboardingBanner(termWidth: number): void {
+  const ruleW = Math.min(42, termWidth - 4);
+  const rule = dim("─".repeat(ruleW));
+  console.log("");
+  console.log(centerStr(rule, termWidth));
+  console.log(centerStr(bold(accent("g e a r b o x")), termWidth));
+  console.log(centerStr(rule, termWidth));
+  console.log("");
+  console.log(centerStr(dim("one terminal · every model you pay for"), termWidth));
+  console.log(centerStr(dim("keys stay local, never sent anywhere"), termWidth));
+  console.log("");
 }
 
 const centerStr = (text: string, width: number): string => {
@@ -129,15 +135,7 @@ async function runCliOnboarding(): Promise<boolean> {
 
   try {
     const termWidth = Math.min(process.stdout.columns || 80, 100);
-    const ruleW = Math.min(32, termWidth - 8);
-    console.log("");
-    console.log(onboardingBoo(termWidth));
-    console.log("");
-    console.log(centerStr(bold(accent("gearbox")), termWidth));
-    console.log(centerStr(dim("one terminal · every model you already pay for"), termWidth));
-    console.log("");
-    console.log(centerStr(dim("─".repeat(ruleW)), termWidth));
-    console.log("");
+    onboardingBanner(termWidth);
 
     while (!anyProviderAvailable()) {
       const env = importableEnvCreds();
