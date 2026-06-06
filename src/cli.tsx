@@ -19,7 +19,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.24";
+const VERSION = "0.1.25";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -56,15 +56,29 @@ function ghostLines(cells: SpriteCell[][], pad = "  "): string[] {
 }
 
 function onboardingBanner(termWidth: number): void {
-  const ruleW = Math.min(42, termWidth - 4);
-  const rule = dim("─".repeat(ruleW));
+  const boxW = Math.min(58, Math.max(36, termWidth - 4));
+  const innerW = boxW - 4;
+  const lp = " ".repeat(Math.max(0, Math.floor((termWidth - boxW) / 2)));
+  const hr = "─".repeat(boxW - 2);
+  const blank = lp + accent("│") + " ".repeat(boxW - 2) + accent("│");
+
+  const row = (text: string) => {
+    const vl = visibleLength(text);
+    const sp = Math.max(0, innerW - vl);
+    return lp + accent("│") + " " + " ".repeat(Math.floor(sp / 2)) + text + " ".repeat(sp - Math.floor(sp / 2)) + " " + accent("│");
+  };
+
   console.log("");
-  console.log(centerStr(rule, termWidth));
-  console.log(centerStr(bold(accent("g e a r b o x")), termWidth));
-  console.log(centerStr(rule, termWidth));
-  console.log("");
-  console.log(centerStr(dim("one terminal · every model you pay for"), termWidth));
-  console.log(centerStr(dim("keys stay local, never sent anywhere"), termWidth));
+  console.log(lp + accent("╭" + hr + "╮"));
+  console.log(blank);
+  console.log(row(paint("1;97", "G  E  A  R  B  O  X")));
+  console.log(blank);
+  console.log(row(dim("─".repeat(Math.min(28, innerW - 2)))));
+  console.log(blank);
+  console.log(row("one terminal · every model you pay for"));
+  console.log(row(dim("keys stay local, never sent anywhere")));
+  console.log(blank);
+  console.log(lp + accent("╰" + hr + "╯"));
   console.log("");
 }
 
