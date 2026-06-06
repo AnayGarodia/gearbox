@@ -567,7 +567,6 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
               { text: "  " + r.status.padEnd(v.statusPad), color: accountStateColor(r.status) },
               { text: "  use ", color: color.faint },
               { text: cmd.padEnd(commandWidth), color: color.accent, bold: true, bg: color.accentBg },
-              { text: "  or " + r.number, color: color.faint },
             ], width));
             if (r.duplicateOf) out.push(clipSpans([{ text: "      same login as ", color: color.faint }, { text: r.duplicateOf, color: color.text }], width));
             else if (r.detail) out.push(clipSpans([{ text: "      " + r.detail, color: color.faint }], width));
@@ -582,7 +581,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         }
         out.push(BLANK);
         out.push(clipSpans([{ text: "  add     ", color: color.faint }, { text: "/account add codex [name]", color: color.accent }, { text: "   /account add claude [name]", color: color.accent }, { text: "   /account add <api-key>", color: color.accent }], width));
-        out.push(clipSpans([{ text: "  remove  ", color: color.faint }, { text: "/account remove <name-or-number>", color: color.accent }], width));
+        out.push(clipSpans([{ text: "  remove  ", color: color.faint }, { text: "/account remove <name>", color: color.accent }], width));
         break;
       }
       case "usage": {

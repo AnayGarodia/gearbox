@@ -34,7 +34,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/context", usage: "/context", desc: "see what's loaded and how many tokens it uses", group: "chat" },
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
   // accounts & cost
-  { name: "/account", usage: "/account", desc: "list accounts; /account <number> to switch, /account add to add one", group: "accounts" },
+  { name: "/account", usage: "/account", desc: "list accounts; /account <name> to switch, /account add to add one", group: "accounts" },
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
   { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },
@@ -122,8 +122,8 @@ export function accountLabel(a: { id: string; provider: string; exec: string; au
 }
 
 /**
- * Numbered account list — you switch/remove by NUMBER, never an id. The active
- * subscription (if any) is marked; otherwise API keys auto-route.
+ * Account list — you switch/remove by NAME (slug), never a number or an id. The
+ * active subscription (if any) is marked; otherwise API keys auto-route.
  */
 export function formatAccounts(
   accounts: { id: string; label: string; provider: string; exec: string; auth?: any }[],
@@ -151,7 +151,7 @@ export function formatAccounts(
         "ready";
       const alias = accountSlug(a);
       lines.push(`  ${mark} ${accountLabel(a).padEnd(34)} ${status}`);
-      lines.push(`      use /account ${alias}${i + 1 ? `  (or ${i + 1})` : ""}`);
+      lines.push(`      use /account ${alias}`);
       if (st?.detail && st.signedIn) lines.push(`      ${st.detail}`);
     });
     if (!activeCliId) lines.push("", "  no subscription active — your API keys auto-route per task");
@@ -162,9 +162,9 @@ export function formatAccounts(
   }
   lines.push(
     "",
-    "  switch: /account <name-or-number>",
+    "  switch: /account <name>",
     "  add:    /account add codex [name]  ·  /account add claude [name]  ·  /account add <api-key>",
-    accounts.length ? "  remove: /account remove <name-or-number>" : "",
+    accounts.length ? "  remove: /account remove <name>" : "",
   );
   return lines.filter(Boolean).join("\n");
 }

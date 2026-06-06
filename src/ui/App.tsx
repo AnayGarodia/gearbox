@@ -1005,10 +1005,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       .replace(/[()]/g, " ")
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "");
-  const accountAliases = (a: ReturnType<typeof listAccounts>[number], index: number) => {
+  const accountAliases = (a: ReturnType<typeof listAccounts>[number]) => {
     const name = accountName(a);
     const slug = accountSlug(a);
-    const aliases = new Set([String(index + 1), slug, normalizeAccountRef(name), normalizeAccountRef(a.label), normalizeAccountRef(a.id)]);
+    const aliases = new Set([slug, normalizeAccountRef(name), normalizeAccountRef(a.label), normalizeAccountRef(a.id)]);
     const nick = name.match(/\(([^)]+)\)/)?.[1];
     if (nick) aliases.add(normalizeAccountRef(nick));
     if (a.provider === "codex-cli") aliases.add("chatgpt");
@@ -1017,11 +1017,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
   const findAccountRef = (query: string, accounts = listAccounts()): { account?: (typeof accounts)[number]; error?: string } => {
     const q = normalizeAccountRef(query);
-    if (!q) return { error: "which account? use /account <name-or-number>" };
-    const exact = accounts.map((a, i) => ({ a, aliases: accountAliases(a, i) })).filter(({ aliases }) => aliases.has(q));
+    if (!q) return { error: "which account? use /account <name>" };
+    const exact = accounts.map((a) => ({ a, aliases: accountAliases(a) })).filter(({ aliases }) => aliases.has(q));
     if (exact.length === 1) return { account: exact[0]!.a };
     if (exact.length > 1) return { error: `"${query}" matches ${exact.map(({ a }) => accountName(a)).join(", ")} — use the full alias` };
-    const fuzzy = accounts.map((a, i) => ({ a, aliases: [...accountAliases(a, i)] })).filter(({ aliases }) => aliases.some((x) => x.includes(q)));
+    const fuzzy = accounts.map((a) => ({ a, aliases: [...accountAliases(a)] })).filter(({ aliases }) => aliases.some((x) => x.includes(q)));
     if (fuzzy.length === 1) return { account: fuzzy[0]!.a };
     if (fuzzy.length > 1) return { error: `"${query}" matches ${fuzzy.map(({ a }) => accountName(a)).join(", ")} — use the full alias` };
     return { error: `no account matching "${query}"` };
@@ -1033,7 +1033,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     statuses: Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>,
   ): AccountView => {
     const active = activeCliId ? accounts.find((a) => a.id === activeCliId) : null;
-    const rows = accounts.map((a, i) => {
+    const rows = accounts.map((a) => {
       const st = statuses[a.id];
       const activeRow = a.id === activeCliId;
       const status =
@@ -1049,7 +1049,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         status,
         active: activeRow,
         alias: accountSlug(a),
-        number: i + 1,
         detail: st?.signedIn ? st.detail : undefined,
         duplicateOf: st?.duplicateOf,
       };
@@ -2032,11 +2031,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           );
           return;
         }
-        // Everything account-related, addressed by NUMBER (never an id):
-        //   /account              → numbered list
-        //   /account <n>          → switch to account #n
+        // Everything account-related, addressed by name/slug:
+        //   /account              → list accounts
+        //   /account <name>       → switch to account by name/slug (fuzzy match)
         //   /account add …        → sign in (claude/codex) or paste an API key
-        //   /account remove <n>   → remove account #n
+        //   /account remove <name>→ remove account by name/slug
         //   /account off          → leave the active subscription
         case "accounts":
         case "account": {
@@ -2078,10 +2077,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 pushAccounts(buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current));
               }
             })();
-          };
-          const byNumber = (s?: string) => {
-            const n = Number(s);
-            return Number.isInteger(n) && n >= 1 && n <= all.length ? all[n - 1] : undefined;
           };
           // Make an account active. cli → run through its binary; api → set the
           // provider default and drop any active subscription so API/routing runs.
@@ -2135,17 +2130,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             setActiveCli(null);
             updatePrefs({ activeAccount: null });
             notice("left the subscription — back to your API keys");
-            return;
-          }
-          // Switch by number: `/account 2`.
-          const numbered = byNumber(subL);
-          if (numbered) {
-            activate(numbered);
-            return;
-          }
-          // A number that's out of range (vs. a non-number, which may be a subcommand).
-          if (/^\d+$/.test(subL)) {
-            notice(all.length ? `there's no account ${subL} — pick 1–${all.length}.\n\n` + formatAccounts(all, activeId, []) : "no accounts yet — /account add to add one");
             return;
           }
           if (!["add", "remove", "rm", "import", "off"].includes(subL)) {

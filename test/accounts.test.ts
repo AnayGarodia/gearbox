@@ -256,8 +256,8 @@ test("buildUsageView includes configured accounts without usage yet", () => {
   expect(view.apiKeys.map((a) => a.name)).toContain("anthropic");
 });
 
-// ── plain-English labels + numbered list (no ids in the UI) ──
-test("accountLabel reads in plain English; list is numbered", async () => {
+// ── plain-English labels + name-only list (no ids in the UI) ──
+test("accountLabel reads in plain English; list switches by name", async () => {
   const { accountLabel, accountSlug, formatAccounts } = await import("../src/commands.ts");
   addCliAccount("claude-cli");
   addCliAccount("codex-cli", "personal");
@@ -267,9 +267,9 @@ test("accountLabel reads in plain English; list is numbered", async () => {
   expect(accountSlug(getAccount("codex-cli-personal")!)).toBe("chatgpt-personal");
   expect(accountLabel(getAccount("anthropic-x")!)).toBe("Anthropic · API key");
   const out = formatAccounts(listAccounts(), "claude-cli", []);
-  expect(out).toContain("(or 1)"); // number remains a shortcut
   expect(out).toContain("/account chatgpt-personal"); // name alias is first-class
-  expect(out).toContain("/account <name-or-number>");
+  expect(out).not.toMatch(/\(or \d+\)/); // no positional numbers
+  expect(out).toContain("/account <name>");
   expect(out).not.toContain("<id>"); // ids are gone from the UI
 });
 

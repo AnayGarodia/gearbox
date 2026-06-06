@@ -22,7 +22,6 @@ export interface AccountRow {
   status: string;
   active: boolean;
   alias: string;
-  number: number;
   detail?: string;
   duplicateOf?: string;
 }
