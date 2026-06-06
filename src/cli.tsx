@@ -19,7 +19,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.1.25";
+const VERSION = "0.1.26";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -56,29 +56,31 @@ function ghostLines(cells: SpriteCell[][], pad = "  "): string[] {
 }
 
 function onboardingBanner(termWidth: number): void {
-  const boxW = Math.min(58, Math.max(36, termWidth - 4));
-  const innerW = boxW - 4;
-  const lp = " ".repeat(Math.max(0, Math.floor((termWidth - boxW) / 2)));
-  const hr = "─".repeat(boxW - 2);
-  const blank = lp + accent("│") + " ".repeat(boxW - 2) + accent("│");
+  const w = Math.min(termWidth, 120);
+  const center = (s: string) => {
+    const pad = Math.max(0, Math.floor((w - visibleLength(s)) / 2));
+    return " ".repeat(pad) + s;
+  };
 
-  const row = (text: string) => {
-    const vl = visibleLength(text);
-    const sp = Math.max(0, innerW - vl);
-    return lp + accent("│") + " " + " ".repeat(Math.floor(sp / 2)) + text + " ".repeat(sp - Math.floor(sp / 2)) + " " + accent("│");
+  // 5-row block-letter art for GEARBOX (each letter 6 chars wide)
+  const F: Record<string, string[]> = {
+    G: [" █████", "██    ", "██  ██", "██   █", " █████"],
+    E: ["█████ ", "█     ", "████  ", "█     ", "█████ "],
+    A: ["  ██  ", " █  █ ", "██████", "█    █", "█    █"],
+    R: ["████  ", "█   █ ", "████  ", "█  █  ", "█   █ "],
+    B: ["████  ", "█   █ ", "████  ", "█   █ ", "████  "],
+    O: [" ████ ", "█    █", "█    █", "█    █", " ████ "],
+    X: ["█    █", " █  █ ", "  ██  ", " █  █ ", "█    █"],
   };
 
   console.log("");
-  console.log(lp + accent("╭" + hr + "╮"));
-  console.log(blank);
-  console.log(row(paint("1;97", "G  E  A  R  B  O  X")));
-  console.log(blank);
-  console.log(row(dim("─".repeat(Math.min(28, innerW - 2)))));
-  console.log(blank);
-  console.log(row("one terminal · every model you pay for"));
-  console.log(row(dim("keys stay local, never sent anywhere")));
-  console.log(blank);
-  console.log(lp + accent("╰" + hr + "╯"));
+  for (let r = 0; r < 5; r++) {
+    const line = "GEARBOX".split("").map(ch => F[ch]?.[r] ?? "      ").join("  ");
+    console.log(center(accent(line)));
+  }
+  console.log("");
+  console.log(center(dim("one terminal  ·  every model you pay for")));
+  console.log(center(dim("keys stay local · never sent anywhere")));
   console.log("");
 }
 
