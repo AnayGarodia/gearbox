@@ -48,7 +48,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
@@ -94,24 +94,24 @@ function transcriptMarkdown(items: Item[]): string {
   for (const it of items) {
     if (it.kind === "user") out.push("## You", "", it.text, "");
     else if (it.kind === "assistant") out.push("## Gearbox", "", it.text, "");
-    else if (it.kind === "tool") out.push(`> \`${it.name}\` ${it.arg}${it.summary ? " — " + it.summary : ""}`, "");
+    else if (it.kind === "tool") out.push(`> \`${it.name}\` ${it.arg}${it.summary ? " · " + it.summary : ""}`, "");
     else if (it.kind === "notice") out.push(`_${it.text}_`, "");
     else if (it.kind === "accounts") {
       out.push("**accounts**", "", `current: ${it.view.current}`);
-      for (const r of it.view.rows) out.push(`- ${r.name} (${r.type}) — ${r.status} — /account ${r.alias}`);
+      for (const r of it.view.rows) out.push(`- ${r.name} (${r.type}) · ${r.status} · /account ${r.alias}`);
       out.push("");
     }
     else if (it.kind === "usage") {
       out.push("**usage · spend & limits**", "");
       for (const a of it.view.subscriptions) {
         const limits = (a.limits ?? []).map((l) => `${l.label} ${l.pct}%`).join(" · ");
-        out.push(`- ${a.name} (subscription) — ${a.turns} turns${limits ? ` · ${limits}` : ""}`);
+        out.push(`- ${a.name} (subscription) · ${a.turns} turns${limits ? ` · ${limits}` : ""}`);
       }
-      for (const a of it.view.apiKeys) out.push(`- ${a.name} (API key) — ${a.spend} · ${a.turns} turns · ${a.tok}`);
+      for (const a of it.view.apiKeys) out.push(`- ${a.name} (API key) · ${a.spend} · ${a.turns} turns · ${a.tok}`);
       out.push(`- total API spend ${it.view.totalApiSpend}`, "");
     } else if (it.kind === "context") {
       out.push("**context · what's loaded**", "");
-      for (const r of it.view.rows) out.push(`- ${r.label.trim()} — ${r.display.trim()}`);
+      for (const r of it.view.rows) out.push(`- ${r.label.trim()} · ${r.display.trim()}`);
       out.push(`- total ${it.view.total.trim()}${it.view.windowPct != null ? ` (${it.view.windowPct}% of ${it.view.windowLabel})` : ""}`, "");
     } else if (it.kind === "error") out.push(`**error:** ${it.text}`, "");
   }
@@ -122,7 +122,7 @@ function transcriptMarkdown(items: Item[]): string {
 // case worth special-casing: say "you appear to be offline" + a retry hint
 // instead of a stack-ish ENOTFOUND string.
 function friendlyError(msg: string): string {
-  if (isNetworkError(msg)) return `can't reach the provider — you appear to be offline. Check your connection, then /retry.`;
+  if (isNetworkError(msg)) return `can't reach the provider · you appear to be offline. Check your connection, then /retry.`;
   return msg;
 }
 
@@ -137,7 +137,7 @@ function uniq<T>(xs: T[]): T[] {
 
 type CliModelChoice = { id: string; label: string; provider: string; efforts?: string[] };
 
-// Claude CLI has no --thinking-effort flag — effort is not passed through.
+// Claude CLI has no --thinking-effort flag · effort is not passed through.
 const CLAUDE_CLI_EFFORTS: string[] = [];
 const FALLBACK_CODEX_MODELS: CliModelChoice[] = [
   { id: "gpt-5.5", label: "gpt-5.5", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
@@ -362,7 +362,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const outCharsRef = useRef(0); // streamed output chars this turn (for a live tok/s estimate)
-  const firstOutputAtRef = useRef(0); // when the FIRST output token arrived — tok/s is measured from here, not turn start (so thinking time doesn't drag the rate to ~1/s)
+  const firstOutputAtRef = useRef(0); // when the FIRST output token arrived · tok/s is measured from here, not turn start (so thinking time doesn't drag the rate to ~1/s)
   const [, bumpMotion] = useReducer((x: number) => x + 1, 0);
   const [yolo, setYoloState] = useState(isYolo());
   const [perm, setPermState] = useState<PermRequest | null>(null);
@@ -373,7 +373,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
 const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const paletteIndexRef = useRef(0);
   // Status-bar click pickers: clicking the model/effort label opens a floating
-  // picker above the status bar (fullscreen only — mouse reporting is grabbed
+  // picker above the status bar (fullscreen only · mouse reporting is grabbed
   // there). The /model and /effort slash commands remain the keyboard path.
   const [quickPicker, setQuickPickerState] = useState<null | "model" | "effort">(null);
   const [quickPickerIndex, setQuickPickerIndexState] = useState(0);
@@ -399,13 +399,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
   const panelMaxScrollRef = useRef(0); // max scroll for a static panel (set in render)
   const panelAccountSlugsRef = useRef<string[]>([]); // row index → /account <slug>, set in render (names-only)
-  // Usable (API) models for the /model panel — same source + order as the live
+  // Usable (API) models for the /model panel · same source + order as the live
   // registry so the panel's selection index maps to the right model id.
   const buildPanelModelRows = (cur?: string | null): PanelModelRow[] =>
     modelRegistry().filter((m) => providerAvailable(m.provider)).map((m) => ({ id: m.id, label: m.label, provider: m.provider, current: m.id === cur }));
   // Open a scrollable static info panel (fullscreen only). Returns false inline,
   // so callers fall back to printing the item in the transcript. No echo in panel
-  // mode — the point is to keep the transcript uncluttered.
+  // mode · the point is to keep the transcript uncluttered.
   const openInfoPanel = (title: string, item: Item): boolean => {
     if (!fullscreen) return false;
     atBottomRef.current = true;
@@ -451,7 +451,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     setTitle(busy ? `✳ ${proj} · working` : `${proj} · gearbox`);
   }, [busy]);
 
-  // Refs read by the (closure-captured) input handler — avoids stale state.
+  // Refs read by the (closure-captured) input handler · avoids stale state.
   const editRef = useRef(edit);
   const busyRef = useRef(busy);
   const selectorRef = useRef(selector);
@@ -562,7 +562,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           /* best-effort; retry next launch */
         }
       }
-      if (learned) notice(`loaded the real model list for ${learned} account${learned === 1 ? "" : "s"} — /model to see them`);
+      if (learned) notice(`loaded the real model list for ${learned} account${learned === 1 ? "" : "s"} · /model to see them`);
     })();
   }, []);
 
@@ -623,7 +623,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   // Smooth scrolling: a wheel notch (or a fast swipe's burst of events) sets a
   // TARGET, and an easing loop glides scrollTop toward it a fraction of the
-  // remaining distance each frame — so big jumps decelerate instead of snapping,
+  // remaining distance each frame · so big jumps decelerate instead of snapping,
   // while a single line still moves immediately. The terminal grid is still
   // line-quantized; this just makes the motion between rows continuous.
   const scrollTargetRef = useRef<number | null>(null);
@@ -904,7 +904,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     };
   }, [stdin, fullscreen, rows, scrollBy, copyWithFeedback]);
 
-  // Save the current conversation (best-effort) — model-agnostic messages + the UI
+  // Save the current conversation (best-effort) · model-agnostic messages + the UI
   // transcript + per-turn model/usage, so it resumes faithfully and feeds routing.
   const persist = useCallback(() => {
     const s = sessionRef.current;
@@ -1034,7 +1034,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     ];
     if (!models.length) rows.push("  no named subscription models exposed yet");
     for (const m of models) rows.push(`  ${m.id === currentId ? glyph.on : glyph.off} ${m.label}`);
-    rows.push("", "API models are hidden while a subscription is active — /account off returns to API routing\n  tip: /model haiku (or any API model name) switches directly and leaves the subscription");
+    rows.push("", "API models are hidden while a subscription is active · /account off returns to API routing\n  tip: /model haiku (or any API model name) switches directly and leaves the subscription");
     return rows.join("\n");
   };
   const resolveCliModel = (binary: string, query: string): { ok: true; modelId: string; label: string } | { ok: false; message: string } => {
@@ -1043,7 +1043,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (!matches.length) return { ok: false, message: `no ${binary} subscription model matching "${query}"` };
     const exact = matches.find((m) => m.label.toLowerCase() === q || m.id.toLowerCase() === q);
     const m = exact ?? (matches.length === 1 ? matches[0] : undefined);
-    if (!m) return { ok: false, message: `"${query}" matches ${matches.map((x) => x.label).join(", ")} — be more specific` };
+    if (!m) return { ok: false, message: `"${query}" matches ${matches.map((x) => x.label).join(", ")} · be more specific` };
     return { ok: true, modelId: m.id, label: m.label };
   };
   const setActiveCliModelId = (modelId: string | undefined) => {
@@ -1128,7 +1128,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const subscription = activeCli ? activeCli.label : null;
   const routing = setupRequired || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
   const ctxPct = !activeCli && model && lastInput > 0 ? Math.round((lastInput / model.contextWindow) * 100) : null;
-  // Only show effort when the active model actually supports reasoning — avoids showing
+  // Only show effort when the active model actually supports reasoning · avoids showing
   // "effort medium" on models like haiku that have no reasoning support.
   const activeModelEfforts = (() => {
     const cli = activeCliRef.current;
@@ -1177,10 +1177,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (!q) return { error: "which account? use /account <name>" };
     const exact = accounts.map((a) => ({ a, aliases: accountAliases(a) })).filter(({ aliases }) => aliases.has(q));
     if (exact.length === 1) return { account: exact[0]!.a };
-    if (exact.length > 1) return { error: `"${query}" matches ${exact.map(({ a }) => accountName(a)).join(", ")} — use the full alias` };
+    if (exact.length > 1) return { error: `"${query}" matches ${exact.map(({ a }) => accountName(a)).join(", ")} · use the full alias` };
     const fuzzy = accounts.map((a) => ({ a, aliases: [...accountAliases(a)] })).filter(({ aliases }) => aliases.some((x) => x.includes(q)));
     if (fuzzy.length === 1) return { account: fuzzy[0]!.a };
-    if (fuzzy.length > 1) return { error: `"${query}" matches ${fuzzy.map(({ a }) => accountName(a)).join(", ")} — use the full alias` };
+    if (fuzzy.length > 1) return { error: `"${query}" matches ${fuzzy.map(({ a }) => accountName(a)).join(", ")} · use the full alias` };
     return { error: `no account matching "${query}"` };
   };
   const buildAccountView = (
@@ -1206,7 +1206,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         status,
         active: activeRow,
         alias: accountSlug(a),
-        // Who/what this account is — live sign-in detail (email · plan) if we just
+        // Who/what this account is · live sign-in detail (email · plan) if we just
         // checked, else the identity we persisted on a prior login. Lets the user
         // tell which Claude/ChatGPT account a subscription seat actually is.
         detail: (st?.signedIn ? st.detail : undefined) ?? a.identity?.label,
@@ -1226,7 +1226,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Refresh each subscription account's live identity (email · plan) into the
   // status cache, persisting the email when the CLI exposes one so it survives
   // future checks. Called when the /account panel opens so the user can see WHICH
-  // Claude/ChatGPT account a seat is — not just "subscription".
+  // Claude/ChatGPT account a seat is · not just "subscription".
   const refreshCliStatuses = useCallback(async () => {
     const accounts = listAccounts().filter((a) => a.exec === "cli");
     const statuses = { ...accountStatusCacheRef.current };
@@ -1247,7 +1247,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Set for the next turn to route it through the docs-grounded /ask path.
   const askModeRef = useRef(false);
   // Provenance is shown in full only when the route CHANGES (a switch, a model
-  // change, a failover hop) — not on every unchanged turn. `routeChanged` returns
+  // change, a failover hop) · not on every unchanged turn. `routeChanged` returns
   // true the first time it sees a given (backend·account·model) key.
   const lastRouteRef = useRef("");
   const routeChanged = (key: string) => {
@@ -1258,7 +1258,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   // Run a turn through a vendor subscription binary (claude/codex). Shared by the
   // EXPLICIT pin (`/account use`) and an AUTO-routed seat the RoutingSelector
-  // chose — the dispatch is the same; only where the seat came from differs.
+  // chose · the dispatch is the same; only where the seat came from differs.
   const runCliBackend = useCallback(
     async (args: {
       binary: string;
@@ -1278,7 +1278,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const { binary, profile, modelId, accountId, efforts, label, pinned, prompt, messages, onEvent, signal } = args;
       usedAccountRef.current = accountId;
       // Full provenance only when the route just changed; unchanged turns stay quiet
-      // (the working strip + reply are enough — no per-turn "owns tools" repetition).
+      // (the working strip + reply are enough · no per-turn "owns tools" repetition).
       if (args.showProvenance !== false) {
         const detail = pinned
           ? `${binary}${label ? ` · ${label}` : ""} owns tools and permissions`
@@ -1286,11 +1286,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         onEvent({ type: "phase", label: "using subscription", detail, state: "running" });
       }
       // Effort is validated against THIS model's supported set and clamped/omitted
-      // — never sent unsupported (provider effort vocabularies differ).
+      // · never sent unsupported (provider effort vocabularies differ).
       const _cliEffortRaw = normalizeEffort(effortRef.current, efforts);
       if (_cliEffortRaw === null && effortRef.current !== "medium") {
         const { level: nearest } = clampEffort(effortRef.current, efforts);
-        const hint = efforts.length ? ` — try /effort ${nearest}` : "";
+        const hint = efforts.length ? ` · try /effort ${nearest}` : "";
         throw new Error(`effort "${effortRef.current}" is not supported by ${label ?? binary} (supports: ${efforts.join(", ") || "none"}${hint})`);
       }
       const cliEffort = _cliEffortRaw ?? undefined;
@@ -1316,7 +1316,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             `</project-context>\n\n` +
             prompt;
         } catch {
-          // non-critical — proceed with plain prompt
+          // non-critical · proceed with plain prompt
         }
       }
       const r = await runCliTask({
@@ -1344,21 +1344,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const defaultRunner: Runner = useCallback(
     async ({ prompt, messages, onEvent, selector: sel, signal }) => {
       // /ask (and auto-detected meta-questions): answer from the bundled Gearbox
-      // docs via a cheap routed model, NO tools — runs before routing/pin so it
+      // docs via a cheap routed model, NO tools · runs before routing/pin so it
       // works even when /model is pinned to something broken. Read-and-clear.
       const isAsk = askModeRef.current;
       askModeRef.current = false;
       if (isAsk) {
         const docs = loadGearboxDocs();
         if (!docs) {
-          onEvent({ type: "error", message: "Gearbox docs aren't bundled with this install — can't answer from them." });
+          onEvent({ type: "error", message: "Gearbox docs aren't bundled with this install · can't answer from them." });
           return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
         }
         const choice = new RoutingSelector().select({ prompt, kind: "search" });
         // /ask runs a plain API completion, so it can't use a subscription seat
         // (the CLI backend drives its own loop). If routing only has a seat, say so.
         if (choice.backend?.kind === "cli") {
-          onEvent({ type: "error", message: "/ask needs an API-key account — it can't run on a subscription. Add one with /account add <key>." });
+          onEvent({ type: "error", message: "/ask needs an API-key account · it can't run on a subscription. Add one with /account add <key>." });
           return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
         }
         routedRef.current = { model: choice.model, reason: choice.reason };
@@ -1445,7 +1445,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (_effortRaw === null && effortRef.current !== "medium") {
           const supported = effortLevels(choice.model);
           const { level: nearest } = clampEffort(effortRef.current, supported);
-          const hint = supported.length ? ` — try /effort ${nearest}` : "";
+          const hint = supported.length ? ` · try /effort ${nearest}` : "";
           throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
         }
         const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true });
@@ -1461,7 +1461,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
       // Reactive same-turn failover: try the routed pick; if it fails because the
       // account is out of quota/credit/rate, park it (the router then routes
-      // around it), narrate plainly, re-select, and continue — up to MAX hops.
+      // around it), narrate plainly, re-select, and continue · up to MAX hops.
       const MAX_FAILOVERS = 2;
       let choice = sel.select({ prompt, kind: plan ? "plan" : undefined, requires });
       for (let hop = 0; ; hop++) {
@@ -1481,7 +1481,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [],
   );
 
-  // Summarize older turns (cheap model via the selector seam — kind:"summarize")
+  // Summarize older turns (cheap model via the selector seam · kind:"summarize")
   // and rewrite msgRef in place. The visible transcript (items) is untouched;
   // only the model's working context shrinks. Returns a status line for a notice.
   const compactNow = useCallback(
@@ -1503,9 +1503,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   );
 
   const MODE_NOTE: Record<"normal" | "auto-accept" | "plan", string> = {
-    normal: "normal mode — I'll ask before writes, edits, and shell",
-    "auto-accept": "auto-accept edits — file writes/edits apply without asking (shell still gated)",
-    plan: "plan mode — read-only; I'll propose a plan before changing anything",
+    normal: "normal mode · I'll ask before writes, edits, and shell",
+    "auto-accept": "auto-accept edits · file writes/edits apply without asking (shell still gated)",
+    plan: "plan mode · read-only; I'll propose a plan before changing anything",
   };
   const setModeTo = (next: "normal" | "auto-accept" | "plan") => {
     modeRef.current = next;
@@ -1541,8 +1541,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const prev = effortRef.current;
     effortRef.current = level;
     setEffortState(level);
-    if (!allowed.length) return ` — effort reset to ${level} (no reasoning support)`;
-    return ` — effort clamped: ${prev} → ${level} (${prev} not supported)`;
+    if (!allowed.length) return ` · effort reset to ${level} (no reasoning support)`;
+    return ` · effort clamped: ${prev} → ${level} (${prev} not supported)`;
   };
 
   const setEffort = (raw: string) => {
@@ -1558,7 +1558,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     }
     effortRef.current = level;
     setEffortState(level);
-    notice(`effort: ${level} — ${target.label}`);
+    notice(`effort: ${level} · ${target.label}`);
   };
 
   // Hand the terminal to an interactive child (e.g. `claude auth login`'s OAuth
@@ -1571,7 +1571,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (process.env.GEARBOX_MOUSE !== "0") process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l"); // mouse off
       if (fullscreen) process.stdout.write("\x1b[?1049l"); // leave alt-screen
       process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, cursor on
-      process.stdout.write(`\n→ running \`${cmd} ${cmdArgs.join(" ")}\` — follow the prompts…\n\n`);
+      process.stdout.write(`\n→ running \`${cmd} ${cmdArgs.join(" ")}\` · follow the prompts…\n\n`);
       const r = nodeSpawnSync(cmd, cmdArgs, { stdio: ["inherit", "inherit", "inherit"], ...(env ? { env } : {}) });
       return r.status ?? 0;
     } catch {
@@ -1867,7 +1867,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const changed = uniq([...changedFiles]);
           const doneChecks = uniq(checks);
           const failed = uniq(failures).slice(0, 4);
-          const next = failed.length ? "/retry" : changed.length && !doneChecks.length ? "run tests" : changed.length ? "commit changes" : "/context";
+          const next = failed.length ? nextStepFor(failed, changed) : changed.length && !doneChecks.length ? "run tests" : changed.length ? "commit changes" : "/context";
           if (changed.length || doneChecks.length || failed.length) {
             push({ kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next });
           }
@@ -2008,11 +2008,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return;
         }
         if (a && a.exec !== "cli") {
-          // An API-key account has nothing to re-login — point to switching instead.
-          notice(`${accountName(a)} is an API-key account — nothing to re-login. Use /account ${accountSlug(a)} to switch to it, or /account add ${a.provider} <key> to replace the key.`);
+          // An API-key account has nothing to re-login · point to switching instead.
+          notice(`${accountName(a)} is an API-key account · nothing to re-login. Use /account ${accountSlug(a)} to switch to it, or /account add ${a.provider} <key> to replace the key.`);
           return;
         }
-        // Not a known account — treat the arg as the provider form (claude/codex).
+        // Not a known account · treat the arg as the provider form (claude/codex).
         signInCli(arg);
       };
 
@@ -2052,12 +2052,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               .slice(0, 10)
               .map((s, i) => `  ${i + 1}. ${new Date(s.updatedAt).toLocaleString()} · ${s.title || "(untitled)"} (${s.items.length} msgs)`)
               .join("\n");
-            notice("resume a session — /resume <n>:\n" + rows);
+            notice("resume a session · /resume <n>:\n" + rows);
             return;
           }
           const pick = (resumeListRef.current.length ? resumeListRef.current : sessions)[parseInt(arg, 10) - 1];
           if (!pick) {
-            notice(`no session ${arg} — /resume to list`);
+            notice(`no session ${arg} · /resume to list`);
             return;
           }
           loadInto(pick);
@@ -2080,7 +2080,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             setEffort(arg);
           } else {
             const target = effortTarget();
-            notice(target?.efforts.length ? `effort: ${effortRef.current} — ${target.label} supports ${target.efforts.join(", ")}` : "the active model does not expose reasoning efforts");
+            notice(target?.efforts.length ? `effort: ${effortRef.current} · ${target.label} supports ${target.efforts.join(", ")}` : "the active model does not expose reasoning efforts");
           }
           return;
         }
@@ -2117,7 +2117,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const on = vimRef.current === "off";
           setVim(on ? "insert" : "off");
           updatePrefs({ vim: on });
-          notice(on ? "vim mode on — esc for normal, i to insert" : "vim mode off");
+          notice(on ? "vim mode on · esc for normal, i to insert" : "vim mode off");
           return;
         }
         case "config": {
@@ -2138,10 +2138,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (key === "vim") {
             setVim(on ? "insert" : "off");
             updatePrefs({ vim: on });
-            notice(on ? "vim mode on — esc for normal, i to insert" : "vim mode off");
+            notice(on ? "vim mode on · esc for normal, i to insert" : "vim mode off");
           } else if (key === "inline") {
             updatePrefs({ fullscreen: !on });
-            notice(`inline mode ${on ? "on" : "off"} — restart gearbox to apply`);
+            notice(`inline mode ${on ? "on" : "off"} · restart gearbox to apply`);
           } else if (key === "notify") {
             notifyRef.current = on;
             updatePrefs({ notify: on });
@@ -2156,7 +2156,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const next = !isYolo();
           setYolo(next);
           setYoloState(next);
-          notice(next ? "yolo mode ON — all file writes and shell commands run without asking" : "yolo mode off — back to asking before writes/edits/shell");
+          notice(next ? "yolo mode ON · all file writes and shell commands run without asking" : "yolo mode off · back to asking before writes/edits/shell");
           return;
         }
         case "ghost": {
@@ -2165,7 +2165,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (arg) {
             const found = SKINS.find((s) => s === arg.toLowerCase());
             if (!found) {
-              notice(`unknown mood: ${arg} — try ${SKINS.join(", ")}`);
+              notice(`unknown mood: ${arg} · try ${SKINS.join(", ")}`);
               return;
             }
             next = found;
@@ -2216,8 +2216,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const routing = selectorRef.current instanceof RoutingSelector;
             const activeSub = activeCliRef.current;
             const mode = activeSub
-              ? `now: ${activeSub.binary} subscription${activeCliModelRef.current ? ` · ${cliModelLabel(activeCliModelRef.current)}` : ""} — /account off for API routing`
-              : routing ? "now: routing on — Gearbox picks per task" : `now: pinned to ${currentId ?? "one model"} — /model auto to route`;
+              ? `now: ${activeSub.binary} subscription${activeCliModelRef.current ? ` · ${cliModelLabel(activeCliModelRef.current)}` : ""} · /account off for API routing`
+              : routing ? "now: routing on · Gearbox picks per task" : `now: pinned to ${currentId ?? "one model"} · /model auto to route`;
             const list = activeSub ? formatCliModelList(activeSub.binary, activeCliModelRef.current ?? null) : formatModelList(currentId, arg.toLowerCase() === "all");
             notice(list + `\n\n  ${mode}`);
             return;
@@ -2225,7 +2225,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (arg.toLowerCase() === "auto" || arg.toLowerCase() === "route") {
             if (activeCliRef.current) {
               setActiveCliModelId(undefined);
-              notice(`subscription model cleared — ${activeCliRef.current.binary} will use its default. /account off for API routing`);
+              notice(`subscription model cleared · ${activeCliRef.current.binary} will use its default. /account off for API routing`);
               return;
             }
             const left = leaveSubscription();
@@ -2233,14 +2233,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             setLastPick(null);
             routedRef.current = null;
             updatePrefs({ pinnedModel: undefined }); // remember: routing, across sessions
-            notice("routing on — Gearbox now picks the model per task (the cheapest that can do the job)" + left);
+            notice("routing on · Gearbox now picks the model per task (the cheapest that can do the job)" + left);
             return;
           }
           {
             const cli = activeCliRef.current;
             if (cli) {
               // If the query contains a digit (version-specific like "sonnet-4.6", "gpt-4o"),
-              // try the API registry first — versioned names are API-specific, not subscription
+              // try the API registry first · versioned names are API-specific, not subscription
               // tier shortcuts. Subscription shortcuts ("sonnet", "haiku", "opus") have no digits.
               const looksVersioned = /\d/.test(arg);
               if (looksVersioned) {
@@ -2253,7 +2253,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                   updatePrefs({ pinnedModel: r.modelId });
                   const newSpec2 = findModel(r.modelId);
                   const effortSuffix2 = applyEffortClamp(newSpec2 ? effortLevels(newSpec2) : []);
-                  notice(`${r.message} — pinned (left subscription).${left}${effortSuffix2}`);
+                  notice(`${r.message} · pinned (left subscription).${left}${effortSuffix2}`);
                   const kind = classify(lastPromptRef.current ?? "").replace("code", "code") as PreferenceKind;
                   push({ kind: "preference", id: idRef.current++, text: `Remember ${r.modelId} for ${kind} tasks?`, acceptCommand: `/prefer ${kind} ${r.modelId}` });
                   return;
@@ -2261,7 +2261,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               }
               const cr = resolveCliModel(cli.binary, arg);
               if (!cr.ok) {
-                // Not a subscription model — try the full API registry (e.g. /model haiku while on a subscription).
+                // Not a subscription model · try the full API registry (e.g. /model haiku while on a subscription).
                 const r = resolveModelSwitch(arg);
                 if (r.ok && r.modelId) {
                   const left = leaveSubscription();
@@ -2271,7 +2271,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                   updatePrefs({ pinnedModel: r.modelId });
                   const newSpec2 = findModel(r.modelId);
                   const effortSuffix2 = applyEffortClamp(newSpec2 ? effortLevels(newSpec2) : []);
-                  notice(`${r.message} — pinned (left subscription).${left}${effortSuffix2}`);
+                  notice(`${r.message} · pinned (left subscription).${left}${effortSuffix2}`);
                   const kind = classify(lastPromptRef.current ?? "").replace("code", "code") as PreferenceKind;
                   push({ kind: "preference", id: idRef.current++, text: `Remember ${r.modelId} for ${kind} tasks?`, acceptCommand: `/prefer ${kind} ${r.modelId}` });
                   return;
@@ -2282,7 +2282,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               setActiveCliModelId(cr.modelId);
               const newCliModel = cliModelChoices(cli.binary).find((m) => m.id === cr.modelId);
               const effortSuffix = applyEffortClamp(newCliModel?.efforts ?? []);
-              notice(`subscription model → ${cr.label} — using ${cli.binary}; tools and permissions still owned by the subscription${effortSuffix}`);
+              notice(`subscription model → ${cr.label} · using ${cli.binary}; tools and permissions still owned by the subscription${effortSuffix}`);
               return;
             }
             const r = resolveModelSwitch(arg);
@@ -2294,11 +2294,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               updatePrefs({ pinnedModel: r.modelId }); // persist the pin across sessions
               const newSpec = findModel(r.modelId);
               const effortSuffix = applyEffortClamp(newSpec ? effortLevels(newSpec) : []);
-              notice(`${r.message} — pinned (persists across sessions). /model auto to route per task again.${left}${effortSuffix}`);
+              notice(`${r.message} · pinned (persists across sessions). /model auto to route per task again.${left}${effortSuffix}`);
               const kind = classify(lastPromptRef.current ?? "").replace("code", "code") as PreferenceKind;
               push({ kind: "preference", id: idRef.current++, text: `Remember ${r.modelId} for ${kind} tasks?`, acceptCommand: `/prefer ${kind} ${r.modelId}` });
             } else {
-              notice(r.message);
+              // Fork-in-the-road instead of a dead end: if there's no API key but a
+              // subscription can serve this model's family, offer the switch.
+              const wanted = modelRegistry().find((m) => [m.id, m.label].some((s) => s.toLowerCase() === arg.toLowerCase() || s.toLowerCase().includes(arg.toLowerCase())));
+              const fam = wanted && /claude|anthropic/i.test(`${wanted.provider} ${wanted.id}`) ? "claude-cli" : wanted && /openai|gpt|^o\d/i.test(`${wanted.provider} ${wanted.id}`) ? "codex-cli" : null;
+              const sub = fam ? listAccounts().find((a) => a.provider === fam && a.enabled) : null;
+              if (sub && wanted) {
+                notice(`${r.message}\n\nyou have a ${accountName(sub)} subscription · use it with /account ${accountSlug(sub)}, or add a key: /account add ${wanted.provider} <key>`);
+              } else {
+                notice(r.message);
+              }
             }
           }
           return;
@@ -2329,7 +2338,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             notice(
               keys.length
                 ? "budgets (estimates remaining = budget − tracked spend):\n" + keys.map((k) => `  ${k}: $${b[k]!.amountUSD} ${b[k]!.period}`).join("\n")
-                : "no budgets set. /budget <provider|account> <amount> [monthly|total] — lets routing estimate remaining credit for providers that don't expose a balance",
+                : "no budgets set. /budget <provider|account> <amount> [monthly|total] · lets routing estimate remaining credit for providers that don't expose a balance",
             );
             return;
           }
@@ -2356,7 +2365,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           const facts = loadFacts().trim();
-          const it: Item = { kind: "notice", id: idRef.current++, text: facts ? "remembered facts:\n" + facts : "no remembered facts yet — add one with #<note> or /memory <note>" };
+          const it: Item = { kind: "notice", id: idRef.current++, text: facts ? "remembered facts:\n" + facts : "no remembered facts yet · add one with #<note> or /memory <note>" };
           if (openInfoPanel("memory", it)) return;
           echo(text);
           push(it);
@@ -2366,7 +2375,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const m = (() => { try { return selectorRef.current.select({ prompt: "" }).model; } catch { return null; } })();
           if (!m) {
             echo(text);
-            notice("no model available — add a provider first\n\n" + onboardingSummary(onboardingState));
+            notice("no model available · add a provider first\n\n" + onboardingSummary(onboardingState));
             return;
           }
           const { sections } = buildContext({ history: msgRef.current, userText: lastPromptRef.current || "(your next message)", model: m, plan: modeRef.current === "plan" });
@@ -2380,7 +2389,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           echo(text);
           const sel = selectorRef.current;
           if (!sel.explain) {
-            notice("routing is off — a model or subscription is pinned. Use /model auto to route per task, then /why.");
+            notice("routing is off · a model or subscription is pinned. Use /model auto to route per task, then /why.");
             return;
           }
           try {
@@ -2509,7 +2518,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 const withHealth = listAccounts();
                 pushAccounts(buildAccountView(withHealth, activeCliRef.current?.id ?? null, importableEnvCreds(), statuses));
               } catch (e: any) {
-                notice(`couldn't check subscription accounts — ${e?.message ?? String(e)}`);
+                notice(`couldn't check subscription accounts · ${e?.message ?? String(e)}`);
                 pushAccounts(buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current));
               }
             })();
@@ -2565,7 +2574,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             cliSessionRef.current = undefined;
             setActiveCli(null);
             updatePrefs({ activeAccount: null });
-            notice("left the subscription — back to your API keys");
+            notice("left the subscription · back to your API keys");
             return;
           }
           if (subL === "login") {
@@ -2625,7 +2634,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 notice(res.message);
                 return;
               }
-              notice(`${res.message} — testing…`);
+              notice(`${res.message} · testing…`);
               const t = await testAccount(res.account);
               notice(t.ok ? `✓ added · ${t.message}` : `added, but the key test failed: ${t.message}`);
               // Discover the models this account can actually serve (Azure
@@ -2634,7 +2643,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               const d = await discoverModels(res.account);
               if (d.models.length) {
                 putAccount({ ...res.account, models: d.models });
-                notice(`found ${d.models.length} model${d.models.length === 1 ? "" : "s"} on this account — /model to pick one`);
+                notice(`found ${d.models.length} model${d.models.length === 1 ? "" : "s"} on this account · /model to pick one`);
               } else if (d.note) {
                 notice(d.note);
               }
@@ -2664,7 +2673,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               const keys = importableEnvCreds();
               const cloud = importableCloudCreds();
               if (!keys.length && !cloud.length) {
-                notice("nothing to import — no new provider keys or cloud creds found");
+                notice("nothing to import · no new provider keys or cloud creds found");
                 return;
               }
               for (const c of keys) await importEnvCred(c);
@@ -2676,12 +2685,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (subL === "refresh") {
             // Re-discover the real model set for in-loop accounts (Azure
             // deployments / Foundry / gateway lists) and persist it. Lets accounts
-            // added before discovery — or after you create a new deployment — pick
+            // added before discovery · or after you create a new deployment · pick
             // up their actual models without re-adding.
             void (async () => {
               const targets = listAccounts().filter((a) => a.enabled && a.exec !== "cli");
               if (!targets.length) {
-                notice("no API/cloud accounts to refresh — /account add to add one");
+                notice("no API/cloud accounts to refresh · /account add to add one");
                 return;
               }
               notice(`refreshing models for ${targets.length} account${targets.length === 1 ? "" : "s"}…`);
@@ -2730,7 +2739,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (!withBalance.length) {
             // No live fetch needed → show the complete card. (Pushing then
             // mutating wouldn't work: a finished card commits to <Static>, which
-            // never re-renders — the inline default.)
+            // never re-renders · the inline default.)
             const it: Item = { kind: "usage", id: idRef.current++, view: buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id)) };
             if (openInfoPanel("cost", it)) return;
             echo(text);
@@ -2751,7 +2760,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         case "compact": {
           echo(text);
           if (busyRef.current) {
-            notice("busy — try /compact once the current turn finishes");
+            notice("busy · try /compact once the current turn finishes");
             return;
           }
           setBusy(true);
@@ -2775,7 +2784,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         case "init":
           if (busyRef.current) {
             echo(text);
-            notice("busy — try /init again once the current turn finishes");
+            notice("busy · try /init again once the current turn finishes");
             return;
           }
           echo(text);
@@ -2805,7 +2814,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           echo(text);
           // Suggest the closest real command (typo-friendly), else point to /help.
           const near = matchCommands(`/${name}`).filter((c) => c.name !== `/${name}`)[0];
-          notice(near ? `no /${name} command — did you mean ${near.name}?  (/help for all)` : `no /${name} command — type /help to see what's available`);
+          notice(near ? `no /${name} command · did you mean ${near.name}?  (/help for all)` : `no /${name} command · type /help to see what's available`);
           return;
         }
       }
@@ -2834,7 +2843,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const cmd = text.slice(1).trim();
         echo(text);
         if (!cmd) {
-          notice("run a shell command with !<command> — e.g. !git status");
+          notice("run a shell command with !<command> · e.g. !git status");
           return;
         }
         const id = idRef.current++;
@@ -2872,10 +2881,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return;
       }
       if (busyRef.current) {
-        // Queue it — sent automatically when the current turn finishes.
+        // Queue it · sent automatically when the current turn finishes.
         queueRef.current.push(text);
         setQueued([...queueRef.current]);
-        notice(`queued (${queueRef.current.length}) — sends when the current turn finishes`);
+        notice(`queued (${queueRef.current.length}) · sends when the current turn finishes`);
         return;
       }
       // Auto-detect a question ABOUT Gearbox and answer it from the docs, with a
@@ -2915,7 +2924,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (mi >= 0) msgRef.current = ms.slice(0, mi);
     curAsstRef.current = null;
     setEdit({ value: userText, cursor: userText.length });
-    notice("rewound the last turn — edit and resend");
+    notice("rewound the last turn · edit and resend");
   };
 
   useInput((input, key) => {
@@ -2924,7 +2933,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (/\[<\d+;\d+;\d+[Mm]/.test(input)) return;
     // Bracketed-paste assembly: the terminal wraps a paste in \x1b[200~ … \x1b[201~.
     // Buffer from the opener to the closer (possibly across several reads), then
-    // collapse the whole blob — big pastes become a [Pasted N lines · M chars] chip
+    // collapse the whole blob · big pastes become a [Pasted N lines · M chars] chip
     // instead of flooding the composer or submitting on an embedded newline.
     if (pasteBufRef.current !== null || input.includes("\x1b[200~")) {
       pasteBufRef.current = (pasteBufRef.current ?? "") + input;
@@ -2971,7 +2980,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       setQuickPicker(null); // Esc or any other key dismisses the overlay
       return;
     }
-    // ⌃C — interrupt a turn; else clear the composer; else "press again to quit".
+    // ⌃C · interrupt a turn; else clear the composer; else "press again to quit".
     if (key.ctrl && input === "c") {
       if (busyRef.current) {
         interruptedRef.current = true;
@@ -3111,7 +3120,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       notice(KEYS_HELP);
       return;
     }
-    // ⌃O — toggle full diffs / tool output (un-truncate the 16-line cap).
+    // ⌃O · toggle full diffs / tool output (un-truncate the 16-line cap).
     if (key.ctrl && input === "o") {
       setExpandAll((x) => {
         flashStatus(x ? "collapsed long output" : "expanded full diffs and output");
@@ -3119,7 +3128,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       });
       return;
     }
-    // ⌃Y — copy the last assistant reply to the clipboard (OSC 52; works over SSH).
+    // ⌃Y · copy the last assistant reply to the clipboard (OSC 52; works over SSH).
     if (key.ctrl && input === "y") {
       const last = [...itemsRef.current].reverse().find((i) => i.kind === "assistant");
       if (last && last.kind === "assistant" && last.text) {
@@ -3169,7 +3178,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
     }
     // Fallback for terminals that DON'T wrap pastes in bracketed markers: a single
-    // large multi-line chunk is almost certainly a paste — collapse it too.
+    // large multi-line chunk is almost certainly a paste · collapse it too.
     if (!busyRef.current && input.length > 240 && input.includes("\n")) {
       const clean = sanitizeInputText(input);
       const lines = clean.split("\n").length;
@@ -3256,7 +3265,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const lineWidth = Math.max(width - 3, 20);
   const lines = useMemo(() => itemsToLines(items, lineWidth, expandAll), [items, lineWidth, expandAll]);
 
-  // Footer height — over-estimated so the fullscreen frame never exceeds the
+  // Footer height · over-estimated so the fullscreen frame never exceeds the
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
   // clips the status bar). HEADER is the title bar (marginTop + title + rule).
   const PALETTE_ROWS = pickerRows.length ? Math.min(7, pickerRows.length) : fileMatches.length ? Math.min(5, fileMatches.length) : cmdMatches.length ? Math.min(7, cmdMatches.length) : 0;
@@ -3425,7 +3434,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     );
   }
 
-  // Inline (the DEFAULT): the terminal owns the screen — native selection,
+  // Inline (the DEFAULT): the terminal owns the screen · native selection,
   // scrollback, and wheel scroll. Finished items commit to scrollback via
   // <Static> (in Transcript); only the live tail + footer re-render.
   const banner = <Banner model={modelLabel} cwd={basename(process.cwd())} width={width} />;

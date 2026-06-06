@@ -36,7 +36,7 @@ export interface CommandMeta {
 }
 
 export const COMMANDS: CommandMeta[] = [
-  // models & routing — the product's point: pick the right model per task
+  // models & routing · the product's point: pick the right model per task
   { name: "/model", usage: "/model [name]", desc: "list models · /model <name> pins one · /model auto routes per task", group: "models" },
   { name: "/effort", usage: "/effort [level]", desc: "set the active model's reasoning level, e.g. low · high · xhigh · max", group: "models" },
   { name: "/prefer", usage: "/prefer kind model", desc: "remember a confirmed model preference for a task type", group: "models" },
@@ -47,7 +47,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/retry", usage: "/retry", desc: "send your last message again", group: "chat" },
   { name: "/compact", usage: "/compact", desc: "shrink the conversation to free up room", group: "chat" },
   { name: "/context", usage: "/context", desc: "see what's loaded and how many tokens it uses", group: "chat" },
-  { name: "/ask", usage: "/ask <q>", desc: "ask about Gearbox itself — answered from its own docs", group: "chat" },
+  { name: "/ask", usage: "/ask <q>", desc: "ask about Gearbox itself · answered from its own docs", group: "chat" },
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
   // accounts & cost
   { name: "/account", usage: "/account", desc: "list accounts; /account <name> switches, /account login <name> re-auths, /account add adds one", group: "accounts" },
@@ -72,7 +72,7 @@ export const COMMANDS: CommandMeta[] = [
 
 // Hidden aliases: still work when typed, but kept out of /help and the palette
 // to reduce clutter (/accounts, /login fold into /account; /vim into /config;
-// /ghost is an easter egg; /cwd was removed — `/context` shows the directory).
+// /ghost is an easter egg; /cwd was removed · `/context` shows the directory).
 const HIDDEN = new Set(["/accounts", "/login", "/vim", "/ghost", "/cwd"]);
 
 /** Commands whose name starts with the typed draft (for the live palette). */
@@ -97,7 +97,7 @@ const GROUP_TITLES: { id: Group; title: string }[] = [
   { id: "other", title: "other" },
 ];
 
-// The account-add reference — single source of truth, shown by `/account add`
+// The account-add reference · single source of truth, shown by `/account add`
 // and fed into the /ask docs corpus so "how do I add X" answers are exact.
 export const ACCOUNT_ADD_HELP =
   "add an account:\n" +
@@ -126,7 +126,7 @@ export function helpText(): string {
   return out.join("\n");
 }
 
-// The bare account name, no type suffix — e.g. "Claude", "Claude (work)",
+// The bare account name, no type suffix · e.g. "Claude", "Claude (work)",
 // "ChatGPT", "Anthropic", "OpenRouter". Use under a group header that already
 // states the type; use accountLabel() when the type needs to be inline.
 export function accountName(a: { id: string; provider: string; exec: string; auth?: any }): string {
@@ -148,14 +148,14 @@ export function accountSlug(a: { id: string; provider: string; exec: string; aut
     .replace(/^-+|-+$/g, "");
 }
 
-// A plain-English label with the type suffix — e.g. "Claude · subscription",
+// A plain-English label with the type suffix · e.g. "Claude · subscription",
 // "Claude (work) · subscription", "Anthropic · API key".
 export function accountLabel(a: { id: string; provider: string; exec: string; auth?: any }): string {
   return `${accountName(a)} · ${a.exec === "cli" ? "subscription" : "API key"}`;
 }
 
 /**
- * Account list — you switch/remove by NAME (slug), never a number or an id. The
+ * Account list · you switch/remove by NAME (slug), never a number or an id. The
  * active subscription (if any) is marked; otherwise API keys auto-route.
  */
 export function formatAccounts(
@@ -187,10 +187,10 @@ export function formatAccounts(
       lines.push(`      use /account ${alias}`);
       if (st?.detail && st.signedIn) lines.push(`      ${st.detail}`);
     });
-    if (!activeCliId) lines.push("", "  no subscription active — your API keys auto-route per task");
+    if (!activeCliId) lines.push("", "  no subscription active · your API keys auto-route per task");
   }
   if (importable.length) {
-    lines.push("", "found in your environment — /account import to add:");
+    lines.push("", "found in your environment · /account import to add:");
     for (const c of importable) lines.push(`  + ${c.label} (${c.envVar})`);
   }
   lines.push(
@@ -281,7 +281,7 @@ export function formatModelList(currentId: string | null, showAll = false): stri
 
   if (usable.length) {
     rows.push("", "ready to use");
-    // Cap each provider's list — a discovered account (e.g. Azure Foundry) can
+    // Cap each provider's list · a discovered account (e.g. Azure Foundry) can
     // serve 100+ models, which would bury everything else. `/model all` or a
     // fuzzy `/model <name>` still reaches the rest.
     const CAP = 8;
@@ -293,16 +293,16 @@ export function formatModelList(currentId: string | null, showAll = false): stri
       shown.set(m.provider, n + 1);
       rows.push(line(m));
     }
-    if (hidden) rows.push(`  + ${hidden} more on your accounts — /model all to list · /model <name> to pick`);
+    if (hidden) rows.push(`  + ${hidden} more on your accounts · /model all to list · /model <name> to pick`);
   } else {
-    rows.push("", "no accounts yet — /account to add one");
+    rows.push("", "no accounts yet · /account to add one");
   }
 
   if (showAll && rest.length) {
     rows.push("", "needs an account");
     for (const m of rest) rows.push(`  ${glyph.off} ${m.label.padEnd(18)} ${m.provider}`);
   } else if (rest.length) {
-    rows.push("", `  + ${rest.length} more once you add a key — /model all to list · /account to add one`);
+    rows.push("", `  + ${rest.length} more once you add a key · /model all to list · /account to add one`);
   }
   return rows.join("\n");
 }
@@ -321,21 +321,21 @@ export function resolveModelSwitch(query: string): SwitchResult {
 
   const MODELS = modelRegistry();
   const matches = MODELS.filter((m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
-  if (matches.length === 0) return { ok: false, message: `no model matching “${query}” — /model to list` };
+  if (matches.length === 0) return { ok: false, message: `no model matching “${query}” · /model to list` };
 
   const exact = matches.find((m) => m.label.toLowerCase() === q || m.id.toLowerCase() === q);
   const available = matches.filter((m) => providerAvailable(m.provider));
 
   if (exact) {
-    if (!providerAvailable(exact.provider)) return { ok: false, message: `${exact.label}: no ${exact.provider} account yet — /account add ${exact.provider} <key> or set ${envHint(exact.provider)}` };
+    if (!providerAvailable(exact.provider)) return { ok: false, message: `${exact.label}: no ${exact.provider} account yet · /account add ${exact.provider} <key> or set ${envHint(exact.provider)}` };
     return { ok: true, modelId: exact.id, message: `model → ${exact.label}` };
   }
   if (available.length === 0) {
     const m = matches[0]!;
-    return { ok: false, message: `“${query}” matches ${m.label} but no account for ${m.provider} — /accounts add ${m.provider} <key> or set ${envHint(m.provider)}` };
+    return { ok: false, message: `“${query}” matches ${m.label} but no account for ${m.provider} · /accounts add ${m.provider} <key> or set ${envHint(m.provider)}` };
   }
   if (available.length > 1) {
-    return { ok: false, message: `“${query}” matches ${available.map((m) => m.label).join(", ")} — be more specific` };
+    return { ok: false, message: `“${query}” matches ${available.map((m) => m.label).join(", ")} · be more specific` };
   }
   const m = available[0]!;
   return { ok: true, modelId: m.id, message: `model → ${m.label}` };

@@ -4,7 +4,7 @@ import { color, glyph } from "../theme.ts";
 
 // Title bar: wordmark left, working dir right, a hairline rule under. Live
 // model/provider state lives in the bottom status bar (one canonical home), so
-// the top bar doesn't repeat it — it just says where you are.
+// the top bar doesn't repeat it · it just says where you are.
 export function Banner({ cwd, width }: { model?: string; cwd?: string; width?: number }) {
   const { stdout } = useStdout();
   const w = width ?? Math.min(stdout?.columns ?? 80, 100);

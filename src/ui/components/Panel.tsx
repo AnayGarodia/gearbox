@@ -14,7 +14,7 @@ function accountStateColor(status: string): string {
 
 // A full-region, Esc-dismissable overlay that replaces the transcript while open.
 // Three flavours: a scrollable static dump (reuses the line buffer + Viewport), or
-// an interactive accounts / models list (↑↓ select, ⏎ acts — handled in App).
+// an interactive accounts / models list (↑↓ select, ⏎ acts · handled in App).
 export function Panel({
   panel,
   width,
@@ -57,7 +57,7 @@ export function Panel({
     body = (
       <Box flexDirection="column" paddingX={1}>
         {rows.length === 0 ? (
-          <Text color={color.faint}>no accounts yet — /account add to add one</Text>
+          <Text color={color.faint}>no accounts yet · /account add to add one</Text>
         ) : (
           slice.map((r, i) => {
             const sel = start + i === idx;

@@ -68,3 +68,23 @@ export async function runVerification(
   }
   return results;
 }
+
+// What to suggest after a turn whose verification FAILED. /retry only makes sense
+// when the model could plausibly fix it by regenerating — not for a conflict
+// marker, and not for an error in a file the turn never touched (pre-existing).
+export function nextStepFor(failures: string[], changedFiles: string[]): string {
+  if (!failures.length) return changedFiles.length ? "commit changes" : "/context";
+  const joined = failures.join("\n");
+  // A merge-conflict marker (TS1185) can't be fixed by re-running generation.
+  if (/\bTS1185\b|merge conflict|conflict marker|<<<<<<<|>>>>>>>/i.test(joined)) {
+    const m = joined.match(/([\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs))[(:]/);
+    return m ? `resolve the conflict in ${m[1]}` : "resolve the merge conflict";
+  }
+  // If every file named in the errors is one the turn DIDN'T change, the failure
+  // most likely predates this turn — don't pin it on the user's change.
+  const errFiles = [...joined.matchAll(/([\w./-]+\.(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs))[(:]/g)].map((x) => x[1]!);
+  if (errFiles.length && errFiles.every((f) => !changedFiles.some((c) => c === f || c.endsWith(f) || f.endsWith(c)))) {
+    return "likely predates your change — check the repo state";
+  }
+  return "/retry";
+}

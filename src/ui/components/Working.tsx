@@ -38,7 +38,7 @@ export function Working({
   verb: string;
   elapsed: number;
   tps?: number; // live output tokens/sec estimate
-  linger?: boolean; // post-turn celebrate/error beat — show a label, not the timer
+  linger?: boolean; // post-turn celebrate/error beat · show a label, not the timer
   width: number;
 }) {
   const label = linger ? (state === "error" ? "something broke" : "done") : verb;
@@ -47,7 +47,7 @@ export function Working({
   const spinner = linger ? "●" : spinFrame(state);
   const f = Math.floor(Date.now() / 360);
   const dots = ["", ".", "..", "..."][f % 4]!;
-  // One verb only — the gear-themed flavour word IS the activity; don't also stack
+  // One verb only · the gear-themed flavour word IS the activity; don't also stack
   // the literal "thinking". Boo's face already carries the state.
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
@@ -57,7 +57,7 @@ export function Working({
         {!linger ? <Text color={color.accentDim}>{dots}</Text> : null}
       </Text>
       {/* tok/s only shows once it's a real streaming rate (App measures from the
-          first output token, not total elapsed — otherwise it reads as ~1/s). */}
+          first output token, not total elapsed · otherwise it reads as ~1/s). */}
       {!linger ? <Text><Text color={color.accentDim}>{elapsed}s</Text><Text color={color.faint}>{tps >= 5 ? ` · ~${tps} tok/s` : ""} · esc to interrupt</Text></Text> : <Text color={color.faint}> </Text>}
     </Box>
   );

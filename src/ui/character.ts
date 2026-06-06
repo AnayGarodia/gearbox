@@ -1,5 +1,5 @@
 // Gearbox's character lives here: workshop-themed working verbs (shown beside
-// Boo while it works). Restrained but warm — the personality is in the words.
+// Boo while it works). Restrained but warm · the personality is in the words.
 
 // Present-participle, mechanical/gearbox-themed. Grin-worthy, never cutesy.
 export const WORKING_VERBS = [
