@@ -19,10 +19,16 @@ function selectedRangeForLine(sel: ViewSelection | null, absLine: number): [numb
   return [start, end];
 }
 
-function LineRow({ line, absLine, selection }: { line: Line; absLine: number; selection?: ViewSelection | null }) {
-  if (line.length === 0) return <Text> </Text>; // a blank row still occupies one line
+function LineRow({ line, absLine, selection, lineWidth }: { line: Line; absLine: number; selection?: ViewSelection | null; lineWidth: number }) {
+  // Paint a full-width canvas so the terminal's native bg (which varies across
+  // emulators) doesn't bleed through on short lines or empty rows.
+  if (line.length === 0) {
+    return <Text backgroundColor={color.navy}>{" ".repeat(lineWidth)}</Text>;
+  }
   const range = selectedRangeForLine(normalized(selection), absLine);
   let pos = 0;
+  const lineLen = line.reduce((n, s) => n + s.text.length, 0);
+  const trailing = Math.max(0, lineWidth - lineLen);
   return (
     <Text>
       {line.flatMap((s, j) => {
@@ -31,7 +37,7 @@ function LineRow({ line, absLine, selection }: { line: Line; absLine: number; se
         pos = end;
         if (!range || end <= range[0] || start >= range[1]) {
           return [
-            <Text key={j} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>
+            <Text key={j} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg ?? color.navy}>
               {s.text}
             </Text>,
           ];
@@ -39,11 +45,12 @@ function LineRow({ line, absLine, selection }: { line: Line; absLine: number; se
         const a = Math.max(range[0] - start, 0);
         const b = Math.min(range[1] - start, s.text.length);
         return [
-          s.text.slice(0, a) ? <Text key={`${j}-a`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>{s.text.slice(0, a)}</Text> : null,
+          s.text.slice(0, a) ? <Text key={`${j}-a`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg ?? color.navy}>{s.text.slice(0, a)}</Text> : null,
           <Text key={`${j}-b`} inverse>{s.text.slice(a, b)}</Text>,
-          s.text.slice(b) ? <Text key={`${j}-c`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>{s.text.slice(b)}</Text> : null,
+          s.text.slice(b) ? <Text key={`${j}-c`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg ?? color.navy}>{s.text.slice(b)}</Text> : null,
         ].filter(Boolean);
       })}
+      {trailing > 0 ? <Text backgroundColor={color.navy}>{" ".repeat(trailing)}</Text> : null}
     </Text>
   );
 }
@@ -67,7 +74,7 @@ export function Viewport({ lines, scrollTop, height, width, selection }: { lines
     <Box width={width}>
       <Box flexDirection="column" width={width - 1}>
         {padded.map((l, i) => (
-          <LineRow key={i} line={l} absLine={scrollTop + i} selection={selection} />
+          <LineRow key={i} line={l} absLine={scrollTop + i} selection={selection} lineWidth={width - 1} />
         ))}
       </Box>
       <Box flexDirection="column" width={1}>

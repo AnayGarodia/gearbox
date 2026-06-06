@@ -144,6 +144,15 @@ function CodeBlock({ lang, code, width }: { lang: string; code: string; width: n
         const row = diffRow(l, lang);
         const prefix = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} │ `;
         const highlighted = highlightLine(row.code, row.lang);
+        const isBlank = row.code.trim() === "";
+        if (isBlank) {
+          // Blank lines get the prefix only — no trailing background band.
+          return (
+            <Text key={i}>
+              <Text color={color.faint} backgroundColor={row.bg}>{prefix}</Text>
+            </Text>
+          );
+        }
         return renderPaddedLine(
           i,
           [

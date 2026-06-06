@@ -22,7 +22,7 @@ import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { confirmRoutingPreference, type PreferenceKind } from "../model/preferences.ts";
-import { effortLevels, normalizeEffort, type Effort } from "../model/reasoning.ts";
+import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, type ModelSpec } from "../providers.ts";
 import { runTask } from "../agent/run.ts";
 import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
@@ -131,7 +131,8 @@ function uniq<T>(xs: T[]): T[] {
 
 type CliModelChoice = { id: string; label: string; provider: string; efforts?: string[] };
 
-const CLAUDE_CLI_EFFORTS = ["low", "medium", "high", "max"];
+// Claude CLI has no --thinking-effort flag — effort is not passed through.
+const CLAUDE_CLI_EFFORTS: string[] = [];
 const FALLBACK_CODEX_MODELS: CliModelChoice[] = [
   { id: "gpt-5.5", label: "gpt-5.5", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
   { id: "gpt-5.4", label: "gpt-5.4", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
@@ -853,7 +854,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     ];
     if (!models.length) rows.push("  no named subscription models exposed yet");
     for (const m of models) rows.push(`  ${m.id === currentId ? glyph.on : glyph.off} ${m.label}`);
-    rows.push("", "API models are hidden while a subscription is active — /account off returns to API routing");
+    rows.push("", "API models are hidden while a subscription is active — /account off returns to API routing\n  tip: /model haiku (or any API model name) switches directly and leaves the subscription");
     return rows.join("\n");
   };
   const resolveCliModel = (binary: string, query: string): { ok: true; modelId: string; label: string } | { ok: false; message: string } => {
@@ -942,6 +943,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const subscription = activeCli ? activeCli.label : null;
   const routing = setupRequired || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
   const ctxPct = !activeCli && model && lastInput > 0 ? Math.round((lastInput / model.contextWindow) * 100) : null;
+  // Only show effort when the active model actually supports reasoning — avoids showing
+  // "effort medium" on models like haiku that have no reasoning support.
+  const activeModelEfforts = (() => {
+    const cli = activeCliRef.current;
+    if (cli) {
+      const choices = cliModelChoices(cli.binary);
+      const m = choices.find((c) => c.id === activeCliModel) ?? choices[0];
+      return m?.efforts ?? [];
+    }
+    return model ? effortLevels(model) : [];
+  })();
+  const displayEffort = activeModelEfforts.length > 0 ? effort : undefined;
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const pushPhase = (label: string, detail?: string) => {
@@ -1040,7 +1053,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         onEvent({ type: "phase", label: "using subscription", detail: `${cli.binary}${modelLabel ? ` · ${modelLabel}` : ""} owns tools and permissions`, state: "running" });
         const cliChoices = cliModelChoices(cli.binary);
         const cliChoice = cliChoices.find((m) => m.id === activeCliModelRef.current) ?? cliChoices[0];
-        const cliEffort = cliChoice ? normalizeEffort(effortRef.current, cliChoice.efforts ?? []) ?? undefined : undefined;
+        const _cliEffortRaw = cliChoice ? normalizeEffort(effortRef.current, cliChoice.efforts ?? []) : null;
+        if (_cliEffortRaw === null && effortRef.current !== "medium") {
+          const supported = cliChoice?.efforts ?? [];
+          const { level: nearest } = clampEffort(effortRef.current, supported);
+          const hint = supported.length ? ` — try /effort ${nearest}` : "";
+          throw new Error(`effort "${effortRef.current}" is not supported by ${cliChoice?.label ?? cli.binary} (supports: ${supported.join(", ") || "none"}${hint})`);
+        }
+        const cliEffort = _cliEffortRaw ?? undefined;
         const activeAccount = getAccount(cli.id);
         const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
         const reloginCommand = cli.binary.includes("codex")
@@ -1089,7 +1109,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       usedAccountRef.current = account?.id ?? null;
       cliMetaRef.current = null;
       if (account) markUsed(account.id);
-      const modelEffort = normalizeEffort(effortRef.current, effortLevels(choice.model)) ?? undefined;
+      const _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
+      if (_effortRaw === null && effortRef.current !== "medium") {
+        const supported = effortLevels(choice.model);
+        const { level: nearest } = clampEffort(effortRef.current, supported);
+        const hint = supported.length ? ` — try /effort ${nearest}` : "";
+        throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
+      }
+      const modelEffort = _effortRaw ?? undefined;
       const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: modelEffort });
       // r.messages = the sent context + the newly produced turn. Rebuild msgRef as
       // FULL history + the user message + only the new messages (never the curated
@@ -1157,6 +1184,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     updatePrefs({ activeAccount: null });
     return " (left the subscription)";
   };
+  // Apply effort clamping when switching to a model with different effort support.
+  // Returns a suffix to append to the model-switch notice, or "" if no change.
+  const applyEffortClamp = (allowed: string[]): string => {
+    const { level, clamped } = clampEffort(effortRef.current, allowed);
+    if (!clamped) return "";
+    const prev = effortRef.current;
+    effortRef.current = level;
+    setEffortState(level);
+    if (!allowed.length) return ` — effort reset to ${level} (no reasoning support)`;
+    return ` — effort clamped: ${prev} → ${level} (${prev} not supported)`;
+  };
+
   const setEffort = (raw: string) => {
     const target = effortTarget();
     if (!target?.efforts.length) {
@@ -1763,11 +1802,28 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             if (cli) {
               const cr = resolveCliModel(cli.binary, arg);
               if (!cr.ok) {
+                // Not a subscription model — try the full API registry (e.g. /model haiku while on a subscription).
+                const r = resolveModelSwitch(arg);
+                if (r.ok && r.modelId) {
+                  const left = leaveSubscription();
+                  setSelector(new FixedSelector(r.modelId));
+                  setLastPick(null);
+                  routedRef.current = null;
+                  updatePrefs({ pinnedModel: r.modelId });
+                  const newSpec2 = findModel(r.modelId);
+                  const effortSuffix2 = applyEffortClamp(newSpec2 ? effortLevels(newSpec2) : []);
+                  notice(`${r.message} — pinned (left subscription).${left}${effortSuffix2}`);
+                  const kind = classify(lastPromptRef.current ?? "").replace("code", "code") as PreferenceKind;
+                  push({ kind: "preference", id: idRef.current++, text: `Remember ${r.modelId} for ${kind} tasks?`, acceptCommand: `/prefer ${kind} ${r.modelId}` });
+                  return;
+                }
                 notice(cr.message);
                 return;
               }
               setActiveCliModelId(cr.modelId);
-              notice(`subscription model → ${cr.label} — using ${cli.binary}; tools and permissions still owned by the subscription`);
+              const newCliModel = cliModelChoices(cli.binary).find((m) => m.id === cr.modelId);
+              const effortSuffix = applyEffortClamp(newCliModel?.efforts ?? []);
+              notice(`subscription model → ${cr.label} — using ${cli.binary}; tools and permissions still owned by the subscription${effortSuffix}`);
               return;
             }
             const r = resolveModelSwitch(arg);
@@ -1777,7 +1833,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               setLastPick(null);
               routedRef.current = null;
               updatePrefs({ pinnedModel: r.modelId }); // persist the pin across sessions
-              notice(`${r.message} — pinned (persists across sessions). /model auto to route per task again.` + left);
+              const newSpec = findModel(r.modelId);
+              const effortSuffix = applyEffortClamp(newSpec ? effortLevels(newSpec) : []);
+              notice(`${r.message} — pinned (persists across sessions). /model auto to route per task again.${left}${effortSuffix}`);
               const kind = classify(lastPromptRef.current ?? "").replace("code", "code") as PreferenceKind;
               push({ kind: "preference", id: idRef.current++, text: `Remember ${r.modelId} for ${kind} tasks?`, acceptCommand: `/prefer ${kind} ${r.modelId}` });
             } else {
@@ -2675,7 +2733,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           <Text color={color.ok}>{glyph.notice} {copiedNotice}</Text>
         </Box>
       ) : null}
-      <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={effort} online={online} />
+      <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={displayEffort} online={online} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}
     </>

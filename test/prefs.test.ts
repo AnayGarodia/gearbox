@@ -10,19 +10,19 @@ afterEach(() => {});
 test("prefs round-trip through ~/.gearbox/prefs.json", async () => {
   const { loadPrefs, savePrefs, updatePrefs } = await import("../src/ui/prefs.ts");
   expect(loadPrefs()).toEqual({});
-  savePrefs({ theme: "light" });
-  expect(loadPrefs().theme).toBe("light");
+  savePrefs({ vim: true });
+  expect(loadPrefs().vim).toBe(true);
   const p = updatePrefs({ notify: false });
-  expect(p).toEqual({ theme: "light", notify: false });
+  expect(p).toEqual({ vim: true, notify: false });
   expect(loadPrefs().notify).toBe(false);
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("setTheme swaps the active color palette in place", async () => {
-  const { color, setTheme, THEMES } = await import("../src/ui/theme.ts");
-  expect(setTheme("light")).toBe(true);
-  expect(color.text).toBe(THEMES.light!.text);
-  expect(setTheme("nope")).toBe(false);
-  setTheme("dark"); // restore
-  expect(color.text).toBe(THEMES.dark!.text);
+test("color palette has all required keys", async () => {
+  const { color } = await import("../src/ui/theme.ts");
+  expect(typeof color.accent).toBe("string");
+  expect(typeof color.navy).toBe("string");
+  expect(typeof color.codeKeyword).toBe("string");
+  expect(typeof color.ok).toBe("string");
+  expect(typeof color.err).toBe("string");
 });

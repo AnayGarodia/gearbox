@@ -249,7 +249,9 @@ export async function addByPastedKey(key: string): Promise<AddResult> {
 /** A cheap live check that a stored account's credential actually works. */
 export async function testAccount(a: Account): Promise<{ ok: boolean; message: string }> {
   const creds = await resolveCreds(a);
-  if (!creds.apiKey && a.auth.kind !== "cli") return { ok: false, message: "no key stored" };
+  // Cloud providers use non-apiKey auth — don't gate on apiKey presence.
+  const isCloud = a.auth.kind === "aws" || a.auth.kind === "azure" || a.auth.kind === "vertex";
+  if (!creds.apiKey && !isCloud && a.auth.kind !== "cli") return { ok: false, message: "no key stored" };
   try {
     if (a.provider === "anthropic") {
       const r = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
@@ -262,6 +264,32 @@ export async function testAccount(a: Account): Promise<{ ok: boolean; message: s
     if (a.provider === "google") {
       const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${creds.apiKey ?? ""}`);
       return r.ok ? { ok: true, message: "credential works" } : { ok: false, message: await errMessage(r) };
+    }
+    // Azure OpenAI: list deployments using the resource endpoint + api-key header.
+    if (a.provider === "azure" && creds.azure) {
+      const { resourceName, apiKey, apiVersion = "2024-08-01-preview" } = creds.azure;
+      if (!resourceName || !apiKey) return { ok: false, message: "azure: resourceName and apiKey are required" };
+      const r = await fetch(
+        `https://${resourceName}.openai.azure.com/openai/models?api-version=${apiVersion}`,
+        { headers: { "api-key": apiKey } },
+      );
+      return r.ok ? { ok: true, message: "credential works" } : { ok: false, message: await errMessage(r) };
+    }
+    // Bedrock: validate credential fields are present (live call requires SigV4 signing).
+    if (a.provider === "bedrock" && creds.aws) {
+      const { accessKeyId, secretAccessKey, region } = creds.aws;
+      if (!accessKeyId || !secretAccessKey) return { ok: false, message: "bedrock: AWS access key and secret are required" };
+      if (!region) return { ok: false, message: "bedrock: AWS_REGION is required" };
+      const keyOk = /^(AKIA|ASIA)[A-Z0-9]{16}$/.test(accessKeyId);
+      if (!keyOk) return { ok: false, message: `bedrock: access key ID looks malformed (expected AKIA… or ASIA…, got ${accessKeyId.slice(0, 8)}…)` };
+      return { ok: true, message: "credential fields present (Bedrock connectivity verified on first use)" };
+    }
+    // Vertex: validate project and location are set.
+    if (a.provider === "vertex" && creds.vertex) {
+      const { project, location } = creds.vertex;
+      if (!project) return { ok: false, message: "vertex: GOOGLE_VERTEX_PROJECT is required" };
+      if (!location) return { ok: false, message: "vertex: GOOGLE_VERTEX_LOCATION is required" };
+      return { ok: true, message: "credential fields present (Vertex connectivity verified on first use — run `gcloud auth application-default login` if not done)" };
     }
     // openai-compat / openai / gateways / local: list models on the endpoint.
     const base = creds.baseURL ?? "https://api.openai.com/v1";

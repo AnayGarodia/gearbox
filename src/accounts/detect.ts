@@ -87,10 +87,11 @@ function awsIni(file: string, profile = "default"): Record<string, string> {
 
 export function detectCloudCreds(): DetectedCloud[] {
   const out: DetectedCloud[] = [];
-  // AWS: env first, then ~/.aws/credentials default profile.
+  // AWS: env first, then ~/.aws/credentials (respects AWS_PROFILE).
+  const awsProfile = process.env.AWS_PROFILE ?? "default";
   const home = homedir();
-  const creds = awsIni(join(home, ".aws", "credentials"));
-  const conf = awsIni(join(home, ".aws", "config"));
+  const creds = awsIni(join(home, ".aws", "credentials"), awsProfile);
+  const conf = awsIni(join(home, ".aws", "config"), awsProfile);
   const akid = process.env.AWS_ACCESS_KEY_ID ?? creds.aws_access_key_id;
   const secret = process.env.AWS_SECRET_ACCESS_KEY ?? creds.aws_secret_access_key;
   const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? conf.region;

@@ -61,8 +61,22 @@ const CURATED: ModelSpec[] = [
   { id: "gemini-3.1-pro-preview", provider: "google", sdkId: "gemini-3.1-pro-preview", label: "gemini-3.1-pro", contextWindow: 1_000_000, cost: { inUSDPerMtok: 2, outUSDPerMtok: 12 }, reasoning: true, efforts: ["minimal", "low", "medium", "high"] },
   { id: "gemini-3.5-flash", provider: "google", sdkId: "gemini-3.5-flash", label: "gemini-3.5-flash", contextWindow: 1_000_000, cost: { inUSDPerMtok: 0.3, outUSDPerMtok: 2.5 }, reasoning: true, efforts: ["minimal", "low", "medium", "high"] },
   // DeepSeek (native; deepseek-chat/reasoner retire after 2026-07).
-  { id: "deepseek-v4-pro", provider: "deepseek", sdkId: "deepseek-v4-pro", label: "deepseek-v4-pro", contextWindow: 128_000, cost: { inUSDPerMtok: 0.4, outUSDPerMtok: 1.75 }, reasoning: true },
+  { id: "deepseek-v4-pro", provider: "deepseek", sdkId: "deepseek-v4-pro", label: "deepseek-v4-pro", contextWindow: 128_000, cost: { inUSDPerMtok: 0.4, outUSDPerMtok: 1.75 } },
   { id: "deepseek-v4-flash", provider: "deepseek", sdkId: "deepseek-v4-flash", label: "deepseek-v4-flash", contextWindow: 128_000, cost: { inUSDPerMtok: 0.27, outUSDPerMtok: 1.1 } },
+  // Amazon Bedrock — Claude and Amazon Nova models hosted on AWS. Pricing is ~10% above direct.
+  // IDs use the provider/sdkId format so they match the generated-model keys and dedup cleanly.
+  { id: "bedrock/anthropic.claude-sonnet-4-20250514-v1:0", provider: "bedrock", sdkId: "anthropic.claude-sonnet-4-20250514-v1:0", label: "bedrock/sonnet-4", contextWindow: 200_000, cost: { inUSDPerMtok: 3.3, outUSDPerMtok: 16.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
+  { id: "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0", provider: "bedrock", sdkId: "anthropic.claude-haiku-4-5-20251001-v1:0", label: "bedrock/haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 1.1, outUSDPerMtok: 5.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
+  { id: "bedrock/anthropic.claude-opus-4-20250514-v1:0", provider: "bedrock", sdkId: "anthropic.claude-opus-4-20250514-v1:0", label: "bedrock/opus-4", contextWindow: 200_000, cost: { inUSDPerMtok: 5.5, outUSDPerMtok: 27.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
+  { id: "bedrock/amazon.nova-pro-v1:0", provider: "bedrock", sdkId: "amazon.nova-pro-v1:0", label: "bedrock/nova-pro", contextWindow: 300_000, cost: { inUSDPerMtok: 0.8, outUSDPerMtok: 3.2 } },
+  { id: "bedrock/amazon.nova-lite-v1:0", provider: "bedrock", sdkId: "amazon.nova-lite-v1:0", label: "bedrock/nova-lite", contextWindow: 300_000, cost: { inUSDPerMtok: 0.06, outUSDPerMtok: 0.24 } },
+  { id: "bedrock/amazon.nova-micro-v1:0", provider: "bedrock", sdkId: "amazon.nova-micro-v1:0", label: "bedrock/nova-micro", contextWindow: 128_000, cost: { inUSDPerMtok: 0.035, outUSDPerMtok: 0.14 } },
+  { id: "bedrock/meta.llama4-maverick-17b-instruct-v1:0", provider: "bedrock", sdkId: "meta.llama4-maverick-17b-instruct-v1:0", label: "bedrock/llama-4-mav", contextWindow: 128_000, cost: { inUSDPerMtok: 0.24, outUSDPerMtok: 0.97 } },
+  { id: "bedrock/meta.llama4-scout-17b-instruct-v1:0", provider: "bedrock", sdkId: "meta.llama4-scout-17b-instruct-v1:0", label: "bedrock/llama-4-scout", contextWindow: 128_000, cost: { inUSDPerMtok: 0.17, outUSDPerMtok: 0.66 } },
+  // Google Vertex AI — Gemini models via GCP. Same SDK IDs as google native; pricing may differ by project.
+  { id: "vertex/gemini-3.1-pro-preview", provider: "vertex", sdkId: "gemini-3.1-pro-preview", label: "vertex/gemini-3.1-pro", contextWindow: 1_000_000, cost: { inUSDPerMtok: 2, outUSDPerMtok: 12 }, reasoning: true, efforts: ["minimal", "low", "medium", "high"] },
+  { id: "vertex/gemini-3.5-flash", provider: "vertex", sdkId: "gemini-3.5-flash", label: "vertex/gemini-3.5-flash", contextWindow: 1_000_000, cost: { inUSDPerMtok: 0.3, outUSDPerMtok: 2.5 }, reasoning: true, efforts: ["minimal", "low", "medium", "high"] },
+  { id: "vertex/gemini-3.1-flash-lite", provider: "vertex", sdkId: "gemini-3.1-flash-lite", label: "vertex/gemini-3.1-flash-lite", contextWindow: 1_000_000, cost: { inUSDPerMtok: 0.1, outUSDPerMtok: 0.4 } },
 ];
 
 // Everything else is DATA: derive a spec per catalog `defaultModels` entry so all

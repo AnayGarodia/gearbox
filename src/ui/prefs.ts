@@ -1,4 +1,4 @@
-// Persisted UI preferences (theme, effort, notifications, inline vs fullscreen).
+// Persisted UI preferences (effort, notifications, inline vs fullscreen).
 // Stored at ~/.gearbox/prefs.json (GEARBOX_HOME overrides the dir). All reads and
 // writes are best-effort — a missing/corrupt file just yields defaults.
 import { homedir } from "node:os";
@@ -6,7 +6,6 @@ import { join, dirname } from "node:path";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 
 export interface Prefs {
-  theme?: string; // THEME_NAMES
   effort?: "fast" | "balanced" | "max";
   notify?: boolean; // desktop notification on long turns
   fullscreen?: boolean; // false → inline mode (native scroll + select-to-copy)

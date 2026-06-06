@@ -439,7 +439,7 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
               <>
                 {outLines > shown.length ? <Text color={color.faint}>{`… ${outLines} lines · ⌃O to expand`}</Text> : null}
                 {shown.map((l, i) => (
-                  <Text key={i} color={isShell ? color.dim : color.ok}>{isShell ? `│ ${l}` : `+ ${l}`}</Text>
+                  <Text key={i} color={color.dim}>{`│ ${l}`}</Text>
                 ))}
               </>
             );

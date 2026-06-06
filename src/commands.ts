@@ -44,8 +44,7 @@ export const COMMANDS: CommandMeta[] = [
   // modes
   { name: "/plan", usage: "/plan", desc: "plan mode: read-only, no edits (also shift+tab)", group: "modes" },
   { name: "/yolo", usage: "/yolo", desc: "run edits and commands without asking", group: "modes" },
-  // look & settings
-  { name: "/theme", usage: "/theme [name]", desc: "colors: dark · light · mono · solarized", group: "settings" },
+  // settings
   { name: "/config", usage: "/config", desc: "view or change saved settings", group: "settings" },
   // other
   { name: "/init", usage: "/init", desc: "scan this repo and write a GEARBOX.md guide", group: "other" },
@@ -77,7 +76,7 @@ const GROUP_TITLES: { id: Group; title: string }[] = [
   { id: "accounts", title: "accounts & cost" },
   { id: "output", title: "save & copy" },
   { id: "modes", title: "modes" },
-  { id: "settings", title: "look & settings" },
+  { id: "settings", title: "settings" },
   { id: "other", title: "other" },
 ];
 
