@@ -27,11 +27,12 @@ import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSp
 import { Panel } from "./components/Panel.tsx";
 import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, type PanelState, type PanelModelRow } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
+import { runWithFailover } from "../agent/failover.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
-import { AccountResolver, resolveCreds } from "../accounts/resolve.ts";
-import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
+import { resolveCreds, rank } from "../accounts/resolve.ts";
+import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount, defaultAccount } from "../accounts/store.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
-import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
 import { discoverModels } from "../accounts/discover.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
@@ -48,7 +49,8 @@ import { missingRequirements, type ModelRequirement } from "../model/capabilitie
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
+import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
@@ -64,9 +66,6 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile } from "node:fs/promises";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
-
-// Stateless: picks the active account per provider (reads the registry each call).
-const accountResolver = new AccountResolver();
 
 export type Runner = (opts: {
   prompt: string;
@@ -386,7 +385,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     setPanelState(p);
   };
   const panelMaxScrollRef = useRef(0); // max scroll for a static panel (set in render)
-  const panelAccountNumbersRef = useRef<number[]>([]); // row index → /account <n>, set in render
+  const panelAccountSlugsRef = useRef<string[]>([]); // row index → /account <slug>, set in render (names-only)
   // Usable (API) models for the /model panel — same source + order as the live
   // registry so the panel's selection index maps to the right model id.
   const buildPanelModelRows = (cur?: string | null): PanelModelRow[] =>
@@ -553,6 +552,23 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (learned) notice(`loaded the real model list for ${learned} account${learned === 1 ? "" : "s"} — /model to see them`);
     })();
   }, []);
+
+  // Boot: probe accounts whose health is stale so the first /account is accurate.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const now = Date.now();
+      const stale = listAccounts().filter((a) => !isFresh(a.health, now));
+      await Promise.all(stale.map(async (a) => {
+        try {
+          const h = await checkHealth(a);
+          if (cancelled) return;
+          recordHealth(a, h.state, h.detail);
+        } catch { /* best-effort; never block boot */ }
+      }));
+    })();
+    return () => { cancelled = true; };
+  }, []); // once on mount
 
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
   useEffect(() => {
@@ -807,7 +823,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const p = panelRef.current;
         if (p) {
           if (p.kind === "static") setPanel({ ...p, scroll: clampScroll(p.scroll + delta, panelMaxScrollRef.current) });
-          else if (p.kind === "accounts") setPanel({ ...p, index: clampIndex(p.index + delta, panelAccountNumbersRef.current.length) });
+          else if (p.kind === "accounts") setPanel({ ...p, index: clampIndex(p.index + delta, panelAccountSlugsRef.current.length) });
           else setPanel({ ...p, index: clampIndex(p.index + delta, filterModelRows(buildPanelModelRows(), p.filter).length) });
         } else scrollBy(delta);
       }
@@ -1076,10 +1092,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       .replace(/[()]/g, " ")
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/^-+|-+$/g, "");
-  const accountAliases = (a: ReturnType<typeof listAccounts>[number], index: number) => {
+  const accountAliases = (a: ReturnType<typeof listAccounts>[number]) => {
     const name = accountName(a);
     const slug = accountSlug(a);
-    const aliases = new Set([String(index + 1), slug, normalizeAccountRef(name), normalizeAccountRef(a.label), normalizeAccountRef(a.id)]);
+    const aliases = new Set([slug, normalizeAccountRef(name), normalizeAccountRef(a.label), normalizeAccountRef(a.id)]);
     const nick = name.match(/\(([^)]+)\)/)?.[1];
     if (nick) aliases.add(normalizeAccountRef(nick));
     if (a.provider === "codex-cli") aliases.add("chatgpt");
@@ -1088,11 +1104,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
   const findAccountRef = (query: string, accounts = listAccounts()): { account?: (typeof accounts)[number]; error?: string } => {
     const q = normalizeAccountRef(query);
-    if (!q) return { error: "which account? use /account <name-or-number>" };
-    const exact = accounts.map((a, i) => ({ a, aliases: accountAliases(a, i) })).filter(({ aliases }) => aliases.has(q));
+    if (!q) return { error: "which account? use /account <name>" };
+    const exact = accounts.map((a) => ({ a, aliases: accountAliases(a) })).filter(({ aliases }) => aliases.has(q));
     if (exact.length === 1) return { account: exact[0]!.a };
     if (exact.length > 1) return { error: `"${query}" matches ${exact.map(({ a }) => accountName(a)).join(", ")} — use the full alias` };
-    const fuzzy = accounts.map((a, i) => ({ a, aliases: [...accountAliases(a, i)] })).filter(({ aliases }) => aliases.some((x) => x.includes(q)));
+    const fuzzy = accounts.map((a) => ({ a, aliases: [...accountAliases(a)] })).filter(({ aliases }) => aliases.some((x) => x.includes(q)));
     if (fuzzy.length === 1) return { account: fuzzy[0]!.a };
     if (fuzzy.length > 1) return { error: `"${query}" matches ${fuzzy.map(({ a }) => accountName(a)).join(", ")} — use the full alias` };
     return { error: `no account matching "${query}"` };
@@ -1104,7 +1120,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     statuses: Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>,
   ): AccountView => {
     const active = activeCliId ? accounts.find((a) => a.id === activeCliId) : null;
-    const rows = accounts.map((a, i) => {
+    const rows = accounts.map((a) => {
       const st = statuses[a.id];
       const activeRow = a.id === activeCliId;
       const status =
@@ -1113,16 +1129,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         st?.signedIn === false ? "not signed in" :
         st?.signedIn === true ? "signed in" :
         a.exec === "cli" ? "not checked" :
-        "ready";
+        badgeFor(a.health?.state);
       return {
         name: accountName(a),
         type: (a.exec === "cli" ? "subscription" : "API key") as "subscription" | "API key",
         status,
         active: activeRow,
         alias: accountSlug(a),
-        number: i + 1,
         detail: st?.signedIn ? st.detail : undefined,
         duplicateOf: st?.duplicateOf,
+        health: a.health?.state,
       };
     });
     return {
@@ -1157,7 +1173,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const choice = new RoutingSelector().select({ prompt, kind: "search" });
         routedRef.current = { model: choice.model, reason: choice.reason };
         onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
-        const acct = accountResolver.pick(choice.model.provider);
+        const acct = defaultAccount(choice.model.provider);
         const creds = acct ? await resolveCreds(acct) : undefined;
         usedAccountRef.current = acct?.id ?? null;
         cliMetaRef.current = null;
@@ -1194,10 +1210,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         const cliEffort = _cliEffortRaw ?? undefined;
         const activeAccount = getAccount(cli.id);
-        const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
-        const reloginCommand = cli.binary.includes("codex")
-          ? `/account add codex${activeName ? ` ${activeName}` : ""}`
-          : `/account add claude${activeName ? ` ${activeName}` : ""}`;
+        const reloginCommand = `/account login ${activeAccount ? accountSlug(activeAccount) : (cli.binary.includes("codex") ? "codex" : "claude")}`;
         // On the first turn of a session, inject the repo map so the model
         // doesn't waste tool calls on find/ls to discover the file structure.
         // The CLI backend bypasses gearbox's context engine entirely, so this
@@ -1254,14 +1267,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // working set to SEND; the returned ledger stays the full source of truth.
       const userContent = imageContent(prompt, activeImagesRef.current);
       const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
-      // Pick the active account for this model's provider and inject its creds.
-      // No account → env-default for users who have opted to keep keys in env.
-      // Durable accounts remain the preferred onboarding path.
-      const account = accountResolver.pick(choice.model.provider);
-      const creds = account ? await resolveCreds(account) : undefined;
-      usedAccountRef.current = account?.id ?? null;
       cliMetaRef.current = null;
-      if (account) markUsed(account.id);
+      // Validate the requested effort against the chosen model up front (clear
+      // error if the user pinned an effort the model can't do).
       const _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
       if (_effortRaw === null && effortRef.current !== "medium") {
         const supported = effortLevels(choice.model);
@@ -1270,7 +1278,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
       }
       const modelEffort = _effortRaw ?? undefined;
-      const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: modelEffort });
+
+      // Failover pool: every healthy account that can serve this model's family,
+      // best-first. A credential failure (expired/invalid/no-credit/rate-limited)
+      // before any output transparently advances to the next account.
+      const candidates = rank(choice.model);
+      let r: Awaited<ReturnType<typeof runTask>>;
+      if (!candidates.length) {
+        // No stored account matches — fall back to env-default creds (single run).
+        usedAccountRef.current = null;
+        r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, effort: modelEffort });
+      } else {
+        const fo = await runWithFailover({
+          candidates,
+          onEvent,
+          recordHealth,
+          resolveCreds,
+          runOne: async ({ account, model, creds }) =>
+            runTask({ model, messages: ctx, onEvent, signal, plan, system, creds, effort: modelEffort, reportErrors: false }),
+        });
+        usedAccountRef.current = fo.usedAccountId ?? null;
+        if (fo.usedAccountId) markUsed(fo.usedAccountId);
+        r = fo;
+      }
       // r.messages = the sent context + the newly produced turn. Rebuild msgRef as
       // FULL history + the user message + only the new messages (never the curated
       // projection), and sanitize so an interrupted turn can't leave a dangling
@@ -1784,6 +1814,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         })();
       };
 
+      // Re-login by account NAME/slug (e.g. /account login claude-work). Resolves
+      // the account, then drives signInCli with its provider + nickname. Falls
+      // back to treating the arg as a provider word ("claude"/"codex [name]").
+      const reloginByRef = (arg: string) => {
+        const ref = findAccountRef(arg, listAccounts());
+        const a = ref.account ?? (activeCliRef.current ? getAccount(activeCliRef.current.id) : undefined);
+        if (a && a.exec === "cli") {
+          const nick = accountName(a).match(/\((.*)\)/)?.[1];
+          signInCli(`${a.provider.replace(/-cli$/, "")}${nick ? ` ${nick}` : ""}`.trim());
+          return;
+        }
+        if (a && a.exec !== "cli") {
+          // An API-key account has nothing to re-login — point to switching instead.
+          notice(`${accountName(a)} is an API-key account — nothing to re-login. Use /account ${accountSlug(a)} to switch to it, or /account add ${a.provider} <key> to replace the key.`);
+          return;
+        }
+        // Not a known account — treat the arg as the provider form (claude/codex).
+        signInCli(arg);
+      };
+
       // Every command runs inside this boundary: a bug in any handler becomes a
       // single clean notice, never a raw stack dumped over the UI or a crash.
       try {
@@ -2172,11 +2222,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           );
           return;
         }
-        // Everything account-related, addressed by NUMBER (never an id):
-        //   /account              → numbered list
-        //   /account <n>          → switch to account #n
+        // Everything account-related, addressed by name/slug:
+        //   /account              → list accounts
+        //   /account <name>       → switch to account by name/slug (fuzzy match)
         //   /account add …        → sign in (claude/codex) or paste an API key
-        //   /account remove <n>   → remove account #n
+        //   /account remove <name>→ remove account by name/slug
         //   /account off          → leave the active subscription
         case "accounts":
         case "account": {
@@ -2218,16 +2268,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               try {
                 const fresh = listAccounts();
                 const statuses = await checkCliAccounts(fresh);
-                pushAccounts(buildAccountView(fresh, activeCliRef.current?.id ?? null, importableEnvCreds(), statuses));
+                // Best-effort probe of API-key accounts with stale health.
+                await Promise.all(
+                  fresh.filter((a) => a.exec !== "cli" && !isFresh(a.health, Date.now())).map(async (a) => {
+                    try { const h = await checkHealth(a); recordHealth(a, h.state, h.detail); } catch { /* best-effort */ }
+                  }),
+                );
+                // Re-read to get the freshly recorded health.
+                const withHealth = listAccounts();
+                pushAccounts(buildAccountView(withHealth, activeCliRef.current?.id ?? null, importableEnvCreds(), statuses));
               } catch (e: any) {
                 notice(`couldn't check subscription accounts — ${e?.message ?? String(e)}`);
                 pushAccounts(buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current));
               }
             })();
-          };
-          const byNumber = (s?: string) => {
-            const n = Number(s);
-            return Number.isInteger(n) && n >= 1 && n <= all.length ? all[n - 1] : undefined;
           };
           // Make an account active. cli → run through its binary; api → set the
           // provider default and drop any active subscription so API/routing runs.
@@ -2283,18 +2337,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             notice("left the subscription — back to your API keys");
             return;
           }
-          // Switch by number: `/account 2`.
-          const numbered = byNumber(subL);
-          if (numbered) {
-            activate(numbered);
+          if (subL === "login") {
+            reloginByRef(parts.slice(1).join(" "));
             return;
           }
-          // A number that's out of range (vs. a non-number, which may be a subcommand).
-          if (/^\d+$/.test(subL)) {
-            notice(all.length ? `there's no account ${subL} — pick 1–${all.length}.\n\n` + formatAccounts(all, activeId, []) : "no accounts yet — /account add to add one");
-            return;
-          }
-          if (!["add", "remove", "rm", "import", "off", "refresh"].includes(subL)) {
+          if (!["add", "remove", "rm", "import", "off", "login", "refresh"].includes(subL)) {
             const ref = findAccountRef(arg, all);
             if (ref.account) {
               activate(ref.account);
@@ -2339,12 +2386,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 res = await addOpenAICompatAccount(parts[2] ?? "", parts[3] ?? "", parts[4] ?? "", parts.slice(5));
               } else if (catalogProvider(first)?.authKind === "openai-compat" && !catalogProvider(first)?.baseUrl && /^https?:\/\//i.test(parts[2] ?? "")) {
                 res = await addOpenAICompatAccount(first, parts[2] ?? "", parts[3] ?? "", parts.slice(4));
+              } else if (["bedrock", "aws"].includes(first)) {
+                res = await addBedrockAccount(parts[2] ?? "", parts[3] ?? "", parts[4] ?? "");
               } else if (provGiven) res = await addApiKeyAccount(provGiven, keyVal);
-              else if (detectProviderByKey(key)) res = await addByPastedKey(key);
-              else {
-                notice(`"${key}" isn't a recognized key. Try /account add claude, /account add codex, or paste a full API key.`);
-                return;
-              }
+              else res = await addByPastedKey(key); // sniffer identifies it or returns a guided message
               if (!res.ok || !res.account) {
                 notice(res.message);
                 return;
@@ -2427,7 +2472,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         case "login": {
           echo(text);
-          signInCli(arg);
+          reloginByRef(arg);
           return;
         }
         case "cost":
@@ -2711,12 +2756,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return;
       }
       if (p.kind === "accounts") {
-        const nums = panelAccountNumbersRef.current;
-        const n = nums.length;
+        const slugs = panelAccountSlugsRef.current;
+        const n = slugs.length;
         if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, n) });
         else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, n) });
-        else if (key.return) { const num = nums[clampIndex(p.index, n)]; setPanel(null); if (num) handleCommand(`/account ${num}`); }
-        else if (/^[1-9]$/.test(input)) { const k = Number(input); if (k <= n) { setPanel(null); handleCommand(`/account ${k}`); } }
+        else if (key.return) { const slug = slugs[clampIndex(p.index, n)]; setPanel(null); if (slug) handleCommand(`/account ${slug}`); }
         return;
       }
       // models: type-to-filter, ↑↓ select, ⏎ pin
@@ -3000,7 +3044,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     panelMaxScrollRef.current = Math.max(0, panelStaticLines.length - panelBodyHeight(transcriptHeight));
   } else if (panel?.kind === "accounts") {
     panelAccountView = buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current);
-    panelAccountNumbersRef.current = panelAccountView.rows.map((r) => r.number);
+    panelAccountSlugsRef.current = panelAccountView.rows.map((r) => r.alias);
   } else if (panel?.kind === "models") {
     panelModels = buildPanelModelRows(panelCurrentModel);
   }

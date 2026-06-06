@@ -133,9 +133,9 @@ test("accounts card renders grouped rows with name aliases", () => {
     view: {
       current: "ChatGPT (maitree) · subscription",
       rows: [
-        { name: "ChatGPT (maitree)", type: "subscription", status: "active", active: true, alias: "chatgpt-maitree", number: 5, detail: "Logged in using ChatGPT" },
-        { name: "Claude (personal)", type: "subscription", status: "duplicate", active: false, alias: "claude-personal", number: 4, duplicateOf: "Claude" },
-        { name: "Anthropic", type: "API key", status: "ready", active: false, alias: "anthropic", number: 2 },
+        { name: "ChatGPT (maitree)", type: "subscription", status: "active", active: true, alias: "chatgpt-maitree", detail: "Logged in using ChatGPT" },
+        { name: "Claude (personal)", type: "subscription", status: "duplicate", active: false, alias: "claude-personal", duplicateOf: "Claude" },
+        { name: "Anthropic", type: "API key", status: "ready", active: false, alias: "anthropic" },
       ],
       importable: [],
       labelPad: 17,
@@ -148,7 +148,7 @@ test("accounts card renders grouped rows with name aliases", () => {
   expect(f).toContain("/account chatgpt-maitree");
   expect(f).toContain("same login as Claude");
   expect(f).toContain("api keys");
-  expect(f).toContain("/account remove <name-or-number>");
+  expect(f).toContain("/account remove <name>");
 
   const lines = itemsToLines([item], 120);
   const text = lines.map((l) => l.map((s) => s.text).join("")).join("\n");

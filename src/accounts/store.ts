@@ -178,10 +178,30 @@ export function getAccount(id: string): Account | undefined {
   return listAccounts().find((a) => a.id === id);
 }
 
+/** Normalize a label/id to a kebab slug, suffixing -2, -3… to avoid collisions. */
+export function uniqueSlug(base: string, taken: string[]): string {
+  const norm = base.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "account";
+  if (!taken.includes(norm)) return norm;
+  for (let n = 2; ; n++) {
+    const cand = `${norm}-${n}`;
+    if (!taken.includes(cand)) return cand;
+  }
+}
+
+// Base for a slug: derived from the human-facing label (already set on the Account).
+function deriveSlugBase(a: Account): string {
+  return a.label;
+}
+
 /** Add (or replace by id) an account and persist. */
 export function putAccount(account: Account): void {
   const f = loadAccounts();
   const i = f.accounts.findIndex((a) => a.id === account.id);
+  if (!account.slug) {
+    const taken = f.accounts.filter((a) => a.id !== account.id).map((a) => a.slug ?? "").filter(Boolean);
+    // Prefer the existing slug for this id (stable across edits); else derive one.
+    account.slug = (i >= 0 && f.accounts[i]!.slug) || uniqueSlug(deriveSlugBase(account), taken);
+  }
   if (i >= 0) f.accounts[i] = account;
   else f.accounts.push(account);
   if (!f.defaults[account.provider]) f.defaults[account.provider] = account.id; // first of a provider = default

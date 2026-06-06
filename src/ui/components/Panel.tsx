@@ -74,7 +74,7 @@ export function Panel({
         )}
       </Box>
     );
-    hint = "↑↓ move · ⏎ switch · 1–9 jump · esc close";
+    hint = "↑↓ move · ⏎ switch · esc close";
   } else {
     const rows = filterModelRows(models ?? [], panel.filter);
     const idx = clampIndex(panel.index, rows.length);

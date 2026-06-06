@@ -153,7 +153,8 @@ export async function runTask(opts: {
   creds?: ResolvedCreds; // per-account credentials (from the active account); env-default if absent
   effort?: Effort; // model-specific reasoning effort → per-provider providerOptions
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
-}): Promise<{ messages: ModelMessage[]; usage: Usage }> {
+  reportErrors?: boolean; // when false, suppress the error event and return a structured failure instead
+}): Promise<{ messages: ModelMessage[]; usage: Usage; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
   const { model, messages, onEvent, signal, plan } = opts;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
@@ -164,9 +165,13 @@ export async function runTask(opts: {
   // catches that third case; `emitErr` dedupes + trims so the UI shows a single
   // readable line, never the giant APICallError object.
   let errored = false;
+  let producedOutput = false;
+  let failureRaw: unknown = undefined;
   const emitErr = (err: unknown) => {
     if (errored || signal?.aborted) return;
     errored = true;
+    failureRaw = err;
+    if (opts.reportErrors === false) return; // caller (failover) will decide
     onEvent({ type: "error", message: unavailableModelHint(cleanError(err), model) });
   };
 
@@ -234,7 +239,7 @@ export async function runTask(opts: {
       switch (part.type) {
         case "text-delta": {
           const t = part.text ?? part.textDelta ?? "";
-          if (t) { onEvent({ type: "text", text: t }); await maybePaint(); }
+          if (t) { producedOutput = true; onEvent({ type: "text", text: t }); await maybePaint(); }
           break;
         }
         case "tool-input-start": {
@@ -242,6 +247,7 @@ export async function runTask(opts: {
           const name = part.toolName ?? part.name ?? "tool";
           names.set(id, name);
           started.add(id);
+          producedOutput = true;
           openStream(id, name);
           onEvent({ type: "tool-start", id, name, arg: "" });
           onEvent({ type: "phase", label: friendlyToolPhase(name), state: "running" });
@@ -252,7 +258,7 @@ export async function runTask(opts: {
           const chunk = part.inputTextDelta ?? part.delta ?? "";
           if (!chunk) break;
           const st = streams.get(id) ?? openStream(id, names.get(id) ?? "tool");
-          if (!started.has(id)) { started.add(id); onEvent({ type: "tool-start", id, name: st.name, arg: "" }); }
+          if (!started.has(id)) { started.add(id); producedOutput = true; onEvent({ type: "tool-start", id, name: st.name, arg: "" }); }
           st.rawBuf += chunk;
           const head = readField(st.rawBuf, st.headField);
           if (head != null && head !== st.lastHead) { st.lastHead = head; onEvent({ type: "tool-stream", id, arg: head }); }
@@ -276,6 +282,7 @@ export async function runTask(opts: {
             onEvent({ type: "tool-stream", id, arg });
           } else {
             started.add(id);
+            producedOutput = true;
             onEvent({ type: "tool-start", id, name, arg });
             onEvent({ type: "phase", label: friendlyToolPhase(name), detail: arg, state: "running" });
           }
@@ -324,9 +331,10 @@ export async function runTask(opts: {
       /* keep prior messages; multi-turn still works from input history */
     }
   }
+  const failure = errored ? { message: cleanError(failureRaw), raw: failureRaw, producedOutput } : undefined;
   onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
   onEvent({ type: "done", usage });
-  return { messages: next, usage };
+  return { messages: next, usage, failure };
 }
 
 // A single, tool-less completion through the same provider seam as runTask —

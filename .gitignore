@@ -11,3 +11,4 @@ dist/
 .gstack/
 .aider*
 .worktrees/
+.claude/

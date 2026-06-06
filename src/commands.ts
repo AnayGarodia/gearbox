@@ -5,9 +5,22 @@ import { catalogProvider } from "./accounts/catalog.ts";
 import { glyph } from "./ui/theme.ts";
 import { fuzzyRank } from "./ui/fuzzy.ts";
 import type { ContextView } from "./ui/types.ts";
+import type { HealthState } from "./accounts/types.ts";
 
 // The env var (or generic hint) to set for a provider, for "no key" messages.
 const envHint = (p: string): string => ENV_LABEL[p] ?? catalogProvider(p)?.envVars[0] ?? "an API key";
+
+/** Map a HealthState to a short human-readable badge string. */
+export function badgeFor(s: HealthState | undefined): string {
+  switch (s) {
+    case "ok": return "✓ ready";
+    case "expired": return "⚠ expired";
+    case "invalid": return "✗ invalid";
+    case "rate-limited": return "⏳ limited";
+    case "no-credit": return "✗ no credit";
+    default: return "— unknown";
+  }
+}
 
 // Commands are grouped so /help reads as a few short lists instead of one
 // 26-row wall. `usage` stays short (≤ ~14 chars) so the live palette and help
@@ -35,7 +48,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/ask", usage: "/ask <q>", desc: "ask about Gearbox itself — answered from its own docs", group: "chat" },
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
   // accounts & cost
-  { name: "/account", usage: "/account", desc: "list accounts; /account <number> to switch, /account add to add one", group: "accounts" },
+  { name: "/account", usage: "/account", desc: "list accounts; /account <name> switches, /account login <name> re-auths, /account add adds one", group: "accounts" },
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
   { name: "/cost", usage: "/cost", desc: "see what you've spent per account", group: "accounts" },
@@ -91,8 +104,9 @@ export const ACCOUNT_ADD_HELP =
   "  /account add codex <name>    a 2nd ChatGPT account, e.g. /account add codex work\n" +
   "  /account add azure <foundry-endpoint> <api-key>            Azure AI Foundry (pass the full https:// endpoint)\n" +
   "  /account add azure <resource-name> <api-key> [api-version] Azure OpenAI (pass the bare resource name)\n" +
+  "  /account add bedrock <access-key-id> <secret> <region>     Amazon Bedrock\n" +
   "  /account add openai-compat <name> <base-url> <api-key> <model> [model...]\n" +
-  "  /account add <api-key>       paste any provider key (auto-detected)\n" +
+  "  /account add <paste>         paste any key / AWS block / service-account JSON / endpoint (auto-detected)\n" +
   "  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter\n" +
   "After adding, /account refresh discovers the models the account can actually serve.";
 
@@ -122,7 +136,8 @@ export function accountName(a: { id: string; provider: string; exec: string; aut
   return catalogProvider(a.provider)?.label ?? a.provider;
 }
 
-export function accountSlug(a: { id: string; provider: string; exec: string; auth?: any }): string {
+export function accountSlug(a: { id: string; provider: string; exec: string; auth?: any; slug?: string }): string {
+  if (a.slug) return a.slug;
   return accountName(a)
     .toLowerCase()
     .replace(/[()]/g, "")
@@ -137,8 +152,8 @@ export function accountLabel(a: { id: string; provider: string; exec: string; au
 }
 
 /**
- * Numbered account list — you switch/remove by NUMBER, never an id. The active
- * subscription (if any) is marked; otherwise API keys auto-route.
+ * Account list — you switch/remove by NAME (slug), never a number or an id. The
+ * active subscription (if any) is marked; otherwise API keys auto-route.
  */
 export function formatAccounts(
   accounts: { id: string; label: string; provider: string; exec: string; auth?: any }[],
@@ -166,7 +181,7 @@ export function formatAccounts(
         "ready";
       const alias = accountSlug(a);
       lines.push(`  ${mark} ${accountLabel(a).padEnd(34)} ${status}`);
-      lines.push(`      use /account ${alias}${i + 1 ? `  (or ${i + 1})` : ""}`);
+      lines.push(`      use /account ${alias}`);
       if (st?.detail && st.signedIn) lines.push(`      ${st.detail}`);
     });
     if (!activeCliId) lines.push("", "  no subscription active — your API keys auto-route per task");
@@ -177,9 +192,9 @@ export function formatAccounts(
   }
   lines.push(
     "",
-    "  switch: /account <name-or-number>",
+    "  switch: /account <name>",
     "  add:    /account add codex [name]  ·  /account add claude [name]  ·  /account add <api-key>",
-    accounts.length ? "  remove: /account remove <name-or-number>" : "",
+    accounts.length ? "  remove: /account remove <name>" : "",
     accounts.length ? "  refresh models: /account refresh" : "",
   );
   return lines.filter(Boolean).join("\n");

@@ -18,8 +18,8 @@ test("accounts panel marks the selected row and the current account", () => {
   const view: AccountView = {
     current: "Claude · subscription",
     rows: [
-      { name: "Claude", type: "subscription", status: "active", active: true, alias: "claude", number: 1 },
-      { name: "Anthropic", type: "API key", status: "ready", active: false, alias: "anthropic", number: 2 },
+      { name: "Claude", type: "subscription", status: "active", active: true, alias: "claude" },
+      { name: "Anthropic", type: "API key", status: "ready", active: false, alias: "anthropic" },
     ],
     importable: [],
     labelPad: 10,

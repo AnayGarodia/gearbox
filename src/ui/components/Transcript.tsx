@@ -86,9 +86,10 @@ function UsageCard({ view }: { view: UsageView }) {
 }
 
 const accountStateColor = (status: string) =>
-  status === "active" || status === "signed in" || status === "ready" ? color.ok :
+  status === "active" || status === "signed in" || status === "ready" || status.startsWith("✓") ? color.ok :
   status === "duplicate" ? color.accent :
-  status === "not signed in" ? color.run :
+  status === "not signed in" || status.startsWith("✗") ? color.run :
+  status.startsWith("⚠") || status.startsWith("⏳") ? color.accent :
   color.faint;
 
 function AccountCard({ view }: { view: AccountView }) {
@@ -105,7 +106,6 @@ function AccountCard({ view }: { view: AccountView }) {
           <Text color={accountStateColor(r.status)}>  {r.status.padEnd(view.statusPad)}</Text>
           <Text color={color.faint}>  use </Text>
           <Text color={color.accent} bold backgroundColor={color.accentBg}>{cmd.padEnd(commandWidth)}</Text>
-          <Text color={color.faint}>  or {r.number}</Text>
         </Text>
         {r.duplicateOf ? (
           <Text color={color.faint}>{"      same login as "}<Text color={color.text}>{r.duplicateOf}</Text></Text>
@@ -148,7 +148,7 @@ function AccountCard({ view }: { view: AccountView }) {
       ) : null}
       <Box marginTop={1} flexDirection="column">
         <Text><Text color={color.faint}>{"  add     "}</Text><Text color={color.accent}>/account add codex [name]</Text><Text color={color.faint}>   </Text><Text color={color.accent}>/account add claude [name]</Text><Text color={color.faint}>   </Text><Text color={color.accent}>{"/account add <api-key>"}</Text></Text>
-        <Text><Text color={color.faint}>{"  remove  "}</Text><Text color={color.accent}>{"/account remove <name-or-number>"}</Text></Text>
+        <Text><Text color={color.faint}>{"  remove  "}</Text><Text color={color.accent}>{"/account remove <name>"}</Text></Text>
       </Box>
     </Box>
   );
