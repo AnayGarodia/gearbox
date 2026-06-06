@@ -10,3 +10,4 @@ dist/
 # experiments keep their own gitignore
 .gstack/
 .aider*
+.worktrees/
