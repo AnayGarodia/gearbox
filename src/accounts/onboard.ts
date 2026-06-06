@@ -5,8 +5,9 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { putAccount, setSecret } from "./store.ts";
-import { catalogProvider, detectProviderByKey, CATALOG } from "./catalog.ts";
+import { catalogProvider, CATALOG } from "./catalog.ts";
 import { normalizeProviderId } from "./onboarding.ts";
+import { sniffCredential } from "./sniff.ts";
 import { resolveCreds } from "./resolve.ts";
 import { subscriptionEnv } from "../agent/cli-backend.ts";
 import { which, spawnProc, readStream } from "../proc.ts";
@@ -140,6 +141,30 @@ export async function addAzureAccount(resourceOrEndpoint: string, key: string, o
   return { ok: true, account, message: `added ${account.label} (${id})` };
 }
 
+/** Store an Amazon Bedrock (AWS IAM) account. Secrets are stored by ref; the
+ *  account carries the region. Live connectivity is verified on first use. */
+export async function addBedrockAccount(accessKeyId: string, secretAccessKey: string, region: string, opts: { id?: string; label?: string } = {}): Promise<AddResult> {
+  if (!accessKeyId.trim() || !secretAccessKey.trim() || !region.trim()) {
+    return { ok: false, message: "usage: /account add bedrock <access-key-id> <secret-access-key> <region>" };
+  }
+  const id = opts.id ?? `bedrock-${slugify(region)}`;
+  const accessKeyIdRef = `${id}:aws-access-key-id`;
+  const secretKeyRef = `${id}:aws-secret-access-key`;
+  await setSecret(accessKeyIdRef, accessKeyId.trim());
+  await setSecret(secretKeyRef, secretAccessKey.trim());
+  const account: Account = {
+    id,
+    label: opts.label ?? `Amazon Bedrock (${region})`,
+    provider: "bedrock",
+    exec: "in-loop",
+    auth: { kind: "aws", accessKeyIdRef, secretKeyRef, region: region.trim() },
+    enabled: true,
+    addedAt: Date.now(),
+  };
+  putAccount(account);
+  return { ok: true, account, message: `added ${account.label}` };
+}
+
 /** Register a CLI-backed subscription account (claude-cli / codex-cli). No secret
  *  is stored — the token lives in the vendor binary, which we drive as a
  *  subprocess (ToS-clean). Requires the binary on PATH + the user logged in. */
@@ -239,11 +264,25 @@ export function cliLoginArgs(binary: string): string[] {
   return binary === "codex" ? ["login"] : ["auth", "login"];
 }
 
-/** Paste any key — detect the provider from its prefix, then add it. */
+/** Paste any credential — identify it via the sniffer, then add it (or return a
+ *  precise guided message naming exactly what else is needed). */
 export async function addByPastedKey(key: string): Promise<AddResult> {
-  const provider = detectProviderByKey(key);
-  if (!provider) return { ok: false, message: "couldn't identify the provider from that key — use /accounts add <provider> <key>" };
-  return addApiKeyAccount(provider, key);
+  const g = sniffCredential(key);
+  if ((g.kind === "api-key" || g.kind === "openai-compat") && g.provider) {
+    return addApiKeyAccount(g.provider, g.fields.apiKey ?? key);
+  }
+  if (g.kind === "aws" && !g.missing.length) {
+    return addBedrockAccount(g.fields.accessKeyId!, g.fields.secretAccessKey!, g.fields.region!);
+  }
+  return { ok: false, message: guidedMessageFor(g) };
+}
+
+// One-line instruction telling the user exactly what else to provide.
+function guidedMessageFor(g: import("./sniff.ts").CredentialGuess): string {
+  if (g.kind === "aws") return `looks like AWS/Bedrock — provide all three: /account add bedrock <access-key-id> <secret> <region>`;
+  if (g.kind === "azure") return `looks like Azure (${g.fields.resourceName ?? "resource"}) — add the key: /account add azure ${g.fields.endpoint ?? "<endpoint>"} <api-key>`;
+  if (g.kind === "vertex") return `looks like a Vertex service account — use: /account add vertex (guided), project ${g.fields.project || "<project>"}`;
+  return `couldn't identify that credential — use /account add <provider> <key>, or /onboard for options`;
 }
 
 /** A cheap live check that a stored account's credential actually works. */

@@ -29,8 +29,8 @@ import { resolveCreds, rank } from "../accounts/resolve.ts";
 import { runWithFailover } from "../agent/failover.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
-import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
-import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
+import { catalogProvider } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordUsage, recordRateLimits, recordBalance, buildUsageView, type UsageView } from "../accounts/usage.ts";
@@ -2251,12 +2251,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 res = await addOpenAICompatAccount(parts[2] ?? "", parts[3] ?? "", parts[4] ?? "", parts.slice(5));
               } else if (catalogProvider(first)?.authKind === "openai-compat" && !catalogProvider(first)?.baseUrl && /^https?:\/\//i.test(parts[2] ?? "")) {
                 res = await addOpenAICompatAccount(first, parts[2] ?? "", parts[3] ?? "", parts.slice(4));
+              } else if (["bedrock", "aws"].includes(first)) {
+                res = await addBedrockAccount(parts[2] ?? "", parts[3] ?? "", parts[4] ?? "");
               } else if (provGiven) res = await addApiKeyAccount(provGiven, keyVal);
-              else if (detectProviderByKey(key)) res = await addByPastedKey(key);
-              else {
-                notice(`"${key}" isn't a recognized key. Try /account add claude, /account add codex, or paste a full API key.`);
-                return;
-              }
+              else res = await addByPastedKey(key); // sniffer identifies it or returns a guided message
               if (!res.ok || !res.account) {
                 notice(res.message);
                 return;
