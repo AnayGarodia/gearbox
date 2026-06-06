@@ -1,4 +1,11 @@
 import { test, expect } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+// Isolate from the real ~/.gearbox: resolveModelSwitch reads the account store
+// (providerAvailable + account.models feed the model registry), so without a
+// clean home the user's real accounts make fuzzy matches like "haiku" ambiguous.
+process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-commands-"));
 import { matchCommands, helpText, formatModelList, resolveModelSwitch, COMMANDS } from "../src/commands.ts";
 
 test("matchCommands filters by prefix", () => {
