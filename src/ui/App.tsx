@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput, useStdin } from "ink";
 import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
 import { Transcript } from "./components/Transcript.tsx";
-import { StatusBar } from "./components/StatusBar.tsx";
+import { StatusBar, statusBarHit } from "./components/StatusBar.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer } from "./components/Composer.tsx";
@@ -79,6 +79,7 @@ const KEYS_HELP = [
   "  ⌃Y copy last reply · shift+tab cycle mode (normal · auto-accept · plan)",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
+  "  click the model or effort label in the status bar to pick (fullscreen)",
   "  input stays fixed at the bottom; /config inline on uses terminal scrollback",
 ].join("\n");
 
@@ -354,6 +355,23 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [paletteIndex, setPaletteIndexState] = useState(0);
 const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const paletteIndexRef = useRef(0);
+  // Status-bar click pickers: clicking the model/effort label opens a floating
+  // picker above the status bar (fullscreen only — mouse reporting is grabbed
+  // there). The /model and /effort slash commands remain the keyboard path.
+  const [quickPicker, setQuickPickerState] = useState<null | "model" | "effort">(null);
+  const [quickPickerIndex, setQuickPickerIndexState] = useState(0);
+  const quickPickerRef = useRef<null | "model" | "effort">(null);
+  const quickPickerIndexRef = useRef(0);
+  const setQuickPicker = (p: null | "model" | "effort") => {
+    quickPickerRef.current = p;
+    setQuickPickerState(p);
+    quickPickerIndexRef.current = 0;
+    setQuickPickerIndexState(0);
+  };
+  const setQuickPickerIndex = (n: number) => {
+    quickPickerIndexRef.current = n;
+    setQuickPickerIndexState(n);
+  };
   const setSearch = (s: { q: string; idx: number } | null) => {
     searchRef.current = s;
     setSearchState(s);
@@ -438,6 +456,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const scrollTopRef = useRef(0);
   const viewportHeightRef = useRef(1);
   const maxScrollRef = useRef(0);
+  const paletteRowsLiveRef = useRef(0); // PALETTE_ROWS, for status-bar click hit-testing
+  const statusBarRenderRef = useRef<{ model: string; effort?: string; mode: "normal" | "auto-accept" | "plan" }>({ model: "", mode: "normal" });
 
   const setPerm = (p: PermRequest | null) => {
     permRef.current = p;
@@ -577,6 +597,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const col = Math.max(0, x - 4); // 1 pad + prompt + space, SGR coords are 1-based
       return offsetAt(value, lineIdx, col);
     };
+    // Which status-bar label, if any, sits under this click. Row + column math
+    // lives in the pure, tested statusBarHit; here we only supply live layout.
+    const statusBarZoneAt = (x: number, y: number): "model" | "effort" | null => {
+      const lineCount = Math.max(1, editRef.current.value.split("\n").length);
+      const { model, effort, mode } = statusBarRenderRef.current;
+      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, effort, mode });
+    };
     const viewportTop = 4; // Banner is 3 rows; viewport begins on row 4.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
       const viewportBottom = viewportTop + transcriptHeightLiveRef.current - 1;
@@ -598,10 +625,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (b === 64) delta -= 1;
         else if (b === 65) delta += 1;
         else {
-          const off = composerOffset(x, y);
-          const point = transcriptPoint(x, y);
           const isDrag = (b & 32) === 32;
           const isPrimary = (b & 3) === 0;
+          // Status-bar click pickers (fullscreen only). A primary press on the
+          // model or effort label toggles its floating picker; a press anywhere
+          // else closes an open one before normal click handling resumes.
+          if (fullscreen && isPrimary && !isDrag && !up && !busyRef.current && !permRef.current) {
+            const zone = statusBarZoneAt(x, y);
+            if (zone) {
+              setQuickPicker(quickPickerRef.current === zone ? null : zone);
+              continue;
+            }
+            if (quickPickerRef.current) setQuickPicker(null);
+          }
+          const off = composerOffset(x, y);
+          const point = transcriptPoint(x, y);
           if (isPrimary && isDrag && transcriptMouseAnchorRef.current && !point) {
             const bottom = viewportTop + transcriptHeightLiveRef.current - 1;
             if (y < viewportTop) scrollBy(-2);
@@ -882,6 +920,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (head === "/resume") return take(listSessions().slice(0, 7).map((s, i) => ({ value: `/resume ${i + 1}`, label: `${i + 1}. ${s.title || "(untitled)"}`.slice(0, 42), detail: new Date(s.updatedAt).toLocaleDateString() })));
     return [];
   };
+  // Rows for the status-bar click pickers. Reuses the exact data the slash
+  // pickers use, so selecting a row submits the same `/model X` / `/effort Y`
+  // command path (notices, effort clamping, subscription handling all apply).
+  const quickPickerRows = (which: "model" | "effort"): PaletteRow[] =>
+    which === "model" ? commandPickerRows("/model") : effortRows();
   const isExactSlashCommand = (draft: string): boolean => {
     const q = draft.trim();
     if (!/^\/\S+$/.test(q)) return false;
@@ -935,6 +978,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return model ? effortLevels(model) : [];
   })();
   const displayEffort = activeModelEfforts.length > 0 ? effort : undefined;
+  // Mirror exactly what the status bar renders, so the click hit-test matches.
+  statusBarRenderRef.current = { model: modelLabel, effort: displayEffort, mode };
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const pushPhase = (label: string, detail?: string) => {
@@ -2363,6 +2408,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       else if (input === "3" || key.escape) resolvePerm("deny");
       return;
     }
+    // An open status-bar click picker captures navigation keys: ↑/↓ move, Enter
+    // confirms (submits /model X or /effort Y), Esc or any other key dismisses.
+    if (quickPickerRef.current) {
+      const rows = quickPickerRows(quickPickerRef.current);
+      if (key.upArrow || key.downArrow) {
+        if (rows.length) {
+          const delta = key.upArrow ? -1 : 1;
+          setQuickPickerIndex((quickPickerIndexRef.current + delta + rows.length) % rows.length);
+        }
+        return;
+      }
+      if (key.return) {
+        const row = rows[Math.min(quickPickerIndexRef.current, rows.length - 1)];
+        setQuickPicker(null);
+        if (row) submit(row.value);
+        return;
+      }
+      setQuickPicker(null); // Esc or any other key dismisses the overlay
+      return;
+    }
     // ⌃C — interrupt a turn; else clear the composer; else "press again to quit".
     if (key.ctrl && input === "c") {
       if (busyRef.current) {
@@ -2618,6 +2683,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
   // clips the status bar). HEADER is the title bar (marginTop + title + rule).
   const PALETTE_ROWS = pickerRows.length ? Math.min(7, pickerRows.length) : fileMatches.length ? Math.min(5, fileMatches.length) : cmdMatches.length ? Math.min(7, cmdMatches.length) : 0;
+  const quickRows = quickPicker ? quickPickerRows(quickPicker) : [];
+  const quickPickerLimit = Math.min(7, Math.max(1, quickRows.length));
   let footer = 2; // status line + its top margin
   footer += perm ? 9 : 3; // permission card vs composer (rule + input + marginTop)
   footer += PALETTE_ROWS;
@@ -2627,6 +2694,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
   if (copiedNotice) footer += 1;
+  if (quickPicker && quickRows.length) footer += quickPickerLimit + 2; // overlay: header + marginTop + rows
   const HEADER = 3;
   const transcriptHeight = Math.max(1, rows - HEADER - footer);
   const maxScroll = Math.max(0, lines.length - transcriptHeight);
@@ -2635,6 +2703,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   scrollTopLiveRef.current = effScroll;
   transcriptHeightLiveRef.current = transcriptHeight;
   viewportHeightRef.current = transcriptHeight;
+  paletteRowsLiveRef.current = PALETTE_ROWS;
   maxScrollRef.current = maxScroll;
   scrollTopRef.current = effScroll;
 
@@ -2678,6 +2747,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     </Box>
   ) : null;
 
+  // Status-bar click picker overlay (rendered just above the status bar). Shares
+  // the CommandPalette renderer with the slash pickers.
+  const quickPickerJsx = quickPicker && quickRows.length ? (
+    <Box flexDirection="column" marginTop={1}>
+      <Box paddingX={1}>
+        <Text color={color.accent}>{quickPicker === "model" ? "model" : "effort"}</Text>
+        <Text color={color.faint}> · ↑↓ select · ⏎ apply · esc close</Text>
+      </Box>
+      <CommandPalette draft="" selected={Math.min(quickPickerIndex, quickRows.length - 1)} limit={quickPickerLimit} rows={quickRows} width={width} />
+    </Box>
+  ) : null;
+
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : (
@@ -2713,6 +2794,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           <Text color={color.ok}>{glyph.notice} {copiedNotice}</Text>
         </Box>
       ) : null}
+      {quickPickerJsx}
       <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={displayEffort} online={online} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}
