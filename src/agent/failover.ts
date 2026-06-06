@@ -29,8 +29,9 @@ export interface FailoverResult extends RunOneResult {
 
 // A friendly one-line fix per failure state — shown when the pool is exhausted.
 export function fixHint(account: Account, state: HealthState): string {
-  if (account.exec === "cli") return `re-login: /account login ${account.slug ?? account.id}`;
   if (state === "no-credit") return `add credit, or switch: /account <name>`;
+  if (account.exec === "cli" && (state === "expired" || state === "invalid"))
+    return `re-login: /account login ${account.slug ?? account.id}`;
   if (state === "invalid" || state === "expired") return `replace the key: /account add ${account.provider} <key>`;
   if (state === "rate-limited") return `wait, or switch: /account <name>`;
   return `check: /account ${account.slug ?? account.id}`;
@@ -39,6 +40,11 @@ export function fixHint(account: Account, state: HealthState): string {
 export async function runWithFailover(opts: FailoverOpts): Promise<FailoverResult> {
   const { candidates, onEvent, recordHealth, resolveCreds, runOne } = opts;
   const tried: { account: Account; state: HealthState; message: string }[] = [];
+
+  if (!candidates.length) {
+    onEvent({ type: "error", message: "no account is configured for this model — run /account add to add one" });
+    return { messages: [], usage: { inputTokens: 0, outputTokens: 0 } };
+  }
 
   for (let i = 0; i < candidates.length; i++) {
     const { account, model } = candidates[i]!;
@@ -63,7 +69,7 @@ export async function runWithFailover(opts: FailoverOpts): Promise<FailoverResul
 
     // Terminal: emit one consolidated, actionable error now.
     onEvent({ type: "error", message: failureReport(tried) });
-    return { ...res, usedAccountId: account.id };
+    return { ...res };
   }
 
   onEvent({ type: "error", message: failureReport(tried) });

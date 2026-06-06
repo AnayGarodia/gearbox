@@ -61,3 +61,23 @@ test("does NOT advance once output was produced (no mid-stream switch)", async (
   });
   expect(used).toEqual(["a"]);
 });
+
+test("empty pool emits a clear error and reports no used account", async () => {
+  const events: any[] = [];
+  const res = await runWithFailover({
+    candidates: [], onEvent: (e) => events.push(e), recordHealth: () => {},
+    resolveCreds: async () => ({ apiKey: "k" }), runOne: async () => ({ messages: [], usage: { inputTokens: 0, outputTokens: 0 } }),
+  });
+  expect(events.find((e) => e.type === "error")?.message).toContain("/account add");
+  expect(res.usedAccountId).toBeUndefined();
+});
+
+test("a terminal failure does not report the failed account as used", async () => {
+  const candidates = [{ account: acct("only"), model: sonnet }];
+  const res = await runWithFailover({
+    candidates, onEvent: () => {}, recordHealth: () => {}, resolveCreds: async () => ({ apiKey: "k" }),
+    runOne: async () => ({ messages: [], usage: { inputTokens: 0, outputTokens: 0 },
+      failure: { message: "invalid x-api-key", raw: { statusCode: 401 }, producedOutput: false } }),
+  });
+  expect(res.usedAccountId).toBeUndefined();
+});
