@@ -17,7 +17,7 @@
     "gearbox": "bun run src/cli.tsx",
     "link": "bun link",
     "build": "bun build --target=node src/cli.tsx --outfile dist/cli.mjs && node scripts/add-shebang.mjs",
-    "prepublishOnly": "bun run build",
+    "release": "bash scripts/release.sh",
     "typecheck": "tsc --noEmit",
     "test": "bun test"
   },
