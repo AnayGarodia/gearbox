@@ -64,6 +64,8 @@ src/
     run.ts           real agent loop (AI SDK streamText -> AgentEvent), abort-aware; runCompletion = tool-less grounded answer (used by /ask); returns a structured failure (for failover)
     failover.ts      runWithFailover: run a turn over the ranked account pool; on a credential failure before output, advance to the next; clear exhaustion errors
     cli-backend.ts   claude/codex CLI subprocess backend (for Pro/Max subscriptions)
+    classify.ts      LLM task classifier (cheap model → routing kind) w/ keyword fast-path + persistent cache; runs before the selector seam
+    delegate.ts      the `delegate` tool: hand a self-contained sub-task to a sub-agent on a freshly-ROUTED model (any provider), full tools, same repo, sequential, depth-1 (no recursion); runTask is injected so no import cycle
     mock.ts          scripted demo stream (runs with no API key; used by tests)
   ui/
     theme.ts         colors + glyphs (the look)

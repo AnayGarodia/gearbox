@@ -27,7 +27,12 @@ run tests or commands to check your work rather than assuming. Prefer the
 smallest change that solves the problem. Be concise in prose; let the diffs and
 test output speak. When done, say briefly what you changed and how you verified it.
 Style: no em dashes (—); use a comma, a period, or " · " instead. When you state a
-count (lines, files, changes), make it match the actual diff exactly.`;
+count (lines, files, changes), make it match the actual diff exactly.
+When a sizable, self-contained sub-task would be handled better or cheaper by a
+different model (bulk edits, a focused refactor, research, generation), use the
+\`delegate\` tool: it spins up a sub-agent on the best-routed model and returns its
+report. Make the task self-contained — the sub-agent can't see this conversation.
+Do small things yourself; delegate the chunks.`;
 
 export const PLAN_ADDENDUM = `
 

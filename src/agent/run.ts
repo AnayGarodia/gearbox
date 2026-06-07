@@ -5,6 +5,7 @@ import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import { reasoningOptions, type Effort } from "../model/reasoning.ts";
+import { makeDelegateTool, type SubAgentRunner } from "./delegate.ts";
 import { createToolset } from "../tools.ts";
 import { config } from "../config.ts";
 import { BASE_SYSTEM, PLAN_ADDENDUM } from "../context/builder.ts";
@@ -162,9 +163,11 @@ export async function runTask(opts: {
   creds?: ResolvedCreds; // per-account credentials (from the active account); env-default if absent
   effort?: Effort; // model-specific reasoning effort → per-provider providerOptions
   deferTerminal?: boolean; // suppress terminal error/blocked/finished/done events + return `failure` instead (the caller drives failover and emits the final outcome)
+  depth?: number; // 0 = top-level turn (gets the `delegate` tool); >0 = a sub-agent (no delegate, so delegation can't recurse)
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
 }): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
   const { model, messages, onEvent, signal, plan } = opts;
+  const depth = opts.depth ?? 0;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   let failureMessage: string | undefined;
   const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
@@ -188,7 +191,18 @@ export async function runTask(opts: {
   };
 
   onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
-  const activeTools = await createToolset(onEvent, { readOnly: Boolean(plan) });
+  // Delegation (top-level turns only, and not in plan mode): the `delegate` tool
+  // spawns a sub-agent on a freshly-routed model. The sub-agent IS another runTask
+  // at depth+1 (so it has no delegate tool — no recursion). We capture its prose as
+  // the tool result and forward only its sub-events upward (handled by the tool).
+  const subRunner: SubAgentRunner = async (p) => {
+    let text = "";
+    const wrapped: OnEvent = (e) => { if (e.type === "text") text += e.text; else p.onEvent(e); };
+    const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content: p.prompt }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true });
+    return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
+  };
+  const delegate = depth === 0 && !plan ? makeDelegateTool({ onEvent, signal, run: subRunner }) : undefined;
+  const activeTools = await createToolset(onEvent, { readOnly: Boolean(plan), delegate });
   const result = opts._stream
     ? null
     : streamText({

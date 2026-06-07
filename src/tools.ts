@@ -1,6 +1,6 @@
 // The harness's tools. Real file + shell access, scoped to the working dir.
 // v0.1 keeps them simple; permission prompts / sandboxing get richer later.
-import { tool } from "ai";
+import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -250,7 +250,11 @@ export const readOnlyTools = {
   web_search: tools.web_search,
 };
 
-export async function createToolset(onEvent?: OnEvent, opts: { readOnly?: boolean } = {}) {
+export async function createToolset(onEvent?: OnEvent, opts: { readOnly?: boolean; delegate?: Tool<any, any> } = {}) {
   const base = opts.readOnly ? readOnlyTools : createTools(onEvent);
-  return { ...base, ...(await mcpTools(onEvent, Boolean(opts.readOnly))) };
+  const set: Record<string, Tool<any, any>> = { ...base, ...(await mcpTools(onEvent, Boolean(opts.readOnly))) };
+  // `delegate` is injected by run.ts at depth 0 only (sub-agents don't get it),
+  // so delegation can't recurse. Absent ⇒ no delegation (plan mode, sub-agents).
+  if (opts.delegate) set.delegate = opts.delegate;
+  return set;
 }
