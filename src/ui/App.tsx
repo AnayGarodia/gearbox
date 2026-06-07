@@ -3640,16 +3640,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return (
       <Box flexDirection="column" width={width} height={rows}>
         <Banner model={modelLabel} account={bannerAccount} width={width} />
+        {/* flexGrow pins the footer (and the composer with it) to the bottom row,
+            so however the footer height is estimated, the input bar is always at
+            row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}
         {panel ? (
-          <Box paddingX={1}>
+          <Box paddingX={1} flexGrow={1}>
             <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} currentModelId={panelCurrentModel} staticLines={panelStaticLines} />
           </Box>
         ) : welcome ? (
-          <Box height={transcriptHeight} flexDirection="column" justifyContent="center">
+          <Box flexGrow={1} flexDirection="column" justifyContent="center">
             {hero}
           </Box>
         ) : (
-          <Box paddingX={1}>
+          <Box paddingX={1} flexGrow={1}>
             <Viewport lines={lines} scrollTop={effScroll} height={transcriptHeight} width={width - 2} selection={transcriptSelection} />
           </Box>
         )}
