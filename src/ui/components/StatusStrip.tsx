@@ -60,14 +60,19 @@ export function StatusStrip({
             {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
           </Row>
         ) : (
-          // Status-only window: the CLI reports a state word but no utilization %.
-          // The % is only sent when you're approaching a limit. Don't fake a bar —
-          // just show the state and reset time, which is all we actually know.
+          // Status-only window: CLI reports a state but no utilization %.
+          // When ok, the reset time is the useful signal — show it prominently.
+          // "% not reported" only when warn/limited where the missing number matters.
           <Row key={l.label} label={l.label}>
-            <Text color={l.status === "limited" ? color.err : l.status === "warn" ? color.run : color.faint}>
-              {l.status === "limited" ? "at limit" : l.status === "warn" ? "near limit" : "% not reported"}
-            </Text>
-            {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
+            {l.status === "limited" ? (
+              <Text color={color.err}>at limit{l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}</Text>
+            ) : l.status === "warn" ? (
+              <Text color={color.run}>near limit{l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}</Text>
+            ) : l.resetsIn ? (
+              <Text color={color.ok}>ok  <Text color={color.faint}>·  {l.resetsIn}</Text></Text>
+            ) : (
+              <Text color={color.ok}>ok</Text>
+            )}
           </Row>
         ),
       )}
