@@ -1514,11 +1514,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
         }
         const choice = new RoutingSelector().select({ prompt, kind: "search" });
-        // /ask runs a plain API completion, so it can't use a subscription seat
-        // (the CLI backend drives its own loop). If routing only has a seat, say so.
-        if (choice.backend?.kind === "cli") {
-          onEvent({ type: "error", message: "/ask needs an API-key account · it can't run on a subscription. Add one with /account add <key>." });
-          return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
+        // On a subscription (no in-loop API), run the grounded answer THROUGH the
+        // CLI seat instead of refusing — prepend the docs so it stays grounded and
+        // tell the binary not to use tools. (vi)
+        const askCli = activeCliRef.current ?? (choice.backend?.kind === "cli" ? { binary: choice.backend.binary, id: choice.backend.account.id, label: choice.model.label, profile: choice.backend.profile, sdkId: choice.model.sdkId } : null);
+        if (askCli) {
+          const askPrompt = `${buildAskSystem(docs)}\n\nAnswer the following question about Gearbox using ONLY the reference above. Do not use any tools.\n\nQuestion: ${prompt}`;
+          usedAccountRef.current = (askCli as any).id;
+          cliMetaRef.current = null;
+          const r = await runCliBackend({ binary: (askCli as any).binary, profile: (askCli as any).profile, modelId: (askCli as any).sdkId ?? activeCliModelRef.current, accountId: (askCli as any).id, efforts: [], label: (askCli as any).label, pinned: true, deferTerminal: false, showProvenance: true, prompt: askPrompt, messages: [], onEvent, signal });
+          return { messages, usage: r.usage };
         }
         routedRef.current = { model: choice.model, reason: choice.reason };
         onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
@@ -1667,13 +1672,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // only the model's working context shrinks. Returns a status line for a notice.
   const compactNow = useCallback(
     async (keepRecent: number, signal?: AbortSignal): Promise<string> => {
-      let model;
+      let model, creds;
       try {
-        model = selectorRef.current.select({ prompt: "", kind: "summarize" }).model;
+        const ch = selectorRef.current.select({ prompt: "", kind: "summarize" });
+        // The summarizer runs in-loop (AI SDK), so a flat-rate seat can't host it.
+        // Skip cleanly instead of silently failing (S-A).
+        if (ch.backend?.kind === "cli") return "compaction needs an API-key model · skipped while on a subscription";
+        model = ch.model;
+        // Resolve the model's account creds so compaction works for STORED API
+        // accounts, not just an env key (it silently never compacted before).
+        const acct = (ch.backend?.kind === "in-loop" && ch.backend.account) || defaultAccount(model.provider);
+        creds = acct ? await resolveCreds(acct) : undefined;
       } catch {
         return "no model available to compact with";
       }
-      const res = await compactHistory({ history: msgRef.current, summarize: modelSummarizer(model, signal), keepRecent });
+      const res = await compactHistory({ history: msgRef.current, summarize: modelSummarizer(model, creds, signal), keepRecent });
       if (!res) return "nothing old enough to compact yet";
       msgRef.current = res.messages;
       const saved = res.before - res.after;

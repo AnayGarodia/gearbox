@@ -11,6 +11,7 @@
 // from its tool_result.
 import { generateText, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
+import type { ResolvedCreds } from "../accounts/types.ts";
 import { groupTurns, textOf, msgTokens } from "./builder.ts";
 
 // Injectable so tests can compact without a live model call.
@@ -24,11 +25,13 @@ const SUMMARY_SYSTEM = `You compress a coding-session transcript into durable no
 - open threads / what's left to do
 Drop chit-chat and raw file dumps. Be specific (names, paths, signatures). Output only the notes.`;
 
-/** A Summarizer backed by a real model (chosen by the caller via the selector). */
-export function modelSummarizer(model: ModelSpec, signal?: AbortSignal): Summarizer {
+/** A Summarizer backed by a real model (chosen by the caller via the selector).
+ *  Pass the model's account creds so compaction works for STORED API accounts,
+ *  not just an env key (it silently never compacted otherwise). */
+export function modelSummarizer(model: ModelSpec, creds?: ResolvedCreds, signal?: AbortSignal): Summarizer {
   return async (transcript: string) => {
     const { text } = await generateText({
-      model: resolveModel(model),
+      model: resolveModel(model, creds),
       system: SUMMARY_SYSTEM,
       prompt: transcript,
       abortSignal: signal,

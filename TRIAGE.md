@@ -32,7 +32,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☑ **iii** looks dead on reads/delegate — FIXED: the mascot "tool" state animated `anim:{}`→`overlay:"load"` (a loading fill) and "thinking"→`overlay:"dots"`, so Boo visibly moves through a long read/90s delegate; the Working strip already ticks live elapsed + "esc to interrupt". (Mascot.tsx) [v0.2.41]  ⚠ verify the feel in a live terminal.
 - ☑ **iv** ↑ history + draft — FIXED: navHistory takes a liveLine, App stashes the draft when stepping into history and restores it on the way down; typing now detaches from the history cursor (I-E). (history.ts, App.tsx) [v0.2.42]
 - ☑ **v** /prefer no-op — FIXED: applies immediately on routing, else saved with a clear "applies once routing is on" notice; and an explicit /prefer now overrides the quality bar (R-2: preferredIn searches the full pool). (App.tsx, router.ts) [v0.2.42]
-- ☐ **vi** /ask refuses on subscription (hard-wired to runCompletion/AI-SDK). → route via CLI seat. *(subscription)*
+- ☑ **vi** /ask on subscription — FIXED: instead of refusing, /ask now runs through the active CLI seat with the bundled docs prepended (grounded, "don't use tools"). API-key path unchanged (runCompletion). (App.tsx) [v0.2.44] ⚠ live-verify.
 - ☑ **vii** offline ~30s freeze — FIXED: `maxRetries` is now threaded (runTask/runCompletion/compact) and dropped to 0 when the probe says offline, so a no-network turn fails in one connect-timeout instead of the 3-attempt storm; + L-G friendlier message. (run.ts, App.tsx onlineRef, compact.ts) [v0.2.40]
 - ⚠ **viii** blank screenful after exit: no SIGINT/SIGHUP restore; restore order wrong; title/cursor not reset. *(terminal)*
 - ☑ **ix** status bar truncates "auto"→"a…" — FIXED: `fitStatusFields` sheds low-priority left fields by width, reserves the right side. (StatusBar.tsx + statusbar-layout.test) [v0.2.38]
@@ -59,7 +59,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ R-8 `/model auto` on a subscription just clears the seat model (doesn't enable routing); confusing message.
 - ☐ R-9 SubscriptionPinSelector is dead code; subscription pin bypasses the seam entirely (root R1).
 ### Subscription / CLI
-- ☐ S-A auto-compact & /compact die on a subscription (modelSummarizer = raw AI SDK, no creds/CLI) → long chats overflow the window; bills API when it works.
+- ☑ S-A compaction — FIXED: modelSummarizer takes creds (works for STORED API accounts, not just env); compactNow resolves them and skips cleanly with a message when the summarize pick is a flat-rate seat (was a silent failure → context overflow). CLI-hosted summary still future. (compact.ts, App.tsx) [v0.2.44]
 - ☐ S-B delegate/delegate_parallel error out entirely on a subscription-only setup (no fallback).
 - ☐ S-C codex `exec resume` argv malformed (`resume` after flags) → every codex turn starts fresh.
 - ☐ S-D CLI session id never persisted → no real resume across restarts for subscription turns.
