@@ -126,3 +126,31 @@ test("skips disabled accounts and leaves headroom/balance undefined with no usag
   expect(s.rateHeadroom).toBeUndefined();
   expect(s.balanceRemainingUSD).toBeUndefined();
 });
+
+test("a /budget for an env-only provider (no account row) feeds routing as env:<provider>", () => {
+  // No accounts at all — just a declared budget for a provider that lives on an
+  // env key. Previously this was dead (provider never entered the snapshot).
+  const ctx = buildRoutingContext(1000, {
+    accounts: [],
+    usage: [usage({ accountId: "env:anthropic", spentUSD: 4, inputTokens: 0, outputTokens: 0, turns: 1, estimated: true } as any)],
+    budgets: { anthropic: { amountUSD: 20, period: "monthly" } as any },
+  });
+  const st = ctx.byAccountId.get("env:anthropic");
+  expect(st).toBeDefined();
+  expect(st!.provider).toBe("anthropic");
+  expect(st!.balanceTotalUSD).toBe(20);
+  expect(st!.balanceEstimated).toBe(true);
+  // remaining = budget − spent-in-period (≤ 20)
+  expect(st!.balanceRemainingUSD!).toBeLessThanOrEqual(20);
+});
+
+test("an env budget does NOT shadow a real account for the same provider", () => {
+  const ctx = buildRoutingContext(1000, {
+    accounts: [acct({ id: "anthropic-1", provider: "anthropic", exec: "in-loop" })],
+    usage: [],
+    budgets: { anthropic: { amountUSD: 20, period: "monthly" } as any },
+  });
+  // The real account is covered; no phantom env:anthropic is added.
+  expect(ctx.byAccountId.has("env:anthropic")).toBe(false);
+  expect(ctx.byAccountId.has("anthropic-1")).toBe(true);
+});

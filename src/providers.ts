@@ -10,6 +10,7 @@ import { createVertex } from "@ai-sdk/google-vertex";
 import { createAzure } from "@ai-sdk/azure";
 import type { LanguageModel } from "ai";
 import { accountsForProvider, listAccounts } from "./accounts/store.ts";
+import { profileFor } from "./model/profiles.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
 import type { Account, ResolvedCreds } from "./accounts/types.ts";
 
@@ -241,13 +242,32 @@ export function findModel(idOrLabel: string): ModelSpec | undefined {
   return modelRegistry().find((m) => m.id === idOrLabel || m.label === idOrLabel);
 }
 
-/** Approximate USD cost of a set of turns, from each turn's model + token usage. */
-export function estimateCost(turns: { model: string; inputTokens: number; outputTokens: number }[]): number {
+// Cost lookup: registry spec first, then the profile corpus (covers canonical
+// models that aren't in the live registry). Discovered/gateway models have no
+// price and return undefined — the caller treats that as "unknown", not $0.
+function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | undefined {
+  return modelRegistry().find((m) => m.id === id)?.cost ?? profileFor(id)?.cost;
+}
+
+/**
+ * Approximate USD cost of a set of turns, from each turn's model + token usage.
+ * Cache-aware: Anthropic-style usage reports cache tokens SEPARATELY from
+ * `inputTokens`, so we add them at their real rates (reads ≈10% of input, 5m
+ * writes ≈125%). Flat-rate subscription seats (`cli:` ids) cost $0 — the marginal
+ * price is zero, so pricing them at metered list rates was wrong.
+ */
+export function estimateCost(
+  turns: { model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheCreationInputTokens?: number }[],
+): number {
   let usd = 0;
   for (const t of turns) {
-    const c = modelRegistry().find((m) => m.id === t.model)?.cost;
+    if (t.model.startsWith("cli:")) continue; // flat-rate subscription seat
+    const c = costFor(t.model);
     if (!c) continue;
-    usd += (t.inputTokens / 1e6) * c.inUSDPerMtok + (t.outputTokens / 1e6) * c.outUSDPerMtok;
+    const inPerTok = c.inUSDPerMtok / 1e6;
+    usd += t.inputTokens * inPerTok + (t.outputTokens / 1e6) * c.outUSDPerMtok;
+    if (t.cachedInputTokens) usd += t.cachedInputTokens * inPerTok * 0.1;
+    if (t.cacheCreationInputTokens) usd += t.cacheCreationInputTokens * inPerTok * 1.25;
   }
   return usd;
 }

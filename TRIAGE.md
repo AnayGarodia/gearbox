@@ -28,7 +28,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 
 ## Reported bugs (your 19)
 - ☐ **i** no real end-of-turn summary (only when files changed). → emit a light recap every non-interrupted turn. *(group: liveness)*
-- ☐ **ii** cost broken: session vs ledger diverge; delegation over-counts ledger / under-counts session; failed attempts dropped; subscription priced at metered; cache tokens ignored; discovered models = $0. *(SSOT)*
+- ◑ **ii** cost: FIXED cache pricing (reads 10% / writes 125%), flat-rate seats now $0, profile-corpus fallback; cache tokens threaded into TurnMeta + ledger so both views agree. [v0.2.39] REMAINING: session-vs-account divergence is mostly correct-by-design (account ledger spans sessions + delegation); discovered/gateway models still have no price (unknown, not $0-by-bug). C-A (dropped failed-attempt tokens) → network group.
 - ☐ **iii** looks dead on reads/delegate: no live elapsed on running lines; delegate sub-agents run with noop onEvent; mascot "tool" state has no animation. *(liveness)*
 - ☐ **iv** ↑ history doesn't recall once you've typed (multi-line draft + no live-draft preservation; histIdx not reset on edit). *(input)*
 - ☐ **v** /prefer no-op when pinned (setSelector keeps FixedSelector); also silently ignored when the model is below the kind's quality bar. *(routing/input)*
@@ -36,7 +36,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ **vii** offline failure leaves you stuck ~30s, no fast-fail (no maxRetries; offline probe cosmetic). *(network)*
 - ⚠ **viii** blank screenful after exit: no SIGINT/SIGHUP restore; restore order wrong; title/cursor not reset. *(terminal)*
 - ☑ **ix** status bar truncates "auto"→"a…" — FIXED: `fitStatusFields` sheds low-priority left fields by width, reserves the right side. (StatusBar.tsx + statusbar-layout.test) [v0.2.38]
-- ☐ **x** /context shows 1M window on haiku: select({prompt:""}) routes to a 1M model unrelated to the turn. *(SSOT)*
+- ☑ **x** /context 1M window on haiku — FIXED: route with the real last prompt + use the answering model's / subscription window. (App.tsx /context handler) [v0.2.39]
 - ⚠ **xi** scrolling jumpy: 1 line/notch + per-frame easing re-render + atBottom re-pin fighting manual scroll. *(terminal)*
 - ☐ **xii** large paste floods: markerless-paste fallback too narrow (needs >240 chars AND newline AND single read). *(input)*
 - ⚠ **xiii** usage shows "ok ok": real % probe only runs behind the statusPinned toggle, never at boot / inline; silent null fallback to seeded "ok". *(subscription)*
@@ -44,7 +44,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ **xv** /model <name> leaves subscription for metered API (pin path ignores seats). *(subscription/routing)*
 - ☐ **xvi** "use opus" ignored → ran sonnet (no NL model parser; delegation re-routes independently). *(routing)*
 - ☑ **xvii** "took 1m 60s" — FIXED: round whole seconds before splitting; carry to minutes. (App.tsx formatDuration + duration.test) [v0.2.38]
-- ☐ **xviii** /budget no-op for the common case (env-only providers get a neutral state that bypasses balanceOf; spend not keyed to provider). NOTE: your new `/cap` is a separate hard-ceiling feature, not this. *(SSOT)*
+- ☑ **xviii** /budget no-op — FIXED: routing-context synthesizes an `env:<provider>` state from budget−spend; env turns now ledger under `env:<provider>` so the budget depletes + shows in /usage. (routing-context.ts + App.tsx) [v0.2.39]
 - ☐ **xix** clear+resume loads the empty post-clear session (listSessions sorts purely by updatedAt; /clear doesn't persist outgoing first). *(session)*
 
 ## Additional bugs found by the audit (~48)

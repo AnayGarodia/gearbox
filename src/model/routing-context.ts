@@ -91,6 +91,30 @@ export function buildRoutingContext(
       ...headroomOf(u),
     });
   }
+
+  // `/budget <provider>` for a provider with NO accounts.json row (the common
+  // env-key case) was dead: the router enumerates env candidates as `env:<provider>`,
+  // but nothing put that key in the map, so the declared budget never fed scarcity.
+  // Synthesize it here from budget − spend (spend is keyed `env:<provider>` too).
+  const coveredProviders = new Set([...byAccountId.values()].map((s) => s.provider));
+  for (const [key, budget] of Object.entries(budgets)) {
+    if (byAccountId.has(key) || coveredProviders.has(key)) continue; // already an account / provider
+    const envId = `env:${key}`;
+    if (byAccountId.has(envId)) continue;
+    const u = usageById.get(envId);
+    const spent = u ? spentInPeriod(u, budget.period, now) : 0;
+    byAccountId.set(envId, {
+      accountId: envId,
+      provider: key,
+      exec: "in-loop",
+      isSubscription: false,
+      balanceRemainingUSD: Math.max(0, budget.amountUSD - spent),
+      balanceTotalUSD: budget.amountUSD,
+      balanceAt: now,
+      balanceEstimated: true,
+      ...headroomOf(u),
+    });
+  }
   return { now, byAccountId };
 }
 

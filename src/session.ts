@@ -22,6 +22,7 @@ export interface TurnMeta {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number; // prompt-cache read tokens (the hit) when the provider exposes them
+  cacheCreationInputTokens?: number; // prompt-cache write tokens (Anthropic; billed ≈125% for 5m)
   at: number;
 }
 

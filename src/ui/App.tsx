@@ -448,6 +448,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return { name: accountName(a), kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api", provider: a.provider, balanceExposed: a.exec !== "cli" && balanceExposed(a.provider), limitNote: a.exec === "cli" ? `limits appear after the first ${bin === "codex" ? "Codex" : "Claude"} turn` : undefined };
       }
       if (id === "unknown") return { name: "(unattributed)", kind: "api" as const };
+      // Env-key turns (no stored account) are ledgered as `env:<provider>` so a
+      // `/budget <provider>` depletes correctly — show them under the provider name.
+      if (id.startsWith("env:")) { const p = id.slice(4); return { name: p, kind: "api" as const, provider: p, balanceExposed: balanceExposed(p) }; }
       return { name: id, kind: "api" as const };
     };
     return buildUsageView(estimateCost(sessionRef.current.turns), resolve, Date.now(), accounts.map((a) => a.id));
@@ -2003,12 +2006,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             modelId = "unknown";
           }
         }
-        sessionRef.current.turns.push({ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, at: Date.now() });
+        sessionRef.current.turns.push({ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens, at: Date.now() });
         // Per-account spend ledger (ACCOUNT pillar): real cost when the provider
         // reports it (claude CLI), else an estimate from token usage × list price.
-        const acctId = usedAccountRef.current ?? modelId;
+        // No stored account (env key) → ledger under `env:<provider>` so a
+        // `/budget <provider>` actually depletes; falls back to the model id.
+        const acctId = usedAccountRef.current ?? (findModel(modelId)?.provider ? `env:${findModel(modelId)!.provider}` : modelId);
         const cm = cliMetaRef.current;
-        const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
+        const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens }]);
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
         if (!hadError && getAccount(acctId)?.exec === "cli") {
           // Real rate events carry actual utilization when near a limit (e.g.
@@ -2034,7 +2039,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (!ac.signal.aborted) {
           try {
             const cm = selectorRef.current.select({ prompt: "", kind: "summarize" }).model;
-            const budget = Math.max(8000, cm.contextWindow - 32000);
+            // Trigger off the window of the model that ANSWERED (its window is what
+            // overflows), not the summarizer's — a 1M summarizer never triggers a
+            // 200k haiku turn; a 128k summarizer over-compacts a 1M model.
+            const answeringWindow = activeCliRef.current
+              ? (activeCliRef.current.binary?.includes("codex") ? (findModel(activeCliModelRef.current ?? "")?.contextWindow ?? 272_000) : 200_000)
+              : (findModel(modelId)?.contextWindow ?? cm.contextWindow);
+            const budget = Math.max(8000, answeringWindow - 32000);
             // Conservative on purpose: the builder's per-turn elision already
             // keeps normal sessions bounded (old tool output dropped every turn);
             // compaction is the deeper safety net for genuinely long sessions, so
@@ -2727,14 +2738,23 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return;
         }
         case "context": {
-          const m = (() => { try { return selectorRef.current.select({ prompt: "" }).model; } catch { return null; } })();
+          // Route with the REAL last prompt, not "" — an empty prompt classifies as
+          // "code" and picks a 1M-window model, so /context showed "1% of 1000.0k"
+          // while haiku (200k) was actually answering.
+          const m = (() => { try { return selectorRef.current.select({ prompt: lastPromptRef.current || "" }).model; } catch { return null; } })();
           if (!m) {
             echo(text);
             notice("no model available · add a provider first\n\n" + onboardingSummary(onboardingState));
             return;
           }
+          // Window of what actually answers (status-bar parity): subscription → the
+          // CLI window (claude Max is 200k, NOT the registry's 1M); else the model's.
+          const cliNow = activeCliRef.current;
+          const ctxWindow = cliNow
+            ? (cliNow.binary?.includes("codex") ? (findModel(activeCliModelRef.current ?? "")?.contextWindow ?? 272_000) : 200_000)
+            : m.contextWindow;
           const { sections } = buildContext({ history: msgRef.current, userText: lastPromptRef.current || "(your next message)", model: m, plan: modeRef.current === "plan" });
-          const it: Item = { kind: "context", id: idRef.current++, view: buildContextView(sections, m.contextWindow, process.cwd()) };
+          const it: Item = { kind: "context", id: idRef.current++, view: buildContextView(sections, ctxWindow, process.cwd()) };
           if (openInfoPanel("context", it)) return;
           echo(text);
           push(it);
