@@ -88,14 +88,27 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
       break; // hook_* noise ignored
     case "rate_limit_event": {
       // claude reports each window (five_hour, seven_day, …) in its own event;
-      // key by type so they accumulate instead of overwriting. The print-mode
-      // event usually carries only `status` ("allowed"/"rejected") + `resetsAt`,
-      // NOT a utilization number — so capture status too and don't require a %.
-      const ri = obj.rate_limit_info;
-      if (ri && (ri.rateLimitType || typeof ri.resetsAt === "number")) {
-        const type = ri.rateLimitType ?? "limit";
-        const utilization = typeof ri.utilization === "number" ? ri.utilization : undefined;
-        state.rates.set(type, { utilization, status: ri.status, resetsAt: ri.resetsAt, type });
+      // key by type so they accumulate instead of overwriting.
+      const ri = obj.rate_limit_info ?? obj; // some CLI versions flatten onto the event itself
+      if (ri) {
+        const type = ri.rateLimitType ?? ri.type ?? ri.windowType ?? "limit";
+        const utilization = typeof ri.utilization === "number" ? ri.utilization
+          : typeof ri.usageFraction === "number" ? ri.usageFraction
+          : typeof ri.usage_fraction === "number" ? ri.usage_fraction
+          : undefined;
+        state.rates.set(type, { utilization, status: ri.status, resetsAt: ri.resetsAt ?? ri.resets_at, type });
+        // Write raw event to debug file so we can inspect what the CLI actually sends.
+        try {
+          import("node:fs").then(({ appendFileSync, mkdirSync }) => {
+            import("node:path").then(({ join }) => {
+              import("node:os").then(({ homedir }) => {
+                const dir = process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
+                mkdirSync(dir, { recursive: true });
+                appendFileSync(join(dir, "debug-rate-events.jsonl"), JSON.stringify({ at: Date.now(), raw: obj }) + "\n");
+              });
+            });
+          });
+        } catch { /* best-effort */ }
       }
       break;
     }
