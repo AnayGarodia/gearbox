@@ -14,6 +14,15 @@ import { barCells } from "../accounts/usage.ts";
 import { scorecardRows } from "../commands.ts";
 
 const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
+// A limit window's value: a utilization bar when a % is known, else the status word.
+const limitValueSpans = (l: { pct?: number; status?: "ok" | "warn" | "limited" }): Span[] => {
+  if (typeof l.pct === "number") {
+    const lim = barCells(l.pct / 100, 10);
+    return [{ text: lim.fill, color: limitColor(l.pct) }, { text: lim.empty, color: color.faint }, { text: " " + l.pct + "%", color: limitColor(l.pct) }];
+  }
+  const c = l.status === "limited" ? color.err : l.status === "warn" ? color.accent : color.ok;
+  return [{ text: l.status === "limited" ? "limited" : l.status === "warn" ? "near limit" : "ok", color: c }];
+};
 const accountStateColor = (status: string) =>
   status === "active" || status === "signed in" || status === "ready" || status.startsWith("✓") ? color.ok :
   status === "duplicate" ? color.accent :
@@ -596,22 +605,18 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
             const line: Line = [{ text: "    " + a.name.padEnd(v.labelPad), color: color.text }, { text: "  " + a.turns + " turn" + (a.turns === 1 ? "" : "s"), color: color.faint }];
             if (a.limits?.length) {
               const l = a.limits[0]!;
-              const lim = barCells(l.pct / 100, 10);
-              line.push({ text: "    " + l.label + " ", color: color.faint }, { text: lim.fill, color: limitColor(l.pct) }, { text: lim.empty, color: color.faint }, { text: " " + l.pct + "%", color: limitColor(l.pct) });
+              line.push({ text: "    " + l.label + " ", color: color.faint }, ...limitValueSpans(l));
               if (l.resetsIn) line.push({ text: " · " + l.resetsIn, color: color.faint });
             } else {
               line.push({ text: "    " + (a.limitNote ?? "limits not observed yet"), color: color.faint });
             }
             out.push(clipSpans(line, width));
             for (const l of a.limits?.slice(1) ?? []) {
-              const lim = barCells(l.pct / 100, 10);
               out.push(clipSpans([
                 { text: "    " + "".padEnd(v.labelPad), color: color.text },
                 { text: "       ", color: color.faint },
                 { text: "    " + l.label + " ", color: color.faint },
-                { text: lim.fill, color: limitColor(l.pct) },
-                { text: lim.empty, color: color.faint },
-                { text: " " + l.pct + "%", color: limitColor(l.pct) },
+                ...limitValueSpans(l),
                 ...(l.resetsIn ? [{ text: " · " + l.resetsIn, color: color.faint }] : []),
               ], width));
             }

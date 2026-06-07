@@ -23,6 +23,19 @@ export function pickDefaultModel(preferredId?: string): ModelSpec | undefined {
   return modelRegistry().find((m) => providerAvailable(m.provider));
 }
 
+/** Returns a ModelSpec by exact id, or undefined if not found. Results are cached. */
+const _modelCache = new Map<string, ModelSpec | undefined>();
+export function getModelById(id: string): ModelSpec | undefined {
+  if (_modelCache.has(id)) return _modelCache.get(id);
+  const all = modelRegistry();
+  const found = all.find((m) => m.id === id);
+  _modelCache.set(id, found);
+  return found;
+}
+
+/** Clears the model lookup cache (useful after registry changes in tests). */
+export function clearModelCache(): void { _modelCache.clear(); }
+
 export function anyProviderAvailable(): boolean {
   if (modelRegistry().some((m) => providerAvailable(m.provider))) return true;
   // A CLI subscription (claude/codex) is a usable provider even though it never

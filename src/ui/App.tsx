@@ -83,7 +83,7 @@ const KEYS_HELP = [
   "  ⏎ send · ⌃J newline · esc interrupt · ⌃C twice to quit",
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
   "  ⌃A / ⌃E line start / end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
-  "  ⌃Y copy last reply · shift+tab cycle mode (normal · auto-accept · plan)",
+  "  ⌃Y copy last reply · ⌃V paste image from clipboard · shift+tab cycle mode",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
   "  click the model or effort label in the status bar to pick (fullscreen)",
@@ -106,7 +106,7 @@ function transcriptMarkdown(items: Item[]): string {
     else if (it.kind === "usage") {
       out.push("**usage · spend & limits**", "");
       for (const a of it.view.subscriptions) {
-        const limits = (a.limits ?? []).map((l) => `${l.label} ${l.pct}%`).join(" · ");
+        const limits = (a.limits ?? []).map((l) => `${l.label} ${typeof l.pct === "number" ? `${l.pct}%` : l.status === "limited" ? "limited" : l.status === "warn" ? "near limit" : "ok"}`).join(" · ");
         out.push(`- ${a.name} (subscription) · ${a.turns} turns${limits ? ` · ${limits}` : ""}`);
       }
       for (const a of it.view.apiKeys) out.push(`- ${a.name} (API key) · ${a.spend} · ${a.turns} turns · ${a.tok}`);
@@ -510,7 +510,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Which account ran the last turn + its provider-reported cost/limit (for the
   // per-account spend ledger; see src/accounts/usage.ts).
   const usedAccountRef = useRef<string | null>(null);
-  const cliMetaRef = useRef<{ costUSD?: number; rates?: { utilization: number; resetsAt?: number; type?: string }[] } | null>(null);
+  const cliMetaRef = useRef<{ costUSD?: number; rates?: { utilization?: number; status?: string; resetsAt?: number; type?: string }[] } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
   const ghostSkinRef = useRef<GhostSkin>("base");
@@ -1009,6 +1009,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     imageChipPathsRef.current.set(marker, path);
     return marker;
   };
+  // A single existing file path (from drag-drop OR a terminal that pastes an image
+  // as its temp path) → attach: image becomes a chip, any other file an @mention.
+  // Returns true when it handled the text. Mutates the composer via setEdit.
+  const attachPastedPath = (text: string, e: Edit): boolean => {
+    const p = sanitizeInputText(text).trim().replace(/^'|'$/g, "").replace(/\\ /g, " ");
+    if (!p || p.includes("\n") || p.length >= 1024 || !/[/\\.]/.test(p)) return false;
+    const abs = p.startsWith("~") ? p.replace(/^~/, process.env.HOME ?? "~") : resolve(process.cwd(), p);
+    if (!existsSync(abs)) return false;
+    if (isImageFilePath(abs)) {
+      const marker = imageMarkerFor(abs);
+      setEdit({ value: e.value.slice(0, e.cursor) + marker + " " + e.value.slice(e.cursor), cursor: e.cursor + marker.length + 1 });
+      flashStatus(`attached ${basename(abs)}`);
+    } else {
+      const ins = `@${p} `;
+      setEdit({ value: e.value.slice(0, e.cursor) + ins + e.value.slice(e.cursor), cursor: e.cursor + ins.length });
+    }
+    return true;
+  };
   const chipImagePathsIn = (text: string): string[] => {
     const paths: string[] = [];
     for (const [marker, path] of imageChipPathsRef.current) {
@@ -1150,7 +1168,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const modelLabel = setupRequired ? "setup required" : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}` : (model?.label ?? "none");
   const subscription = activeCli ? activeCli.label : null;
   const routing = setupRequired || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
-  const ctxPct = !activeCli && model && lastInput > 0 ? Math.round((lastInput / model.contextWindow) * 100) : null;
+  // Context window of whatever's actually answering: the in-loop model, or — on a
+  // subscription — the CLI's window. Claude Code Max runs a 200k window (NOT the
+  // registry's 1M API value), so default claude to 200k; codex keeps its larger one.
+  const activeCtxWindow = activeCli
+    ? (activeCliRef.current?.binary?.includes("codex") ? (findModel(activeCliModel ?? "")?.contextWindow ?? 272_000) : 200_000)
+    : model?.contextWindow ?? null;
+  const ctxPct = !setupRequired && activeCtxWindow && lastInput > 0 ? Math.round((lastInput / activeCtxWindow) * 100) : null;
   // Only show effort when the active model actually supports reasoning · avoids showing
   // "effort medium" on models like haiku that have no reasoning support.
   const activeModelEfforts = (() => {
@@ -2984,6 +3008,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         return;
       }
+      // Some terminals paste an image/file as its temp PATH (wrapped in the same
+      // bracketed markers). Treat a single existing path like a drag-drop: image →
+      // chip, other file → @mention.
+      if (attachPastedPath(clean, e)) return;
       const lines = clean.split("\n").length;
       if (clean.length > 400 || lines > 4) {
         const id = ++pasteIdRef.current;
@@ -3171,6 +3199,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       });
       return;
     }
+    // ⌃V · attach an image from the clipboard. A guaranteed manual path for
+    // terminals that don't surface cmd-V of a screenshot to the app at all.
+    if (key.ctrl && input === "v") {
+      const imgPath = clipboardImageToFile();
+      if (imgPath) {
+        const e = editRef.current;
+        const marker = imageMarkerFor(imgPath);
+        setEdit({ value: e.value.slice(0, e.cursor) + marker + " " + e.value.slice(e.cursor), cursor: e.cursor + marker.length + 1 });
+        flashStatus("attached image from clipboard");
+      } else {
+        notice("no image on the clipboard · drag a file in, or paste its path");
+      }
+      return;
+    }
     // ⌃Y · copy the last assistant reply to the clipboard (OSC 52; works over SSH).
     if (key.ctrl && input === "y") {
       const last = [...itemsRef.current].reverse().find((i) => i.kind === "assistant");
@@ -3203,22 +3245,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       return;
     }
     // File drag-drop: terminals paste the dropped file's path. If it's a real
-    // file, turn it into an @mention so it gets read into the prompt.
+    // file, turn it into an image chip / @mention so it gets read into the prompt.
     if (!busyRef.current && input.length > 3 && !input.includes("\n")) {
-      const p = sanitizeInputText(input).trim().replace(/^'|'$/g, "").replace(/\\ /g, " ");
-      const abs = p.startsWith("~") ? p.replace(/^~/, process.env.HOME ?? "~") : resolve(process.cwd(), p);
-      if (/[/\\.]/.test(p) && p.length < 1024 && existsSync(abs)) {
-        const e = editRef.current;
-        if (isImageFilePath(abs)) {
-          const marker = imageMarkerFor(abs);
-          setEdit({ value: e.value.slice(0, e.cursor) + marker + " " + e.value.slice(e.cursor), cursor: e.cursor + marker.length + 1 });
-          flashStatus(`attached ${basename(abs)}`);
-          return;
-        }
-        const ins = `@${p} `;
-        setEdit({ value: e.value.slice(0, e.cursor) + ins + e.value.slice(e.cursor), cursor: e.cursor + ins.length });
-        return;
-      }
+      if (attachPastedPath(input, editRef.current)) return;
     }
     // Fallback for terminals that DON'T wrap pastes in bracketed markers: a single
     // large multi-line chunk is almost certainly a paste · collapse it too.
@@ -3471,7 +3500,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         </Box>
       ) : null}
       {quickPickerJsx}
-      {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={model?.contextWindow ?? null} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} api={stripApi} width={width} /> : null}
+      {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} api={stripApi} width={width} /> : null}
       <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={displayEffort} online={online} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}

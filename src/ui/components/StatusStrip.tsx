@@ -49,13 +49,23 @@ export function StatusStrip({
           <Text color={color.faint}>  ·  {fmtTok(tokens)}{contextWindow ? ` / ${fmtTok(contextWindow)}` : ""}</Text>
         </Row>
       ) : null}
-      {sub?.limits?.map((l) => (
-        <Row key={l.label} label={l.label}>
-          <Text color={l.pct >= 90 ? color.err : color.accentDim}>{bar(100 - l.pct)}</Text>
-          <Text color={l.pct >= 90 ? color.err : color.text}>  {100 - l.pct}% left</Text>
-          {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
-        </Row>
-      ))}
+      {sub?.limits?.map((l) =>
+        typeof l.pct === "number" ? (
+          <Row key={l.label} label={l.label}>
+            <Text color={l.pct >= 90 ? color.err : color.accentDim}>{bar(100 - l.pct)}</Text>
+            <Text color={l.pct >= 90 ? color.err : color.text}>  {100 - l.pct}% left</Text>
+            {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
+          </Row>
+        ) : (
+          // Status-only window: no number reported, so show the state + reset.
+          <Row key={l.label} label={l.label}>
+            <Text color={l.status === "limited" ? color.err : l.status === "warn" ? color.run : color.ok}>
+              {l.status === "limited" ? "limited" : l.status === "warn" ? "near limit" : "ok"}
+            </Text>
+            {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
+          </Row>
+        ),
+      )}
       {sub && !sub.limits?.length ? (
         <Row label="limits">
           <Text color={color.faint}>{sub.limitNote ?? "not reported yet"}</Text>

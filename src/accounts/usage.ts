@@ -12,7 +12,8 @@ const home = () => process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
 const file = () => join(home(), "usage.json");
 
 export interface RateSnapshot {
-  utilization: number; // 0..1
+  utilization?: number; // 0..1; absent when the provider reports only a status word
+  status?: string; // provider's own state, e.g. "allowed" / "allowed_warning" / "rejected"
   resetsAt?: number; // epoch seconds
   type?: string; // e.g. "seven_day" / "five_hour"
   at: number; // when we recorded it
@@ -171,9 +172,10 @@ export function barCells(frac: number, width: number): { fill: string; empty: st
 // shown as a bar) and API KEYS (pay-per-token → what matters is dollars spent).
 // Both renderers (inline + fullscreen) draw from this so they stay identical.
 export interface LimitWindow {
-  pct: number; // 0..100
+  pct?: number; // 0..100 utilization; absent when the provider reports only a status
   label: string; // "5-hour" / "7-day"
   resetsIn?: string; // "resets in 2h" (relative, if known)
+  status?: "ok" | "warn" | "limited"; // shown when pct is unknown (status-only window)
 }
 export interface UsageAcct {
   name: string; // bare label (no "· subscription"/"· API key" suffix; the group says it)
@@ -244,9 +246,14 @@ export function buildUsageView(sessionUSD?: number, resolve?: (id: string) => Ac
       const limits: LimitWindow[] = snaps
         .slice()
         .sort((a, b) => order(a.type) - order(b.type))
-        .map((r) => {
+        .map((r): LimitWindow => {
           const meta = [resetsIn(r.resetsAt, now), observedAgo(r.at, now)].filter(Boolean).join(" · ");
-          return { pct: Math.round(r.utilization * 100), label: prettyLimit(r.type), resetsIn: meta || undefined };
+          if (typeof r.utilization === "number") {
+            return { pct: Math.round(r.utilization * 100), label: prettyLimit(r.type), resetsIn: meta || undefined };
+          }
+          // No number reported — fall back to the provider's status word.
+          const status = r.status === "rejected" ? "limited" : r.status === "allowed_warning" || r.status === "warning" ? "warn" : "ok";
+          return { label: prettyLimit(r.type), resetsIn: meta || undefined, status };
         });
       subscriptions.push({ name, turns: u.turns, tok, limits: limits.length ? limits : undefined, limitNote: limits.length ? undefined : limitNote ?? "limits not observed yet" });
     } else {

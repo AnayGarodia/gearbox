@@ -48,8 +48,16 @@ function UsageCard({ view }: { view: UsageView }) {
                   {a.limits.map((l) => (
                     <Text key={l.label}>
                       <Text color={color.faint}>{"    " + l.label + " "}</Text>
-                      <Bar frac={l.pct / 100} width={10} on={limitColor(l.pct)} />
-                      <Text color={limitColor(l.pct)}>{" " + l.pct + "%"}</Text>
+                      {typeof l.pct === "number" ? (
+                        <>
+                          <Bar frac={l.pct / 100} width={10} on={limitColor(l.pct)} />
+                          <Text color={limitColor(l.pct)}>{" " + l.pct + "%"}</Text>
+                        </>
+                      ) : (
+                        <Text color={l.status === "limited" ? color.err : l.status === "warn" ? color.accent : color.ok}>
+                          {l.status === "limited" ? "limited" : l.status === "warn" ? "near limit" : "ok"}
+                        </Text>
+                      )}
                       {l.resetsIn ? <Text color={color.faint}>{" · " + l.resetsIn}</Text> : null}
                     </Text>
                   ))}

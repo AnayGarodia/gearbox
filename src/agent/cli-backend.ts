@@ -16,7 +16,8 @@ import { spawnProc } from "../proc.ts";
 import type { Proc } from "../proc.ts";
 
 export interface CliRate {
-  utilization: number;
+  utilization?: number; // 0..1, ONLY when the CLI reports a number (it often doesn't)
+  status?: string; // the CLI's own word: "allowed" / "allowed_warning" / "rejected"
   resetsAt?: number;
   type?: string;
 }
@@ -87,11 +88,14 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
       break; // hook_* noise ignored
     case "rate_limit_event": {
       // claude reports each window (five_hour, seven_day, …) in its own event;
-      // key by type so they accumulate instead of overwriting.
+      // key by type so they accumulate instead of overwriting. The print-mode
+      // event usually carries only `status` ("allowed"/"rejected") + `resetsAt`,
+      // NOT a utilization number — so capture status too and don't require a %.
       const ri = obj.rate_limit_info;
-      if (ri && typeof ri.utilization === "number") {
+      if (ri && (ri.rateLimitType || typeof ri.resetsAt === "number")) {
         const type = ri.rateLimitType ?? "limit";
-        state.rates.set(type, { utilization: ri.utilization, resetsAt: ri.resetsAt, type });
+        const utilization = typeof ri.utilization === "number" ? ri.utilization : undefined;
+        state.rates.set(type, { utilization, status: ri.status, resetsAt: ri.resetsAt, type });
       }
       break;
     }

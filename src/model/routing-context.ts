@@ -53,7 +53,10 @@ function headroomOf(u: AccountUsage | undefined): Pick<AccountState, "rateHeadro
   let bindingWindow: AccountState["bindingWindow"];
   let apiThrottle: number | undefined;
   for (const r of snaps) {
-    const h = 1 - clamp01(r.utilization);
+    // Utilization is a number when the provider reports one; otherwise infer
+    // headroom from its status word (rejected = empty, allowed = full).
+    const util = typeof r.utilization === "number" ? r.utilization : r.status === "rejected" ? 1 : r.status === "allowed_warning" || r.status === "warning" ? 0.9 : 0;
+    const h = 1 - clamp01(util);
     if (r.type?.startsWith("api:")) {
       // Short-term throughput windows from response headers — tracked separately.
       if (apiThrottle === undefined || h < apiThrottle) apiThrottle = h;
@@ -61,7 +64,7 @@ function headroomOf(u: AccountUsage | undefined): Pick<AccountState, "rateHeadro
     }
     if (rateHeadroom === undefined || h < rateHeadroom) {
       rateHeadroom = h;
-      bindingWindow = { type: r.type, utilization: r.utilization, resetsAt: r.resetsAt };
+      bindingWindow = { type: r.type, utilization: util, resetsAt: r.resetsAt };
     }
   }
   return { rateHeadroom, bindingWindow, rateAt: snaps[0]?.at, apiThrottle };

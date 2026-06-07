@@ -36,6 +36,17 @@ test("claude stream maps to text/tool events + usage + cost + session", () => {
   expect(r.rates?.[0]).toMatchObject({ utilization: 0.81, type: "seven_day" }); // quota snapshot captured
 });
 
+test("status-only rate_limit_event (no utilization number) is still captured", () => {
+  // The real claude CLI usually emits status + resetsAt but NO utilization.
+  const lines = [
+    `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1780830600,"rateLimitType":"five_hour"}}`,
+    `{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":5,"output_tokens":1}}`,
+  ];
+  const r = parseCliLines("claude", lines, () => {});
+  expect(r.rates?.[0]).toMatchObject({ status: "allowed", type: "five_hour", resetsAt: 1780830600 });
+  expect(r.rates?.[0]?.utilization).toBeUndefined();
+});
+
 test("codex stream maps agent_message + tool item + usage + thread id", () => {
   const ev: AgentEvent[] = [];
   const r = parseCliLines("codex", CODEX, (e) => ev.push(e));
