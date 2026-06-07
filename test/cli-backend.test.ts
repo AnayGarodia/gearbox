@@ -162,3 +162,13 @@ test("formatAskUserQuestion returns empty string when there are no questions", (
   expect(formatAskUserQuestion({})).toBe("");
   expect(formatAskUserQuestion(null)).toBe("");
 });
+
+test("captures the model the claude stream reports (for the status bar)", () => {
+  const lines = [
+    '{"type":"system","subtype":"init","session_id":"s1","model":"claude-sonnet-4-6"}',
+    '{"type":"assistant","message":{"model":"claude-sonnet-4-6","content":[{"type":"text","text":"hi"}]}}',
+    '{"type":"result","usage":{"input_tokens":10,"output_tokens":5}}',
+  ];
+  const r = parseCliLines("claude", lines, () => {});
+  expect(r.model).toBe("claude-sonnet-4-6");
+});

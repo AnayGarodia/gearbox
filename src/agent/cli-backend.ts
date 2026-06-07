@@ -27,6 +27,7 @@ export interface CliResult {
   usage: Usage;
   sessionId?: string; // the binary's own session id, for resume
   costUSD?: number; // claude reports this; codex doesn't
+  model?: string; // the model the CLI actually used (from its stream) — for the status bar
   rates?: CliRate[]; // claude's rate_limit_events — ONE per window (5-hour, 7-day)
   failure?: { message: string }; // set when the turn errored (for failover); the caller decides whether to show it
 }
@@ -37,6 +38,7 @@ interface CliState {
   usage: Usage;
   sessionId?: string;
   costUSD?: number;
+  model?: string; // the model id reported by the CLI stream (claude: init/assistant)
   // Keyed by window type so a 5-hour and a 7-day event don't overwrite each
   // other (claude emits them as separate rate_limit_events).
   rates: Map<string, CliRate>;
@@ -85,6 +87,7 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
   switch (obj?.type) {
     case "system":
       if (obj.subtype === "init" && obj.session_id) state.sessionId = obj.session_id;
+      if (obj.subtype === "init" && obj.model) state.model = obj.model; // the model this session will use
       break; // hook_* noise ignored
     case "rate_limit_event": {
       // claude reports each window (five_hour, seven_day, …) in its own event;
@@ -104,6 +107,7 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
       break;
     }
     case "assistant": {
+      if (obj.message?.model) state.model = obj.message.model; // the model that produced this message
       for (const part of obj.message?.content ?? []) {
         if (part.type === "text" && part.text) {
           state.text += part.text;
@@ -249,7 +253,7 @@ export function parseCliLines(binary: string, lines: string[], onEvent: OnEvent)
 }
 
 function finalize(state: CliState): CliResult {
-  return { messages: [], usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, rates: [...state.rates.values()] };
+  return { messages: [], usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, model: state.model, rates: [...state.rates.values()] };
 }
 
 function cleanCliStderr(text: string): string {
@@ -378,5 +382,5 @@ export async function runCliTask(opts: {
   const next: ModelMessage[] = [...messages, { role: "user", content: prompt }];
   if (state.text) next.push({ role: "assistant", content: state.text });
   if (!opts.deferTerminal) onEvent({ type: "done", usage: state.usage });
-  return { messages: next, usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, rates: [...state.rates.values()], failure: failureMessage ? { message: failureMessage } : undefined };
+  return { messages: next, usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, model: state.model, rates: [...state.rates.values()], failure: failureMessage ? { message: failureMessage } : undefined };
 }

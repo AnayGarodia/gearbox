@@ -1462,6 +1462,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       });
       cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
       cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
+      // Surface the model the subscription CLI actually used (claude reports it in
+      // its stream) when the user hasn't pinned one, so the status bar shows e.g.
+      // "Claude (personal) · sonnet-4.6" instead of just the account name.
+      if (r.model && !activeCliModelRef.current && !args.label) setActiveCliModel(cliModelLabel(r.model));
       return { messages: r.messages, usage: r.usage, failure: r.failure };
     },
     [],
