@@ -110,7 +110,7 @@ function transcriptMarkdown(items: Item[]): string {
         const limits = (a.limits ?? []).map((l) => `${l.label} ${typeof l.pct === "number" ? `${l.pct}%` : l.status === "limited" ? "limited" : l.status === "warn" ? "near limit" : "ok"}`).join(" · ");
         out.push(`- ${a.name} (subscription) · ${a.turns} turns${limits ? ` · ${limits}` : ""}`);
       }
-      for (const a of it.view.apiKeys) out.push(`- ${a.name} (API key) · ${a.spend} · ${a.turns} turns · ${a.tok}`);
+      for (const a of it.view.apiKeys) out.push(`- ${a.name} (API key) · ${a.spend}${a.balanceLeft ? ` · ${a.balanceLeft}` : a.balanceNote ? ` · ${a.balanceNote}` : ""} · ${a.turns} turns · ${a.tok}`);
       out.push(`- total API spend ${it.view.totalApiSpend}`, "");
     } else if (it.kind === "context") {
       out.push("**context · what's loaded**", "");
@@ -416,7 +416,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const a = getAccount(id);
       if (a) {
         const bin = a.auth.kind === "cli" ? a.auth.binary : undefined;
-        return { name: accountName(a), kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api", balanceExposed: a.exec !== "cli" && balanceExposed(a.provider), limitNote: a.exec === "cli" ? `limits appear after the first ${bin === "codex" ? "Codex" : "Claude"} turn` : undefined };
+        return { name: accountName(a), kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api", provider: a.provider, balanceExposed: a.exec !== "cli" && balanceExposed(a.provider), limitNote: a.exec === "cli" ? `limits appear after the first ${bin === "codex" ? "Codex" : "Claude"} turn` : undefined };
       }
       if (id === "unknown") return { name: "(unattributed)", kind: "api" as const };
       return { name: id, kind: "api" as const };
@@ -2814,6 +2814,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               return {
                 name: accountName(a),
                 kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api",
+                provider: a.provider,
                 balanceExposed: a.exec !== "cli" && balanceExposed(a.provider),
                 limitNote: a.exec === "cli" ? `limits appear after the first ${bin === "codex" ? "Codex" : "Claude"} turn` : undefined,
               };

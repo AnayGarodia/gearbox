@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { budgetFor } from "../model/preferences.ts";
 
 const home = () => process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
 const file = () => join(home(), "usage.json");
@@ -202,6 +203,7 @@ export interface UsageView {
 export type AcctInfo = {
   name: string;
   kind: "sub" | "api";
+  provider?: string; // catalog provider id (e.g. "openai") — used to resolve budgets
   balanceExposed?: boolean; // provider can report remaining credit (e.g. OpenRouter)
   limitNote?: string;
 };
@@ -236,7 +238,7 @@ export function buildUsageView(sessionUSD?: number, resolve?: (id: string) => Ac
 
   for (const id of ids) {
     const u = byId.get(id) ?? { accountId: id, spentUSD: 0, inputTokens: 0, outputTokens: 0, turns: 0, estimated: false, firstAt: now, lastAt: now };
-    const { name, kind, balanceExposed, limitNote } = info(u.accountId);
+    const { name, kind, provider, balanceExposed, limitNote } = info(u.accountId);
     const tok = `${fmtTok(u.inputTokens)}/${fmtTok(u.outputTokens)}`;
     if (u.estimated) estimated = true;
     if (kind === "sub") {
@@ -263,7 +265,17 @@ export function buildUsageView(sessionUSD?: number, resolve?: (id: string) => Ac
         acct.balanceLeft = usd(u.balance.remainingUSD) + " left";
         if (u.balance.totalUSD) acct.balanceFrac = Math.max(0, Math.min(1, u.balance.remainingUSD / u.balance.totalUSD));
       } else if (!balanceExposed) {
-        acct.balanceNote = "balance not exposed";
+        // Check for a user-declared budget (self-declared spend cap → estimated remaining).
+        const budget = budgetFor(id, provider);
+        if (budget) {
+          const spent = spentInPeriod(u, budget.period, now);
+          const remaining = budget.amountUSD - spent;
+          acct.balanceLeft = "~" + usd(Math.max(0, remaining)) + " left";
+          acct.balanceFrac = Math.max(0, Math.min(1, remaining / budget.amountUSD));
+        } else if (u.spentUSD > 0 && provider) {
+          // Nudge: first spend with no balance visibility → suggest setting a budget.
+          acct.balanceNote = `/budget ${provider} <amount>`;
+        }
       }
       apiKeys.push(acct);
     }

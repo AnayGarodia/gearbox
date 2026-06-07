@@ -78,6 +78,7 @@ export function StatusStrip({
         <Row label={api.name.slice(0, pad)}>
           <Text color={api.spendPos ? color.ok : color.faint}>{api.spend}</Text>
           {api.balanceLeft ? <Text color={color.faint}>  ·  {api.balanceLeft}</Text> : null}
+          {!api.balanceLeft && api.balanceNote ? <Text color={color.faint}>  ·  {api.balanceNote}</Text> : null}
         </Row>
       ) : null}
       <Row label="session">
