@@ -6,7 +6,8 @@ import React from "react";
 import { render } from "ink";
 import { createInterface } from "node:readline/promises";
 import { execFileSync, spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { App } from "./ui/App.tsx";
 import { FixedSelector } from "./model/selector.ts";
@@ -19,7 +20,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.2.25";
+const VERSION = "0.2.26";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -337,10 +338,15 @@ async function readStdin(): Promise<string> {
 }
 
 if (args[0] === "upgrade" || args[0] === "update") {
-  const root = resolve(import.meta.dir, "..");
+  // Resolve this module's dir cross-runtime: import.meta.dir is Bun-only and is
+  // undefined under Node (the installed binary runs on node), which used to crash
+  // path.resolve. fileURLToPath(import.meta.url) works on both.
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   if (!existsSync(resolve(root, ".git"))) {
-    console.log("This build can't self-update (not a git checkout).");
-    console.log("Update by pulling the repo and reinstalling:  git pull && bun install");
+    // The published/installed build: update via the official installer, which
+    // re-fetches the latest version from npm.
+    console.log("Update to the latest version:");
+    console.log("  curl -fsSL https://unpkg.com/gearbox-code@latest/install.sh | bash");
     process.exit(0);
   }
   try {
