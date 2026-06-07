@@ -81,6 +81,39 @@ export async function runVerification(
   return results;
 }
 
+// ── Auto-iterate-to-green ────────────────────────────────────────────────────
+// When verification fails after a turn that edited files, Gearbox can feed the
+// failure straight back to the model and re-run, bounded so it can't loop forever.
+// `/verify off` disables this (and the verification step entirely).
+
+export type VerifyMode = "auto" | "off";
+
+export const MAX_AUTOFIX_ATTEMPTS = 3;
+
+export function shouldAutoFix(input: {
+  mode: VerifyMode;
+  attempt: number;
+  failures: string[];
+  changedFiles: string[];
+}): boolean {
+  if (input.mode !== "auto") return false;
+  if (input.failures.length === 0) return false;
+  if (input.changedFiles.length === 0) return false; // not our regression to chase
+  return input.attempt < MAX_AUTOFIX_ATTEMPTS;
+}
+
+export function buildFixPrompt(failures: string[]): string {
+  const list = failures.map((f) => `  - ${f}`).join("\n");
+  return [
+    "The checks I ran after your last change did not pass:",
+    "",
+    list,
+    "",
+    "Fix the cause of these failures and make the checks pass. Only change what is",
+    "needed; do not revert unrelated work.",
+  ].join("\n");
+}
+
 // What to suggest after a turn whose verification FAILED. /retry only makes sense
 // when the model could plausibly fix it by regenerating — not for a conflict
 // marker, and not for an error in a file the turn never touched (pre-existing).

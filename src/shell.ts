@@ -2,7 +2,7 @@
 // Intentionally runs through a shell — that is the point (tests, git, pipes).
 // Safety belongs in a confirm/permission gate (planned), not in avoiding the shell.
 import { execSync } from "node:child_process";
-import { spawnProc } from "./proc.ts";
+import { ShellSession } from "./shell-session.ts";
 
 const CAP = 60_000;
 const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
@@ -36,61 +36,41 @@ export function runShell(command: string): { ok: boolean; output: string } {
   }
 }
 
-/** Streaming shell runner for live tool/UI output. */
+// Persistent shells so `cd`, `export`, and `source` carry across commands (the
+// `!` prefix, the run_shell tool, and verification all share one). Sessions are
+// keyed by working dir: the main agent shares the process-cwd session, while a
+// parallel sub-agent running in its own git worktree (opts.cwd) gets an isolated
+// one, so concurrent fan-out shells don't share state. Each lazily (re)starts.
+const sessions = new Map<string, ShellSession>();
+function shellSession(cwd?: string): ShellSession {
+  const root = cwd ?? process.cwd();
+  let session = sessions.get(root);
+  if (!session) {
+    session = new ShellSession(root);
+    sessions.set(root, session);
+  }
+  return session;
+}
+
+/** Streaming shell runner for live tool/UI output, backed by a persistent session. */
 export async function runShellStream(
   command: string,
   opts: { signal?: AbortSignal; timeoutMs?: number; onChunk?: (chunk: ShellChunk) => void; cwd?: string } = {},
 ): Promise<ShellResult> {
   const started = Date.now();
-  const chunks: string[] = [];
-  const proc = spawnProc(["/bin/sh", "-lc", command], {
-    cwd: opts.cwd ?? process.cwd(),
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
+  const root = opts.cwd ?? process.cwd();
+  const r = await shellSession(root).run(command, {
+    timeoutMs: opts.timeoutMs ?? 60_000,
+    signal: opts.signal,
+    onChunk: opts.onChunk,
   });
-
-  let timedOut = false;
-  const kill = () => {
-    try {
-      proc.kill();
-    } catch {
-      /* already exited */
-    }
-  };
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    kill();
-  }, opts.timeoutMs ?? 60_000);
-  const onAbort = () => kill();
-  opts.signal?.addEventListener("abort", onAbort);
-
-  const read = async (stream: NodeJS.ReadableStream | null, name: "stdout" | "stderr") => {
-    if (!stream) return;
-    const dec = new TextDecoder();
-    for await (const chunk of stream as any) {
-      const text = dec.decode(chunk, { stream: true });
-      if (!text) continue;
-      chunks.push(text);
-      opts.onChunk?.({ stream: name, text });
-    }
-  };
-
-  try {
-    await Promise.all([read(proc.stdout, "stdout"), read(proc.stderr, "stderr"), proc.exited]);
-  } finally {
-    clearTimeout(timeout);
-    opts.signal?.removeEventListener("abort", onAbort);
-  }
-
-  const exitCode = proc.exitCode;
-  const raw = chunks.join("").trim();
-  const prefix = timedOut ? `timed out after ${opts.timeoutMs ?? 60_000}ms\n` : exitCode && exitCode !== 0 ? `exit ${exitCode}\n` : "";
+  // A dead session (e.g. after a timeout kill) is dropped so the next call starts fresh.
+  if (r.timedOut) sessions.delete(root);
   return {
-    ok: !timedOut && exitCode === 0,
-    output: clip(prefix + (raw || "(no output)")),
-    exitCode,
+    ok: r.ok,
+    output: clip(r.output || "(no output)"),
+    exitCode: r.exitCode,
     durationMs: Date.now() - started,
-    timedOut,
+    timedOut: r.timedOut,
   };
 }

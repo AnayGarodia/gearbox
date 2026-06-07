@@ -6,6 +6,7 @@ import { readFile, writeFile, readdir, stat } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
+import { applyEdit } from "./edit.ts";
 import { runShellStream } from "./shell.ts";
 import { requestPermission } from "./permission.ts";
 import { which, Glob, spawnSyncProc } from "./proc.ts";
@@ -34,28 +35,6 @@ function makeSafe(root: string) {
 }
 
 const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
-
-function countOccurrences(text: string, find: string): number {
-  if (!find) return 0;
-  let count = 0;
-  let at = 0;
-  while ((at = text.indexOf(find, at)) >= 0) {
-    count++;
-    at += find.length;
-  }
-  return count;
-}
-
-function replaceOccurrence(text: string, find: string, replace: string, occurrence: number): string {
-  let at = -1;
-  let from = 0;
-  for (let i = 0; i < occurrence; i++) {
-    at = text.indexOf(find, from);
-    if (at < 0) return text;
-    from = at + find.length;
-  }
-  return text.slice(0, at) + replace + text.slice(at + find.length);
-}
 
 function notFoundHint(path: string, before: string, find: string): string {
   const needle = find.trim().split(/\s+/).filter((w) => w.length >= 3)[0]?.toLowerCase();
@@ -94,26 +73,30 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
   }),
 
   edit_file: tool({
-    description: "Edit a file by exact text replacement. Use occurrence for a specific match, or replaceAll for every exact match.",
+    description:
+      "Edit a file by replacing text. Tries an exact match first, then falls back to a whitespace-tolerant match (so minor indentation/spacing drift in `find` still applies). Use occurrence for a specific match, or replaceAll for every match.",
     inputSchema: z.object({
       path: z.string(),
       find: z.string().min(1),
       replace: z.string(),
-      occurrence: z.number().int().positive().default(1).describe("1-based match to replace when replaceAll is false"),
-      replaceAll: z.boolean().default(false).describe("replace every exact occurrence"),
+      occurrence: z.number().int().positive().optional().describe("1-based match to replace when replaceAll is false"),
+      replaceAll: z.boolean().default(false).describe("replace every match"),
     }),
     execute: async ({ path, find, replace, occurrence, replaceAll }) => {
       const abs = safe(path);
       const before = await readFile(abs, "utf8");
-      const matches = countOccurrences(before, find);
-      if (matches === 0) throw new Error(notFoundHint(path, before, find));
-      if (!replaceAll && occurrence > matches) throw new Error(`only found ${matches} occurrence${matches === 1 ? "" : "s"} in ${path}; requested occurrence ${occurrence}`);
+      const r = applyEdit(before, find, replace, { occurrence, replaceAll });
+      if (!r.ok) {
+        if (r.reason === "not-found") throw new Error(notFoundHint(path, before, find));
+        if (r.reason === "ambiguous")
+          throw new Error(`"${find.split("\n")[0]?.trim()}…" matches ${r.matches} places in ${path} (ignoring whitespace); pass occurrence or replaceAll to disambiguate`);
+        throw new Error(`only found ${r.matches} occurrence${r.matches === 1 ? "" : "s"} in ${path}; requested occurrence ${occurrence}`);
+      }
       if (!(await requestPermission({ kind: "edit", title: "Edit a file", detail: path }))) throw new Error(DENIED);
-      const after = replaceAll ? before.split(find).join(replace) : replaceOccurrence(before, find, replace, occurrence);
-      await writeFile(abs, after, "utf8");
-      const diff = computeDiff(before, after);
-      const changed = replaceAll ? matches : 1;
-      return { summary: `edited ${path} · ${changed} replacement${changed === 1 ? "" : "s"} (${diffStat(diff)})`, diff };
+      await writeFile(abs, r.after, "utf8");
+      const diff = computeDiff(before, r.after);
+      const fuzzy = r.strategy === "whitespace" ? " · whitespace-matched" : "";
+      return { summary: `edited ${path} · ${r.replacements} replacement${r.replacements === 1 ? "" : "s"}${fuzzy} (${diffStat(diff)})`, diff };
     },
   }),
 

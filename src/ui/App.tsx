@@ -53,7 +53,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
@@ -360,6 +360,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const ctrlCRef = useRef(0); // timestamp of the last bare ⌃C (for "press again to quit")
   const escRef = useRef(0); // timestamp of the last bare esc (for double-esc rewind)
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
+  const verifyRef = useRef<VerifyMode>(loadPrefs().verify === "off" ? "off" : "auto"); // post-edit checks + auto-iterate-to-green
   const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
   // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
   // text is kept here and expanded back in on submit.
@@ -1735,7 +1736,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
 
   const runTurn = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, attempt = 0) => {
       setVerb(nextVerb());
       activeImagesRef.current = [];
       let { text: modelPrompt, attached } = expandMentions(prompt);
@@ -1949,7 +1950,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       try {
         const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal });
         msgRef.current = r.messages;
-        if (!hadError && !ac.signal.aborted && changedFiles.size && checks.length === 0) {
+        if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && changedFiles.size && checks.length === 0) {
           const commands = detectVerificationCommands(process.cwd(), [...changedFiles]);
           if (commands.length) {
             const results = await runVerification(commands, { onEvent, signal: ac.signal });
@@ -2066,6 +2067,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           setLinger(true);
           if (lingerRef.current) clearTimeout(lingerRef.current);
           lingerRef.current = setTimeout(() => setLinger(false), 1500);
+          // Auto-iterate to green: if checks failed on a turn that edited files,
+          // feed the failure back and re-run, bounded by MAX_AUTOFIX_ATTEMPTS.
+          // `/verify off` disables this (verifyRef === "off").
+          if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed })) {
+            notice(`checks failed — fixing (attempt ${attempt + 1}/${MAX_AUTOFIX_ATTEMPTS})`);
+            const fixPrompt = buildFixPrompt(failed);
+            setTimeout(() => void runTurnRef.current?.(fixPrompt, attempt + 1), 0);
+          } else if (verifyRef.current === "auto" && attempt >= MAX_AUTOFIX_ATTEMPTS && failed.length) {
+            notice(`still failing after ${MAX_AUTOFIX_ATTEMPTS} fix attempts — over to you`);
+          }
           // Nudge the user back for long turns (likely stepped away): bell + notify.
           if (Date.now() - turnStart > 8000 && notifyRef.current) {
             bell();
@@ -2076,6 +2087,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     },
     [runner, defaultRunner, persist],
   );
+  // Stable handle so the auto-fix path can re-enter runTurn without it being a dep.
+  const runTurnRef = useRef(runTurn);
+  runTurnRef.current = runTurn;
 
   const handleCommand = useCallback(
     (text: string) => {
@@ -2275,6 +2289,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }
           return;
         }
+        case "verify": {
+          echo(text);
+          const a = arg.trim().toLowerCase();
+          if (a === "off") {
+            verifyRef.current = "off";
+            updatePrefs({ verify: "off" });
+            notice("verification off · no post-edit checks, no auto-fix");
+          } else if (a === "on" || a === "auto") {
+            verifyRef.current = "auto";
+            updatePrefs({ verify: "auto" });
+            notice("verification auto · runs checks after edits and iterates to green");
+          } else {
+            const cmds = detectVerificationCommands(process.cwd()).map((c) => c.command);
+            notice(
+              `verification: ${verifyRef.current}` +
+                (cmds.length ? ` · detected: ${cmds.join(", ")}` : " · no test/build/typecheck command detected") +
+                `\n  /verify off  ·  /verify auto`,
+            );
+          }
+          return;
+        }
         case "copy": {
           echo(text);
           const last = [...itemsRef.current].reverse().find((i) => i.kind === "assistant");
@@ -2321,7 +2356,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 `  vim     ${p.vim ? "on" : "off"}         vim keys in the composer\n` +
                 `  notify  ${p.notify === false ? "off" : "on"}          desktop ping when a long turn finishes\n` +
                 `  inline  ${p.fullscreen === false ? "on" : "off"}         terminal scrollback instead of fixed bottom input (restart to apply)\n` +
-                `  change one: /config <vim|notify|inline> <value>`,
+                `  verify  ${p.verify === "off" ? "off" : "auto"}        run checks after edits and auto-fix to green (also /verify)\n` +
+                `  change one: /config <vim|notify|inline|verify> <value>`,
             );
             return;
           }
@@ -2337,8 +2373,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             notifyRef.current = on;
             updatePrefs({ notify: on });
             notice(`notifications ${on ? "on" : "off"}`);
+          } else if (key === "verify") {
+            verifyRef.current = on ? "auto" : "off";
+            updatePrefs({ verify: on ? "auto" : "off" });
+            notice(`verification ${on ? "auto" : "off"}`);
           } else {
-            notice("settings: vim · notify · inline");
+            notice("settings: vim · notify · inline · verify");
           }
           return;
         }
