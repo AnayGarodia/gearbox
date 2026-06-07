@@ -410,7 +410,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Persistent usage strip (toggled by /cost) — stays above the composer until you
   // toggle it off; survives restarts. Doesn't capture input.
   const [statusPinned, setStatusPinnedState] = useState(() => Boolean(loadPrefs().statusPinned));
-  const [, bumpUsage] = useReducer((x: number) => x + 1, 0); // force a strip re-read after a probe records fresh limits
+  const [usageTick, bumpUsage] = useReducer((x: number) => x + 1, 0); // bump → strip re-reads usage.json (else it's memoized, off the render hot path)
   const [probing, setProbing] = useState<Set<string>>(new Set()); // account ids with a usage probe in flight (→ "checking…")
   const setStatusPinned = (v: boolean) => {
     setStatusPinnedState(v);
@@ -681,13 +681,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const m = maxScrollRef.current;
       const tgt = Math.max(0, Math.min(m, scrollTargetRef.current ?? pos));
       const diff = tgt - pos;
-      if (Math.abs(diff) < 1) {
+      // Snappier than a long ease: settle small moves instantly and big swipes in
+      // a couple frames. Fewer frames = fewer full re-renders = crisper feel.
+      if (Math.abs(diff) <= 3) {
         pos = tgt;
         scrollTargetRef.current = null;
         stopScrollAnim();
       } else {
-        // Ease: ~35% of the remaining distance per frame, at least one line.
-        const step = Math.sign(diff) * Math.max(1, Math.round(Math.abs(diff) * 0.35));
+        // Ease ~55% of the remaining distance per frame (min 2 lines).
+        const step = Math.sign(diff) * Math.max(2, Math.round(Math.abs(diff) * 0.55));
         pos += step;
         if ((diff > 0 && pos > tgt) || (diff < 0 && pos < tgt)) pos = tgt;
       }
@@ -696,6 +698,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     }, 16);
   }, [noMotion, stopScrollAnim]);
   useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear the glide timer on unmount
+  useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
 
   const copyWithFeedback = useCallback((text: string) => {
     const clean = text.replace(/[ \t]+\n/g, "\n").trim();
@@ -826,7 +829,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             else if (y > bottom) scrollBy(2);
             const edgeLine = y < viewportTop ? scrollTopLiveRef.current : scrollTopLiveRef.current + transcriptHeightLiveRef.current - 1;
             const edgeText = lineText(linesRef.current[edgeLine] ?? []);
-            setTranscriptSel({
+            setTranscriptSelLive({
               startLine: transcriptMouseAnchorRef.current.line,
               startCol: transcriptMouseAnchorRef.current.col,
               endLine: edgeLine,
@@ -914,7 +917,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               setTranscriptSel({ startLine: point.line, startCol: point.col, endLine: point.line, endCol: point.col });
             }
           } else if (point && isDrag && transcriptMouseAnchorRef.current) {
-            setTranscriptSel({ startLine: transcriptMouseAnchorRef.current.line, startCol: transcriptMouseAnchorRef.current.col, endLine: point.line, endCol: point.col });
+            setTranscriptSelLive({ startLine: transcriptMouseAnchorRef.current.line, startCol: transcriptMouseAnchorRef.current.col, endLine: point.line, endCol: point.col });
           }
         }
       }
@@ -1000,9 +1003,30 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     busyRef.current = b;
     setBusyState(b);
   };
+  // A drag fires mouse events faster than the terminal can repaint. Update the
+  // ref immediately (copy/edge logic always reads the true selection) but throttle
+  // the actual re-render to ~60fps (leading + trailing), so a fast drag glides
+  // instead of flooding the render loop. Used only for continuous drag-extend.
+  const selRenderRef = useRef<{ t: ReturnType<typeof setTimeout> | null; pending: ViewSelection | null }>({ t: null, pending: null });
+  const cancelSelFlush = () => {
+    const r = selRenderRef.current;
+    if (r.t) { clearTimeout(r.t); r.t = null; }
+    r.pending = null;
+  };
   const setTranscriptSel = (sel: ViewSelection | null) => {
+    cancelSelFlush(); // a discrete update wins over any pending throttled drag frame
     transcriptSelectionRef.current = sel;
     setTranscriptSelectionState(sel);
+  };
+  const setTranscriptSelLive = (sel: ViewSelection) => {
+    transcriptSelectionRef.current = sel;
+    const r = selRenderRef.current;
+    if (r.t) { r.pending = sel; return; } // a flush is already scheduled; keep the latest
+    setTranscriptSelectionState(sel); // leading edge: show this frame now
+    r.t = setTimeout(() => {
+      r.t = null;
+      if (r.pending) { setTranscriptSelectionState(r.pending); r.pending = null; }
+    }, 16);
   };
   const imageMarkerFor = (path: string): string => {
     for (const [marker, existing] of imageChipPathsRef.current) {
@@ -1184,13 +1208,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const claudeTimer = setInterval(() => { for (const a of subs()) void probeOne(a); }, 10 * 60_000);
     return () => { alive = false; clearInterval(codexTimer); clearInterval(claudeTimer); };
   }, [statusPinned, activeCli?.id]);
-  const onboardingState = {
-    configured: listAccounts(),
-    importable: importableEnvCreds(),
-    cloudImportable: importableCloudCreds().map((c) => ({ provider: c.provider, label: c.label, source: c.source })),
-    hasClaudeCli: Boolean(which("claude")),
-    hasCodexCli: Boolean(which("codex")),
-  };
+  // Memoized: this reads accounts.json + ~/.aws creds AND spawns `which claude`/
+  // `which codex` subprocesses — doing that on every render (every scroll frame /
+  // drag event) was a major source of input lag. Recompute only when the account
+  // set could have changed: any command/turn changes items.length, a switch changes
+  // activeCli, a probe/turn bumps usageTick. Never on scroll/drag or stream deltas.
+  const onboardingState = useMemo(
+    () => ({
+      configured: listAccounts(),
+      importable: importableEnvCreds(),
+      cloudImportable: importableCloudCreds().map((c) => ({ provider: c.provider, label: c.label, source: c.source })),
+      hasClaudeCli: Boolean(which("claude")),
+      hasCodexCli: Boolean(which("codex")),
+    }),
+    [items.length, activeCli?.id, usageTick], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const setupRequired = needsOnboarding(onboardingState);
   useEffect(() => {
     if (!setupRequired && firstRunRef.current) {
@@ -1933,6 +1965,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             .map((t) => ({ type: t, status: "ok" as const }));
           if (toSeed.length) recordRateLimits(acctId, toSeed);
         }
+        bumpUsage(); // a turn just changed spend/limits → let the memoized strip re-read
         // Auto-compact: once the history approaches the budget, summarize old
         // turns (cheap delegated model) so the next turns stay bounded without
         // losing the gist. Best-effort and skipped on interrupt.
@@ -2844,8 +2877,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (fullscreen) {
             const on = !statusPinned;
             setStatusPinned(on);
-            // One state per toggle, each naming the inverse command.
-            notice(on ? "usage pinned · /cost to hide" : "usage hidden · /cost to show");
+            // One state per toggle, each naming the inverse command (canonical /usage).
+            notice(on ? "usage pinned · /usage to hide" : "usage hidden · /usage to show");
             return;
           }
           const accounts = listAccounts();
@@ -3454,8 +3487,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (search) footer += 1;
   if (copiedNotice) footer += 1;
   if (quickPicker && quickRows.length) footer += quickPickerLimit + 2; // overlay: header + marginTop + rows
-  // Pinned usage strip (/cost): header + context? + limit windows / note + api? + session + marginTop.
-  const stripView = statusPinned ? currentUsageView() : null;
+  // Pinned usage strip (/usage): header + context? + limit windows / note + api? + session + marginTop.
+  // Memoized: currentUsageView() reads usage.json + accounts from disk, so calling it
+  // on every render (every scroll frame / drag event while the strip is open) was a
+  // real source of mouse lag. Recompute only when usage data, the active account, or
+  // the per-turn token count actually changes — never on scroll/drag.
+  const stripView = useMemo(
+    () => (statusPinned ? currentUsageView() : null),
+    [statusPinned, usageTick, activeCli?.id, tokens, probing], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const stripSub = stripView ? (stripView.subscriptions.find((s) => s.name === activeCli?.label) ?? stripView.subscriptions[0] ?? null) : null;
   // Prefer the account that actually ran the last turn (usedAccountRef) over the
   // top-spend default, so switching between GPT / Azure / DeepSeek / etc. shows

@@ -46,7 +46,7 @@ export function StatusStrip({
     <Box width={width} flexDirection="column" paddingX={1} marginTop={1}>
       <Box justifyContent="space-between">
         <Text color={color.accent} bold>usage</Text>
-        <Text color={color.faint}>/cost to hide</Text>
+        <Text color={color.faint}>/usage to hide</Text>
       </Box>
       {ctxPct != null ? (
         <Row label="context">

@@ -18,7 +18,7 @@ test("status strip shows context, subscription limit windows, and session spend"
     />,
   ).lastFrame() ?? "";
   expect(out).toContain("usage");
-  expect(out).toContain("/cost to hide");
+  expect(out).toContain("/usage to hide");
   expect(out).toContain("83% left"); // context: 100-17
   expect(out).toContain("99% left"); // 5h: 100-1
   expect(out).toContain("2% left"); // 7d: 100-98
