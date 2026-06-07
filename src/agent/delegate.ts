@@ -14,7 +14,7 @@
 // never imports run.ts — that would be a cycle (run.ts imports this).
 import { tool, type Tool } from "ai";
 import { z } from "zod";
-import { copyFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { copyFileSync, mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { RoutingSelector, classify } from "../model/router.ts";
@@ -87,23 +87,73 @@ function gitToplevel(): string | null {
   const r = git(["rev-parse", "--show-toplevel"]);
   return r.ok && r.out ? r.out : null;
 }
-function addWorktree(repoRoot: string, dir: string): boolean {
-  return git(["-C", repoRoot, "worktree", "add", "--detach", dir, "HEAD"]).ok;
-}
 function removeWorktree(repoRoot: string, dir: string): void {
   git(["-C", repoRoot, "worktree", "remove", "--force", dir]);
   try { if (existsSync(dir)) rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
-// Files a sub-agent changed in its worktree, vs HEAD. Returns {path, deleted}.
-function changedFiles(dir: string): { path: string; deleted: boolean }[] {
-  git(["-C", dir, "add", "-A"]); // stage so untracked files show up
-  const r = git(["-C", dir, "status", "--porcelain"]);
+// Parse `git status --porcelain` into {path, deleted}; optionally stage first so
+// untracked files are included. Handles renames (takes the new path).
+function changesIn(root: string, stage: boolean): { path: string; deleted: boolean }[] {
+  if (stage) git(["-C", root, "add", "-A"]);
+  const r = git(["-C", root, "status", "--porcelain"]);
   if (!r.ok || !r.out) return [];
-  return r.out.split("\n").map((line) => {
+  const out: { path: string; deleted: boolean }[] = [];
+  for (const line of r.out.split("\n")) {
+    if (!line) continue;
     const status = line.slice(0, 2);
-    const path = line.slice(3).trim();
-    return { path, deleted: status.includes("D") };
-  }).filter((c) => c.path);
+    let path = line.slice(3).trim();
+    if (path.includes(" -> ")) path = path.split(" -> ")[1]!.trim(); // rename → new path
+    // strip surrounding quotes git adds for paths with spaces
+    if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
+    if (path) out.push({ path, deleted: status.includes("D") });
+  }
+  return out;
+}
+// Create an isolated worktree at HEAD, then SEED it with the parent's current
+// uncommitted state (so sub-agents see the orchestrator's in-flight edits) and
+// baseline-commit it — so the sub-agent's own changes later measure against the
+// parent state, not HEAD (otherwise every worktree would re-report the parent's
+// edits and they'd all "conflict").
+function addSeededWorktree(repoRoot: string, dir: string): boolean {
+  if (!git(["-C", repoRoot, "worktree", "add", "--detach", dir, "HEAD"]).ok) return false;
+  for (const c of changesIn(repoRoot, false)) {
+    const src = join(repoRoot, c.path), dst = join(dir, c.path);
+    try {
+      if (c.deleted) { if (existsSync(dst)) rmSync(dst, { force: true }); }
+      else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(src, dst); }
+    } catch { /* skip a file we can't seed */ }
+  }
+  git(["-C", dir, "add", "-A"]);
+  git(["-C", dir, "commit", "-q", "-m", "gearbox-fanout-baseline", "--no-verify"]);
+  return true;
+}
+// 3-way auto-merge a file that multiple worktrees edited, into repoRoot. base =
+// the parent's current file (the shared seed). Non-overlapping hunks combine
+// cleanly; truly-overlapping edits leave <<<<<< conflict markers. Returns true if
+// markers were left (so the orchestrator knows to resolve them).
+function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean {
+  const baseAbs = join(repoRoot, path);
+  const tmps: string[] = [];
+  const tmp = (tag: string) => { const p = join(tmpdir(), `gearbox-merge-${++counter}-${tag}`); tmps.push(p); return p; };
+  const base = tmp("base");
+  try { copyFileSync(baseAbs, base); } catch { writeFileSync(base, ""); } // new file → empty base
+  let current = base;
+  let conflicted = false;
+  try {
+    for (const dir of dirs) {
+      const other = join(dir, path);
+      if (!existsSync(other)) continue;
+      const r = spawnSyncProc(["git", "merge-file", "-p", current, base, other], { stdout: "pipe", stderr: "pipe" });
+      if ((r.exitCode ?? 0) !== 0) conflicted = true; // >0 = conflicts, <0 = error
+      const next = tmp("step");
+      writeFileSync(next, r.stdout);
+      current = next;
+    }
+    mkdirSync(dirname(baseAbs), { recursive: true });
+    copyFileSync(current, baseAbs);
+  } catch { conflicted = true; }
+  finally { for (const t of tmps) { try { rmSync(t, { force: true }); } catch {} } }
+  return conflicted;
 }
 
 // ── the tools ─────────────────────────────────────────────────────────────────
@@ -136,7 +186,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
 
   const delegate_parallel = tool({
     description:
-      "Run SEVERAL independent sub-tasks at once, each on its own best-routed model AND its own isolated git worktree, so their concurrent file writes can't collide. Use when you have 2+ chunks that touch DIFFERENT files and don't depend on each other (e.g. 'add tests to module A', 'document module B', 'refactor module C'). Each sub-task is self-contained (the sub-agents don't see this conversation or each other). When all finish, their changes are merged back into the repo; any two sub-tasks that edited the SAME file are reported as conflicts for you to resolve. Requires a git repo. For dependent or same-file work, use `delegate` one at a time instead.",
+      "Run SEVERAL independent sub-tasks at once, each on its own best-routed model AND its own isolated git worktree (seeded with your current uncommitted edits), so their concurrent file writes can't collide. Use when you have 2+ chunks that are mostly independent (e.g. 'add tests to module A', 'document module B', 'refactor module C'). Each sub-task is self-contained (the sub-agents don't see this conversation or each other). When all finish, changes are merged back: files touched by one sub-task apply directly; a file touched by several is 3-way auto-merged (non-overlapping edits combine cleanly; only truly-overlapping edits leave conflict markers for you to resolve). Requires a git repo. For tightly-coupled work, use `delegate` one at a time instead.",
     inputSchema: z.object({
       tasks: z.array(z.object({
         task: z.string().describe("A complete, self-contained sub-task touching files independent of the others."),
@@ -159,7 +209,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
         const routed = routeSubTask(t.task, t.kind);
         if ("error" in routed) { skipped.push(`#${idx + 1}: ${routed.error}`); continue; }
         const dir = join(tmpdir(), `gearbox-fanout-${batch}-${idx}-${Date.now()}`);
-        if (!addWorktree(repoRoot, dir)) { skipped.push(`#${idx + 1}: couldn't create a worktree`); continue; }
+        if (!addSeededWorktree(repoRoot, dir)) { skipped.push(`#${idx + 1}: couldn't create a worktree`); continue; }
         created.push(dir);
         jobs.push({ idx, task: t.task, routed, dir });
       }
@@ -173,36 +223,40 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
           try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir }); }
           catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
           onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: j.routed.model.label });
-          return { j, res, changed: res.ok ? changedFiles(j.dir) : [] };
+          return { j, res, changed: res.ok ? changesIn(j.dir, true) : [] }; // sub-agent's changes vs the seeded baseline
         }));
 
-        // 3) Detect conflicts (a file touched by >1 sub-task), merge the rest back.
-        const writers = new Map<string, number[]>();
+        // 3) Merge back. One writer → apply directly. Multiple writers → 3-way
+        //    auto-merge (non-overlapping edits combine; overlaps leave markers).
+        const writers = new Map<string, { dir: string; deleted: boolean }[]>();
         for (const o of outcomes) for (const c of o.changed) {
-          writers.set(c.path, [...(writers.get(c.path) ?? []), o.j.idx]);
+          writers.set(c.path, [...(writers.get(c.path) ?? []), { dir: o.j.dir, deleted: c.deleted }]);
         }
-        const conflicts = [...writers.entries()].filter(([, who]) => who.length > 1);
-        const conflictSet = new Set(conflicts.map(([p]) => p));
-        let applied = 0;
-        for (const o of outcomes) {
-          for (const c of o.changed) {
-            if (conflictSet.has(c.path)) continue; // leave conflicting files for the orchestrator
-            const dst = join(repoRoot, c.path);
+        let applied = 0, autoMerged = 0;
+        const conflicted: string[] = [];
+        for (const [path, who] of writers) {
+          if (who.length === 1) {
+            const w = who[0]!;
+            const dst = join(repoRoot, path);
             try {
-              if (c.deleted) { if (existsSync(dst)) rmSync(dst, { force: true }); }
-              else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(join(o.j.dir, c.path), dst); }
+              if (w.deleted) { if (existsSync(dst)) rmSync(dst, { force: true }); }
+              else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(join(w.dir, path), dst); }
               applied++;
-            } catch { /* skip a file we couldn't merge */ }
+            } catch { /* skip a file we couldn't apply */ }
+          } else {
+            const hadMarkers = mergeFileBack(repoRoot, path, who.filter((w) => !w.deleted).map((w) => w.dir));
+            autoMerged++;
+            if (hadMarkers) conflicted.push(path);
           }
         }
 
         // 4) Report.
         const lines: string[] = [];
         for (const o of outcomes) lines.push(`#${o.j.idx + 1} (${o.j.routed.model.label}): ${o.res.text.split("\n")[0]?.slice(0, 160) ?? ""}`);
-        const parts = [`Ran ${outcomes.length} sub-tasks in parallel · merged ${applied} file change(s).`];
-        if (conflicts.length) parts.push(`CONFLICTS (same file edited by multiple sub-tasks — NOT applied; resolve yourself): ${conflicts.map(([p]) => p).join(", ")}.`);
+        const parts = [`Ran ${outcomes.length} sub-tasks in parallel · applied ${applied} file change(s)${autoMerged ? `, 3-way-merged ${autoMerged} shared file(s)` : ""}.`];
+        if (conflicted.length) parts.push(`Conflict markers left in (resolve these): ${conflicted.join(", ")}.`);
         if (skipped.length) parts.push(`Skipped: ${skipped.join("; ")}.`);
-        onEvent({ type: "tool-end", id: groupId, ok: true, summary: `${outcomes.length} done · ${applied} merged${conflicts.length ? ` · ${conflicts.length} conflict(s)` : ""}` });
+        onEvent({ type: "tool-end", id: groupId, ok: true, summary: `${outcomes.length} done · ${applied + autoMerged} merged${conflicted.length ? ` · ${conflicted.length} w/ markers` : ""}` });
         return [parts.join(" "), "", ...lines].join("\n");
       } finally {
         for (const dir of created) removeWorktree(repoRoot, dir); // always clean up worktrees
