@@ -2034,7 +2034,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         } else if (e.type === "done") {
           finishAssistant();
           turnUsage = e.usage;
-          if (e.usage.inputTokens > 0) setLastInput(e.usage.inputTokens);
+          // The context % must reflect the WHOLE prompt sent, not just the uncached
+          // slice — Anthropic reports cache read/write tokens separately, so using
+          // inputTokens alone made ctx% collapse the moment caching kicked in (C-E).
+          const totalIn = e.usage.inputTokens + (e.usage.cachedInputTokens ?? 0) + (e.usage.cacheCreationInputTokens ?? 0);
+          if (totalIn > 0) setLastInput(totalIn);
           setTokens((t) => t + e.usage.inputTokens + e.usage.outputTokens);
         }
       };
@@ -2139,7 +2143,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // A brief post-turn beat: confetti on a clean finish, crying on an error.
         // The working line lingers ~1.5s (it unmounts the instant busy goes false
         // otherwise, so these states would never render). Skip on a user interrupt.
-        if (!interrupted) {
+        if (!interrupted) try {
           setMascotState(hadError ? "error" : "celebrate");
           // Collapse this turn's live trace into durable facts, then summarize from
           // the FINAL state (a check that failed then passed on retry is not a
@@ -2184,7 +2188,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             bell();
             notify("gearbox", hadError ? "turn finished with an error" : "turn finished");
           }
-        }
+        } catch { /* a post-turn render/summary throw must never reject runTurn → unhandled rejection that could wedge the app (L-D) */ }
       }
     },
     [runner, defaultRunner, persist],
@@ -2192,6 +2196,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Stable handle so the auto-fix path can re-enter runTurn without it being a dep.
   const runTurnRef = useRef(runTurn);
   runTurnRef.current = runTurn;
+  // Clear the post-turn linger timer on unmount so it can't fire setLinger after
+  // the app is gone (L-H).
+  useEffect(() => () => { if (lingerRef.current) clearTimeout(lingerRef.current); }, []);
 
   const handleCommand = useCallback(
     (text: string) => {
@@ -2329,6 +2336,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       switch (name) {
         case "exit":
         case "quit":
+          persist(); // save the conversation before quitting (only turn-end persisted before — I-D)
           exit();
           return;
         case "clear":
@@ -3469,6 +3477,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       const now = Date.now();
       if (now - ctrlCRef.current < 1500) {
+        persist(); // ⌃C-⌃C quit: save the conversation first (I-D)
         exit();
         return;
       }

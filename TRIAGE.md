@@ -72,13 +72,13 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ C-B estimateCost returns $0 for any model not in modelRegistry (discovered/gateway/seeded).
 - ☐ C-C reason "$/Mtok" blend (dup of R-7).
 - ☐ C-D strip shows two unrelated "context" numbers (cumulative `tokens` vs lastInput/ctxPct).
-- ☐ C-E ctxPct ignores cache tokens → context % collapses on a cache hit.
+- ☑ C-E ctx% ignores cache — FIXED: lastInput now = inputTokens + cache read + cache write, so ctx% reflects the whole prompt. [v0.2.47]
 - ☐ C-F auto-compact budget keys off a different model's window than the one answering.
 ### Session / input / paste
 - ☐ I-A markerless paste split across reads still floods (per-read size check, no time-window coalescer).
 - ☐ I-B unterminated bracketed paste freezes input (no timeout/escape).
 - ☑ I-C @mention trailing punctuation — FIXED: progressively strips trailing )].,;:!?"'>}  (files.ts). [v0.2.42]
-- ☐ I-D quitting never persists (only turn-end); exit()/⌃C-quit have no persist hook.
+- ☑ I-D persist on quit — FIXED: /exit, /quit, and ⌃C-⌃C persist the conversation before exiting. [v0.2.47]
 - ☑ I-E histIdx reset on edit — FIXED with iv. [v0.2.42]
 - ☐ I-F /resume <n> uses a stale snapshot (resumeListRef vs fresh sessions).
 - ☐ I-G title truncation mismatch (80 vs 42 vs untruncated) — cosmetic.
@@ -87,11 +87,11 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ L-A verification can run after interrupt; post-turn test run not interruptible.
 - ☑ L-B auto-compaction retry storm — FIXED: compaction generateText now maxRetries:1. [v0.2.40]
 - ☐ L-C type-ahead queue auto-fires next prompt into a still-broken state after an errored turn; no clear-queue.
-- ☐ L-D busy can wedge if the finally's summary block throws (unhandled rejection from `void runTurn`).
+- ☑ L-D post-turn throw wedging the app — FIXED: the finally's summary/linger block is wrapped in try/catch so it can never reject runTurn (→ unhandled rejection). [v0.2.47]
 - ☐ L-E single-`done` invariant fragile/untested (ask path vs failover vs CLI).
 - ☑ L-F CLI subprocess SIGKILL escalation — FIXED: onAbort sends SIGTERM then SIGKILL after 2s so a wedged claude/codex can't pin busy forever. (proc.ts kill(signal), cli-backend.ts) [v0.2.40]
 - ☑ L-G isNetworkError regex misses "Connect Timeout Error" — FIXED: added undici/AI-SDK shapes (connect timeout, attempted address, failed after N attempts). (net.ts + net.test) [v0.2.38]
-- ☐ L-H linger timer not cleared on unmount.
+- ☑ L-H linger timer cleanup — FIXED: cleared on unmount. [v0.2.47]
 - ☐ L-I network/timeout classified as "other" (terminal) not retryable; backwards vs rate-limit.
 ### Terminal / rendering
 - ☑ T-A title reset on exit — FIXED with viii. [v0.2.46]
