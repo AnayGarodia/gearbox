@@ -70,3 +70,25 @@ test("an open palette raises the status row by paletteRows", () => {
 test("no effort label means effort clicks miss", () => {
   expect(statusBarHit({ ...base, effort: undefined, x: 13, y: 37 })).toBeNull();
 });
+
+import { fitStatusFields } from "../src/ui/components/StatusBar.tsx";
+
+test("fitStatusFields keeps the model and sheds lowest-priority fields to fit width", () => {
+  const fields = [
+    { text: "sonnet-4.6", priority: 100 },
+    { text: "effort medium", priority: 50 },
+    { text: "⎇ main", priority: 40 },
+    { text: "80.0k tok", priority: 30 },
+    { text: "$0.44", priority: 20 },
+    { text: "1% ctx", priority: 60 },
+  ];
+  // Huge budget: everything kept, order preserved.
+  expect(fitStatusFields(fields, 1000).map((f) => f.text)).toEqual(fields.map((f) => f.text));
+  // Tight budget: model always survives; cost (P20) and tokens (P30) drop before ctx (P60).
+  const tight = fitStatusFields(fields, 30).map((f) => f.text);
+  expect(tight[0]).toBe("sonnet-4.6");
+  expect(tight).not.toContain("$0.44");
+  expect(tight).not.toContain("80.0k tok");
+  // Brutally narrow: only the model remains, never an empty list.
+  expect(fitStatusFields(fields, 3).map((f) => f.text)).toEqual(["sonnet-4.6"]);
+});

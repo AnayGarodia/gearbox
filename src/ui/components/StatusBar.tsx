@@ -9,6 +9,23 @@ function fmtTokens(n: number): string {
 
 const SEP = `  ${glyph.bullet}  `; // separator between left-segment fields (5 cols)
 
+// Drop the lowest-priority left fields until the joined line fits `budget` cols.
+// fields[0] (the model) is never dropped; survivors keep display order. This is
+// what stops the bar truncating a word mid-character ("auto" → "a…") on a narrow
+// terminal — we shed whole fields (cost, tokens, branch…) instead. Pure + tested.
+export function fitStatusFields<T extends { text: string; priority: number }>(fields: T[], budget: number): T[] {
+  const w = (fs: T[]) => fs.reduce((n, f) => n + f.text.length, 0) + Math.max(0, fs.length - 1) * SEP.length;
+  const kept = fields.slice();
+  while (kept.length > 1 && w(kept) > budget) {
+    let dropIdx = -1;
+    let lowest = Infinity;
+    for (let i = 1; i < kept.length; i++) if (kept[i]!.priority < lowest) { lowest = kept[i]!.priority; dropIdx = i; }
+    if (dropIdx < 0) break;
+    kept.splice(dropIdx, 1);
+  }
+  return kept;
+}
+
 export type StatusZone = [start: number, end: number]; // 0-based, half-open cols
 
 // Pure layout helper: where the clickable model/effort labels sit in the status
@@ -95,23 +112,37 @@ export function StatusBar({
 }) {
   const sep = SEP;
   const modeLabel = mode === "auto-accept" ? "auto-accept" : mode; // "plan" / "auto-accept"
-  const left = [
-    model,
-    effort ? `effort ${effort}` : null,
-    branch ? `${glyph.branch} ${branch}` : null,
-    tokens > 0 ? `${fmtTokens(tokens)} tok` : null,
-    cost >= 0.005 ? `$${cost.toFixed(2)}` : null,
-  ].filter(Boolean) as string[];
   const ctxColor = ctxPct == null || ctxPct < 70 ? color.faint : ctxPct < 90 ? color.accent : color.err;
+
+  // Left fields in display order. fields[0] (model) is never dropped; the rest shed
+  // by priority when the terminal is narrow, so the right side (the routing USP)
+  // stays whole instead of being cut to "a…".
+  const fields = [
+    { text: model, color: color.dim, priority: 100 },
+    effort ? { text: `effort ${effort}`, color: color.faint, priority: 50 } : null,
+    branch ? { text: `${glyph.branch} ${branch}`, color: color.faint, priority: 40 } : null,
+    tokens > 0 ? { text: `${fmtTokens(tokens)} tok`, color: color.accentDim, priority: 30 } : null,
+    cost >= 0.005 ? { text: `$${cost.toFixed(2)}`, color: color.faint, priority: 20 } : null,
+    ctxPct != null && ctxPct > 0 ? { text: `${ctxPct}% ctx`, color: ctxColor, priority: 60 } : null,
+    !online ? { text: "⚠ offline", color: color.err, bold: true, priority: 95 } : null,
+  ].filter(Boolean) as { text: string; color: string; bold?: boolean; priority: number }[];
+
+  // Reserve the right side and the mode badge, then fit the left fields to what's left.
+  const rightPlain = [
+    yolo ? "yolo" : "",
+    subscription ? "subscription · own tools/perms" : routing ? `auto · ${routing.split(" · ")[0]}` : "",
+  ].filter(Boolean).join("  ·  ");
+  const modeW = mode !== "normal" ? modeLabel.length + sep.length : 0;
+  const budget = Math.max(0, width - 2 /*paddingX*/ - modeW - (rightPlain ? rightPlain.length + sep.length : 0));
+  const kept = fitStatusFields(fields, budget);
 
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
       <Text color={color.dim} wrap="truncate-end">
         {mode !== "normal" ? <Text color={color.accent}>{modeLabel}{sep}</Text> : null}
-        {left.length ? <Text color={color.dim}>{left[0]}</Text> : null}
-        {left.slice(1).map((x) => <Text key={x} color={x.includes("tok") ? color.accentDim : color.faint}>{sep}{x}</Text>)}
-        {ctxPct != null && ctxPct > 0 ? <Text color={ctxColor}>{left.length ? sep : ""}{ctxPct}% ctx</Text> : null}
-        {!online ? <Text color={color.err} bold>{sep}⚠ offline</Text> : null}
+        {kept.map((f, i) => (
+          <Text key={f.text} color={f.color} bold={f.bold}>{i > 0 ? sep : ""}{f.text}</Text>
+        ))}
       </Text>
       <Text color={color.faint} wrap="truncate-end">
         {yolo ? <Text color={color.err} bold>yolo</Text> : null}
@@ -120,9 +151,8 @@ export function StatusBar({
             The model name is already on the left, so the right reminds you of the
             one thing that's different: it runs its own tools/permissions. */}
         {subscription ? <Text><Text color={color.ok}>subscription</Text><Text color={color.faint}> {glyph.bullet} </Text><Text color={color.text}>own tools/perms</Text></Text> : null}
-        {/* Compact: just "auto · <kind>". The full reason (caps · $/Mtok) lives in
-            the per-turn provenance line; repeating it here overflows the bar and
-            forced both halves to truncate mid-token. */}
+        {/* Compact "auto · <kind>"; the full reason lives in the per-turn provenance
+            line. The left fields shed by width (above) so this never gets truncated. */}
         {!subscription && routing ? <Text color={color.accentDim}>auto</Text> : null}
         {!subscription && routing ? ` ${glyph.bullet} ${routing.split(" · ")[0]}` : null}
       </Text>

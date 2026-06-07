@@ -150,11 +150,16 @@ function uniq<T>(xs: T[]): T[] {
 
 // Human-readable turn duration: sub-minute gets one decimal (4.2s); a minute or
 // more is m s (1m 23s); sub-second rounds up to 0.1s so it never reads "0.0s".
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   const s = ms / 1000;
-  if (s < 60) return `${Math.max(0.1, s).toFixed(1)}s`;
-  const m = Math.floor(s / 60);
-  return `${m}m ${Math.round(s % 60)}s`;
+  // Sub-minute: one decimal (4.2s) — unless it rounds up to 60.0s, then carry.
+  const oneDecimal = Math.max(0.1, Math.round(s * 10) / 10);
+  if (oneDecimal < 60) return `${oneDecimal.toFixed(1)}s`;
+  // A minute or more: round to whole seconds FIRST, then split — so the seconds
+  // can never round to 60 and read "1m 60s" (119.6s → 120 → "2m 0s").
+  const total = Math.round(s);
+  const m = Math.floor(total / 60);
+  return `${m}m ${total % 60}s`;
 }
 
 type CliModelChoice = { id: string; label: string; provider: string; efforts?: string[] };

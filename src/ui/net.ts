@@ -51,5 +51,7 @@ export function useOnline(intervalMs = 20_000, enabled = true): boolean {
 /** Does an error look like a network/offline failure (vs. an API/auth error)? */
 export function isNetworkError(e: unknown): boolean {
   const msg = (e instanceof Error ? e.message : String(e ?? "")).toLowerCase();
-  return /enotfound|econnrefused|econnreset|etimedout|eai_again|network|fetch failed|failed to fetch|socket hang up|getaddrinfo|dns/.test(msg);
+  // Includes the undici/AI-SDK shapes the old regex missed: "Connect Timeout Error",
+  // "attempted address …:443", and the SDK's "failed after N attempts" retry wrapper.
+  return /enotfound|econnrefused|econnreset|etimedout|eai_again|network|fetch failed|failed to fetch|socket hang up|getaddrinfo|dns|connect timeout|timeouterror|undici|attempted address|und_err|failed after \d+ attempt|connection (?:reset|closed|refused|error|timed out)|timed? ?out/.test(msg);
 }
