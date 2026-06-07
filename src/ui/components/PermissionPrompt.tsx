@@ -4,7 +4,7 @@ import { color, glyph } from "../theme.ts";
 import type { PermRequest } from "../../permission.ts";
 
 // A blocking confirm before Boo writes, edits, or runs a shell command. A bordered
-// card is right here — it's a modal decision (Gemini/Copilot frame these the same).
+// card is right here · it's a modal decision (Gemini/Copilot frame these the same).
 export function PermissionPrompt({ req, width }: { req: PermRequest; width: number }) {
   return (
     <Box flexDirection="column" width={width} marginTop={1} paddingX={1} borderStyle="round" borderColor={color.accent}>

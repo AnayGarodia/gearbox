@@ -4,7 +4,7 @@ import { color, glyph } from "../theme.ts";
 import { caretPos, selectionRange, type Edit } from "../input.ts";
 
 // Borderless composer: a hairline rule, then a `❯` prompt with the input and a
-// terminal-native block cursor (`inverse`). Multi-line aware — continuation lines
+// terminal-native block cursor (`inverse`). Multi-line aware · continuation lines
 // align under the prompt and the cursor lands on the right row/column. No box.
 export function Composer({
   value,
@@ -30,6 +30,10 @@ export function Composer({
   const lines = value.split("\n");
   const { lineIdx: curLine, col: curCol } = caretPos(value, cursor);
   const selected = selectionRange({ value, cursor, selectionAnchor });
+  // Shell mode: a leading `!` runs the line as a shell command. Give it a distinct
+  // pink accent + badge so it never reads like a chat message or a /command.
+  const shellMode = value.startsWith("!");
+  const accent = shellMode ? color.shell : color.accent;
   const prefix = (i: number) => (i === 0 ? glyph.prompt + " " : "  ");
   const offsetOfLine = (line: number) => {
     let off = 0;
@@ -62,41 +66,51 @@ export function Composer({
     );
   };
 
+  // Badge shown at the left of the hairline rule: shell mode wins, then vim.
+  const badge = shellMode
+    ? { text: " ! bash ", c: color.shell }
+    : vim === "normal"
+    ? { text: " NORMAL ", c: color.accent }
+    : vim === "insert"
+    ? { text: " INSERT ", c: color.dim }
+    : null;
+
   return (
     <Box flexDirection="column" width={width} marginTop={1}>
       <Box paddingX={1}>
-        {vim !== "off" ? (
+        {badge ? (
           <>
-            <Text color={vim === "normal" ? color.accent : color.dim} bold>{vim === "normal" ? " NORMAL " : " INSERT "}</Text>
-            <Text color={color.faint}>{glyph.rule.repeat(Math.max(width - 11, 4))}</Text>
+            <Text color={badge.c} bold>{badge.text}</Text>
+            <Text color={shellMode ? color.shell : color.faint}>{glyph.rule.repeat(Math.max(width - 2 - badge.text.length, 4))}</Text>
           </>
         ) : (
           <Text color={color.faint}>{glyph.rule.repeat(Math.max(width - 2, 8))}</Text>
         )}
       </Box>
-      {busy ? (
+      {value === "" ? (
+        // Empty composer: idle placeholder. While busy, the cue is "type to queue".
         <Box paddingX={1}>
-          <Text color={color.faint} bold backgroundColor={color.panelBg}>
+          <Text color={busy ? color.faint : accent} bold backgroundColor={color.panelBg}>
             {glyph.prompt}{" "}
           </Text>
-          <Text color={color.faint} backgroundColor={color.panelBg}>{value || "…"}</Text>
-        </Box>
-      ) : value === "" ? (
-        <Box paddingX={1}>
-          <Text color={color.accent} bold backgroundColor={color.panelBg}>
-            {glyph.prompt}{" "}
-          </Text>
-          <Text inverse backgroundColor={color.panelBg}> </Text>
-          <Text color={color.faint} backgroundColor={color.panelBg}>{suggestion ?? placeholder}</Text>
+          {!busy ? <Text inverse backgroundColor={color.panelBg}> </Text> : null}
+          <Text color={color.faint} backgroundColor={color.panelBg}>{busy ? "type to queue · esc interrupts" : suggestion ?? placeholder}</Text>
         </Box>
       ) : (
+        // Non-empty: render the live editable input WITH the cursor, even while
+        // busy — what you type queues and sends when the turn finishes.
         <Box flexDirection="column" paddingX={1}>
           {lines.map((ln, i) => (
             <Box key={i}>
-              <Text color={color.accent} bold backgroundColor={color.panelBg}>{prefix(i)}</Text>
+              <Text color={accent} bold backgroundColor={color.panelBg}>{prefix(i)}</Text>
               {renderLine(ln, i)}
             </Box>
           ))}
+          {busy ? (
+            <Text color={color.faint}>↵ queues · sends when the current turn finishes</Text>
+          ) : shellMode ? (
+            <Text color={color.faint}>↵ runs in your shell</Text>
+          ) : null}
         </Box>
       )}
     </Box>

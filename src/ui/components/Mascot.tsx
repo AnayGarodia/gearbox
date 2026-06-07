@@ -5,7 +5,7 @@ import { GHOSTS, type SpriteCell } from "../mascot-sprite.ts";
 import { getImageMode, imageId, idColor, placeholderRows, type GhostSize } from "../image.ts";
 import { renderGhost, EYES_CLOSED, TALK, type GhostCfg, type OverlayKind } from "../ghost/engine.ts";
 
-// Boo — the ghost in the gearbox. Built parametrically (src/ui/ghost/engine.ts):
+// Boo · the ghost in the gearbox. Built parametrically (src/ui/ghost/engine.ts):
 // a 20x20 pixel sprite composited from layers (body + face + palette + accessory
 // + overlay) and FOLDED into half-block truecolor cells. Each character is the ▀
 // upper-half block: glyph color = top pixel, background = bottom pixel, so one
@@ -62,7 +62,7 @@ export function Sprite({ data }: { data: SpriteCell[][] }) {
 // ── Animation ───────────────────────────────────────────────────────────────
 // Deliberately calm. One shared, unhurried cadence (240ms) drives the frame-based
 // animation; talk + overlays advance at half that (~480ms) and the idle bob is
-// gone — motion should read as a quiet sign of life, not fidgeting. The interval
+// gone · motion should read as a quiet sign of life, not fidgeting. The interval
 // is leaf-local (lives in the animating component), so it only ticks while that
 // component is mounted and never re-renders the transcript. GEARBOX_NO_MOTION
 // holds frame 0 (fully still / CI).
@@ -108,7 +108,7 @@ export function AnimatedGhost({ cfg, scale, anim }: { cfg: GhostCfg; scale: 1 | 
 // A small, native-resolution head crop (the feet/body carry no expression and are
 // dropped). Two rules keep it from being noisy: (1) ONE fixed crop window for
 // EVERY state, so the ghost never changes height and the input bar below it never
-// moves; (2) Boo is static through the long phases (thinking, tool) — only the
+// moves; (2) Boo is static through the long phases (thinking, tool) · only the
 // brief, meaningful beats move: the mouth while streaming, confetti on a clean
 // finish, tears on an error. The state mostly reads from the FACE + palette +
 // the verb beside it.
@@ -134,7 +134,7 @@ export function stateView(state: MascotState, skin: GhostSkin): { cfg: GhostCfg;
   }
 }
 
-/** The (now fixed) crop height in cell rows — App uses it to budget the line. */
+/** The (now fixed) crop height in cell rows · App uses it to budget the line. */
 export const STATE_GHOST_ROWS = 5; // FACE_CROP rows 4..14 → 5 cell rows
 
 /** The compact state ghost for the working line (blocks path). */
@@ -159,8 +159,8 @@ function KittyGhost({ variant, size }: { variant: string; size: GhostSize }) {
   );
 }
 
-/** Splash for the entry screen — Boo + wordmark + tagline. On the blocks path the
- *  ghost just blinks occasionally (calm — no float or sparkle); the kitty PNG path
+/** Splash for the entry screen · Boo + wordmark + tagline. On the blocks path the
+ *  ghost just blinks occasionally (calm · no float or sparkle); the kitty PNG path
  *  stays static (re-placing a PNG on a timer glitches). `size` is chosen by the
  *  caller: "big" (2×) on a roomy window, "mini" (1×) when short, "none" (wordmark). */
 export function MascotSplash({ skin = "base", size = "big" }: { skin?: GhostSkin; size?: GhostSize | "none" }) {

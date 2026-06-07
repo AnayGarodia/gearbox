@@ -24,7 +24,7 @@ function Bar({ frac, width, on }: { frac: number; width: number; on: string }) {
 }
 
 // The /usage card, split by account type. Subscriptions (flat fee) show a
-// rate-limit bar — the metric that matters there; API keys (pay-per-token) show
+// rate-limit bar · the metric that matters there; API keys (pay-per-token) show
 // dollars spent. Same data as the fullscreen path (lines.ts).
 function UsageCard({ view }: { view: UsageView }) {
   const { labelPad, spendPad } = view;
@@ -329,7 +329,7 @@ function UserLine({ text, width }: { text: string; width: number }) {
   );
 }
 
-// The reply: clean prose, indented, no marker — it reads as the open response.
+// The reply: clean prose, indented, no marker · it reads as the open response.
 function AssistantLine({ text, width }: { text: string; width: number }) {
   if (!text) return null;
   const prose = Math.max(width - 4, 20);
@@ -617,7 +617,7 @@ function Row({ item, width, expandAll = false }: { item: Item; width: number; ex
   }
 }
 
-// An item is "final" once it will never change again — so it's safe to commit to
+// An item is "final" once it will never change again · so it's safe to commit to
 // native scrollback. The streaming assistant reply and a running tool are not.
 function isFinal(it: Item): boolean {
   if (it.kind === "assistant") return !!it.done;

@@ -13,6 +13,7 @@ export interface Theme {
   ok: string;
   err: string;
   run: string;
+  shell: string;
   navy: string;
   path: string;
   userBg: string;
@@ -37,7 +38,7 @@ export interface Theme {
 // background. Syntax uses a single accent family (blues) + violet for types.
 export const color: Theme = {
   accent: "#7DD3FC", accentDim: "#60A5FA", text: "#E2E8F0", dim: "#94A3B8", faint: "#64748B",
-  user: "#BAE6FD", ok: "#4ADE80", err: "#F87171", run: "#818CF8", navy: "#111111",
+  user: "#BAE6FD", ok: "#4ADE80", err: "#F87171", run: "#818CF8", shell: "#F472B6", navy: "#111111",
   userBg: "#0D2137", codeBg: "#0D0D0D", panelBg: "#161616", accentBg: "#0A1628",
   path: "#7DD3FC",
   codeKeyword: "#7DD3FC", codeString: "#A7F3D0", codeNumber: "#A5B4FC",

@@ -12,7 +12,7 @@ const SEP = `  ${glyph.bullet}  `; // separator between left-segment fields (5 c
 export type StatusZone = [start: number, end: number]; // 0-based, half-open cols
 
 // Pure layout helper: where the clickable model/effort labels sit in the status
-// bar's left segment, in 0-based terminal columns. Single source of truth — the
+// bar's left segment, in 0-based terminal columns. Single source of truth · the
 // StatusBar render and the mouse hit-test both derive from this so the rendered
 // position and the clickable position cannot drift. Mirrors the render:
 // paddingX(1) + optional "{mode}{SEP}" + model + optional "{SEP}effort {effort}".
@@ -51,7 +51,7 @@ export function statusBarHit(args: {
 }): "model" | "effort" | null {
   // The `- 2` is the composer chrome above its input (rule + marginTop). It is
   // coupled to App.tsx's footer estimate (`footer += perm ? 9 : 3`, the 3 being
-  // input + those same 2 chrome rows) and to Composer.tsx's layout — keep in sync.
+  // input + those same 2 chrome rows) and to Composer.tsx's layout · keep in sync.
   const statusRow = args.termRows - args.composerLines - args.paletteRows - 2;
   if (args.y !== statusRow || !args.model) return null;
   const { modelZone, effortZone } = statusBarLayout(args);
@@ -62,7 +62,7 @@ export function statusBarHit(args: {
 }
 
 // Bottom status line, full width. Left: model, branch, ctx, tokens (no "gearbox"
-// brand — the title bar already says it). Right: the routing pick — the product's
+// brand · the title bar already says it). Right: the routing pick · the product's
 // USP, where no other agent shows anything. A blank row above it keeps the
 // composer from crowding the status.
 export function StatusBar({

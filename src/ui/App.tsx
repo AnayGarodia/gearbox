@@ -56,6 +56,7 @@ import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
+import { clipboardImageToFile } from "./clipboard-image.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
 import { navHistory, searchHistory } from "./history.ts";
 import { currentMention, matchFiles, completeMention } from "./mention.ts";
@@ -2971,6 +2972,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const clean = sanitizeInputText(pasteBufRef.current.replace(/\x1b\[20[01]~/g, ""));
       pasteBufRef.current = null;
       const e = editRef.current;
+      // An EMPTY paste with an image on the clipboard = cmd-V of a screenshot. The
+      // terminal can't paste binary, so grab the image off the OS clipboard and
+      // attach it as a chip, the same as a dragged-in file path.
+      if (clean.trim() === "") {
+        const imgPath = clipboardImageToFile();
+        if (imgPath) {
+          const marker = imageMarkerFor(imgPath);
+          setEdit({ value: e.value.slice(0, e.cursor) + marker + " " + e.value.slice(e.cursor), cursor: e.cursor + marker.length + 1 });
+          flashStatus("attached image from clipboard");
+        }
+        return;
+      }
       const lines = clean.split("\n").length;
       if (clean.length > 400 || lines > 4) {
         const id = ++pasteIdRef.current;
@@ -3223,9 +3236,31 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     }
     const action = applyKey(editRef.current, input, key, vimRef.current === "off" ? undefined : { normal: vimRef.current === "normal" });
     if (busyRef.current) {
-      if (action.type === "interrupt") {
-        interruptedRef.current = true;
-        abortRef.current?.abort();
+      // While a turn runs you can still type — submit queues (drained when the
+      // turn ends), edits build the next prompt live, ↑/↓ recall history. esc
+      // clears a non-empty composer, else interrupts the turn.
+      switch (action.type) {
+        case "edit":
+          if (suggestion) setSuggestion(null);
+          setEdit(action.state);
+          break;
+        case "submit":
+          submit(editRef.current.value);
+          break;
+        case "history": {
+          const r = navHistory(historyRef.current, histIdxRef.current, action.dir);
+          histIdxRef.current = r.idx;
+          setEdit({ value: r.value, cursor: r.value.length });
+          break;
+        }
+        case "interrupt":
+          if (editRef.current.value) {
+            setEdit({ value: "", cursor: 0 });
+          } else {
+            interruptedRef.current = true;
+            abortRef.current?.abort();
+          }
+          break;
       }
       return;
     }
@@ -3303,6 +3338,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const quickPickerLimit = Math.min(7, Math.max(1, quickRows.length));
   let footer = 2; // status line + its top margin
   footer += perm ? 9 : 3; // permission card vs composer (rule + input + marginTop)
+  // Composer hint row: "↵ queues…" while busy, or "↵ runs in your shell" in ! mode.
+  if (!perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
   footer += PALETTE_ROWS;
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
   if (busy) footer += 2; // compact current-turn activity rail
