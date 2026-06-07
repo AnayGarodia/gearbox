@@ -416,7 +416,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const a = getAccount(id);
       if (a) {
         const bin = a.auth.kind === "cli" ? a.auth.binary : undefined;
-        return { name: accountName(a), kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api", balanceExposed: a.exec !== "cli" && balanceExposed(a.provider), limitNote: a.exec === "cli" ? `${bin === "codex" ? "Codex" : "Claude"} CLI hasn't reported quota windows yet` : undefined };
+        return { name: accountName(a), kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api", balanceExposed: a.exec !== "cli" && balanceExposed(a.provider), limitNote: a.exec === "cli" ? `limits appear after the first ${bin === "codex" ? "Codex" : "Claude"} turn` : undefined };
       }
       if (id === "unknown") return { name: "(unattributed)", kind: "api" as const };
       return { name: id, kind: "api" as const };
@@ -1882,7 +1882,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const cm = cliMetaRef.current;
         const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
-        if (cm?.rates?.length) recordRateLimits(acctId, cm.rates);
+        if (cm?.rates?.length) {
+          recordRateLimits(acctId, cm.rates);
+        } else if (!hadError && getAccount(acctId)?.exec === "cli") {
+          // CLI turn succeeded but no rate_limit_event was emitted. The CLI only
+          // reports them when near a limit, so silence means the user is within
+          // both windows. Record implicit "ok" so the strip shows a live indicator
+          // rather than "hasn't reported yet".
+          recordRateLimits(acctId, [{ type: "five_hour", status: "ok" }, { type: "seven_day", status: "ok" }]);
+        }
         // Auto-compact: once the history approaches the budget, summarize old
         // turns (cheap delegated model) so the next turns stay bounded without
         // losing the gist. Best-effort and skipped on interrupt.
@@ -2807,7 +2815,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 name: accountName(a),
                 kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api",
                 balanceExposed: a.exec !== "cli" && balanceExposed(a.provider),
-                limitNote: a.exec === "cli" ? `${bin === "codex" ? "Codex" : "Claude"} CLI has not reported quota windows yet` : undefined,
+                limitNote: a.exec === "cli" ? `limits appear after the first ${bin === "codex" ? "Codex" : "Claude"} turn` : undefined,
               };
             }
             if (id === "unknown") return { name: "(unattributed)", kind: "api" as const };
