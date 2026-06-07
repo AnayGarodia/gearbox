@@ -1882,19 +1882,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const cm = cliMetaRef.current;
         const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
-        if (cm?.rates?.length) {
-          recordRateLimits(acctId, cm.rates);
-          // Any window not in the event was fine (CLI only fires near a limit).
-          // Fill gaps so both windows always appear in the strip.
-          const reported = new Set(cm.rates.map((r) => r.type));
-          const gaps = (["five_hour", "seven_day"] as const).filter((t) => !reported.has(t)).map((t) => ({ type: t, status: "ok" as const }));
-          if (gaps.length) recordRateLimits(acctId, gaps);
-        } else if (!hadError && getAccount(acctId)?.exec === "cli") {
-          // CLI turn succeeded but no rate_limit_event was emitted. The CLI only
-          // reports them when near a limit, so silence means the user is within
-          // both windows. Record implicit "ok" so the strip shows a live indicator
-          // rather than "hasn't reported yet".
-          recordRateLimits(acctId, [{ type: "five_hour", status: "ok" }, { type: "seven_day", status: "ok" }]);
+        if (!hadError && getAccount(acctId)?.exec === "cli") {
+          // Always record both windows after a successful CLI turn. Real events
+          // (rate_limit_event) contain actual utilization near the limit; any
+          // window NOT in the event was fine — record it as implicit "ok" so
+          // both 5-hour and 7-day always appear in the strip.
+          const realRates = cm?.rates ?? [];
+          const reported = new Set(realRates.map((r) => r.type));
+          const gaps = (["five_hour", "seven_day"] as const)
+            .filter((t) => !reported.has(t))
+            .map((t) => ({ type: t, status: "ok" as const }));
+          recordRateLimits(acctId, [...realRates, ...gaps]);
         }
         // Auto-compact: once the history approaches the budget, summarize old
         // turns (cheap delegated model) so the next turns stay bounded without
