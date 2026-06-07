@@ -40,7 +40,7 @@ import { discoverModels } from "../accounts/discover.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
-import { recordUsage, recordRateLimits, recordBalance, buildUsageView, type UsageView } from "../accounts/usage.ts";
+import { recordUsage, recordRateLimits, recordBalance, buildUsageView, accountUsage, type UsageView } from "../accounts/usage.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { repoMap } from "../context/repomap.ts";
@@ -1883,16 +1883,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
         if (!hadError && getAccount(acctId)?.exec === "cli") {
-          // Always record both windows after a successful CLI turn. Real events
-          // (rate_limit_event) contain actual utilization near the limit; any
-          // window NOT in the event was fine — record it as implicit "ok" so
-          // both 5-hour and 7-day always appear in the strip.
+          // Record real rate events first (these carry actual utilization when
+          // the CLI is near a limit — e.g. seven_day at 81%).
           const realRates = cm?.rates ?? [];
+          if (realRates.length) recordRateLimits(acctId, realRates);
+          // For standard windows NOT in this event, only add implicit "ok" if:
+          // (a) the window has never been recorded, or
+          // (b) its resetsAt timestamp is already in the past (window reset).
+          // Never overwrite a real utilization record with a synthetic "ok" —
+          // that would erase the 81% bar between turns.
+          const now = Date.now();
+          const existing = accountUsage(acctId)?.rates ?? [];
           const reported = new Set(realRates.map((r) => r.type));
-          const gaps = (["five_hour", "seven_day"] as const)
-            .filter((t) => !reported.has(t))
-            .map((t) => ({ type: t, status: "ok" as const }));
-          recordRateLimits(acctId, [...realRates, ...gaps]);
+          const toImply = (["five_hour", "seven_day"] as const).filter((t) => {
+            if (reported.has(t)) return false;
+            const stored = existing.find((r) => r.type === t);
+            if (!stored) return true; // never seen, seed it
+            if (stored.resetsAt && stored.resetsAt * 1000 < now) return true; // expired, refresh
+            return false; // still valid, leave it
+          }).map((t) => ({ type: t, status: "ok" as const }));
+          if (toImply.length) recordRateLimits(acctId, toImply);
         }
         // Auto-compact: once the history approaches the budget, summarize old
         // turns (cheap delegated model) so the next turns stay bounded without
