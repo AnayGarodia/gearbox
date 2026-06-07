@@ -20,11 +20,11 @@ import { App } from "../src/ui/App.tsx";
 import { FixedSelector } from "../src/model/selector.ts";
 import type { Item } from "../src/ui/types.ts";
 
-test("banner shows brand + working dir (model lives in the status bar, not here)", () => {
-  const { lastFrame } = render(<Banner cwd="my-project" />);
+test("banner shows brand + active account (model lives in the status bar, not here)", () => {
+  const { lastFrame } = render(<Banner account="claude · Max · me@host" />);
   const f = lastFrame() ?? "";
   expect(f).toContain("gearbox");
-  expect(f).toContain("my-project");
+  expect(f).toContain("me@host");
   expect(f).not.toContain("sonnet-4.6"); // model is NOT duplicated in the title bar
 });
 

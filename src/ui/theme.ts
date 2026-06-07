@@ -41,9 +41,12 @@ export const color: Theme = {
   user: "#BAE6FD", ok: "#4ADE80", err: "#F87171", run: "#818CF8", shell: "#F472B6", navy: "#111111",
   userBg: "#0D2137", codeBg: "#0D0D0D", panelBg: "#161616", accentBg: "#0A1628",
   path: "#7DD3FC",
-  codeKeyword: "#7DD3FC", codeString: "#A7F3D0", codeNumber: "#A5B4FC",
-  codeComment: "#4B5563", codePunct: "#6B7280",
-  codeFunction: "#93C5FD", codeType: "#C4B5FD", codeOperator: "#6B7280", codeBracket: "#60A5FA",
+  // Distinct hues so a code block isn't a wall of one blue: keyword violet,
+  // function cyan, type teal, string green, number amber, comment gray. Amber (not
+  // red) for numbers keeps red reserved for things that went wrong.
+  codeKeyword: "#C4B5FD", codeString: "#A7F3D0", codeNumber: "#FBBF24",
+  codeComment: "#64748B", codePunct: "#7C8AA0",
+  codeFunction: "#60A5FA", codeType: "#5EEAD4", codeOperator: "#94A3B8", codeBracket: "#8B9DC3",
   diffAddBg: "#052E16", diffDelBg: "#2D0A0A", diffContextBg: "#0D0D0D",
 };
 

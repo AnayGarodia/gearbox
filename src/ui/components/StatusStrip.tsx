@@ -31,9 +31,12 @@ export function StatusStrip({
   api?: UsageAcct | null;
   width: number;
 }) {
+  // Label column wide enough for the longest label we print (e.g. "Anthropic"),
+  // so nothing clips to "Anthropi".
+  const pad = 9;
   const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
     <Text>
-      <Text color={color.faint}>{label.padEnd(8)} </Text>
+      <Text color={color.faint}>{label.padEnd(pad)} </Text>
       {children}
     </Text>
   );
@@ -72,7 +75,7 @@ export function StatusStrip({
         </Row>
       ) : null}
       {api?.spend ? (
-        <Row label={api.name.slice(0, 8)}>
+        <Row label={api.name.slice(0, pad)}>
           <Text color={api.spendPos ? color.ok : color.faint}>{api.spend}</Text>
           {api.balanceLeft ? <Text color={color.faint}>  ·  {api.balanceLeft}</Text> : null}
         </Row>

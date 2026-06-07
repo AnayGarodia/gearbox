@@ -74,6 +74,6 @@ export class FixedSelector implements ModelSelector {
         "No model available. Set a key: ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / DEEPSEEK_API_KEY",
       );
     }
-    return { model, reason: "fixed default · routing not enabled yet" };
+    return { model, reason: "pinned · /model auto to route per task" };
   }
 }

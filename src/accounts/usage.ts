@@ -258,7 +258,7 @@ export function buildUsageView(sessionUSD?: number, resolve?: (id: string) => Ac
       subscriptions.push({ name, turns: u.turns, tok, limits: limits.length ? limits : undefined, limitNote: limits.length ? undefined : limitNote ?? "limits not observed yet" });
     } else {
       apiTotal += u.spentUSD;
-      const acct: UsageAcct = { name, turns: u.turns, tok, spend: usd(u.spentUSD) + (u.estimated ? "~" : "") + " spent", spendPos: u.spentUSD > 0 };
+      const acct: UsageAcct = { name, turns: u.turns, tok, spend: (u.estimated ? "~" : "") + usd(u.spentUSD) + " spent", spendPos: u.spentUSD > 0 };
       if (u.balance?.remainingUSD != null) {
         acct.balanceLeft = usd(u.balance.remainingUSD) + " left";
         if (u.balance.totalUSD) acct.balanceFrac = Math.max(0, Math.min(1, u.balance.remainingUSD / u.balance.totalUSD));

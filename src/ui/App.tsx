@@ -1167,6 +1167,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // On a subscription, the status reflects the CLI account, not the in-loop model/routing.
   const modelLabel = setupRequired ? "setup required" : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}` : (model?.label ?? "none");
   const subscription = activeCli ? activeCli.label : null;
+  // Compact identity for the top-right corner: "claude · Max · you@host" for a
+  // subscription (id stays the slug under the hood), else nothing.
+  const bannerAccount = (() => {
+    if (setupRequired || !activeCli) return null;
+    const a = getAccount(activeCli.id);
+    const name = (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude");
+    const idy = a?.identity?.label ?? "";
+    const tier = (idy.match(/\b(Max|Pro|Plus|Team|Enterprise)\b/i) ?? activeCli.label.match(/\b(Max|Pro|Plus|Team|Enterprise)\b/i))?.[1];
+    const email = idy.match(/[^\s·]+@[^\s·]+/)?.[0];
+    return [name, tier, email].filter(Boolean).join(" · ");
+  })();
   const routing = setupRequired || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
   // Context window of whatever's actually answering: the in-loop model, or — on a
   // subscription — the CLI's window. Claude Code Max runs a 200k window (NOT the
@@ -2769,7 +2780,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (fullscreen) {
             const on = !statusPinned;
             setStatusPinned(on);
-            notice(on ? "usage pinned above the composer — /cost to hide" : "usage hidden");
+            // One state per toggle, each naming the inverse command.
+            notice(on ? "usage pinned · /cost to hide" : "usage hidden · /cost to show");
             return;
           }
           const accounts = listAccounts();
@@ -3517,7 +3529,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
-        <Banner model={modelLabel} cwd={basename(process.cwd())} width={width} />
+        <Banner model={modelLabel} account={bannerAccount} width={width} />
         {panel ? (
           <Box paddingX={1}>
             <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} currentModelId={panelCurrentModel} staticLines={panelStaticLines} />
@@ -3539,7 +3551,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Inline (the DEFAULT): the terminal owns the screen · native selection,
   // scrollback, and wheel scroll. Finished items commit to scrollback via
   // <Static> (in Transcript); only the live tail + footer re-render.
-  const banner = <Banner model={modelLabel} cwd={basename(process.cwd())} width={width} />;
+  const banner = <Banner model={modelLabel} account={bannerAccount} width={width} />;
   return (
     <Box flexDirection="column" width={width}>
       {welcome ? (
