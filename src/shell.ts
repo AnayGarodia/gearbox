@@ -39,12 +39,12 @@ export function runShell(command: string): { ok: boolean; output: string } {
 /** Streaming shell runner for live tool/UI output. */
 export async function runShellStream(
   command: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number; onChunk?: (chunk: ShellChunk) => void } = {},
+  opts: { signal?: AbortSignal; timeoutMs?: number; onChunk?: (chunk: ShellChunk) => void; cwd?: string } = {},
 ): Promise<ShellResult> {
   const started = Date.now();
   const chunks: string[] = [];
   const proc = spawnProc(["/bin/sh", "-lc", command], {
-    cwd: process.cwd(),
+    cwd: opts.cwd ?? process.cwd(),
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",

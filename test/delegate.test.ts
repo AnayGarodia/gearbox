@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test";
-import { makeDelegateTool } from "../src/agent/delegate.ts";
+import { makeDelegateTools } from "../src/agent/delegate.ts";
 
 const origKey = process.env.ANTHROPIC_API_KEY;
 afterEach(() => {
@@ -8,8 +8,13 @@ afterEach(() => {
 });
 
 function makeTool(run: any, events: any[] = []) {
-  return makeDelegateTool({ onEvent: (e) => events.push(e), run });
+  return makeDelegateTools({ onEvent: (e) => events.push(e), run }).delegate;
 }
+
+test("exposes both delegate and delegate_parallel", () => {
+  const set = makeDelegateTools({ onEvent: () => {}, run: async () => ({ text: "", usage: { inputTokens: 0, outputTokens: 0 } }) });
+  expect(Object.keys(set).sort()).toEqual(["delegate", "delegate_parallel"]);
+});
 
 test("routes a sub-task, runs the sub-agent, returns its report", async () => {
   process.env.ANTHROPIC_API_KEY = "sk-test"; // make an in-loop provider available to the router

@@ -14,7 +14,6 @@ import { fetchUrlText } from "./fetch.ts";
 import { webSearch, formatSearchResults } from "./websearch.ts";
 import { mcpTools } from "./mcp.ts";
 
-const ROOT = process.cwd();
 const CAP = 60_000; // cap tool output so the transcript stays sane
 
 const DENIED = "Permission denied by the user — they declined this action.";
@@ -22,12 +21,16 @@ const DENIED = "Permission denied by the user — they declined this action.";
 // Common dirs to skip in the no-ripgrep fallback (ripgrep already honors .gitignore).
 const IGNORE = /(^|\/)(node_modules|\.git|dist|build|\.next|coverage)(\/|$)/;
 
-/** Resolve a path and refuse to escape the workspace root. */
-function safe(path: string): string {
-  const abs = isAbsolute(path) ? path : resolve(ROOT, path);
-  const rel = relative(ROOT, abs);
-  if (rel.startsWith("..")) throw new Error(`path escapes workspace: ${path}`);
-  return abs;
+/** Resolve a path against a workspace root, refusing to escape it. The root is
+ *  per-toolset (a sub-agent in a parallel fan-out gets its own git worktree as
+ *  root, so concurrent writes land in isolated trees). */
+function makeSafe(root: string) {
+  return (path: string): string => {
+    const abs = isAbsolute(path) ? path : resolve(root, path);
+    const rel = relative(root, abs);
+    if (rel.startsWith("..")) throw new Error(`path escapes workspace: ${path}`);
+    return abs;
+  };
 }
 
 const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
@@ -66,7 +69,8 @@ function notFoundHint(path: string, before: string, find: string): string {
   return `text not found in ${path}. Nearby match for "${needle}":\n${snippet}`;
 }
 
-export function createTools(onEvent?: OnEvent) {
+export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
+  const safe = makeSafe(root);
   return {
   read_file: tool({
     description: "Read a UTF-8 file from the workspace.",
@@ -146,7 +150,7 @@ export function createTools(onEvent?: OnEvent) {
           { stdout: "pipe", stderr: "pipe" },
         );
         const out = p.stdout.toString();
-        if (out.trim()) return clip(out.replaceAll(abs + "/", "").replaceAll(ROOT + "/", ""));
+        if (out.trim()) return clip(out.replaceAll(abs + "/", "").replaceAll(root + "/", ""));
         return p.exitCode === 1 ? "no matches" : p.stderr.toString().trim() || "no matches";
       }
       // Fallback: walk + match (best-effort; ripgrep is far better).
@@ -225,6 +229,7 @@ export function createTools(onEvent?: OnEvent) {
       if (!(await requestPermission({ kind: "shell", title: "Run a shell command", detail: command }))) throw new Error(DENIED);
       const id = `run_shell:${command}`;
       const r = await runShellStream(command, {
+        cwd: root, // sub-agents in a fan-out run shell in their own worktree
         onChunk: (c) => onEvent?.({ type: "tool-output", id, name: "run_shell", arg: command, stream: c.stream, text: c.text }),
       });
       if (/\b(bun|npm|pnpm|yarn)\s+(test|run\s+typecheck|typecheck|build)\b|\b(tsc|pytest|cargo\s+test|go\s+test)\b/.test(command)) {
@@ -240,21 +245,28 @@ export const tools = createTools();
 
 export type Tools = typeof tools;
 
-// Read-only subset used in plan mode (reads + search, no writes/edits/shell).
-export const readOnlyTools = {
-  read_file: tools.read_file,
-  list_dir: tools.list_dir,
-  search: tools.search,
-  glob: tools.glob,
-  fetch_url: tools.fetch_url,
-  web_search: tools.web_search,
-};
+// Read-only subset for plan mode (reads + search, no writes/edits/shell).
+function readOnlySubset(all: ReturnType<typeof createTools>) {
+  return {
+    read_file: all.read_file,
+    list_dir: all.list_dir,
+    search: all.search,
+    glob: all.glob,
+    fetch_url: all.fetch_url,
+    web_search: all.web_search,
+  };
+}
 
-export async function createToolset(onEvent?: OnEvent, opts: { readOnly?: boolean; delegate?: Tool<any, any> } = {}) {
-  const base = opts.readOnly ? readOnlyTools : createTools(onEvent);
+export async function createToolset(
+  onEvent?: OnEvent,
+  opts: { readOnly?: boolean; extraTools?: Record<string, Tool<any, any>>; root?: string } = {},
+) {
+  const all = createTools(onEvent, opts.root); // root scopes every file/shell op (worktree isolation)
+  const base = opts.readOnly ? readOnlySubset(all) : all;
   const set: Record<string, Tool<any, any>> = { ...base, ...(await mcpTools(onEvent, Boolean(opts.readOnly))) };
-  // `delegate` is injected by run.ts at depth 0 only (sub-agents don't get it),
-  // so delegation can't recurse. Absent ⇒ no delegation (plan mode, sub-agents).
-  if (opts.delegate) set.delegate = opts.delegate;
+  // extraTools (the delegate tools) are injected by run.ts at depth 0 only — sub-
+  // agents don't get them, so delegation can't recurse. Absent ⇒ no delegation
+  // (plan mode, sub-agents).
+  if (opts.extraTools) for (const [k, v] of Object.entries(opts.extraTools)) set[k] = v;
   return set;
 }
