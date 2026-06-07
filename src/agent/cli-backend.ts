@@ -218,14 +218,17 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
     // Auth still comes from CODEX_HOME, but user config can contain hooks/MCP
     // settings that are stale or unsafe for this subprocess. Keep Gearbox's
     // subscription bridge clean and let the Codex CLI own the actual turn.
-    const args = ["exec", "--json", "--skip-git-repo-check", "--ignore-user-config"];
-    if (model) args.push("--model", model);
-    if (opts.effort) args.push("-c", `model_reasoning_effort="${opts.effort}"`);
-    if (opts.autoApprove) args.push("--dangerously-bypass-approvals-and-sandbox");
-    else args.push("--sandbox", "workspace-write", "-c", `approval_policy="never"`);
-    if (opts.sessionId) args.push("resume", opts.sessionId); // best-effort
-    args.push(prompt);
-    return args;
+    const flags: string[] = ["--json", "--skip-git-repo-check", "--ignore-user-config"];
+    if (model) flags.push("--model", model);
+    if (opts.effort) flags.push("-c", `model_reasoning_effort="${opts.effort}"`);
+    if (opts.autoApprove) flags.push("--dangerously-bypass-approvals-and-sandbox");
+    else flags.push("--sandbox", "workspace-write", "-c", `approval_policy="never"`);
+    // `resume` is a subcommand that must immediately follow `exec`
+    // (codex exec resume <SESSION_ID> [OPTS] [PROMPT]) — it was appended AFTER the
+    // flags, so it was parsed as a prompt arg and resume never worked.
+    return opts.sessionId
+      ? ["exec", "resume", opts.sessionId, ...flags, prompt]
+      : ["exec", ...flags, prompt];
   }
   // claude
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose"];

@@ -104,6 +104,11 @@ test("buildCliArgs omits the resume flag when there is no session id", () => {
   // And it DOES resume when a session id is present (the non-cleared path).
   expect(buildCliArgs("claude", "x", { sessionId: "s9" })).toContain("--resume");
   expect(buildCliArgs("codex", "x", { sessionId: "th-1" })).toContain("resume");
+  // codex: `resume <ID>` MUST immediately follow `exec` (it was appended after the
+  // flags, so it was eaten as a prompt arg and resume silently never worked).
+  const cx = buildCliArgs("codex", "hello", { sessionId: "th-1" });
+  expect(cx.slice(0, 3)).toEqual(["exec", "resume", "th-1"]);
+  expect(cx[cx.length - 1]).toBe("hello"); // prompt still last
 });
 
 test("runCliTask surfaces stderr when a CLI exits without JSON output", async () => {

@@ -1605,12 +1605,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         usedAccountRef.current = account?.id ?? null;
         cliMetaRef.current = null;
         if (account) markUsed(account.id);
-        const _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
+        let _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
         if (_effortRaw === null && effortRef.current !== "medium") {
+          // The (often auto-routed) model doesn't support the active effort tier.
+          // CLAMP to the nearest supported level instead of throwing — routing
+          // picking a model with a different effort vocab must not kill the turn (R-4).
           const supported = effortLevels(choice.model);
-          const { level: nearest } = clampEffort(effortRef.current, supported);
-          const hint = supported.length ? ` · try /effort ${nearest}` : "";
-          throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
+          if (supported.length) {
+            const { level: nearest, clamped } = clampEffort(effortRef.current, supported);
+            _effortRaw = nearest;
+            if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
+          } // else: model has no effort control → omit effort (leave null)
         }
         const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, pinnedModelId: explicitModelId });
         if (account && r.headers) {

@@ -52,7 +52,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ R-1 status-bar model can disagree with what ran (failover + /ask don't set lastPick).
 - ☑ R-2 /prefer below the bar — FIXED with v (preferredIn searches p.pool). [v0.2.42]
 - ☐ R-3 subscription seat for a non-native sdkId loses all profile data → can fail the quality bar and drop the subscription from candidacy.
-- ☐ R-4 effort can hard-THROW mid-turn when routing picks a model lacking the active effort tier (should clamp).
+- ☑ R-4 effort throw → clamp — FIXED: an auto-routed model that lacks the active effort tier now clamps to the nearest supported level (with a phase note) instead of failing the whole turn. (App.tsx) [v0.2.45]
 - ☐ R-5 env-provider cooldown is provider-wide: one 402/quota on one model benches the whole provider for 5 min.
 - ☐ R-6 classifier model chosen by pure cost (no quality floor) → nova-micro/flash-lite can misclassify, cached for 256 prompts.
 - ☐ R-7 reason "$X/Mtok" is a made-up blend (in + 0.2·out), not a real rate, and diverges from estimateCost.
@@ -61,7 +61,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 ### Subscription / CLI
 - ☑ S-A compaction — FIXED: modelSummarizer takes creds (works for STORED API accounts, not just env); compactNow resolves them and skips cleanly with a message when the summarize pick is a flat-rate seat (was a silent failure → context overflow). CLI-hosted summary still future. (compact.ts, App.tsx) [v0.2.44]
 - ☐ S-B delegate/delegate_parallel error out entirely on a subscription-only setup (no fallback).
-- ☐ S-C codex `exec resume` argv malformed (`resume` after flags) → every codex turn starts fresh.
+- ☑ S-C codex resume argv — FIXED: `resume <ID>` now immediately follows `exec` (codex exec resume <ID> [opts] [prompt]); was appended after flags so it was eaten as a prompt arg. (cli-backend.ts + test) [v0.2.45] ⚠ live-verify on codex.
 - ☐ S-D CLI session id never persisted → no real resume across restarts for subscription turns.
 - ☐ S-E effort silently dropped for the claude CLI (only codex gets it), yet App validates/throws on it.
 - ☐ S-F flat-rate CLI cost recorded as real metered spend (inflates ledger); codex falls back to estimateCost.
