@@ -108,6 +108,14 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
         if (part.type === "text" && part.text) {
           state.text += part.text;
           onEvent({ type: "text", text: part.text });
+        } else if (part.type === "tool_use" && part.name === "AskUserQuestion") {
+          // The subscription CLI's interactive question tool. Gearbox drives the
+          // CLI in print mode, so it can't render the CLI's own picker or feed an
+          // answer back into this turn. Surface the question + options as readable
+          // text instead of a truncated, empty-looking tool call, so the user can
+          // see what's being asked and answer in their next message.
+          const q = formatAskUserQuestion(part.input);
+          if (q) onEvent({ type: "text", text: q });
         } else if (part.type === "tool_use") {
           state.toolNames.set(part.id, part.name);
           onEvent({ type: "tool-start", id: part.id, name: part.name ?? "tool", arg: shortArg(part.input) });
@@ -146,6 +154,24 @@ function shortArg(x: any): string {
   if (typeof x === "string") return x.slice(0, 64);
   const s = x.command ?? x.path ?? x.file_path ?? x.cmd ?? "";
   return String(s).slice(0, 64);
+}
+
+// Render an AskUserQuestion tool input (one or more questions, each with labeled
+// options) as readable markdown, so a question the CLI would normally ask through
+// its own picker is visible in the transcript and answerable in the next message.
+export function formatAskUserQuestion(input: any): string {
+  const questions = Array.isArray(input?.questions) ? input.questions : [];
+  if (!questions.length) return "";
+  const blocks = questions.map((q: any) => {
+    const head = String(q?.question ?? q?.header ?? "Question");
+    const options = Array.isArray(q?.options) ? q.options : [];
+    const lines = options.map(
+      (o: any, i: number) =>
+        `${i + 1}. **${String(o?.label ?? "")}**${o?.description ? ` — ${String(o.description)}` : ""}`,
+    );
+    return [`**${head}**`, ...lines].join("\n");
+  });
+  return blocks.join("\n\n") + "\n\n_Reply with your choice to continue._";
 }
 
 // CRITICAL: the vendor CLIs prefer an API key in the environment over their

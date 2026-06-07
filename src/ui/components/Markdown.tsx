@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import { marked } from "marked";
 import { color } from "../theme.ts";
 import { highlightLine } from "../highlight.ts";
+import { PROSE_RE, proseTokenStyle } from "../prose.ts";
 
 // Parse with marked (battle-tested), render with Ink (full control, no foreign
 // ANSI fighting Ink's layout). marked handles headings, lists, tables, code,
@@ -47,25 +48,19 @@ function diffRow(line: string, lang: string): { sign: string; code: string; bg: 
 function RichText({ text, baseColor = color.text }: { text: string; baseColor?: string }) {
   const decoded = decode(text);
   const out: React.ReactNode[] = [];
-  const re = /(\/[^\s,.)]+|(?:^|\s)(?:python|bun|npm|pnpm|yarn|git|pytest|tsc|node|deno|cargo|go)\s+[^\n.]*|`[^`]+`|"[^"]+"|'[^']+'|\b\d+(?:\.\d+)?\b|^[A-Z][A-Za-z /_-]{1,32}:|\b[A-Za-z][\w /-]{1,28}:)/g;
+  // Prose highlighting via the shared tokenizer (prose.ts) — same tokens + styles
+  // as the fullscreen path (proseSpans in lines.ts), so the two never drift.
   let last = 0;
   let key = 0;
-  for (const m of decoded.matchAll(re)) {
+  for (const m of decoded.matchAll(PROSE_RE)) {
     const idx = m.index ?? 0;
     const raw = m[0]!;
     const leading = raw.match(/^\s+/)?.[0] ?? "";
     const token = raw.slice(leading.length);
     if (idx > last) out.push(<Text key={key++} color={baseColor}>{decoded.slice(last, idx)}</Text>);
     if (leading) out.push(<Text key={key++} color={baseColor}>{leading}</Text>);
-    const tokenColor =
-      token.startsWith("/") ? color.path :
-      token.startsWith("`") ? color.accent :
-      token.startsWith('"') || token.startsWith("'") ? color.codeString :
-      /^\d/.test(token) ? color.codeNumber :
-      /:$/.test(token) ? color.accent :
-      color.user;
-    const bg = token.startsWith("/") ? color.accentBg : token.startsWith("`") ? color.codeBg : undefined;
-    out.push(<Text key={key++} color={tokenColor} bold={token.startsWith("/") || /:$/.test(token)} backgroundColor={bg}>{token}</Text>);
+    const st = proseTokenStyle(token);
+    out.push(<Text key={key++} color={st.color} bold={st.bold} backgroundColor={st.bg}>{token}</Text>);
     last = idx + raw.length;
   }
   if (last < decoded.length) out.push(<Text key={key++} color={baseColor}>{decoded.slice(last)}</Text>);

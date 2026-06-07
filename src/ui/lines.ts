@@ -13,6 +13,7 @@ import type { Item } from "./types.ts";
 import { barCells } from "../accounts/usage.ts";
 import { retryPhrase } from "./collapse.ts";
 import { scorecardRows } from "../commands.ts";
+import { PROSE_RE, proseTokenStyle } from "./prose.ts";
 
 const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
 // A limit window's value: a utilization bar when a % is known, else the status word.
@@ -114,25 +115,20 @@ function codeBlockLines(code: string, lang: string, width: number): Line[] {
   return out;
 }
 
+// Prose highlighting: rich but precise. The token set + per-token style live in
+// the shared tokenizer (prose.ts) so this and the inline path (Markdown.tsx) can
+// never drift. Each match is anchored/bounded so ordinary English stays plain.
 function proseSpans(text: string, base: Style = { color: color.text }): Span[] {
   const out: Span[] = [];
-  const re = /(\/[^\s,.)]+|(?:^|\s)(?:python|bun|npm|pnpm|yarn|git|pytest|tsc|node|deno|cargo|go)\s+[^\n.]*|`[^`]+`|"[^"]+"|'[^']+'|\b\d+(?:\.\d+)?\b|^[A-Z][A-Za-z /_-]{1,32}:|\b[A-Za-z][\w /-]{1,28}:)/g;
   let last = 0;
-  for (const m of text.matchAll(re)) {
+  for (const m of text.matchAll(PROSE_RE)) {
     const idx = m.index ?? 0;
     const raw = m[0]!;
     const leading = raw.match(/^\s+/)?.[0] ?? "";
     const token = raw.slice(leading.length);
     if (idx > last) out.push({ text: text.slice(last, idx), ...base });
     if (leading) out.push({ text: leading, ...base });
-    const style =
-      token.startsWith("/") ? { color: color.path, bold: true, bg: color.accentBg } :
-      token.startsWith("`") ? { color: color.accent, bg: color.codeBg } :
-      token.startsWith('"') || token.startsWith("'") ? { color: color.codeString } :
-      /^\d/.test(token) ? { color: color.codeNumber } :
-      /:$/.test(token) ? { color: color.accent, bold: true } :
-      { color: color.user, bold: true };
-    out.push({ text: token, ...style });
+    out.push({ text: token, ...proseTokenStyle(token) });
     last = idx + raw.length;
   }
   if (last < text.length) out.push({ text: text.slice(last), ...base });

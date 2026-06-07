@@ -143,3 +143,22 @@ test("runCliTask turns Codex expired-session stderr into an account-specific rel
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+import { formatAskUserQuestion } from "../src/agent/cli-backend.ts";
+
+test("formatAskUserQuestion renders the question and labeled options", () => {
+  const out = formatAskUserQuestion({
+    questions: [
+      { question: "Which provider?", options: [{ label: "Anthropic", description: "Claude" }, { label: "OpenAI" }] },
+    ],
+  });
+  expect(out).toContain("Which provider?");
+  expect(out).toContain("1. **Anthropic** — Claude");
+  expect(out).toContain("2. **OpenAI**");
+  expect(out).toContain("Reply with your choice");
+});
+
+test("formatAskUserQuestion returns empty string when there are no questions", () => {
+  expect(formatAskUserQuestion({})).toBe("");
+  expect(formatAskUserQuestion(null)).toBe("");
+});
