@@ -56,6 +56,7 @@ export const CATALOG: CatalogProvider[] = [
   { id: "hyperbolic", label: "Hyperbolic", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["HYPERBOLIC_API_KEY"], baseUrl: "https://api.hyperbolic.xyz/v1", signupUrl: "https://app.hyperbolic.xyz/settings" },
   { id: "sambanova", label: "SambaNova", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["SAMBANOVA_API_KEY"], baseUrl: "https://api.sambanova.ai/v1", signupUrl: "https://cloud.sambanova.ai/apis" },
   { id: "novita", label: "Novita", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["NOVITA_API_KEY"], baseUrl: "https://api.novita.ai/v3/openai", signupUrl: "https://novita.ai/settings/key-management" },
+  { id: "minimax", label: "MiniMax", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["MINIMAX_API_KEY"], baseUrl: "https://api.minimax.chat/v1", signupUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key", defaultModels: ["MiniMax-Text-01", "MiniMax-M1"] },
 
   // ── gateways / aggregators (OpenAI-compatible; one key, many models) ──
   { id: "openrouter", label: "OpenRouter", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["OPENROUTER_API_KEY"], keyPrefix: ["sk-or-"], baseUrl: "https://openrouter.ai/api/v1", signupUrl: "https://openrouter.ai/keys", notes: "Hundreds of models via one key. extraHeaders HTTP-Referer/X-Title recommended." },

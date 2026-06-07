@@ -3414,7 +3414,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Pinned usage strip (/cost): header + context? + limit windows / note + api? + session + marginTop.
   const stripView = statusPinned ? currentUsageView() : null;
   const stripSub = stripView ? (stripView.subscriptions.find((s) => s.name === activeCli?.label) ?? stripView.subscriptions[0] ?? null) : null;
-  const stripApi = stripView ? (stripView.apiKeys[0] ?? null) : null;
+  // Prefer the account that actually ran the last turn (usedAccountRef) over the
+  // top-spend default, so switching between GPT / Azure / DeepSeek / etc. shows
+  // the right account's data immediately without waiting for spend to accumulate.
+  const lastUsedAcct = usedAccountRef.current ? getAccount(usedAccountRef.current) : null;
+  const lastUsedApiName = lastUsedAcct && lastUsedAcct.exec !== "cli" ? accountName(lastUsedAcct) : null;
+  const stripApi = stripView ? ((lastUsedApiName ? stripView.apiKeys.find((a) => a.name === lastUsedApiName) : null) ?? stripView.apiKeys[0] ?? null) : null;
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + 1;
   const HEADER = 3;
   const transcriptHeight = Math.max(1, rows - HEADER - footer);
