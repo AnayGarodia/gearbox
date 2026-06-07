@@ -21,6 +21,7 @@ export interface TurnMeta {
   model: string; // model id that ran this turn (per-turn so routing can vary it)
   inputTokens: number;
   outputTokens: number;
+  cachedInputTokens?: number; // prompt-cache read tokens (the hit) when the provider exposes them
   at: number;
 }
 

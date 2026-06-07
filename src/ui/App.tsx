@@ -144,6 +144,15 @@ function uniq<T>(xs: T[]): T[] {
   return [...new Set(xs)];
 }
 
+// Human-readable turn duration: sub-minute gets one decimal (4.2s); a minute or
+// more is m s (1m 23s); sub-second rounds up to 0.1s so it never reads "0.0s".
+function formatDuration(ms: number): string {
+  const s = ms / 1000;
+  if (s < 60) return `${Math.max(0.1, s).toFixed(1)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m ${Math.round(s % 60)}s`;
+}
+
 type CliModelChoice = { id: string; label: string; provider: string; efforts?: string[] };
 
 // Claude CLI has no --thinking-effort flag · effort is not passed through.
@@ -1775,6 +1784,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       setBusy(true);
       setSuggestion(null);
       const turnStart = Date.now();
+      // Captured from the terminal `done` event so the post-turn timing line can
+      // also surface the prompt-cache hit (proof caching is working).
+      let turnUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       outCharsRef.current = 0;
       firstOutputAtRef.current = 0;
       if (lingerRef.current) clearTimeout(lingerRef.current);
@@ -1928,6 +1940,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           push({ kind: "error", id: idRef.current++, text: friendlyError(e.message) });
         } else if (e.type === "done") {
           finishAssistant();
+          turnUsage = e.usage;
           if (e.usage.inputTokens > 0) setLastInput(e.usage.inputTokens);
           setTokens((t) => t + e.usage.inputTokens + e.usage.outputTokens);
         }
@@ -1957,7 +1970,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             modelId = "unknown";
           }
         }
-        sessionRef.current.turns.push({ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, at: Date.now() });
+        sessionRef.current.turns.push({ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, at: Date.now() });
         // Per-account spend ledger (ACCOUNT pillar): real cost when the provider
         // reports it (claude CLI), else an estimate from token usage × list price.
         const acctId = usedAccountRef.current ?? modelId;
@@ -2042,6 +2055,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // A no-op turn (no edits, no checks) gets no summary at all.
           const summaryItem: Item | null = (changed.length || doneChecks.length) ? { kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next } : null;
           setItems(summaryItem ? [...collapsed, summaryItem] : collapsed);
+          // Time awareness after every prompt: how long the turn took, plus the
+          // prompt-cache hit when the provider served part of the input from cache.
+          const elapsed = formatDuration(Date.now() - turnStart);
+          const cacheRead = turnUsage.cachedInputTokens ?? 0;
+          const totalInput = turnUsage.inputTokens + cacheRead + (turnUsage.cacheCreationInputTokens ?? 0);
+          const cachePct = totalInput > 0 && cacheRead > 0 ? Math.round((cacheRead / totalInput) * 100) : 0;
+          notice(cachePct > 0 ? `took ${elapsed} · ${cachePct}% of input from cache` : `took ${elapsed}`);
           setSuggestion(next);
           setLinger(true);
           if (lingerRef.current) clearTimeout(lingerRef.current);

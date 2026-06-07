@@ -5,6 +5,7 @@ import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import { reasoningOptions, type Effort } from "../model/reasoning.ts";
+import { withPromptCaching } from "../model/caching.ts";
 import { makeDelegateTools, type SubAgentRunner } from "./delegate.ts";
 import { createToolset } from "../tools.ts";
 import { config } from "../config.ts";
@@ -204,12 +205,20 @@ export async function runTask(opts: {
   };
   const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner }) : undefined;
   const activeTools = await createToolset(onEvent, { readOnly: Boolean(plan), extraTools, root: opts.root });
+  // Prompt caching: mark the stable prefix (tools+system+settled history) so a
+  // provider with explicit breakpoints reuses it cheaply next turn. No-op on
+  // providers that cache automatically (OpenAI/DeepSeek/Gemini).
+  const cached = withPromptCaching(model, opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM), messages);
   const result = opts._stream
     ? null
     : streamText({
         model: resolveModel(model, opts.creds),
-        system: opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM),
-        messages,
+        system: cached.system,
+        messages: cached.messages,
+        // We deliberately move the (trusted, our-own) system prompt into messages
+        // so a cache marker can ride on it; opt in so the SDK doesn't warn about
+        // system-in-messages (that guard is for UNTRUSTED injected system text).
+        allowSystemInMessages: true,
         tools: activeTools,
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: signal,
@@ -336,10 +345,20 @@ export async function runTask(opts: {
           emitErr(part.error);
           break;
         }
+        case "finish-step": {
+          // Cache WRITES are Anthropic-specific and reported per step (not on the
+          // final `finish`) — accumulate them so the turn's total is complete.
+          const cc = (part as any).providerMetadata?.anthropic?.cacheCreationInputTokens;
+          if (typeof cc === "number" && cc > 0) usage.cacheCreationInputTokens = (usage.cacheCreationInputTokens ?? 0) + cc;
+          break;
+        }
         case "finish": {
           const u = part.totalUsage ?? part.usage ?? {};
           usage.inputTokens = u.inputTokens ?? u.promptTokens ?? 0;
           usage.outputTokens = u.outputTokens ?? u.completionTokens ?? 0;
+          // Cache READS (the hit) are the universal signal — every provider that
+          // caches surfaces them here (Anthropic cache_read, OpenAI/DeepSeek cached).
+          if (typeof u.cachedInputTokens === "number" && u.cachedInputTokens > 0) usage.cachedInputTokens = u.cachedInputTokens;
           break;
         }
       }
@@ -395,12 +414,15 @@ export async function runCompletion(opts: {
   };
 
   onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
+  // Cache the (large, reused) /ask system corpus so repeat questions are cheap.
+  const cached = withPromptCaching(model, system, [{ role: "user", content: prompt }]);
   const result = opts._stream
     ? null
     : streamText({
         model: resolveModel(model, opts.creds),
-        system,
-        messages: [{ role: "user", content: prompt }],
+        system: cached.system,
+        messages: cached.messages,
+        allowSystemInMessages: true, // our own system prompt, moved into messages to carry the cache marker
         abortSignal: signal,
         onError: ({ error }) => emitErr(error),
         ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
@@ -419,6 +441,7 @@ export async function runCompletion(opts: {
         const u = part.totalUsage ?? part.usage ?? {};
         usage.inputTokens = u.inputTokens ?? u.promptTokens ?? 0;
         usage.outputTokens = u.outputTokens ?? u.completionTokens ?? 0;
+        if (typeof u.cachedInputTokens === "number" && u.cachedInputTokens > 0) usage.cachedInputTokens = u.cachedInputTokens;
       }
     }
   } catch (e: any) {

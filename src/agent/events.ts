@@ -5,6 +5,8 @@
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
+  cachedInputTokens?: number; // prompt-cache READ tokens (the cache hit; bills ≈10% of input)
+  cacheCreationInputTokens?: number; // prompt-cache WRITE tokens (Anthropic; bills ≈125% for the 5m TTL)
 }
 
 export type DiffLine = { sign: "+" | "-"; text: string };
