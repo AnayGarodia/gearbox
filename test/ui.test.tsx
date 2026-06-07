@@ -87,6 +87,7 @@ test("usage card groups by type: subscription limit bar + API-key spend (both pa
   const view = {
     subscriptions: [
       {
+        id: "claude-cli",
         name: "Claude",
         turns: 4,
         tok: "17.7k/34",
@@ -97,8 +98,8 @@ test("usage card groups by type: subscription limit bar + API-key spend (both pa
       },
     ],
     apiKeys: [
-      { name: "OpenRouter", turns: 1, tok: "0/0", spend: "$0.00 spent", spendPos: false, balanceLeft: "$12.40 left", balanceFrac: 0.62 },
-      { name: "Anthropic", turns: 3, tok: "0/0", spend: "$0.24 spent", spendPos: true, balanceNote: "balance not exposed" },
+      { id: "openrouter-1", name: "OpenRouter", turns: 1, tok: "0/0", spend: "$0.00 spent", spendPos: false, balanceLeft: "$12.40 left", balanceFrac: 0.62 },
+      { id: "anthropic-1", name: "Anthropic", turns: 3, tok: "0/0", spend: "$0.24 spent", spendPos: true, balanceNote: "balance not exposed" },
     ],
     labelPad: 10,
     spendPad: 11,

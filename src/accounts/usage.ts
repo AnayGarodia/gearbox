@@ -110,14 +110,21 @@ export function spentInPeriod(u: AccountUsage, period: "total" | "monthly", now:
  *  A snapshot may carry its own `at` (real observation time) — used when the data
  *  is read from a possibly-stale source (e.g. a Codex rollout) so staleness reads
  *  honestly; otherwise it's stamped now. */
-export function recordRateLimits(accountId: string, rates: (Omit<RateSnapshot, "at"> & { at?: number })[]): void {
+export function recordRateLimits(
+  accountId: string,
+  rates: (Omit<RateSnapshot, "at"> & { at?: number })[],
+  opts: { replace?: boolean } = {},
+): void {
   if (!rates.length) return;
   const f = load();
   const u = f.accounts[accountId];
   if (!u) return;
   const now = Date.now();
   const byType = new Map<string, RateSnapshot>();
-  for (const r of u.rates ?? (u.rate ? [u.rate] : [])) byType.set(r.type ?? "limit", r);
+  // replace = this is a COMPLETE snapshot (the usage probe), so it's authoritative
+  // about which windows exist — start empty so stale windows the source no longer
+  // reports (e.g. a 7-day that a Pro plan dropped) are removed, not kept forever.
+  if (!opts.replace) for (const r of u.rates ?? (u.rate ? [u.rate] : [])) byType.set(r.type ?? "limit", r);
   for (const r of rates) byType.set(r.type ?? "limit", { ...r, at: r.at ?? now });
   u.rates = [...byType.values()];
   u.rate = u.rates[0]; // keep legacy field populated
@@ -186,6 +193,7 @@ export interface LimitWindow {
   status?: "ok" | "warn" | "limited"; // shown when pct is unknown (status-only window)
 }
 export interface UsageAcct {
+  id: string; // account id — the stable key callers match on (labels can drift)
   name: string; // bare label (no "· subscription"/"· API key" suffix; the group says it)
   turns: number;
   tok: string; // "17.7k/34"
@@ -257,17 +265,22 @@ export function buildUsageView(sessionUSD?: number, resolve?: (id: string) => Ac
         .sort((a, b) => order(a.type) - order(b.type))
         .map((r): LimitWindow => {
           const meta = [resetsIn(r.resetsAt, now), observedAgo(r.at, now)].filter(Boolean).join(" · ");
-          if (typeof r.utilization === "number") {
+          // A window whose reset time has passed has ROLLED OVER — the stored %
+          // is from the previous window, so don't show it as the current number.
+          // Drop to status-only "ok" (a just-reset window has headroom); the next
+          // probe fills the real figure.
+          const expired = typeof r.resetsAt === "number" && r.resetsAt * 1000 < now;
+          if (typeof r.utilization === "number" && !expired) {
             return { pct: Math.round(r.utilization * 100), label: prettyLimit(r.type), resetsIn: meta || undefined };
           }
-          // No number reported — fall back to the provider's status word.
+          // No number (or expired) — fall back to the provider's status word.
           const status = r.status === "rejected" ? "limited" : r.status === "allowed_warning" || r.status === "warning" ? "warn" : "ok";
-          return { label: prettyLimit(r.type), resetsIn: meta || undefined, status };
+          return { label: prettyLimit(r.type), resetsIn: expired ? observedAgo(r.at, now) : meta || undefined, status };
         });
-      subscriptions.push({ name, turns: u.turns, tok, limits: limits.length ? limits : undefined, limitNote: limits.length ? undefined : limitNote ?? "limits not observed yet" });
+      subscriptions.push({ id: u.accountId, name, turns: u.turns, tok, limits: limits.length ? limits : undefined, limitNote: limits.length ? undefined : limitNote ?? "limits not observed yet" });
     } else {
       apiTotal += u.spentUSD;
-      const acct: UsageAcct = { name, turns: u.turns, tok, spend: (u.estimated ? "~" : "") + usd(u.spentUSD) + " spent", spendPos: u.spentUSD > 0 };
+      const acct: UsageAcct = { id: u.accountId, name, turns: u.turns, tok, spend: (u.estimated ? "~" : "") + usd(u.spentUSD) + " spent", spendPos: u.spentUSD > 0 };
       if (u.balance?.remainingUSD != null) {
         acct.balanceLeft = usd(u.balance.remainingUSD) + " left";
         if (u.balance.totalUSD) acct.balanceFrac = Math.max(0, Math.min(1, u.balance.remainingUSD / u.balance.totalUSD));

@@ -566,7 +566,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const bin = (a.auth as any).binary as string;
       activeCliRef.current = { id: a.id, binary: bin, profile: (a.auth as any).loginProfile };
       if (activeCliModelRef.current && !cliSupportsModel(bin, activeCliModelRef.current)) setActiveCliModelId(undefined);
-      setActiveCli({ id: a.id, label: bin });
+      setActiveCli({ id: a.id, label: accountName(a) }); // accountName (not the bare binary) so the status bar + usage-strip match
       updatePrefs({ activeAccount: a.id }); // persist the auto-activation
     }
   }, []);
@@ -1198,7 +1198,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       setProbing((p) => { const n = new Set(p); n.add(a.id); return n; });
       try {
         const snaps = await probeUsage(a);
-        if (snaps?.length && alive) { recordRateLimits(a.id, snaps); bumpUsage(); }
+        // replace: the probe is a complete snapshot → drop windows it no longer
+        // reports (e.g. a stale 7-day on a Pro plan) instead of leaving them ghosted.
+        if (snaps?.length && alive) { recordRateLimits(a.id, snaps, { replace: true }); bumpUsage(); }
       } catch { /* best-effort; fall back to stream data */ }
       finally { if (alive) setProbing((p) => { const n = new Set(p); n.delete(a.id); return n; }); }
     };
@@ -3523,13 +3525,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     () => (statusPinned ? currentUsageView() : null),
     [statusPinned, usageTick, activeCli?.id, tokens, probing], // eslint-disable-line react-hooks/exhaustive-deps
   );
-  const stripSub = stripView ? (stripView.subscriptions.find((s) => s.name === activeCli?.label) ?? stripView.subscriptions[0] ?? null) : null;
+  // Match the ACTIVE subscription by account id (labels can drift — e.g. a boot
+  // restore once set it to the bare binary), so the strip never shows a different
+  // account's usage. Only fall back to the first entry if there's no active sub.
+  const stripSub = stripView ? (stripView.subscriptions.find((s) => s.id === activeCli?.id) ?? (activeCli ? null : stripView.subscriptions[0]) ?? null) : null;
   // Prefer the account that actually ran the last turn (usedAccountRef) over the
   // top-spend default, so switching between GPT / Azure / DeepSeek / etc. shows
   // the right account's data immediately without waiting for spend to accumulate.
-  const lastUsedAcct = usedAccountRef.current ? getAccount(usedAccountRef.current) : null;
-  const lastUsedApiName = lastUsedAcct && lastUsedAcct.exec !== "cli" ? accountName(lastUsedAcct) : null;
-  const stripApi = stripView ? ((lastUsedApiName ? stripView.apiKeys.find((a) => a.name === lastUsedApiName) : null) ?? stripView.apiKeys[0] ?? null) : null;
+  const stripApi = stripView ? ((usedAccountRef.current ? stripView.apiKeys.find((a) => a.id === usedAccountRef.current) : null) ?? stripView.apiKeys[0] ?? null) : null;
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
   const HEADER = 3;
   const transcriptHeight = Math.max(1, rows - HEADER - footer);
