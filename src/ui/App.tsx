@@ -1884,6 +1884,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
         if (cm?.rates?.length) {
           recordRateLimits(acctId, cm.rates);
+          // Any window not in the event was fine (CLI only fires near a limit).
+          // Fill gaps so both windows always appear in the strip.
+          const reported = new Set(cm.rates.map((r) => r.type));
+          const gaps = (["five_hour", "seven_day"] as const).filter((t) => !reported.has(t)).map((t) => ({ type: t, status: "ok" as const }));
+          if (gaps.length) recordRateLimits(acctId, gaps);
         } else if (!hadError && getAccount(acctId)?.exec === "cli") {
           // CLI turn succeeded but no rate_limit_event was emitted. The CLI only
           // reports them when near a limit, so silence means the user is within
