@@ -14,6 +14,7 @@ export interface Prefs {
   vim?: boolean; // composer vim keybindings
   pinnedModel?: string; // /model <name> pin (absent/"auto" = routing); restored next launch
   activeAccount?: string | null; // active CLI subscription account id; restored next launch
+  statusPinned?: boolean; // /cost toggles a persistent usage strip above the composer
 }
 
 function file(): string {

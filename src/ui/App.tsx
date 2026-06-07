@@ -4,6 +4,7 @@ import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
 import { Transcript } from "./components/Transcript.tsx";
 import { StatusBar, statusBarHit } from "./components/StatusBar.tsx";
+import { StatusStrip } from "./components/StatusStrip.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer } from "./components/Composer.tsx";
@@ -399,6 +400,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
   const panelMaxScrollRef = useRef(0); // max scroll for a static panel (set in render)
   const panelAccountSlugsRef = useRef<string[]>([]); // row index → /account <slug>, set in render (names-only)
+  // Persistent usage strip (toggled by /cost) — stays above the composer until you
+  // toggle it off; survives restarts. Doesn't capture input.
+  const [statusPinned, setStatusPinnedState] = useState(() => Boolean(loadPrefs().statusPinned));
+  const setStatusPinned = (v: boolean) => {
+    setStatusPinnedState(v);
+    updatePrefs({ statusPinned: v });
+  };
+  // The live usage view (same data as /cost's card) — used by the pinned strip.
+  const currentUsageView = (): UsageView => {
+    const accounts = listAccounts();
+    const resolve = (id: string) => {
+      const a = getAccount(id);
+      if (a) {
+        const bin = a.auth.kind === "cli" ? a.auth.binary : undefined;
+        return { name: accountName(a), kind: (a.exec === "cli" ? "sub" : "api") as "sub" | "api", balanceExposed: a.exec !== "cli" && balanceExposed(a.provider), limitNote: a.exec === "cli" ? `${bin === "codex" ? "Codex" : "Claude"} CLI hasn't reported quota windows yet` : undefined };
+      }
+      if (id === "unknown") return { name: "(unattributed)", kind: "api" as const };
+      return { name: id, kind: "api" as const };
+    };
+    return buildUsageView(estimateCost(sessionRef.current.turns), resolve, Date.now(), accounts.map((a) => a.id));
+  };
   // Usable (API) models for the /model panel · same source + order as the live
   // registry so the panel's selection index maps to the right model id.
   const buildPanelModelRows = (cur?: string | null): PanelModelRow[] =>
@@ -2717,6 +2739,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         case "cost":
         case "usage": {
+          // Fullscreen: /cost toggles the persistent usage strip (stays on, doesn't
+          // capture input). Inline keeps the one-shot card.
+          if (fullscreen) {
+            const on = !statusPinned;
+            setStatusPinned(on);
+            notice(on ? "usage pinned above the composer — /cost to hide" : "usage hidden");
+            return;
+          }
           const accounts = listAccounts();
           const resolve = (id: string) => {
             const a = getAccount(id);
@@ -3281,6 +3311,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (search) footer += 1;
   if (copiedNotice) footer += 1;
   if (quickPicker && quickRows.length) footer += quickPickerLimit + 2; // overlay: header + marginTop + rows
+  // Pinned usage strip (/cost): header + context? + limit windows / note + api? + session + marginTop.
+  const stripView = statusPinned ? currentUsageView() : null;
+  const stripSub = stripView ? (stripView.subscriptions.find((s) => s.name === activeCli?.label) ?? stripView.subscriptions[0] ?? null) : null;
+  const stripApi = stripView ? (stripView.apiKeys[0] ?? null) : null;
+  if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + 1;
   const HEADER = 3;
   const transcriptHeight = Math.max(1, rows - HEADER - footer);
   const maxScroll = Math.max(0, lines.length - transcriptHeight);
@@ -3399,6 +3434,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         </Box>
       ) : null}
       {quickPickerJsx}
+      {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={model?.contextWindow ?? null} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} api={stripApi} width={width} /> : null}
       <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={displayEffort} online={online} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}
