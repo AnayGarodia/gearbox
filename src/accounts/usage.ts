@@ -106,8 +106,11 @@ export function spentInPeriod(u: AccountUsage, period: "total" | "monthly", now:
 }
 
 /** Record the latest rate-limit snapshots for an account (claude CLI emits one
- *  window per event — 5-hour, 7-day). Merges by type so each window persists. */
-export function recordRateLimits(accountId: string, rates: Omit<RateSnapshot, "at">[]): void {
+ *  window per event — 5-hour, 7-day). Merges by type so each window persists.
+ *  A snapshot may carry its own `at` (real observation time) — used when the data
+ *  is read from a possibly-stale source (e.g. a Codex rollout) so staleness reads
+ *  honestly; otherwise it's stamped now. */
+export function recordRateLimits(accountId: string, rates: (Omit<RateSnapshot, "at"> & { at?: number })[]): void {
   if (!rates.length) return;
   const f = load();
   const u = f.accounts[accountId];
@@ -115,7 +118,7 @@ export function recordRateLimits(accountId: string, rates: Omit<RateSnapshot, "a
   const now = Date.now();
   const byType = new Map<string, RateSnapshot>();
   for (const r of u.rates ?? (u.rate ? [u.rate] : [])) byType.set(r.type ?? "limit", r);
-  for (const r of rates) byType.set(r.type ?? "limit", { ...r, at: now });
+  for (const r of rates) byType.set(r.type ?? "limit", { ...r, at: r.at ?? now });
   u.rates = [...byType.values()];
   u.rate = u.rates[0]; // keep legacy field populated
   save(f);
@@ -149,7 +152,11 @@ const fmtTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(
 /** Render the per-account spend ledger for /cost. `sessionUSD` is this session's
  *  estimate (from the status bar) for context. */
 // Provider limit-window names → plain English (e.g. "seven_day" → "7-day").
-const PRETTY_LIMIT: Record<string, string> = { seven_day: "7-day", five_hour: "5-hour", one_hour: "1-hour" };
+// api:* windows are the per-minute API rate-limit headroom from response headers.
+const PRETTY_LIMIT: Record<string, string> = {
+  seven_day: "7-day", five_hour: "5-hour", one_hour: "1-hour",
+  "api:requests": "req/min", "api:tokens": "tok/min",
+};
 const prettyLimit = (t?: string) => (t ? (PRETTY_LIMIT[t] ?? t.replace(/_/g, " ")) : "limit");
 
 // Eighth-block ramp for sub-cell precision in bars.
@@ -277,6 +284,13 @@ export function buildUsageView(sessionUSD?: number, resolve?: (id: string) => Ac
           acct.balanceNote = `/budget ${provider} <amount>`;
         }
       }
+      // Per-minute API rate-limit headroom from response headers (api:* windows).
+      // API keys have no 5h/weekly plan window, so this is the live "% used" bar.
+      const apiLimits: LimitWindow[] = (u.rates ?? (u.rate ? [u.rate] : []))
+        .filter((r) => (r.type ?? "").startsWith("api:") && typeof r.utilization === "number")
+        .sort((a, b) => (a.type === "api:requests" ? 0 : 1) - (b.type === "api:requests" ? 0 : 1))
+        .map((r) => ({ pct: Math.round(r.utilization! * 100), label: prettyLimit(r.type), resetsIn: [resetsIn(r.resetsAt, now), observedAgo(r.at, now)].filter(Boolean).join(" · ") || undefined }));
+      if (apiLimits.length) acct.limits = apiLimits;
       apiKeys.push(acct);
     }
   }

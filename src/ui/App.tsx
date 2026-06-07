@@ -41,6 +41,7 @@ import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordUsage, recordRateLimits, recordBalance, buildUsageView, accountUsage, type UsageView } from "../accounts/usage.ts";
+import { probeUsage } from "../accounts/usage-probe.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { repoMap } from "../context/repomap.ts";
@@ -110,7 +111,10 @@ function transcriptMarkdown(items: Item[]): string {
         const limits = (a.limits ?? []).map((l) => `${l.label} ${typeof l.pct === "number" ? `${l.pct}%` : l.status === "limited" ? "limited" : l.status === "warn" ? "near limit" : "ok"}`).join(" · ");
         out.push(`- ${a.name} (subscription) · ${a.turns} turns${limits ? ` · ${limits}` : ""}`);
       }
-      for (const a of it.view.apiKeys) out.push(`- ${a.name} (API key) · ${a.spend}${a.balanceLeft ? ` · ${a.balanceLeft}` : a.balanceNote ? ` · ${a.balanceNote}` : ""} · ${a.turns} turns · ${a.tok}`);
+      for (const a of it.view.apiKeys) {
+        const rate = (a.limits ?? []).map((l) => `${l.label} ${l.pct}%`).join(" · ");
+        out.push(`- ${a.name} (API key) · ${a.spend}${a.balanceLeft ? ` · ${a.balanceLeft}` : a.balanceNote ? ` · ${a.balanceNote}` : ""}${rate ? ` · ${rate}` : ""} · ${a.turns} turns · ${a.tok}`);
+      }
       out.push(`- total API spend ${it.view.totalApiSpend}`, "");
     } else if (it.kind === "context") {
       out.push("**context · what's loaded**", "");
@@ -405,6 +409,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Persistent usage strip (toggled by /cost) — stays above the composer until you
   // toggle it off; survives restarts. Doesn't capture input.
   const [statusPinned, setStatusPinnedState] = useState(() => Boolean(loadPrefs().statusPinned));
+  const [, bumpUsage] = useReducer((x: number) => x + 1, 0); // force a strip re-read after a probe records fresh limits
   const setStatusPinned = (v: boolean) => {
     setStatusPinnedState(v);
     updatePrefs({ statusPinned: v });
@@ -626,6 +631,34 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const t = setInterval(() => void refresh(), 5 * 60_000);
     return () => { alive = false; clearInterval(t); };
   }, []);
+
+  // Live subscription usage — the EXACT 5h/weekly % the -p/exec stream omits when
+  // comfortably within limits. We let the vendor CLI fetch its own usage (its own
+  // token, as designed) and read the result: Codex from the rollout it already
+  // writes (FREE, turn-free), Claude via a tiny statusLine probe (one cheap turn).
+  // So we ONLY run this while the usage strip is open (the user is watching), and
+  // probe Claude far less often than Codex. Best-effort; on failure the near-limit
+  // stream data still shows. No vendor token is ever read.
+  useEffect(() => {
+    if (!statusPinned) return;
+    let alive = true;
+    const probeAll = async (includeClaude: boolean) => {
+      for (const a of listAccounts()) {
+        if (!alive) return;
+        if (!a.enabled || a.exec !== "cli" || a.auth.kind !== "cli") continue;
+        const isClaude = a.auth.binary.includes("claude");
+        if (isClaude && !includeClaude) continue; // Claude probe costs a turn — throttle it
+        try {
+          const snaps = await probeUsage(a);
+          if (snaps?.length && alive) { recordRateLimits(a.id, snaps); bumpUsage(); }
+        } catch { /* best-effort; fall back to stream data */ }
+      }
+    };
+    void probeAll(true); // on open: refresh every subscription, incl. a Claude turn
+    const codexTimer = setInterval(() => void probeAll(false), 90_000); // free → often
+    const claudeTimer = setInterval(() => void probeAll(true), 10 * 60_000); // turn → rarely
+    return () => { alive = false; clearInterval(codexTimer); clearInterval(claudeTimer); };
+  }, [statusPinned]);
 
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
   useEffect(() => {
@@ -1883,26 +1916,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
         if (!hadError && getAccount(acctId)?.exec === "cli") {
-          // Record real rate events first (these carry actual utilization when
-          // the CLI is near a limit — e.g. seven_day at 81%).
+          // Real rate events carry actual utilization when near a limit (e.g.
+          // seven_day at 81%) — record them as-is.
           const realRates = cm?.rates ?? [];
           if (realRates.length) recordRateLimits(acctId, realRates);
-          // For standard windows NOT in this event, only add implicit "ok" if:
-          // (a) the window has never been recorded, or
-          // (b) its resetsAt timestamp is already in the past (window reset).
-          // Never overwrite a real utilization record with a synthetic "ok" —
-          // that would erase the 81% bar between turns.
-          const now = Date.now();
-          const existing = accountUsage(acctId)?.rates ?? [];
+          // Seed a status-only "ok" ONLY for a standard window we have NEVER
+          // recorded, so both rows appear immediately on a fresh account. Never
+          // overwrite a real utilization snapshot with a synthetic "ok" — a stale
+          // real number beats a fake one (the usage probe refreshes it). This is
+          // the v0.2.16 regression fix: the old code clobbered the 81% bar.
+          const existing = new Set((accountUsage(acctId)?.rates ?? []).map((r) => r.type));
           const reported = new Set(realRates.map((r) => r.type));
-          const toImply = (["five_hour", "seven_day"] as const).filter((t) => {
-            if (reported.has(t)) return false;
-            const stored = existing.find((r) => r.type === t);
-            if (!stored) return true; // never seen, seed it
-            if (stored.resetsAt && stored.resetsAt * 1000 < now) return true; // expired, refresh
-            return false; // still valid, leave it
-          }).map((t) => ({ type: t, status: "ok" as const }));
-          if (toImply.length) recordRateLimits(acctId, toImply);
+          const toSeed = (["five_hour", "seven_day"] as const)
+            .filter((t) => !reported.has(t) && !existing.has(t))
+            .map((t) => ({ type: t, status: "ok" as const }));
+          if (toSeed.length) recordRateLimits(acctId, toSeed);
         }
         // Auto-compact: once the history approaches the budget, summarize old
         // turns (cheap delegated model) so the next turns stay bounded without
@@ -3434,7 +3462,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const lastUsedAcct = usedAccountRef.current ? getAccount(usedAccountRef.current) : null;
   const lastUsedApiName = lastUsedAcct && lastUsedAcct.exec !== "cli" ? accountName(lastUsedAcct) : null;
   const stripApi = stripView ? ((lastUsedApiName ? stripView.apiKeys.find((a) => a.name === lastUsedApiName) : null) ?? stripView.apiKeys[0] ?? null) : null;
-  if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + 1;
+  if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
   const HEADER = 3;
   const transcriptHeight = Math.max(1, rows - HEADER - footer);
   const maxScroll = Math.max(0, lines.length - transcriptHeight);

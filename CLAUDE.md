@@ -55,6 +55,7 @@ src/
     discover.ts      per-account model discovery (Azure deployments / Foundry / gateway /models) → account.models; catalog defaultModels are seeds, not callable ids
     health.ts        account health: classifyError (provider error → state), checkHealth (cached probe, timeout-bounded), recordHealth; no background polling
     usage.ts         per-account spend ledger + rate-limit snapshots + balance tracking
+    usage-probe.ts   clean live usage probe (NO token read): Claude via a tiny statusLine PTY probe, Codex by reading its own rollout; → exact 5h/weekly %
     balance.ts       provider balance fetch helpers
   help/
     ask.ts           /ask corpus: bundled docs + generated command reference, system prompt, meta-question auto-detect

@@ -88,6 +88,17 @@ export function StatusStrip({
           {!api.balanceLeft && api.balanceNote ? <Text color={color.faint}>  ·  {api.balanceNote}</Text> : null}
         </Row>
       ) : null}
+      {/* Per-minute API rate-limit headroom (from response headers) — the live
+          "% used" bar for pay-per-token keys that have no 5h/weekly plan window. */}
+      {api?.limits?.map((l) =>
+        typeof l.pct === "number" ? (
+          <Row key={`api:${l.label}`} label={l.label}>
+            <Text color={l.pct >= 90 ? color.err : color.accentDim}>{bar(100 - l.pct)}</Text>
+            <Text color={l.pct >= 90 ? color.err : color.text}>  {100 - l.pct}% left</Text>
+            {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
+          </Row>
+        ) : null,
+      )}
       <Row label="session">
         <Text color={cost >= 0.005 ? color.text : color.faint}>${cost.toFixed(2)}</Text>
       </Row>
