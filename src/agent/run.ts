@@ -178,6 +178,7 @@ export async function runTask(opts: {
   deferTerminal?: boolean; // suppress terminal error/blocked/finished/done events + return `failure` instead (the caller drives failover and emits the final outcome)
   depth?: number; // 0 = top-level turn (gets the `delegate` tool); >0 = a sub-agent (no delegate, so delegation can't recurse)
   root?: string; // workspace root for file/shell tools (a parallel sub-agent gets its own git worktree)
+  maxRetries?: number; // SDK retry budget; the caller drops this to 0 when offline so a no-network turn fails in one connect-timeout instead of the ~30s 3-attempt storm
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
 }): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
   const { model, messages, onEvent, signal, plan } = opts;
@@ -212,7 +213,7 @@ export async function runTask(opts: {
   const subRunner: SubAgentRunner = async (p) => {
     let text = "";
     const wrapped: OnEvent = (e) => { if (e.type === "text") text += e.text; else p.onEvent(e); };
-    const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content: p.prompt }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root });
+    const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content: p.prompt }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries });
     return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
   };
   const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner }) : undefined;
@@ -234,6 +235,7 @@ export async function runTask(opts: {
         tools: activeTools,
         stopWhen: stepCountIs(config.maxSteps),
         abortSignal: signal,
+        maxRetries: opts.maxRetries,
         onError: ({ error }) => emitErr(error),
         ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
       });
@@ -419,6 +421,7 @@ export async function runCompletion(opts: {
   signal?: AbortSignal;
   creds?: ResolvedCreds;
   effort?: Effort;
+  maxRetries?: number; // 0 when offline → fail fast instead of the retry storm
   _stream?: AsyncIterable<any>; // test seam
 }): Promise<{ text: string; usage: Usage }> {
   const { model, system, prompt, onEvent, signal } = opts;
@@ -442,6 +445,7 @@ export async function runCompletion(opts: {
         messages: cached.messages,
         allowSystemInMessages: true, // our own system prompt, moved into messages to carry the cache marker
         abortSignal: signal,
+        maxRetries: opts.maxRetries,
         onError: ({ error }) => emitErr(error),
         ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
       });

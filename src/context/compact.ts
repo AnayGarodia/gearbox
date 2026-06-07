@@ -32,6 +32,7 @@ export function modelSummarizer(model: ModelSpec, signal?: AbortSignal): Summari
       system: SUMMARY_SYSTEM,
       prompt: transcript,
       abortSignal: signal,
+      maxRetries: 1, // best-effort compaction — don't inherit the SDK's 3-attempt storm
     });
     return text.trim();
   };

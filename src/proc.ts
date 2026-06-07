@@ -93,7 +93,7 @@ export interface Proc {
   stdin: { write(d: string | Uint8Array): void; end(): void } | null;
   exited: Promise<number | null>;
   readonly exitCode: number | null;
-  kill(): void;
+  kill(signal?: NodeJS.Signals | number): void;
 }
 
 type PipeSpec = "pipe" | "ignore" | "inherit";
@@ -129,7 +129,7 @@ export function spawnProc(cmd: string[], opts: SpawnProcOpts = {}): Proc {
     get exitCode() {
       return child.exitCode;
     },
-    kill: () => child.kill(),
+    kill: (signal?: NodeJS.Signals | number) => { try { child.kill(signal); } catch { /* already dead */ } },
   };
 }
 

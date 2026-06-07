@@ -336,6 +336,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const { stdin, isRawModeSupported, setRawMode } = useStdin();
   const { columns, rows } = useTerminalSize();
   const online = useOnline(20_000, true); // background reachability → "⚠ offline"
+  const onlineRef = useRef(online); // fresh mirror for use inside run callbacks (avoids a stale closure)
+  onlineRef.current = online;
   // Chrome (title bar, rules, composer, status) spans the full terminal width;
   // long prose wraps at a readable cap inside it (see Transcript).
   const width = columns;
@@ -1524,7 +1526,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         usedAccountRef.current = acct?.id ?? null;
         cliMetaRef.current = null;
         if (acct) markUsed(acct.id);
-        const r = await runCompletion({ model: choice.model, system: buildAskSystem(docs), prompt, onEvent, signal, creds });
+        const r = await runCompletion({ model: choice.model, system: buildAskSystem(docs), prompt, onEvent, signal, creds, maxRetries: onlineRef.current ? 2 : 0 });
         return { messages, usage: r.usage };
       }
       const imagesPresent = activeImagesRef.current.length > 0;
@@ -1604,7 +1606,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const hint = supported.length ? ` · try /effort ${nearest}` : "";
           throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
         }
-        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true });
+        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0 });
         if (account && r.headers) {
           const apiRates = parseRateHeaders(account.provider, r.headers, Date.now());
           if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };

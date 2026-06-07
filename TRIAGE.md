@@ -33,7 +33,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ **iv** ↑ history doesn't recall once you've typed (multi-line draft + no live-draft preservation; histIdx not reset on edit). *(input)*
 - ☐ **v** /prefer no-op when pinned (setSelector keeps FixedSelector); also silently ignored when the model is below the kind's quality bar. *(routing/input)*
 - ☐ **vi** /ask refuses on subscription (hard-wired to runCompletion/AI-SDK). → route via CLI seat. *(subscription)*
-- ☐ **vii** offline failure leaves you stuck ~30s, no fast-fail (no maxRetries; offline probe cosmetic). *(network)*
+- ☑ **vii** offline ~30s freeze — FIXED: `maxRetries` is now threaded (runTask/runCompletion/compact) and dropped to 0 when the probe says offline, so a no-network turn fails in one connect-timeout instead of the 3-attempt storm; + L-G friendlier message. (run.ts, App.tsx onlineRef, compact.ts) [v0.2.40]
 - ⚠ **viii** blank screenful after exit: no SIGINT/SIGHUP restore; restore order wrong; title/cursor not reset. *(terminal)*
 - ☑ **ix** status bar truncates "auto"→"a…" — FIXED: `fitStatusFields` sheds low-priority left fields by width, reserves the right side. (StatusBar.tsx + statusbar-layout.test) [v0.2.38]
 - ☑ **x** /context 1M window on haiku — FIXED: route with the real last prompt + use the answering model's / subscription window. (App.tsx /context handler) [v0.2.39]
@@ -85,11 +85,11 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ I-H paste chip store cleared globally on first submit.
 ### Lifecycle / errors / offline
 - ☐ L-A verification can run after interrupt; post-turn test run not interruptible.
-- ☐ L-B auto-compaction also hits the retry storm (extends dead window; no maxRetries).
+- ☑ L-B auto-compaction retry storm — FIXED: compaction generateText now maxRetries:1. [v0.2.40]
 - ☐ L-C type-ahead queue auto-fires next prompt into a still-broken state after an errored turn; no clear-queue.
 - ☐ L-D busy can wedge if the finally's summary block throws (unhandled rejection from `void runTurn`).
 - ☐ L-E single-`done` invariant fragile/untested (ask path vs failover vs CLI).
-- ☐ L-F CLI subprocess abort = SIGTERM only, no SIGKILL escalation → wedged child pins busy forever (real permanent hang).
+- ☑ L-F CLI subprocess SIGKILL escalation — FIXED: onAbort sends SIGTERM then SIGKILL after 2s so a wedged claude/codex can't pin busy forever. (proc.ts kill(signal), cli-backend.ts) [v0.2.40]
 - ☑ L-G isNetworkError regex misses "Connect Timeout Error" — FIXED: added undici/AI-SDK shapes (connect timeout, attempted address, failed after N attempts). (net.ts + net.test) [v0.2.38]
 - ☐ L-H linger timer not cleared on unmount.
 - ☐ L-I network/timeout classified as "other" (terminal) not retryable; backwards vs rate-limit.

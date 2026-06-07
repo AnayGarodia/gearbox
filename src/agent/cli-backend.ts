@@ -320,7 +320,14 @@ export async function runCliTask(opts: {
     return { ...finalize(state), failure: { message: failureMessage! } };
   }
 
-  const onAbort = () => proc.kill();
+  // SIGTERM, then escalate to SIGKILL if the vendor CLI ignores it — a wedged
+  // claude/codex (e.g. stuck in a network wait) would otherwise keep `await
+  // proc.exited` pending forever, pinning the turn's `busy` with no way out.
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const onAbort = () => {
+    proc.kill();
+    killTimer = setTimeout(() => proc.kill("SIGKILL"), 2000);
+  };
   signal?.addEventListener("abort", onAbort);
 
   const outDec = new TextDecoder();
@@ -365,6 +372,7 @@ export async function runCliTask(opts: {
   } catch (e: any) {
     if (!signal?.aborted) fail(e?.message ?? String(e));
   } finally {
+    if (killTimer) clearTimeout(killTimer);
     signal?.removeEventListener("abort", onAbort);
   }
   if (!signal?.aborted) {
