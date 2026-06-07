@@ -20,15 +20,19 @@ function selectedRangeForLine(sel: ViewSelection | null, absLine: number): [numb
 }
 
 function LineRow({ line, absLine, selection, lineWidth }: { line: Line; absLine: number; selection?: ViewSelection | null; lineWidth: number }) {
-  // Paint a full-width canvas so the terminal's native bg (which varies across
-  // emulators) doesn't bleed through on short lines or empty rows.
+  // No canvas color — let the terminal's own background show through. Only spans
+  // with an explicit semantic bg (code block / your message / diff) are painted;
+  // empty rows and trailing space stay transparent.
   if (line.length === 0) {
-    return <Text backgroundColor={color.navy}>{" ".repeat(lineWidth)}</Text>;
+    return <Text>{" ".repeat(lineWidth)}</Text>;
   }
   const range = selectedRangeForLine(normalized(selection), absLine);
   let pos = 0;
   const lineLen = line.reduce((n, s) => n + s.text.length, 0);
   const trailing = Math.max(0, lineWidth - lineLen);
+  // Extend a colored band (code/user/diff) to full width via the last span's bg;
+  // a plain text line's last span has no bg, so the trailing stays transparent.
+  const tailBg = line[line.length - 1]?.bg;
   return (
     <Text>
       {line.flatMap((s, j) => {
@@ -37,7 +41,7 @@ function LineRow({ line, absLine, selection, lineWidth }: { line: Line; absLine:
         pos = end;
         if (!range || end <= range[0] || start >= range[1]) {
           return [
-            <Text key={j} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg ?? color.navy}>
+            <Text key={j} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>
               {s.text}
             </Text>,
           ];
@@ -45,12 +49,12 @@ function LineRow({ line, absLine, selection, lineWidth }: { line: Line; absLine:
         const a = Math.max(range[0] - start, 0);
         const b = Math.min(range[1] - start, s.text.length);
         return [
-          s.text.slice(0, a) ? <Text key={`${j}-a`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg ?? color.navy}>{s.text.slice(0, a)}</Text> : null,
+          s.text.slice(0, a) ? <Text key={`${j}-a`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>{s.text.slice(0, a)}</Text> : null,
           <Text key={`${j}-b`} inverse>{s.text.slice(a, b)}</Text>,
-          s.text.slice(b) ? <Text key={`${j}-c`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg ?? color.navy}>{s.text.slice(b)}</Text> : null,
+          s.text.slice(b) ? <Text key={`${j}-c`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>{s.text.slice(b)}</Text> : null,
         ].filter(Boolean);
       })}
-      {trailing > 0 ? <Text backgroundColor={color.navy}>{" ".repeat(trailing)}</Text> : null}
+      {trailing > 0 ? <Text backgroundColor={tailBg}>{" ".repeat(trailing)}</Text> : null}
     </Text>
   );
 }
