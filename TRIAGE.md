@@ -27,9 +27,9 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 ---
 
 ## Reported bugs (your 19)
-- ☐ **i** no real end-of-turn summary (only when files changed). → emit a light recap every non-interrupted turn. *(group: liveness)*
+- ◑ **i** end-of-turn summary — FIXED for the big gap: delegated edits now emit `file-change` events (delegate.ts merge-back), so a delegation turn gets a real summary + post-turn verification + /undo + /diff (they were invisible before). file-change now also feeds `changedFiles`. REMAINING: pure read-only/chat turns still rely on the assistant prose + the `took Ns` line (no structured recap). [v0.2.41]
 - ◑ **ii** cost: FIXED cache pricing (reads 10% / writes 125%), flat-rate seats now $0, profile-corpus fallback; cache tokens threaded into TurnMeta + ledger so both views agree. [v0.2.39] REMAINING: session-vs-account divergence is mostly correct-by-design (account ledger spans sessions + delegation); discovered/gateway models still have no price (unknown, not $0-by-bug). C-A (dropped failed-attempt tokens) → network group.
-- ☐ **iii** looks dead on reads/delegate: no live elapsed on running lines; delegate sub-agents run with noop onEvent; mascot "tool" state has no animation. *(liveness)*
+- ☑ **iii** looks dead on reads/delegate — FIXED: the mascot "tool" state animated `anim:{}`→`overlay:"load"` (a loading fill) and "thinking"→`overlay:"dots"`, so Boo visibly moves through a long read/90s delegate; the Working strip already ticks live elapsed + "esc to interrupt". (Mascot.tsx) [v0.2.41]  ⚠ verify the feel in a live terminal.
 - ☐ **iv** ↑ history doesn't recall once you've typed (multi-line draft + no live-draft preservation; histIdx not reset on edit). *(input)*
 - ☐ **v** /prefer no-op when pinned (setSelector keeps FixedSelector); also silently ignored when the model is below the kind's quality bar. *(routing/input)*
 - ☐ **vi** /ask refuses on subscription (hard-wired to runCompletion/AI-SDK). → route via CLI seat. *(subscription)*

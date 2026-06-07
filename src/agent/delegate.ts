@@ -14,8 +14,8 @@
 // never imports run.ts — that would be a cycle (run.ts imports this).
 import { tool, type Tool } from "ai";
 import { z } from "zod";
-import { copyFileSync, mkdirSync, rmSync, existsSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { copyFileSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
+import { join, dirname, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
@@ -253,19 +253,26 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
         let applied = 0, autoMerged = 0;
         const conflicted: string[] = [];
         for (const [path, who] of writers) {
+          const dst = join(repoRoot, path);
+          // Capture the pre-merge state so these land in the turn's change set:
+          // drives the end-of-turn summary, post-turn verification, and /undo + /diff
+          // — delegated edits were previously invisible to all three.
+          const existed = existsSync(dst);
+          const before = existed ? (() => { try { return readFileSync(dst, "utf8"); } catch { return ""; } })() : "";
           if (who.length === 1) {
             const w = who[0]!;
-            const dst = join(repoRoot, path);
             try {
-              if (w.deleted) { if (existsSync(dst)) rmSync(dst, { force: true }); }
+              if (w.deleted) { if (existed) rmSync(dst, { force: true }); }
               else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(join(w.dir, path), dst); }
               applied++;
-            } catch { /* skip a file we couldn't apply */ }
+            } catch { continue; /* skip a file we couldn't apply — don't emit a phantom change */ }
           } else {
             const hadMarkers = mergeFileBack(repoRoot, path, who.filter((w) => !w.deleted).map((w) => w.dir));
             autoMerged++;
             if (hadMarkers) conflicted.push(path);
           }
+          // Path relative to cwd to match the edit/write tools' file-change convention.
+          onEvent({ type: "file-change", path: relative(process.cwd(), dst), before, existed });
         }
 
         // 4) Report.

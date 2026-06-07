@@ -1964,6 +1964,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }));
         } else if (e.type === "file-change") {
           turnChanges = recordChange(turnChanges, { path: e.path, before: e.before, existed: e.existed });
+          changedFiles.add(e.path); // also drive the end-of-turn summary + verification (delegated edits arrive only as file-change events, not write-tool ends)
         } else if (e.type === "verification") {
           checks.push(e.command);
           if (!e.ok) failures.push(`${e.command}: ${e.summary}`);

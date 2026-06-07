@@ -122,11 +122,14 @@ export function stateView(state: MascotState, skin: GhostSkin): { cfg: GhostCfg;
   const skinPal = SKIN_CFG[skin].palette;
   switch (state) {
     case "thinking":
-      return { cfg: { palette: skinPal, face: "thinking", crop: FACE_CROP }, anim: {} };
+      // Pulsing dots so the "thinking" beat reads as alive, not stalled.
+      return { cfg: { palette: skinPal, face: "thinking", crop: FACE_CROP }, anim: { overlay: "dots" } };
     case "streaming":
       return { cfg: { palette: skinPal, face: "neutral", crop: FACE_CROP }, anim: { talk: true } };
     case "tool":
-      return { cfg: { palette: "ice", face: "neutral", crop: FACE_CROP }, anim: {} };
+      // A loading fill so Boo visibly stays alive through a long read or a 90s+
+      // delegate (was anim:{} — a frozen face, which read as "it broke").
+      return { cfg: { palette: "ice", face: "neutral", crop: FACE_CROP }, anim: { overlay: "load" } };
     case "celebrate":
       return { cfg: { palette: "mint", face: "joy", crop: FACE_CROP }, anim: { overlay: "confetti" } };
     case "error":
