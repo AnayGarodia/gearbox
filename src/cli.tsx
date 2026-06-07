@@ -21,7 +21,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.2.45";
+const VERSION = "0.2.46";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -570,13 +570,22 @@ let restored = false;
 const restore = () => {
   if (restored || !process.stdout.isTTY) return;
   restored = true;
+  if (mouse) process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l"); // mouse reporting off
   process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, cursor back on
-  if (mouse) process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l");
-  if (fullscreen) process.stdout.write("\x1b[?1049l\x1b[2J\x1b[H"); // exit alt-screen, clear, home
+  process.stdout.write("\x1b]2;\x07"); // reset the window/tab title (was left as "… · gearbox")
+  // Leave the alt-screen so the PRE-LAUNCH normal buffer reappears intact. The old
+  // "\x1b[2J\x1b[H" ran AFTER ?1049l, clearing the restored normal buffer — that
+  // was the "screenful of empty space after exit" (viii). Don't touch it.
+  if (fullscreen) process.stdout.write("\x1b[?1049l");
 };
-// Ensure restore runs even on uncaught errors or signals.
+// Ensure restore runs even on uncaught errors or signals — including SIGINT and
+// SIGHUP (terminal closed), which were missing, so a signal exit left the alt
+// screen up / cursor hidden / title stuck. (raw mode means in-app ⌃C is a
+// keypress, not SIGINT, so this doesn't change the ⌃C behavior.)
 process.once("exit", restore);
-process.once("SIGTERM", () => { restore(); process.exit(0); });
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
+  process.once(sig, () => { restore(); process.exit(sig === "SIGINT" ? 130 : 0); });
+}
 // Bracketed paste ON: the terminal wraps a paste in \x1b[200~…\x1b[201~ so its
 // newlines are literal (not Enter-presses that submit mid-paste) and the whole
 // blob can be assembled + collapsed to a chip. The App strips the markers and

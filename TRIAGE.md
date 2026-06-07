@@ -34,13 +34,13 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☑ **v** /prefer no-op — FIXED: applies immediately on routing, else saved with a clear "applies once routing is on" notice; and an explicit /prefer now overrides the quality bar (R-2: preferredIn searches the full pool). (App.tsx, router.ts) [v0.2.42]
 - ☑ **vi** /ask on subscription — FIXED: instead of refusing, /ask now runs through the active CLI seat with the bundled docs prepended (grounded, "don't use tools"). API-key path unchanged (runCompletion). (App.tsx) [v0.2.44] ⚠ live-verify.
 - ☑ **vii** offline ~30s freeze — FIXED: `maxRetries` is now threaded (runTask/runCompletion/compact) and dropped to 0 when the probe says offline, so a no-network turn fails in one connect-timeout instead of the 3-attempt storm; + L-G friendlier message. (run.ts, App.tsx onlineRef, compact.ts) [v0.2.40]
-- ⚠ **viii** blank screenful after exit: no SIGINT/SIGHUP restore; restore order wrong; title/cursor not reset. *(terminal)*
+- ☑ **viii** blank screen after exit — FIXED: restore now just leaves the alt-screen (`?1049l`) so the pre-launch buffer reappears (was clearing the NORMAL buffer with `2J` after leaving → the blank screenful); + SIGINT/SIGHUP handlers and a title reset (T-A) + cursor restore (T-B). (cli.tsx) [v0.2.46] ⚠ verify in your terminal.
 - ☑ **ix** status bar truncates "auto"→"a…" — FIXED: `fitStatusFields` sheds low-priority left fields by width, reserves the right side. (StatusBar.tsx + statusbar-layout.test) [v0.2.38]
 - ☑ **x** /context 1M window on haiku — FIXED: route with the real last prompt + use the answering model's / subscription window. (App.tsx /context handler) [v0.2.39]
-- ⚠ **xi** scrolling jumpy: 1 line/notch + per-frame easing re-render + atBottom re-pin fighting manual scroll. *(terminal)*
+- ☑ **xi** jumpy scroll — FIXED: wheel step 1→3 lines; single notches settle instantly (glide only for fast swipes). (App.tsx) [v0.2.46] ⚠ verify the feel.
 - ☑ **xii** paste flood — FIXED: the markerless fallback now sanitizes first and treats any >200-char clean chunk as a paste (single-line or multi-line, and even when a stray marker byte slips past the bracketed branch). (App.tsx) [v0.2.42]  (I-A: split-across-reads still floods — needs a time-window coalescer; noted.)
-- ⚠ **xiii** usage shows "ok ok": real % probe only runs behind the statusPinned toggle, never at boot / inline; silent null fallback to seeded "ok". *(subscription)*
-- ☐ **xiv** images refused on subscription: cli-backend has no image support; App hard-blocks. → pass image paths to CLI. *(subscription)* ⚠ live-verify; pending
+- ☑ **xiii** usage "ok ok" — FIXED: extracted a reusable probe; runs once at BOOT (so the first /usage is real) and on /usage open, not only while the strip is pinned. (App.tsx) [v0.2.46] ⚠ needs python3 + an authed config dir to verify live.
+- ☑ **xiv** images on subscription — FIXED: instead of refusing, the image file PATHS are appended to the CLI prompt (<attached-images>) so the vendor CLI opens them with its file tools. Both refusal guards removed. (App.tsx) [v0.2.46] ⚠ verify the CLI reads them.
 - ☑ **xv** /model leaves subscription — FIXED: the /model handler now tries the active subscription's OWN seats first (resolveCliModel), so "/model opus-4.8" pins the subscription's opus seat; only falls to metered API when the subscription can't serve it. (App.tsx) [v0.2.43] ⚠ live-verify on a real subscription.
 - ☑ **xvi** "use opus" ignored — FIXED: modelDirectiveIn parses an explicit in-prompt model directive (strict alias match) and pins it for the turn under auto-routing; the pin is threaded into delegation (pinnedModelId → routeSubTask) so sub-tasks inherit it too. (commands.ts, App.tsx, run.ts, delegate.ts + test) [v0.2.43]
 - ☑ **xvii** "took 1m 60s" — FIXED: round whole seconds before splitting; carry to minutes. (App.tsx formatDuration + duration.test) [v0.2.38]
@@ -94,8 +94,8 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ L-H linger timer not cleared on unmount.
 - ☐ L-I network/timeout classified as "other" (terminal) not retryable; backwards vs rate-limit.
 ### Terminal / rendering
-- ⚠ T-A OSC window title never reset on exit.
-- ⚠ T-B cursor can be left hidden after a signal exit.
+- ☑ T-A title reset on exit — FIXED with viii. [v0.2.46]
+- ☑ T-B cursor restore on signal exit — FIXED with viii (SIGINT/SIGHUP → restore). [v0.2.46]
 - ☐ T-C empty mouse-up over transcript can re-copy a stale selection.
 - ☐ T-D drag-select during the scroll glide reads a stale scrollTop.
 - ⚠ T-E footer height under-budgets the Working ghost rows → can clip status/composer during a turn.

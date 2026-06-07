@@ -833,8 +833,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const x = Number(m[2]);
         const y = Number(m[3]);
         const up = m[4] === "m";
-        if (b === 64) delta -= 1;
-        else if (b === 65) delta += 1;
+        // 3 lines per wheel notch (was 1 — felt sluggish). Single notches settle
+        // instantly (the glide only kicks in for accumulated fast swipes), so
+        // scrolling reads crisp rather than crawling.
+        if (b === 64) delta -= 3;
+        else if (b === 65) delta += 3;
         else {
           const isDrag = (b & 32) === 32;
           const isPrimary = (b & 3) === 0;
@@ -1238,6 +1241,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const claudeTimer = setInterval(() => { for (const a of subs()) void probeOne(a); }, 10 * 60_000);
     return () => { alive = false; clearInterval(codexTimer); clearInterval(claudeTimer); };
   }, [statusPinned, activeCli?.id]);
+
+  // Reusable one-shot usage probe (xiii): the periodic probe above only runs while
+  // the /usage strip is PINNED, so the first /usage (and inline /usage) used to show
+  // the seeded "ok" forever. Callable from boot + the /usage command so real 5h/7d
+  // % appear without pinning. Best-effort (needs python3 + an authed config dir).
+  const probeAccountUsage = useCallback(async (a: Account | undefined) => {
+    if (!a || a.exec !== "cli" || a.auth.kind !== "cli") return;
+    setProbing((p) => { const n = new Set(p); n.add(a.id); return n; });
+    try {
+      const snaps = await probeUsage(a);
+      if (snaps?.length) { recordRateLimits(a.id, snaps, { replace: true }); bumpUsage(); }
+    } catch { /* best-effort; fall back to stream data */ }
+    finally { setProbing((p) => { const n = new Set(p); n.delete(a.id); return n; }); }
+  }, []);
+
+  // Probe each subscription once at launch so the FIRST /usage shows real numbers.
+  useEffect(() => {
+    for (const a of listAccounts().filter((x) => x.enabled && x.exec === "cli" && x.auth.kind === "cli")) void probeAccountUsage(a);
+  }, [probeAccountUsage]);
   // Memoized: this reads accounts.json + ~/.aws creds AND spawns `which claude`/
   // `which codex` subprocesses — doing that on every render (every scroll frame /
   // drag event) was a major source of input lag. Recompute only when the account
@@ -1474,6 +1496,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // non-critical · proceed with plain prompt
         }
       }
+      // Images (xiv): the vendor CLI can't take inline image content, but it CAN
+      // read files, so hand it the absolute paths and ask it to open them — far
+      // better than refusing the turn outright.
+      if (activeImagesRef.current.length) {
+        cliPrompt += `\n\n<attached-images>\n${activeImagesRef.current.map((img) => img.path).join("\n")}\n</attached-images>\nThe user attached the image file(s) listed above — open them with your file/read tools to view them.`;
+      }
       const r = await runCliTask({
         binary,
         prompt: cliPrompt,
@@ -1536,18 +1564,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return { messages, usage: r.usage };
       }
       const imagesPresent = activeImagesRef.current.length > 0;
-      const cliImageGuard = () => {
-        onEvent({
-          type: "error",
-          message: "image attachments need an API-backed model in Gearbox right now. Use `/account off` or an API-key account, then retry with the image path.",
-        });
-        return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
-      };
 
       // An EXPLICIT subscription pin (`/account use`) bypasses routing entirely.
+      // Images now flow to the CLI as file paths (see cliPrompt above), so we no
+      // longer refuse them here (xiv).
       const pin = activeCliRef.current;
       if (pin) {
-        if (imagesPresent) return cliImageGuard();
         routedRef.current = null;
         cliMetaRef.current = null;
         const choices = cliModelChoices(pin.binary);
@@ -1577,7 +1599,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const runAttempt = async (choice: ModelChoice): Promise<Attempt> => {
         if (choice.backend?.kind === "cli") {
           const acct = choice.backend.account;
-          if (imagesPresent) return { ...cliImageGuard(), failure: { message: "image attachments need an API-backed model" }, cooldownKey: acct.id };
+          // Images flow to the CLI as file paths now (xiv) — no refusal here.
           routedRef.current = { model: choice.model, reason: choice.reason };
           setLastPick({ model: choice.model, reason: choice.reason });
           const showCli = routeChanged(`cli:${acct.id}:${choice.model.id}`);
@@ -3147,6 +3169,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (fullscreen) {
             const on = !statusPinned;
             setStatusPinned(on);
+            // Refresh real 5h/7d % on open (the live strip re-renders, so the async
+            // probe result lands) instead of showing the seeded "ok". (xiii)
+            if (on) void probeAccountUsage(listAccounts().find((x) => x.id === activeCli?.id && x.exec === "cli"));
             // One state per toggle, each naming the inverse command (canonical /usage).
             notice(on ? "usage pinned · /usage to hide" : "usage hidden · /usage to show");
             return;
