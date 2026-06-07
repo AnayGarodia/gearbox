@@ -317,6 +317,31 @@ export interface SwitchResult {
   message: string;
 }
 
+// Recognized model family words — so an in-prompt directive ("use opus", "with
+// haiku") is detected without false-matching ordinary words ("use the X library").
+const MODEL_ALIASES =
+  /\b(opus|sonnet|haiku|gpt[-\d.]*|o[34](?:-\w+)?|gemini[-\d.a-z]*|flash[-\d.a-z]*|deepseek[-\w.]*|nova[-\w.]*|llama[-\w.\d]*|grok[-\w.\d]*|qwen[-\w.\d]*|mistral[-\w.\d]*|kimi[-\w.\d]*|minimax[-\w.\d]*)\b/i;
+
+/**
+ * Detect an EXPLICIT model directive in a free-text prompt ("use opus to …",
+ * "with haiku", "run sonnet") and resolve it to a model id, or null. Strict on
+ * purpose: the word after use/with/via/on must be a known model family alias AND
+ * resolve to exactly one available model, so ordinary prose never pins a model.
+ * This is the seam the router was missing — "use opus" used to be invisible to it.
+ */
+export function modelDirectiveIn(prompt: string): string | null {
+  const m = prompt.match(/\b(?:use|using|with|via|run(?:\s+with)?|route(?:\s+to)?|on)\s+(?:the\s+)?([a-z0-9][a-z0-9.\-]*(?:\s+[a-z0-9][a-z0-9.\-]*)?)/i);
+  if (!m) return null;
+  const cand = m[1]!.trim();
+  const alias = cand.match(MODEL_ALIASES)?.[0];
+  if (!alias) return null; // the token isn't a model name — not a directive
+  for (const q of [cand, alias]) {
+    const r = resolveModelSwitch(q);
+    if (r.ok && r.modelId) return r.modelId;
+  }
+  return null;
+}
+
 // Fuzzy: match by substring on label or id, so "haiku" finds "claude-haiku-4-5".
 // Handles none / no-key / ambiguous / exact gracefully.
 export function resolveModelSwitch(query: string): SwitchResult {

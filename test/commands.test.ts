@@ -73,3 +73,22 @@ test("resolveModelSwitch is fuzzy: substring, no-match, no-key, ambiguous, exact
     }
   }
 });
+
+import { modelDirectiveIn } from "../src/commands.ts";
+
+test("modelDirectiveIn pins on an explicit model alias, ignores ordinary prose", () => {
+  const prev = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "x"; // make anthropic models available to resolve
+  try {
+    expect(modelDirectiveIn("use opus to write 150 lines of code")).toBe("claude-opus-4-8");
+    expect(modelDirectiveIn("with haiku, summarize this")).toBe("claude-haiku-4-5");
+    expect(modelDirectiveIn("run sonnet on the repo")).toBe("claude-sonnet-4-6");
+    // NOT directives — ordinary words after use/with/on must not pin a model
+    expect(modelDirectiveIn("use the existing auth framework")).toBeNull();
+    expect(modelDirectiveIn("refactor with care and add tests")).toBeNull();
+    expect(modelDirectiveIn("focus on main.ts")).toBeNull();
+    expect(modelDirectiveIn("write 150 lines of code")).toBeNull();
+  } finally {
+    if (prev === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prev;
+  }
+});

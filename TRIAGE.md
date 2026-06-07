@@ -40,9 +40,9 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ⚠ **xi** scrolling jumpy: 1 line/notch + per-frame easing re-render + atBottom re-pin fighting manual scroll. *(terminal)*
 - ☑ **xii** paste flood — FIXED: the markerless fallback now sanitizes first and treats any >200-char clean chunk as a paste (single-line or multi-line, and even when a stray marker byte slips past the bracketed branch). (App.tsx) [v0.2.42]  (I-A: split-across-reads still floods — needs a time-window coalescer; noted.)
 - ⚠ **xiii** usage shows "ok ok": real % probe only runs behind the statusPinned toggle, never at boot / inline; silent null fallback to seeded "ok". *(subscription)*
-- ☐ **xiv** images refused on subscription: cli-backend has no image support; App hard-blocks. → pass image paths to CLI. *(subscription)*
-- ☐ **xv** /model <name> leaves subscription for metered API (pin path ignores seats). *(subscription/routing)*
-- ☐ **xvi** "use opus" ignored → ran sonnet (no NL model parser; delegation re-routes independently). *(routing)*
+- ☐ **xiv** images refused on subscription: cli-backend has no image support; App hard-blocks. → pass image paths to CLI. *(subscription)* ⚠ live-verify; pending
+- ☑ **xv** /model leaves subscription — FIXED: the /model handler now tries the active subscription's OWN seats first (resolveCliModel), so "/model opus-4.8" pins the subscription's opus seat; only falls to metered API when the subscription can't serve it. (App.tsx) [v0.2.43] ⚠ live-verify on a real subscription.
+- ☑ **xvi** "use opus" ignored — FIXED: modelDirectiveIn parses an explicit in-prompt model directive (strict alias match) and pins it for the turn under auto-routing; the pin is threaded into delegation (pinnedModelId → routeSubTask) so sub-tasks inherit it too. (commands.ts, App.tsx, run.ts, delegate.ts + test) [v0.2.43]
 - ☑ **xvii** "took 1m 60s" — FIXED: round whole seconds before splitting; carry to minutes. (App.tsx formatDuration + duration.test) [v0.2.38]
 - ☑ **xviii** /budget no-op — FIXED: routing-context synthesizes an `env:<provider>` state from budget−spend; env turns now ledger under `env:<provider>` so the budget depletes + shows in /usage. (routing-context.ts + App.tsx) [v0.2.39]
 - ☑ **xix** clear+resume wrong session — FIXED: /clear persists the outgoing conversation first; /resume excludes the session you're in (it was the newest entry you kept landing on) and labels rows with turn count + relative time. (App.tsx) [v0.2.42]

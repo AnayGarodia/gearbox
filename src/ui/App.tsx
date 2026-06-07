@@ -57,7 +57,7 @@ import { missingRequirements, capabilitySummary, type ModelRequirement } from ".
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
@@ -1607,7 +1607,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const hint = supported.length ? ` · try /effort ${nearest}` : "";
           throw new Error(`effort "${effortRef.current}" is not supported by ${choice.model.label} (supports: ${supported.join(", ") || "none"}${hint})`);
         }
-        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0 });
+        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, pinnedModelId: explicitModelId });
         if (account && r.headers) {
           const apiRates = parseRateHeaders(account.provider, r.headers, Date.now());
           if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };
@@ -1627,11 +1627,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Plan mode forces "plan"; a pinned model (FixedSelector) ignores kind, so we
       // only spend the classify call when auto-routing. Falls back to keyword internally.
       let routedKind: TaskKind | undefined = plan ? "plan" : undefined;
-      if (!routedKind && sel instanceof RoutingSelector) {
+      // Honor an explicit in-prompt model directive ("use opus to …") under auto-
+      // routing — the router only ever saw a task KIND, so "use opus" used to be
+      // invisible and you'd get sonnet. A direct /model pin (FixedSelector) already
+      // wins; this adds the natural-language path.
+      const directiveId = sel instanceof RoutingSelector ? modelDirectiveIn(prompt) : null;
+      if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
         routedKind = await classifyTask(prompt, signal);
       }
-      let choice = sel.select({ prompt, kind: routedKind, requires });
+      let choice: ModelChoice;
+      try {
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires });
+      } catch {
+        choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
+      }
+      // When the user explicitly chose the model (a directive or a /model pin),
+      // delegated sub-tasks inherit it instead of re-routing to the cheapest.
+      const explicitModelId = directiveId || (sel instanceof FixedSelector ? choice.model.id : undefined);
       for (let hop = 0; ; hop++) {
         const a = await runAttempt(choice);
         if (!a.failure) { emitTerminal(false, undefined, a.usage); return { messages: a.messages, usage: a.usage }; }
@@ -2614,26 +2627,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           {
             const cli = activeCliRef.current;
             if (cli) {
-              // If the query contains a digit (version-specific like "sonnet-4.6", "gpt-4o"),
-              // try the API registry first · versioned names are API-specific, not subscription
-              // tier shortcuts. Subscription shortcuts ("sonnet", "haiku", "opus") have no digits.
-              const looksVersioned = /\d/.test(arg);
-              if (looksVersioned) {
-                const r = resolveModelSwitch(arg);
-                if (r.ok && r.modelId) {
-                  const left = leaveSubscription();
-                  setSelector(new FixedSelector(r.modelId));
-                  setLastPick(null);
-                  routedRef.current = null;
-                  updatePrefs({ pinnedModel: r.modelId });
-                  const newSpec2 = findModel(r.modelId);
-                  const effortSuffix2 = applyEffortClamp(newSpec2 ? effortLevels(newSpec2) : []);
-                  notice(`${r.message} · pinned (left subscription).${left}${effortSuffix2}`);
-                  const kind = classify(lastPromptRef.current ?? "").replace("code", "code") as PreferenceKind;
-                  push({ kind: "preference", id: idRef.current++, text: `Remember ${r.modelId} for ${kind} tasks?`, acceptCommand: `/prefer ${kind} ${r.modelId}` });
-                  return;
-                }
-              }
+              // Try the active subscription's OWN seats FIRST — "/model opus-4.8"
+              // (or "opus") on a Claude subscription should pin the subscription's
+              // opus seat (free), NOT silently drop to the metered API. We only fall
+              // to the API registry below when the subscription can't serve the model
+              // (e.g. "/model gpt-4o" while on Claude → resolveCliModel fails → API).
               const cr = resolveCliModel(cli.binary, arg);
               if (!cr.ok) {
                 // Not a subscription model · try the full API registry (e.g. /model haiku while on a subscription).

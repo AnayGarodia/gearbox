@@ -179,6 +179,7 @@ export async function runTask(opts: {
   depth?: number; // 0 = top-level turn (gets the `delegate` tool); >0 = a sub-agent (no delegate, so delegation can't recurse)
   root?: string; // workspace root for file/shell tools (a parallel sub-agent gets its own git worktree)
   maxRetries?: number; // SDK retry budget; the caller drops this to 0 when offline so a no-network turn fails in one connect-timeout instead of the ~30s 3-attempt storm
+  pinnedModelId?: string; // when the user EXPLICITLY chose a model (a /model pin or "use opus"), delegated sub-tasks inherit it instead of re-routing to the cheapest
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
 }): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
   const { model, messages, onEvent, signal, plan } = opts;
@@ -216,7 +217,7 @@ export async function runTask(opts: {
     const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content: p.prompt }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries });
     return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
   };
-  const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner }) : undefined;
+  const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId }) : undefined;
   const activeTools = await createToolset(onEvent, { readOnly: Boolean(plan), extraTools, root: opts.root });
   // Prompt caching: mark the stable prefix (tools+system+settled history) so a
   // provider with explicit breakpoints reuses it cheaply next turn. No-op on

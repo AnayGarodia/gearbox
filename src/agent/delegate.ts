@@ -18,6 +18,7 @@ import { copyFileSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSyn
 import { join, dirname, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { RoutingSelector, classify } from "../model/router.ts";
+import { FixedSelector } from "../model/selector.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
 import { recordUsage } from "../accounts/usage.ts";
 import { estimateCost, type ModelSpec } from "../providers.ts";
@@ -63,11 +64,13 @@ const clipTask = (s: string, max: number): string => {
 
 // ── routing a sub-task ────────────────────────────────────────────────────────
 type Routed = { model: ModelSpec; account?: Account };
-function routeSubTask(task: string, kind?: z.infer<typeof KIND>): Routed | { error: string } {
+function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?: string): Routed | { error: string } {
   const k = kind ?? classify(task);
   let choice;
   try {
-    choice = new RoutingSelector().select({ prompt: task, kind: k, requires: ["tools"] });
+    // An explicit pin (a /model pin or "use opus" on the parent turn) wins, so the
+    // sub-task runs the model the user asked for; otherwise auto-route per task.
+    choice = (pinnedModelId ? new FixedSelector(pinnedModelId) : new RoutingSelector()).select({ prompt: task, kind: k, requires: ["tools"] });
   } catch (e: any) {
     return { error: `no model available for this sub-task (${e?.message ?? e})` };
   }
@@ -175,7 +178,7 @@ function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean 
 }
 
 // ── the tools ─────────────────────────────────────────────────────────────────
-export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner }): Record<string, Tool<any, any>> {
+export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string }): Record<string, Tool<any, any>> {
   const { onEvent, signal, run } = opts;
 
   const delegate = tool({
@@ -186,7 +189,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       kind: KIND.optional().describe("Optional task-kind hint to steer model routing (inferred if omitted)."),
     }),
     execute: async ({ task, kind }) => {
-      const routed = routeSubTask(task, kind);
+      const routed = routeSubTask(task, kind, opts.pinnedModelId);
       if ("error" in routed) return `delegation skipped: ${routed.error}. Do it yourself.`;
       const id = `delegate-${++counter}`;
       onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label} · ${clipTask(task, 72)}` });
@@ -224,7 +227,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       const skipped: string[] = [];
       const created: string[] = [];
       for (const [idx, t] of tasks.entries()) {
-        const routed = routeSubTask(t.task, t.kind);
+        const routed = routeSubTask(t.task, t.kind, opts.pinnedModelId);
         if ("error" in routed) { skipped.push(`#${idx + 1}: ${routed.error}`); continue; }
         const dir = join(tmpdir(), `gearbox-fanout-${batch}-${idx}-${Date.now()}`);
         if (!addSeededWorktree(repoRoot, dir)) { skipped.push(`#${idx + 1}: couldn't create a worktree`); continue; }
