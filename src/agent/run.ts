@@ -136,11 +136,20 @@ export function unavailableModelHint(message: string, model: ModelSpec): string 
   return message;
 }
 
+// Truncate at a word boundary with an ellipsis, so a preview never cuts mid-word
+// ("…purpose; the ro") and the trailing count doesn't collide with a severed word.
+const truncWord = (s: string, max: number): string => {
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max);
+  const at = cut.lastIndexOf(" ");
+  return (at > max * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,.;:]+$/, "") + "…";
+};
+
 const resultSummary = (out: any): string => {
   const s = typeof out === "string" ? out : JSON.stringify(out);
   const first = s.split("\n").find((l) => l.trim()) ?? "";
   const lines = s.split("\n").length;
-  return lines > 1 ? `${first.slice(0, 56)} · ${lines} lines` : first.slice(0, 64);
+  return lines > 1 ? `${truncWord(first, 56)} · ${lines} lines` : truncWord(first, 64);
 };
 
 export async function runTask(opts: {
@@ -299,7 +308,7 @@ export async function runTask(opts: {
           } else {
             onEvent({ type: "tool-end", id, ok: true, summary: resultSummary(output) });
           }
-          onEvent({ type: "phase", label: "tool finished", state: "ok" });
+          // No "tool finished" phase — the tool's own result line says it finished.
           break;
         }
         case "tool-error": {
@@ -340,7 +349,7 @@ export async function runTask(opts: {
   }
   const failure = errored ? { message: failureMessage ?? cleanError(failureRaw), raw: failureRaw, producedOutput } : undefined;
   if (!opts.deferTerminal) {
-    onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
+    if (errored) onEvent({ type: "phase", label: "blocked", state: "err" }); // no "finished" phase — the assistant reply is the signal
     onEvent({ type: "done", usage });
   }
   return { messages: next, usage, headers, failure };
@@ -400,7 +409,7 @@ export async function runCompletion(opts: {
   } catch (e: any) {
     if (!signal?.aborted) emitErr(e);
   }
-  onEvent({ type: "phase", label: errored ? "blocked" : "finished", state: errored ? "err" : "ok" });
+  if (errored) onEvent({ type: "phase", label: "blocked", state: "err" }); // no "finished" phase — the assistant reply is the signal
   onEvent({ type: "done", usage });
   return { text, usage };
 }

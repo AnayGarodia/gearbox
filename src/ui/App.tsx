@@ -13,6 +13,7 @@ import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working } from "./components/Working.tsx";
 import { Viewport, type ViewSelection } from "./components/Viewport.tsx";
 import { itemsToLines, type Line } from "./lines.ts";
+import { collapseTurn } from "./collapse.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb } from "./character.ts";
@@ -1668,6 +1669,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const names = images.map((img) => imageMarkerFor(img.path)).join(", ");
         notice(`attached ${images.length} image${images.length === 1 ? "" : "s"}: ${names}`);
       }
+      // Everything pushed from here on belongs to this turn; at settle we collapse
+      // that slice (drop spinners, fold repeated checks) into a durable record.
+      const turnStartId = idRef.current;
       echo(displayPrompt);
       lastPromptRef.current = displayPrompt;
       const urls = urlsInText(modelPrompt);
@@ -1831,7 +1835,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         } else if (e.type === "verification") {
           checks.push(e.command);
           if (!e.ok) failures.push(`${e.command}: ${e.summary}`);
-          push({ kind: "verification", id: idRef.current++, command: e.command, ok: e.ok, summary: e.summary });
+          push({ kind: "verification", id: idRef.current++, command: e.command, ok: e.ok, summary: e.summary, intent: e.intent, durationMs: e.durationMs, output: e.output });
         } else if (e.type === "preference-suggestion") {
           push({ kind: "preference", id: idRef.current++, text: e.text, acceptCommand: e.acceptCommand });
         } else if (e.type === "error") {
@@ -1922,13 +1926,23 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // otherwise, so these states would never render). Skip on a user interrupt.
         if (!interrupted) {
           setMascotState(hadError ? "error" : "celebrate");
+          // Collapse this turn's live trace into durable facts, then summarize from
+          // the FINAL state (a check that failed then passed on retry is not a
+          // failure). turnStartId marks where this turn's items begin.
+          const prevItems = itemsRef.current;
+          const cut = prevItems.findIndex((i) => i.id >= turnStartId);
+          const collapsed = cut < 0 ? prevItems.slice() : [...prevItems.slice(0, cut), ...collapseTurn(prevItems.slice(cut), () => idRef.current++)];
+          const turnItems = cut < 0 ? [] : collapsed.slice(cut);
+          const checkItems = turnItems.filter((i): i is Extract<Item, { kind: "verification" }> => i.kind === "verification");
           const changed = uniq([...changedFiles]);
-          const doneChecks = uniq(checks);
-          const failed = uniq(failures).slice(0, 4);
+          const doneChecks = checkItems.map((c) => c.intent ?? c.command);
+          const failed = checkItems.filter((c) => !c.ok).map((c) => `${c.intent ?? c.command}: ${c.summary}`).slice(0, 4);
+          // Green with edits → forward move (commit), never a retry of something
+          // that already passed. Retry only when a check actually ended red.
           const next = failed.length ? nextStepFor(failed, changed) : changed.length && !doneChecks.length ? "run tests" : changed.length ? "commit changes" : "/context";
-          if (changed.length || doneChecks.length || failed.length) {
-            push({ kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next });
-          }
+          // A no-op turn (no edits, no checks) gets no summary at all.
+          const summaryItem: Item | null = (changed.length || doneChecks.length) ? { kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next } : null;
+          setItems(summaryItem ? [...collapsed, summaryItem] : collapsed);
           setSuggestion(next);
           setLinger(true);
           if (lingerRef.current) clearTimeout(lingerRef.current);

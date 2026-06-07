@@ -63,7 +63,17 @@ export type Item =
     }
   | { kind: "phase"; id: number; label: string; detail?: string; state: "running" | "ok" | "err" }
   | { kind: "model"; id: number; model: string; provider: string; reason: string }
-  | { kind: "verification"; id: number; command: string; ok: boolean; summary: string }
+  | {
+      kind: "verification";
+      id: number;
+      command: string; // the literal command (shown only behind ⌃O)
+      ok: boolean; // FINAL state after any retries
+      summary: string;
+      intent?: string; // "typecheck" / "test" / "build" / "lint" — the named action
+      attempts?: number; // how many times this check ran (1 = no retry)
+      durationMs?: number; // total wall time across attempts, when known
+      output?: string; // last attempt's output, revealed by ⌃O
+    }
   | { kind: "preference"; id: number; text: string; acceptCommand: string }
   | { kind: "summary"; id: number; changed: string[]; checks: string[]; failures: string[]; next?: string }
   | { kind: "notice"; id: number; text: string }

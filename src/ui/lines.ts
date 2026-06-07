@@ -11,6 +11,7 @@ import { glyph } from "./theme.ts";
 import { highlightLine } from "./highlight.ts";
 import type { Item } from "./types.ts";
 import { barCells } from "../accounts/usage.ts";
+import { retryPhrase } from "./collapse.ts";
 import { scorecardRows } from "../commands.ts";
 
 const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
@@ -485,7 +486,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
           out.push(...indent([padBg([
             { text: "┌─ ", color: color.accentDim, bg: color.codeBg },
             { text: expand ? "full code" : "preview", color: color.accent, bold: true, bg: color.codeBg },
-            { text: expand ? ` · ${it.previewLines ?? lines.length} lines` : ` · first ${shown.length} of ${it.previewLines ?? "?"} lines`, color: color.faint, bg: color.codeBg },
+            { text: expand ? ` · ${it.previewLines ?? lines.length} lines` : ` · ${shown.length} of ${it.previewLines ?? "?"} shown`, color: color.faint, bg: color.codeBg },
           ], codeWidth, color.codeBg)], 3));
           for (let i = 0; i < shown.length; i++) {
             out.push(padBg(clipSpans([
@@ -512,7 +513,10 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
             out.push(...streamLines(outTail, outCount, Math.max(width - 5, 1), expand));
           }
         }
-        if (it.status !== "running" && it.summary) {
+        // The summary line repeats the tool's headline result. For a shell that's
+        // the first output line, which we already render in the tail above — so
+        // skip it for shells (it read as `$ tsc --noEmit` printed twice).
+        if (it.status !== "running" && it.summary && !(isShell && outTail)) {
           out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: it.summary.slice(0, Math.max(width - 5, 1)), color: it.status === "err" ? color.err : color.dim }]);
         }
         if (it.diff?.length) out.push(...diffLines(it.diff, width, expand));
@@ -529,7 +533,27 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "verification": {
-        out.push(clipSpans([{ text: "  " + (it.ok ? "✓ " : "▲ "), color: it.ok ? color.ok : color.err }, { text: "check", color: color.text }, { text: " · " + it.command + " · " + it.summary, color: color.faint }], width));
+        // Durable one-liner: the named action + final state, attempts folded in.
+        // The literal command + output live behind ⌃O (expand), not in the spine.
+        const label = it.intent ?? "check";
+        const state = it.ok ? "passed" : "failed";
+        const head: Line = [
+          { text: "  " + (it.ok ? glyph.tool + " " : "▲ "), color: it.ok ? color.ok : color.err },
+          { text: label, color: color.text, bold: true },
+          { text: " · " + state, color: it.ok ? color.ok : color.err },
+        ];
+        if (it.durationMs != null) head.push({ text: " in " + fmtMs(it.durationMs), color: color.faint });
+        const retry = retryPhrase(it.ok, it.attempts ?? 1);
+        if (retry) head.push({ text: " · " + retry, color: color.faint });
+        if (!it.ok && it.summary) head.push({ text: " · " + it.summary, color: color.err });
+        const body = it.output ?? "";
+        if (body && (it.command || it.output)) head.push({ text: "  ⌃O for output", color: color.faint });
+        out.push(clipSpans(head, width));
+        if (expand && (it.command || body)) {
+          if (it.command) out.push(...indent([[{ text: "$ " + it.command, color: color.dim }]], 4));
+          const lines = body.split("\n").filter(Boolean).slice(-14);
+          out.push(...indent(lines.map((l) => [{ text: "│ " + l, color: color.dim }]), 4));
+        }
         break;
       }
       case "preference": {

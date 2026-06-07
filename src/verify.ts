@@ -47,6 +47,17 @@ export function detectVerificationCommands(cwd = process.cwd(), changedFiles: st
   return cmds.slice(0, 3);
 }
 
+// Map a verification/shell command to the named action it performs, so the UI can
+// say "typecheck" instead of `cd … && bun run typecheck 2>&1 | tail -20`.
+export function checkIntent(command: string): string | null {
+  const c = command.toLowerCase();
+  if (/\btsc\b|\btypecheck\b|type-check/.test(c)) return "typecheck";
+  if (/\b(test|jest|vitest|pytest|go\s+test|cargo\s+test|mocha|ava)\b/.test(c)) return "test";
+  if (/\b(eslint|ruff|clippy|lint|flake8|golangci)\b/.test(c)) return "lint";
+  if (/\bbuild\b/.test(c)) return "build";
+  return null;
+}
+
 function summarize(output: string): string {
   const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
   const fail = lines.find((l) => /\b(error|failed|failures?|exception|panic)\b/i.test(l));
@@ -60,9 +71,10 @@ export async function runVerification(
   const results: ShellResult[] = [];
   for (const c of commands) {
     opts.onEvent({ type: "phase", label: "verifying", detail: `${c.command} · ${c.reason}`, state: "running" });
+    const startedAt = Date.now();
     const r = await runShellStream(c.command, { signal: opts.signal, timeoutMs: opts.timeoutMs ?? 120_000 });
     results.push(r);
-    opts.onEvent({ type: "verification", command: c.command, ok: r.ok, summary: r.ok ? "passed" : summarize(r.output) });
+    opts.onEvent({ type: "verification", command: c.command, ok: r.ok, summary: r.ok ? "passed" : summarize(r.output), intent: checkIntent(c.command) ?? undefined, durationMs: Date.now() - startedAt, output: r.output });
     opts.onEvent({ type: "phase", label: "verification", detail: c.command, state: r.ok ? "ok" : "err" });
     if (!r.ok) break;
   }
