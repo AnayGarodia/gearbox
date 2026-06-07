@@ -7,6 +7,7 @@ import { existsSync } from "node:fs";
 import { resolve, relative, isAbsolute } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
 import { applyEdit } from "./edit.ts";
+import { updateRetrievalFile } from "./context/retrieve.ts";
 import { runShellStream } from "./shell.ts";
 import { requestPermission } from "./permission.ts";
 import { which, Glob, spawnSyncProc } from "./proc.ts";
@@ -66,7 +67,9 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
       if (!(await requestPermission({ kind: "write", title: exists ? "Overwrite a file" : "Create a file", detail: path })))
         throw new Error(DENIED);
       const before = exists ? await readFile(abs, "utf8") : "";
+      onEvent?.({ type: "file-change", path: relative(root, abs), before, existed: exists }); // for /undo + /diff
       await writeFile(abs, content, "utf8");
+      updateRetrievalFile(relative(root, abs), content, root); // keep retrieval fresh
       const diff = computeDiff(before, content);
       return { summary: `wrote ${path} (${diffStat(diff)})`, diff };
     },
@@ -93,7 +96,9 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
         throw new Error(`only found ${r.matches} occurrence${r.matches === 1 ? "" : "s"} in ${path}; requested occurrence ${occurrence}`);
       }
       if (!(await requestPermission({ kind: "edit", title: "Edit a file", detail: path }))) throw new Error(DENIED);
+      onEvent?.({ type: "file-change", path: relative(root, abs), before, existed: true }); // for /undo + /diff
       await writeFile(abs, r.after, "utf8");
+      updateRetrievalFile(relative(root, abs), r.after, root); // keep retrieval fresh
       const diff = computeDiff(before, r.after);
       const fuzzy = r.strategy === "whitespace" ? " · whitespace-matched" : "";
       return { summary: `edited ${path} · ${r.replacements} replacement${r.replacements === 1 ? "" : "s"}${fuzzy} (${diffStat(diff)})`, diff };

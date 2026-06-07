@@ -76,6 +76,42 @@ export function resetRetrievalIndex(): void {
   cached = null;
 }
 
+/**
+ * Incrementally fold a single file change into the live index so a file the agent
+ * just created/edited is retrievable on the next turn — without rebuilding the
+ * whole repo index. `content === null` removes the file. No-op when nothing is
+ * indexed yet for `cwd` (the next full build will pick the change up) or the file
+ * isn't a code file.
+ */
+export function updateRetrievalFile(file: string, content: string | null, cwd = process.cwd()): void {
+  if (!cached || cached.cwd !== cwd) return;
+  if (!CODE.test(file)) return;
+  const idx = cached.idx;
+  // Remove the old contribution (df, maps, file list) if we had this file.
+  if (idx.raw.has(file)) {
+    for (const t of new Set(idx.low.get(file)!.match(/[a-z]{3,}/g) ?? [])) {
+      const d = (idx.df.get(t) ?? 0) - 1;
+      if (d <= 0) idx.df.delete(t);
+      else idx.df.set(t, d);
+    }
+    idx.raw.delete(file);
+    idx.low.delete(file);
+    idx.fileDefs.delete(file);
+    idx.files = idx.files.filter((f) => f !== file);
+  }
+  if (content != null) {
+    idx.raw.set(file, content);
+    const lc = content.toLowerCase();
+    idx.low.set(file, lc);
+    const defs: string[] = [];
+    for (const m of content.matchAll(DEF_RE)) defs.push(m[1]!.toLowerCase());
+    idx.fileDefs.set(file, defs);
+    for (const t of new Set(lc.match(/[a-z]{3,}/g) ?? [])) idx.df.set(t, (idx.df.get(t) ?? 0) + 1);
+    if (!idx.files.includes(file)) idx.files.push(file);
+  }
+  idx.n = idx.files.length;
+}
+
 function idf(idx: Index, t: string): number {
   const d = idx.df.get(t) ?? 0;
   return Math.log(1 + (idx.n - d + 0.5) / (d + 0.5));

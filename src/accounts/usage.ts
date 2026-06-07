@@ -38,6 +38,8 @@ export interface AccountUsage {
   lastAt: number;
   monthKey?: string; // "YYYY-MM" of the current calendar month being accumulated
   monthSpentUSD?: number; // spend within monthKey (resets when the month rolls over)
+  dayKey?: string; // "YYYY-MM-DD" of the current day being accumulated
+  daySpentUSD?: number; // spend within dayKey (resets when the day rolls over)
   rate?: RateSnapshot; // legacy single window (read for back-compat, written into rates)
   rates?: RateSnapshot[]; // one snapshot per limit window (5-hour, 7-day, …)
   balance?: BalanceSnapshot; // remaining API credit, where the provider exposes it
@@ -90,12 +92,35 @@ export function recordUsage(opts: {
   const mk = monthKeyOf(now);
   if (u.monthKey !== mk) { u.monthKey = mk; u.monthSpentUSD = 0; }
   u.monthSpentUSD = (u.monthSpentUSD ?? 0) + opts.costUSD;
+  // Per-day spend, so a hard "daily" cap (budget-guard.ts) can enforce. Resets on day rollover.
+  const dk = dayKeyOf(now);
+  if (u.dayKey !== dk) { u.dayKey = dk; u.daySpentUSD = 0; }
+  u.daySpentUSD = (u.daySpentUSD ?? 0) + opts.costUSD;
   f.accounts[opts.accountId] = u;
   save(f);
 }
 
 function monthKeyOf(now: number): string {
   return new Date(now).toISOString().slice(0, 7); // "YYYY-MM"
+}
+
+function dayKeyOf(now: number): string {
+  return new Date(now).toISOString().slice(0, 10); // "YYYY-MM-DD"
+}
+
+/** Spend recorded for the calendar day of `now` for this account (0 after rollover). */
+export function spentToday(u: AccountUsage, now: number): number {
+  return u.dayKey === dayKeyOf(now) ? (u.daySpentUSD ?? 0) : 0;
+}
+
+/** Total spend across all accounts for the calendar day of `now`. */
+export function totalSpentToday(now = Date.now()): number {
+  return loadUsage().reduce((s, u) => s + spentToday(u, now), 0);
+}
+
+/** Total spend across all accounts for the calendar month of `now`. */
+export function totalSpentThisMonth(now = Date.now()): number {
+  return loadUsage().reduce((s, u) => s + spentInPeriod(u, "monthly", now), 0);
 }
 
 /** Spend in the budget period: cumulative for a prepaid "total" budget, or just

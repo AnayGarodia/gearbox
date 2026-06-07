@@ -19,6 +19,7 @@ export type AgentEvent =
   | { type: "tool-stream"; id: string; arg?: string; delta?: string } // tool input streaming: `arg` updates the head, `delta` appends streamed content (e.g. a file being written)
   | { type: "tool-output"; id?: string; name?: string; arg?: string; stream: "stdout" | "stderr"; text: string }
   | { type: "tool-end"; id: string; ok: boolean; summary: string; diff?: DiffLine[] } // tool call finished
+  | { type: "file-change"; path: string; before: string; existed: boolean } // a write/edit mutated a file (for /undo + /diff)
   | { type: "verification"; command: string; ok: boolean; summary: string; intent?: string; durationMs?: number; output?: string }
   | { type: "preference-suggestion"; id: string; text: string; acceptCommand: string }
   | { type: "done"; usage: Usage } // turn complete

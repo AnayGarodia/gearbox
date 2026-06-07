@@ -42,7 +42,7 @@ test("does NOT advance on a real (non-credential) error", async () => {
     runOne: async ({ account }) => {
       used.push(account.id);
       return { messages: [], usage: { inputTokens: 0, outputTokens: 0 },
-               failure: { message: "fetch failed", raw: { message: "fetch failed" }, producedOutput: false } };
+               failure: { message: "invalid request: unknown parameter", raw: { statusCode: 400, message: "invalid request: unknown parameter" }, producedOutput: false } };
     },
   });
   expect(used).toEqual(["a"]); // stopped, no failover on real-error

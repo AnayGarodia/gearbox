@@ -21,6 +21,21 @@ export interface FailoverOpts {
   recordHealth: (account: Account, state: HealthState, detail?: string) => void;
   resolveCreds: (account: Account) => Promise<ResolvedCreds>;
   runOne: (args: { account: Account; model: Candidate["model"]; creds: ResolvedCreds }) => Promise<RunOneResult>;
+  // Transient (network / 5xx) errors before any output get a few same-account
+  // retries with backoff before failing the turn. Injectable for tests.
+  maxTransientRetries?: number;
+  sleep?: (ms: number) => Promise<void>;
+  backoffMs?: (attempt: number) => number;
+}
+
+/** A transient error worth retrying the same account: network blips and 5xx
+ *  server errors (NOT auth/billing, and NOT 429 — that's the rate-limited path). */
+export function isTransient(err: unknown): boolean {
+  const e = err as any;
+  const status = e?.statusCode ?? e?.status ?? e?.response?.status;
+  if (typeof status === "number" && status >= 500 && status <= 599) return true;
+  const t = String(e?.code ?? e?.message ?? e?.error?.message ?? e ?? "").toLowerCase();
+  return /econnreset|etimedout|econnrefused|enotfound|epipe|socket hang up|network|fetch failed|timed? ?out|connection (?:reset|closed|error)|stream error|temporarily unavailable/.test(t);
 }
 
 export interface FailoverResult extends RunOneResult {
@@ -39,6 +54,9 @@ export function fixHint(account: Account, state: HealthState): string {
 
 export async function runWithFailover(opts: FailoverOpts): Promise<FailoverResult> {
   const { candidates, onEvent, recordHealth, resolveCreds, runOne } = opts;
+  const maxRetries = opts.maxTransientRetries ?? 2;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const backoff = opts.backoffMs ?? ((attempt: number) => Math.min(8000, 400 * 2 ** (attempt - 1)));
   const tried: { account: Account; state: HealthState; message: string }[] = [];
 
   if (!candidates.length) {
@@ -49,7 +67,15 @@ export async function runWithFailover(opts: FailoverOpts): Promise<FailoverResul
   for (let i = 0; i < candidates.length; i++) {
     const { account, model } = candidates[i]!;
     const creds = await resolveCreds(account);
-    const res = await runOne({ account, model, creds });
+    let res = await runOne({ account, model, creds });
+
+    // A transient blip (network/5xx) before any output: retry the same account a
+    // few times with backoff before giving up — a hiccup shouldn't lose the turn.
+    for (let attempt = 1; res.failure && !res.failure.producedOutput && isTransient(res.failure.raw) && attempt <= maxRetries; attempt++) {
+      onEvent({ type: "phase", label: `${account.slug ?? account.id} retry ${attempt}/${maxRetries}`, detail: "transient error — retrying", state: "running" });
+      await sleep(backoff(attempt));
+      res = await runOne({ account, model, creds });
+    }
 
     if (!res.failure) {
       recordHealth(account, "ok");

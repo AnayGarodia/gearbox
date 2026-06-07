@@ -95,6 +95,22 @@ export function capabilitiesFor(spec: ModelSpec): ModelCapabilities {
   };
 }
 
+/** A concise one-line readout of what a model can do — for the post-add /
+ *  onboarding smoke so users see capabilities (tools/images/json/effort) up front
+ *  without overclaiming (unknowns show as `?`). */
+export function capabilitySummary(spec: ModelSpec): string {
+  const c = capabilitiesFor(spec);
+  const mark = (label: string, v: CapabilityValue) => (v === true ? label : v === "unknown" ? `${label}?` : null);
+  const parts = [
+    mark("tools", c.tools),
+    mark("images", c.images),
+    mark("json-schema", c.jsonSchema),
+    c.reasoningEffort ? `effort(${c.reasoningEffort.join(",")})` : null,
+    c.usage === "exact" ? "exact-usage" : c.usage === "partial" ? "partial-usage" : null,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "text only";
+}
+
 export function missingRequirements(spec: ModelSpec, required: ModelRequirement[] = []): ModelRequirement[] {
   if (!required.length) return [];
   const caps = capabilitiesFor(spec);

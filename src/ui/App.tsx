@@ -42,7 +42,9 @@ import { discoverModels } from "../accounts/discover.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
-import { recordUsage, recordRateLimits, recordBalance, buildUsageView, accountUsage, type UsageView } from "../accounts/usage.ts";
+import { recordUsage, recordRateLimits, recordBalance, buildUsageView, accountUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
+import { checkCaps, type BudgetCaps } from "../model/budget-guard.ts";
+import { recordChange, planUndo, type FileChange } from "../undo.ts";
 import { probeUsage } from "../accounts/usage-probe.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
@@ -51,7 +53,7 @@ import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../conte
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
-import { missingRequirements, type ModelRequirement } from "../model/capabilities.ts";
+import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
@@ -70,7 +72,9 @@ import { useOnline, isNetworkError } from "./net.ts";
 import { gitBranch } from "./git.ts";
 import { basename, extname, resolve } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { writeFile as fsWriteFile } from "node:fs/promises";
+import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
+import { computeDiff, diffStat } from "../diff.ts";
+import { updateRetrievalFile } from "../context/retrieve.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -361,6 +365,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const escRef = useRef(0); // timestamp of the last bare esc (for double-esc rewind)
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
   const verifyRef = useRef<VerifyMode>(loadPrefs().verify === "off" ? "off" : "auto"); // post-edit checks + auto-iterate-to-green
+  const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
+  const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
   const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
   // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
   // text is kept here and expanded back in on submit.
@@ -1766,6 +1772,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const turnStartId = idRef.current;
       echo(displayPrompt);
       lastPromptRef.current = displayPrompt;
+      // Pre-flight hard spend cap (/cap): refuse the turn before any model call if
+      // a configured ceiling is reached. Guards auto-fix re-entry and runaway spend
+      // (parallel fan-out can multiply cost in one session).
+      {
+        const caps = capsRef.current;
+        if (caps.session || caps.daily || caps.monthly || caps.total) {
+          const verdict = checkCaps(caps, {
+            session: estimateCost(sessionRef.current.turns),
+            daily: totalSpentToday(),
+            monthly: totalSpentThisMonth(),
+            total: totalSpent(),
+          });
+          if (!verdict.allowed) {
+            push({ kind: "error", id: idRef.current++, text: verdict.message ?? "spend cap reached" });
+            return;
+          }
+        }
+      }
       const urls = urlsInText(modelPrompt);
       if (urls.length) {
         const fetched: string[] = [];
@@ -1807,6 +1831,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       let pendingText = "";
       let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
       const changedFiles = new Set<string>();
+      let turnChanges: FileChange[] = []; // pre-turn file snapshots, for /undo + /diff
       const checks: string[] = [];
       const failures: string[] = [];
       let hadError = false;
@@ -1927,6 +1952,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               ...(preview ? { preview: preview.text, previewLines: preview.lines, previewLang: preview.lang } : {}),
             };
           }));
+        } else if (e.type === "file-change") {
+          turnChanges = recordChange(turnChanges, { path: e.path, before: e.before, existed: e.existed });
         } else if (e.type === "verification") {
           checks.push(e.command);
           if (!e.ok) failures.push(`${e.command}: ${e.summary}`);
@@ -2029,6 +2056,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         abortRef.current = null;
         setBusy(false);
         persist();
+        // Snapshot this turn's file changes onto the undo stack (/undo, /diff).
+        if (turnChanges.length) undoStackRef.current.push({ changes: turnChanges, at: Date.now() });
         const interrupted = interruptedRef.current;
         if (interrupted) {
           notice("interrupted");
@@ -2308,6 +2337,96 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 `\n  /verify off  ·  /verify auto`,
             );
           }
+          return;
+        }
+        case "cap": {
+          echo(text);
+          const [which, amountStr] = arg.split(/\s+/);
+          const periods = ["session", "daily", "monthly", "total"] as const;
+          const fmtCaps = () => {
+            const c = capsRef.current;
+            const set = periods.filter((p) => c[p] != null).map((p) => `${p} $${c[p]!.toFixed(2)}`);
+            return set.length ? set.join(" · ") : "none";
+          };
+          if (!which) {
+            notice(`spend caps: ${fmtCaps()}\n  set one: /cap <session|daily|monthly|total> <amount>  ·  clear: /cap off`);
+            return;
+          }
+          if (which.toLowerCase() === "off") {
+            capsRef.current = {};
+            updatePrefs({ budgetCaps: {} });
+            notice("spend caps cleared");
+            return;
+          }
+          const p = periods.find((x) => x === which.toLowerCase());
+          if (!p) {
+            notice("cap period must be one of: session · daily · monthly · total");
+            return;
+          }
+          const amount = parseFloat((amountStr ?? "").replace(/^\$/, ""));
+          if (!Number.isFinite(amount) || amount <= 0) {
+            notice(`give a dollar amount, e.g. /cap ${p} 5`);
+            return;
+          }
+          capsRef.current = { ...capsRef.current, [p]: amount };
+          updatePrefs({ budgetCaps: capsRef.current });
+          notice(`${p} spend cap set to $${amount.toFixed(2)} · turns refuse once reached (/cap off to clear)`);
+          return;
+        }
+        case "diff": {
+          echo(text);
+          // Earliest pre-turn content per path across the session's snapshots,
+          // compared to what's on disk now — one colored diff per changed file.
+          const map = new Map<string, { before: string; existed: boolean }>();
+          for (const turn of undoStackRef.current) for (const c of turn.changes) if (!map.has(c.path)) map.set(c.path, { before: c.before, existed: c.existed });
+          if (!map.size) {
+            notice("no file changes this session");
+            return;
+          }
+          let shown = 0;
+          for (const [path, { before }] of map) {
+            let current = "";
+            try {
+              current = readFileSync(resolve(process.cwd(), path), "utf8");
+            } catch {
+              current = ""; // deleted/missing
+            }
+            if (current === before) continue;
+            const diff = computeDiff(before, current);
+            push({ kind: "tool", id: idRef.current++, callId: `diff:${path}`, name: "diff", arg: path, status: "ok", summary: `${path} (${diffStat(diff)})`, diff });
+            shown++;
+          }
+          if (!shown) notice("no net changes (files match their pre-session content)");
+          return;
+        }
+        case "undo": {
+          echo(text);
+          const snap = undoStackRef.current.pop();
+          if (!snap) {
+            notice("nothing to undo");
+            return;
+          }
+          const plan = planUndo(snap.changes);
+          void (async () => {
+            const done: string[] = [];
+            for (const a of plan) {
+              const abs = resolve(process.cwd(), a.path);
+              try {
+                if (a.action === "delete") {
+                  await fsUnlink(abs);
+                  updateRetrievalFile(a.path, null);
+                  done.push(`✗ ${a.path}`);
+                } else {
+                  await fsWriteFile(abs, a.content, "utf8");
+                  updateRetrievalFile(a.path, a.content);
+                  done.push(`↩ ${a.path}`);
+                }
+              } catch (e: any) {
+                done.push(`! ${a.path}: ${(e?.message ?? String(e)).split("\n")[0]}`);
+              }
+            }
+            notice(`undid last turn's file changes:\n  ${done.join("\n  ")}\n  (files only — the conversation is unchanged)`);
+          })();
           return;
         }
         case "copy": {
@@ -2891,6 +3010,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               } else if (d.note) {
                 notice(d.note);
               }
+              // Capability readout: show what a representative model on this account
+              // can actually do (tools/images/json/effort), so the user knows up front.
+              const spec = d.models.map((id) => findModel(id)).find(Boolean) ?? modelRegistry().find((m) => m.provider === res.account!.provider);
+              if (spec) notice(`this account can: ${capabilitySummary(spec)}`);
             })();
             return;
           }

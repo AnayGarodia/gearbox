@@ -16,6 +16,7 @@ export interface Prefs {
   activeAccount?: string | null; // active CLI subscription account id; restored next launch
   statusPinned?: boolean; // /cost toggles a persistent usage strip above the composer
   verify?: "auto" | "off"; // auto = run checks after edits & auto-iterate to green; off = skip
+  budgetCaps?: { session?: number; daily?: number; monthly?: number; total?: number }; // hard spend ceilings (/cap)
 }
 
 function file(): string {
