@@ -34,6 +34,7 @@ import { runTask, runCompletion } from "../agent/run.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount, defaultAccount } from "../accounts/store.ts";
+import type { Account } from "../accounts/types.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
 import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
 import { discoverModels } from "../accounts/discover.ts";
@@ -410,6 +411,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // toggle it off; survives restarts. Doesn't capture input.
   const [statusPinned, setStatusPinnedState] = useState(() => Boolean(loadPrefs().statusPinned));
   const [, bumpUsage] = useReducer((x: number) => x + 1, 0); // force a strip re-read after a probe records fresh limits
+  const [probing, setProbing] = useState<Set<string>>(new Set()); // account ids with a usage probe in flight (→ "checking…")
   const setStatusPinned = (v: boolean) => {
     setStatusPinnedState(v);
     updatePrefs({ statusPinned: v });
@@ -631,34 +633,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const t = setInterval(() => void refresh(), 5 * 60_000);
     return () => { alive = false; clearInterval(t); };
   }, []);
-
-  // Live subscription usage — the EXACT 5h/weekly % the -p/exec stream omits when
-  // comfortably within limits. We let the vendor CLI fetch its own usage (its own
-  // token, as designed) and read the result: Codex from the rollout it already
-  // writes (FREE, turn-free), Claude via a tiny statusLine probe (one cheap turn).
-  // So we ONLY run this while the usage strip is open (the user is watching), and
-  // probe Claude far less often than Codex. Best-effort; on failure the near-limit
-  // stream data still shows. No vendor token is ever read.
-  useEffect(() => {
-    if (!statusPinned) return;
-    let alive = true;
-    const probeAll = async (includeClaude: boolean) => {
-      for (const a of listAccounts()) {
-        if (!alive) return;
-        if (!a.enabled || a.exec !== "cli" || a.auth.kind !== "cli") continue;
-        const isClaude = a.auth.binary.includes("claude");
-        if (isClaude && !includeClaude) continue; // Claude probe costs a turn — throttle it
-        try {
-          const snaps = await probeUsage(a);
-          if (snaps?.length && alive) { recordRateLimits(a.id, snaps); bumpUsage(); }
-        } catch { /* best-effort; fall back to stream data */ }
-      }
-    };
-    void probeAll(true); // on open: refresh every subscription, incl. a Claude turn
-    const codexTimer = setInterval(() => void probeAll(false), 90_000); // free → often
-    const claudeTimer = setInterval(() => void probeAll(true), 10 * 60_000); // turn → rarely
-    return () => { alive = false; clearInterval(codexTimer); clearInterval(claudeTimer); };
-  }, [statusPinned]);
 
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
   useEffect(() => {
@@ -1183,6 +1157,33 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // to (or leave) a subscription account.
   const [activeCli, setActiveCli] = useState<{ id: string; label: string } | null>(null);
   const [activeCliModel, setActiveCliModel] = useState<string | null>(null);
+
+  // Live subscription usage — the EXACT 5h/weekly % the -p/exec stream omits when
+  // comfortably within limits. The vendor CLI fetches its own usage (its own token,
+  // as designed) and we read the result: Codex from the rollout it already writes
+  // (FREE), Claude via a tiny statusLine probe (one cheap turn). Runs only while the
+  // /cost strip is open, and probes the ACTIVE account immediately on open AND on
+  // every switch (instant feedback). Best-effort; no vendor token is ever read.
+  useEffect(() => {
+    if (!statusPinned) return;
+    let alive = true;
+    const subs = () => listAccounts().filter((a) => a.enabled && a.exec === "cli" && a.auth.kind === "cli");
+    const probeOne = async (a: Account | undefined) => {
+      if (!a || !alive) return;
+      setProbing((p) => { const n = new Set(p); n.add(a.id); return n; });
+      try {
+        const snaps = await probeUsage(a);
+        if (snaps?.length && alive) { recordRateLimits(a.id, snaps); bumpUsage(); }
+      } catch { /* best-effort; fall back to stream data */ }
+      finally { if (alive) setProbing((p) => { const n = new Set(p); n.delete(a.id); return n; }); }
+    };
+    const list = subs();
+    const active = list.find((a) => a.id === activeCli?.id) ?? list[0];
+    void probeOne(active); // instant feedback for the visible account
+    const codexTimer = setInterval(() => { for (const a of subs()) if (a.auth.kind === "cli" && a.auth.binary.includes("codex")) void probeOne(a); }, 90_000);
+    const claudeTimer = setInterval(() => { for (const a of subs()) void probeOne(a); }, 10 * 60_000);
+    return () => { alive = false; clearInterval(codexTimer); clearInterval(claudeTimer); };
+  }, [statusPinned, activeCli?.id]);
   const onboardingState = {
     configured: listAccounts(),
     importable: importableEnvCreds(),
@@ -3581,7 +3582,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         </Box>
       ) : null}
       {quickPickerJsx}
-      {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} api={stripApi} width={width} /> : null}
+      {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} width={width} /> : null}
       <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={displayEffort} online={online} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}

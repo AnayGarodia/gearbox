@@ -20,6 +20,7 @@ export function StatusStrip({
   contextWindow,
   cost,
   sub,
+  subProbing = false,
   api,
   width,
 }: {
@@ -28,6 +29,7 @@ export function StatusStrip({
   contextWindow?: number | null;
   cost: number;
   sub?: { name: string; limits?: LimitWindow[]; limitNote?: string } | null;
+  subProbing?: boolean; // a usage probe is in flight for this account → show "checking…" not "ok"
   api?: UsageAcct | null;
   width: number;
 }) {
@@ -60,14 +62,17 @@ export function StatusStrip({
             {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
           </Row>
         ) : (
-          // Status-only window: CLI reports a state but no utilization %.
-          // When ok, the reset time is the useful signal — show it prominently.
-          // "% not reported" only when warn/limited where the missing number matters.
+          // Status-only window: no utilization number yet. While the probe is in
+          // flight, show "checking…" (a clear loading state, NOT a confident "ok")
+          // — the real % bar replaces it the moment the probe returns. Otherwise
+          // fall back to the stream's state word.
           <Row key={l.label} label={l.label}>
             {l.status === "limited" ? (
               <Text color={color.err}>at limit{l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}</Text>
             ) : l.status === "warn" ? (
               <Text color={color.run}>near limit{l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}</Text>
+            ) : subProbing ? (
+              <Text color={color.faint}>checking…</Text>
             ) : l.resetsIn ? (
               <Text color={color.ok}>ok  <Text color={color.faint}>·  {l.resetsIn}</Text></Text>
             ) : (
