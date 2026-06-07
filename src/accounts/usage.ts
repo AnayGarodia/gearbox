@@ -286,8 +286,11 @@ export function buildUsageView(sessionUSD?: number, resolve?: (id: string) => Ac
       }
       // Per-minute API rate-limit headroom from response headers (api:* windows).
       // API keys have no 5h/weekly plan window, so this is the live "% used" bar.
+      // These windows reset every minute, so a stale one (observed > 5 min ago) is
+      // meaningless noise — only show fresh ones.
+      const API_FRESH_MS = 5 * 60_000;
       const apiLimits: LimitWindow[] = (u.rates ?? (u.rate ? [u.rate] : []))
-        .filter((r) => (r.type ?? "").startsWith("api:") && typeof r.utilization === "number")
+        .filter((r) => (r.type ?? "").startsWith("api:") && typeof r.utilization === "number" && now - r.at < API_FRESH_MS)
         .sort((a, b) => (a.type === "api:requests" ? 0 : 1) - (b.type === "api:requests" ? 0 : 1))
         .map((r) => ({ pct: Math.round(r.utilization! * 100), label: prettyLimit(r.type), resetsIn: [resetsIn(r.resetsAt, now), observedAgo(r.at, now)].filter(Boolean).join(" · ") || undefined }));
       if (apiLimits.length) acct.limits = apiLimits;

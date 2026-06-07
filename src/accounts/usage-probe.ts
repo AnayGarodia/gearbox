@@ -166,7 +166,11 @@ function ensurePtyDriver(): string {
 cfg, settings, out, model, timeout, cwd = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5]), sys.argv[6]
 env = dict(os.environ)
 for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"): env.pop(k, None)
-env["CLAUDE_CONFIG_DIR"] = cfg
+# Only set CLAUDE_CONFIG_DIR for loginProfile accounts. For the DEFAULT account it
+# must stay UNSET: claude derives the keychain credential key from the config dir,
+# so setting it explicitly (even to ~/.claude) makes it look up a per-dir-hashed
+# entry that doesn't exist → "not logged in". Empty cfg = use the default login.
+if cfg: env["CLAUDE_CONFIG_DIR"] = cfg
 try: open(out, "w").close()
 except Exception: pass
 pid, fd = pty.fork()
@@ -219,9 +223,12 @@ export async function probeClaudeUsage(account: Account, opts: { timeoutMs?: num
   if (account.auth.kind !== "cli") return null;
   const py = pythonBin();
   if (!py || !which("claude")) return null;
-  const timeoutMs = opts.timeoutMs ?? 22_000;
+  const timeoutMs = opts.timeoutMs ?? 30_000; // the probe "hi" turn can think for ~10s
   const timeoutSec = Math.max(8, Math.round(timeoutMs / 1000));
-  const configDir = claudeConfigDir(account);
+  const configDir = claudeConfigDir(account); // where .claude.json lives (for onboarding)
+  // CLAUDE_CONFIG_DIR env value: ONLY for loginProfile accounts. Empty for the
+  // default account so claude finds the default keychain login (see the driver).
+  const cfgEnv = account.auth.loginProfile ?? "";
   const capture = ensureCaptureScript();
   const driver = ensurePtyDriver();
   const node = which("node") ?? "node";
@@ -243,7 +250,7 @@ export async function probeClaudeUsage(account: Account, opts: { timeoutMs?: num
 
   let proc: Proc;
   try {
-    proc = spawnProc([py, driver, configDir, settingsFile, out, opts.model ?? "haiku", String(timeoutSec), workCwd], {
+    proc = spawnProc([py, driver, cfgEnv, settingsFile, out, opts.model ?? "haiku", String(timeoutSec), workCwd], {
       stdin: "ignore", stdout: "ignore", stderr: "ignore", env: process.env,
     });
   } catch {
