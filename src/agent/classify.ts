@@ -7,9 +7,12 @@
 // passes the resulting kind into select(). It ALWAYS degrades to the keyword
 // classifier — no API-key/in-loop model, offline, timeout, or a junk reply all fall
 // back, so a turn never blocks on routing. Cost is one tiny call on the cheapest model.
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import { runCompletion } from "./run.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
-import { classify as keywordClassify } from "../model/router.ts";
+import { classify as keywordClassify, confidentKeywordKind } from "../model/router.ts";
 import { profileFor } from "../model/profiles.ts";
 import { modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
 import { accountsForProvider } from "../accounts/store.ts";
@@ -53,16 +56,39 @@ function cheapestInLoop(): { model: ModelSpec; account?: Account } | null {
   return best ? { model: best.model, account: best.account } : null;
 }
 
-const cache = new Map<string, TaskKind>(); // by prompt — avoids re-classifying retries/failover
+// Cache persists across runs so a repeated prompt never re-pays the model call.
+const cacheFile = () => join(process.env.GEARBOX_HOME || join(homedir(), ".gearbox"), "classify-cache.json");
+let cache: Map<string, TaskKind> | null = null;
+function loadCache(): Map<string, TaskKind> {
+  if (cache) return cache;
+  cache = new Map();
+  try {
+    const obj = JSON.parse(readFileSync(cacheFile(), "utf8"));
+    for (const [k, v] of Object.entries(obj)) if (KINDS.has(v as TaskKind)) cache.set(k, v as TaskKind);
+  } catch { /* none yet */ }
+  return cache;
+}
+function saveCache(c: Map<string, TaskKind>): void {
+  try {
+    mkdirSync(join(process.env.GEARBOX_HOME || join(homedir(), ".gearbox")), { recursive: true });
+    writeFileSync(cacheFile(), JSON.stringify(Object.fromEntries(c)), { mode: 0o600 });
+  } catch { /* best-effort */ }
+}
 
-/** Classify a prompt into a routing kind using a cheap model. Falls back to the
- *  keyword classifier on any failure. Best-effort; never throws. */
+/** Classify a prompt into a routing kind. Fast path: a confident keyword match
+ *  (mutation → code, summarize/classify/search markers) skips the model call
+ *  entirely — only genuinely ambiguous prompts (bare questions/explanations) pay
+ *  the ~1-2s LLM hop. Cached across runs; falls back to keyword on any failure. */
 export async function classifyTask(prompt: string, signal?: AbortSignal): Promise<TaskKind> {
   const key = prompt.trim();
-  const cached = cache.get(key);
+  if (!key) return "code";
+  // Fast path: clear signal → no model call.
+  const confident = confidentKeywordKind(prompt);
+  if (confident) return confident;
+  const c = loadCache();
+  const cached = c.get(key);
   if (cached) return cached;
-  const fallback = keywordClassify(prompt);
-  if (!key) return fallback;
+  const fallback = keywordClassify(prompt); // "code" for the ambiguous case
   const pick = cheapestInLoop();
   if (!pick) return fallback; // subscription-only / no key → keyword
   try {
@@ -81,8 +107,13 @@ export async function classifyTask(prompt: string, signal?: AbortSignal): Promis
     }
     const word = text.toLowerCase().match(/[a-z]+/g)?.find((w) => KINDS.has(w as TaskKind)) as TaskKind | undefined;
     const kind = word ?? fallback;
-    if (cache.size > 64) cache.clear();
-    cache.set(key, kind);
+    // Only cache a real model verdict (not the keyword fallback) so a transient
+    // failure doesn't pin the wrong kind forever.
+    if (word) {
+      if (c.size > 256) { for (const k of [...c.keys()].slice(0, 64)) c.delete(k); } // trim oldest
+      c.set(key, kind);
+      saveCache(c);
+    }
     return kind;
   } catch {
     return fallback;

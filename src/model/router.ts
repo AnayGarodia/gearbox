@@ -59,17 +59,27 @@ const BAR: Record<Kind, number> = {
 // would swallow legit bounded sub-tasks like "summarize the test output".
 const MUTATION = /\b(fix|implement|refactor|edit|modif|debug|rewrite|replace|add|create|delete|remove|patch|migrat|rename)\b/;
 
-// Conservative classifier: default to "code" (high bar) unless the prompt is
-// clearly a cheap bounded sub-task. We never silently downgrade real work; we
-// only grab a cheaper model when we're fairly sure it's safe.
-export function classify(prompt: string): Kind {
+// Confident keyword classification: returns a kind ONLY when a rule clearly
+// fires (a mutation verb, or an explicit summarize/classify/search marker), and
+// null otherwise. The null case is the ambiguous one — a bare question or
+// explanation that would wrongly default to "code" — which is exactly where the
+// LLM classifier earns its keep. The agent uses this to SKIP the model call
+// (and its ~1-2s latency) whenever the signal is already clear.
+export function confidentKeywordKind(prompt: string): Kind | null {
   const p = prompt.toLowerCase().trim();
-  if (!p) return "code";
+  if (!p) return null;
   if (MUTATION.test(p)) return "code"; // a real change is requested — strong model
   if (/\b(summari[sz]e|tl;?dr|recap|condense|digest|gist)\b/.test(p)) return "summarize";
   if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b/.test(p)) return "classify";
   if (/^(find|search|locate|grep)\b|\bwhere is\b|\bwhich file\b/.test(p)) return "search";
-  return "code";
+  return null;
+}
+
+// Conservative keyword classifier: default to "code" (high bar) unless the prompt
+// is clearly a cheap bounded sub-task. Used as the fallback when the LLM
+// classifier isn't available; never silently downgrades real work.
+export function classify(prompt: string): Kind {
+  return confidentKeywordKind(prompt) ?? "code";
 }
 
 // Profile metrics resolve against the CANONICAL model id (a subscription seat

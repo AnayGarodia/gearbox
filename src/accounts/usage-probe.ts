@@ -101,6 +101,15 @@ function claudeConfigDir(account: Account): string {
   return lp || join(homedir(), ".claude");
 }
 
+// Is this Claude account actually logged in? On macOS the OAuth creds live in the
+// keychain (we can't cheaply verify, and the probe handles a miss), so assume yes.
+// On Linux/other they're a file in the config dir — check it, so we don't launch a
+// doomed interactive `claude` that just sits at a login prompt for the full timeout.
+function claudeLoggedIn(configDir: string): boolean {
+  if (process.platform === "darwin") return true;
+  return existsSync(join(configDir, ".credentials.json")) || existsSync(join(configDir, ".credentials"));
+}
+
 // Write the tiny capture script once. It is self-contained (no imports beyond
 // node core) so it works regardless of how Gearbox itself was bundled/installed.
 // The output path comes as argv[2] (claude does NOT forward our env to the
@@ -226,6 +235,7 @@ export async function probeClaudeUsage(account: Account, opts: { timeoutMs?: num
   const timeoutMs = opts.timeoutMs ?? 30_000; // the probe "hi" turn can think for ~10s
   const timeoutSec = Math.max(8, Math.round(timeoutMs / 1000));
   const configDir = claudeConfigDir(account); // where .claude.json lives (for onboarding)
+  if (!claudeLoggedIn(configDir)) return null; // not authenticated here → don't waste a probe
   // CLAUDE_CONFIG_DIR env value: ONLY for loginProfile accounts. Empty for the
   // default account so claude finds the default keychain login (see the driver).
   const cfgEnv = account.auth.loginProfile ?? "";

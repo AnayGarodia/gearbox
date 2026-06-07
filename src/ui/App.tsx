@@ -2738,12 +2738,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           if (subL === "off") {
+            if (!activeCliRef.current) {
+              notice("not on a subscription · already auto-routing across your API keys (/model auto). /account <name> to use a subscription.");
+              return;
+            }
+            const wasSub = activeCliRef.current.binary;
             activeCliRef.current = null;
             setActiveCliModelId(undefined);
             cliSessionRef.current = undefined;
             setActiveCli(null);
             updatePrefs({ activeAccount: null });
-            notice("left the subscription · back to your API keys");
+            // Returning to in-loop routing: if no model is pinned, auto-routing is
+            // now live (it picks the cheapest model that fits each task).
+            const auto = selectorRef.current instanceof RoutingSelector;
+            notice(
+              `left the ${wasSub} subscription.\n` +
+              (auto
+                ? `auto-routing now: Gearbox picks the cheapest API model that fits each task. /model <name> to pin one · /account <name> to use a subscription again.`
+                : `now using ${model?.label ?? "your pinned model"} · /model auto to route per task.`),
+            );
             return;
           }
           if (subL === "login") {
