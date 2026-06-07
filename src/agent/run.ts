@@ -22,7 +22,13 @@ const argSummary = (name: string, input: any): string => {
   if (!input || typeof input !== "object") return "";
   if (name === "run_shell") return String(input.command ?? "");
   if ("path" in input) return String(input.path);
-  return Object.values(input).map(String).join(" ").slice(0, 60);
+  // Generic fallback: join SCALAR values only — never stringify a nested object/
+  // array (that yields the useless "[object Object]").
+  return Object.values(input)
+    .filter((v) => v != null && typeof v !== "object")
+    .map(String)
+    .join(" ")
+    .slice(0, 60);
 };
 
 // Which JSON field of each tool's input is worth STREAMING as content (so the
@@ -30,6 +36,12 @@ const argSummary = (name: string, input: any): string => {
 // "head" field is the short label shown next to the tool (path / command).
 const CONTENT_FIELD: Record<string, string> = { write_file: "content", edit_file: "replace" };
 const HEAD_FIELD: Record<string, string> = { run_shell: "command" }; // default: "path"
+
+// Tools that render their OWN rich progress via onEvent (the delegate sub-agent
+// lines, the merge summary). The generic tool lifecycle below would double-render
+// them — once with a garbage `[object Object]` head from their array input — so we
+// skip our UI for these and let the tool drive the display.
+const SELF_RENDERING = new Set(["delegate", "delegate_parallel"]);
 
 // Incrementally decodes ONE JSON string field out of a partial JSON buffer as it
 // streams in (the SDK hands us raw `inputTextDelta` chunks of the tool input).
@@ -233,6 +245,7 @@ export async function runTask(opts: {
   type ToolStream = { name: string; rawBuf: string; headField: string; lastHead: string; content: FieldStreamer | null; pending: string };
   const streams = new Map<string, ToolStream>();
   const started = new Set<string>();
+  const selfRender = new Set<string>(); // call ids of self-rendering tools (delegate*) — we skip our generic UI for them
   const openStream = (id: string, name: string): ToolStream => {
     const st: ToolStream = {
       name,
@@ -284,6 +297,7 @@ export async function runTask(opts: {
           names.set(id, name);
           started.add(id);
           producedOutput = true;
+          if (SELF_RENDERING.has(name)) { selfRender.add(id); break; } // the tool drives its own UI
           openStream(id, name);
           onEvent({ type: "tool-start", id, name, arg: "" });
           onEvent({ type: "phase", label: friendlyToolPhase(name), state: "running" });
@@ -291,6 +305,7 @@ export async function runTask(opts: {
         }
         case "tool-input-delta": {
           const id = part.toolCallId ?? part.id ?? "";
+          if (selfRender.has(id)) break;
           const chunk = part.inputTextDelta ?? part.delta ?? "";
           if (!chunk) break;
           const st = streams.get(id) ?? openStream(id, names.get(id) ?? "tool");
@@ -308,6 +323,7 @@ export async function runTask(opts: {
           const id = part.toolCallId ?? part.id ?? String(names.size);
           const name = part.toolName ?? part.name ?? "tool";
           names.set(id, name);
+          if (SELF_RENDERING.has(name)) { selfRender.add(id); started.add(id); producedOutput = true; break; } // the tool drives its own UI
           const arg = argSummary(name, part.input ?? part.args);
           // If the input streamed, the head is already set — just finalize it and
           // flush any trailing partial line. If it didn't (provider sent only the
@@ -326,6 +342,7 @@ export async function runTask(opts: {
         }
         case "tool-result": {
           const id = part.toolCallId ?? part.id ?? "";
+          if (selfRender.has(id)) break; // delegate tools already emitted their own end
           const output = part.output ?? part.result;
           if (output && typeof output === "object" && Array.isArray(output.diff)) {
             onEvent({ type: "tool-end", id, ok: true, summary: String(output.summary ?? "done"), diff: output.diff });
@@ -337,6 +354,7 @@ export async function runTask(opts: {
         }
         case "tool-error": {
           const id = part.toolCallId ?? part.id ?? "";
+          if (selfRender.has(id)) break; // delegate tools report their own failures
           onEvent({ type: "tool-end", id, ok: false, summary: String(part.error ?? "failed").slice(0, 64) });
           onEvent({ type: "phase", label: "tool failed", state: "err" });
           break;

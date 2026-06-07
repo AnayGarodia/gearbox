@@ -43,6 +43,13 @@ const SUBAGENT_SYSTEM =
 
 let counter = 0;
 
+// The sub-agent's report's first meaningful line — a far more useful tool-end
+// summary than repeating the model label (already shown in the head).
+const reportLine = (text: string): string => {
+  const l = (text.split("\n").find((x) => x.trim()) ?? "").trim();
+  return l.length > 64 ? l.slice(0, 63).trimEnd() + "…" : l;
+};
+
 // ── routing a sub-task ────────────────────────────────────────────────────────
 type Routed = { model: ModelSpec; account?: Account };
 function routeSubTask(task: string, kind?: z.infer<typeof KIND>): Routed | { error: string } {
@@ -179,7 +186,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
         onEvent({ type: "tool-end", id, ok: false, summary: `${routed.model.label} · crashed` });
         return `sub-agent (${routed.model.label}) crashed: ${e?.message ?? e}`;
       }
-      onEvent({ type: "tool-end", id, ok: res.ok, summary: routed.model.label });
+      onEvent({ type: "tool-end", id, ok: res.ok, summary: reportLine(res.text) || routed.model.label });
       return res.text;
     },
   });
@@ -222,7 +229,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
           let res: { ok: boolean; text: string };
           try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir }); }
           catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
-          onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: j.routed.model.label });
+          onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: reportLine(res.text) || j.routed.model.label });
           return { j, res, changed: res.ok ? changesIn(j.dir, true) : [] }; // sub-agent's changes vs the seeded baseline
         }));
 

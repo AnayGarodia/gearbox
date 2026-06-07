@@ -92,8 +92,10 @@ function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
               </Text>
             );
           case "codespan":
+            // Color only, no background box (keeps dense `identifier`-heavy prose
+            // calm) — mirrors the fullscreen lines.ts codespan path.
             return (
-              <Text key={i} color={/[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent} backgroundColor={color.codeBg}>
+              <Text key={i} color={/[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent}>
                 {decode(t.text)}
               </Text>
             );

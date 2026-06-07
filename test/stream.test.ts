@@ -80,6 +80,29 @@ test("runTask streams write_file content incrementally as input arrives", async 
   expect(events.some((e) => e.type === "tool-end" && e.id === "t1")).toBe(true);
 });
 
+test("self-rendering tools (delegate_parallel) emit NO generic tool UI", async () => {
+  // delegate/delegate_parallel report their own rich progress via onEvent. The
+  // generic tool lifecycle must NOT also render them — that double-rendered the
+  // call and stamped a garbage `[object Object]` head from the {tasks:[…]} input.
+  const input = { tasks: [{ task: "a" }, { task: "b" }] };
+  const json = JSON.stringify(input);
+  const chunks: string[] = [];
+  for (let i = 0; i < json.length; i += 5) chunks.push(json.slice(i, i + 5));
+  async function* fakeStream() {
+    yield { type: "tool-input-start", toolCallId: "d1", toolName: "delegate_parallel" };
+    for (const c of chunks) yield { type: "tool-input-delta", toolCallId: "d1", inputTextDelta: c };
+    yield { type: "tool-call", toolCallId: "d1", toolName: "delegate_parallel", input };
+    yield { type: "tool-result", toolCallId: "d1", output: "Ran 2 sub-tasks in parallel" };
+    yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 2 } };
+  }
+  const events: AgentEvent[] = [];
+  await runTask({ model: {} as any, messages: [], onEvent: (e) => events.push(e), _stream: fakeStream() });
+  // No tool-start / tool-stream / tool-end for the delegate call id.
+  expect(events.some((e) => "id" in e && (e as any).id === "d1")).toBe(false);
+  // And crucially, the garbage head never appears anywhere.
+  expect(JSON.stringify(events)).not.toContain("[object Object]");
+});
+
 test("a stream error becomes ONE clean line, never the raw error object", async () => {
   // A fat APICallError-like object (the thing that got dumped to the screen).
   const big: any = Object.assign(new Error("Your credit balance is too low to access the Anthropic API."), {

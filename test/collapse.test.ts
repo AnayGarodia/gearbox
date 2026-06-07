@@ -61,7 +61,7 @@ test("a non-check shell command is kept verbatim", () => {
 
 test("retryPhrase reads naturally", () => {
   expect(retryPhrase(true, 1)).toBe("");
-  expect(retryPhrase(true, 2)).toBe("failed once, retried");
-  expect(retryPhrase(true, 3)).toBe("failed 2 times, retried");
+  expect(retryPhrase(true, 2)).toBe("retried once");
+  expect(retryPhrase(true, 3)).toBe("retried 2 times");
   expect(retryPhrase(false, 2)).toBe("failed after 2 attempts");
 });

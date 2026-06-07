@@ -66,7 +66,7 @@ src/
     failover.ts      runWithFailover: run a turn over the ranked account pool; on a credential failure before output, advance to the next; clear exhaustion errors
     cli-backend.ts   claude/codex CLI subprocess backend (for Pro/Max subscriptions)
     classify.ts      LLM task classifier (cheap model → routing kind) w/ keyword fast-path + persistent cache; runs before the selector seam
-    delegate.ts      `delegate` (one sub-task, main workspace) + `delegate_parallel` (2-6 independent sub-tasks at once, each in its own git worktree → concurrent writes isolated, disjoint changes merged back, same-file overlaps reported as conflicts). Each sub-agent routes to the best model (any provider); depth-1 (no recursion); runTask injected (no import cycle). Tools are root-aware (createTools(onEvent, root)) so a worktree scopes every file/shell op.
+    delegate.ts      `delegate` (one sub-task, main workspace) + `delegate_parallel` (2-6 independent sub-tasks at once, each in its own git worktree → concurrent writes isolated, disjoint changes merged back, same-file overlaps reported as conflicts). Each sub-agent routes to the best model (any provider); depth-1 (no recursion); runTask injected (no import cycle). Tools are root-aware (createTools(onEvent, root)) so a worktree scopes every file/shell op. These tools **self-render** their progress via onEvent (the `#N → model · task` sub-lines, the merge summary), so run.ts's `SELF_RENDERING` set SKIPS its generic tool UI for them — otherwise each call double-renders, once with a garbage `[object Object]` head from the `{tasks:[…]}` input. Don't remove that skip.
     mock.ts          scripted demo stream (runs with no API key; used by tests)
   ui/
     theme.ts         colors + glyphs (the look)

@@ -229,7 +229,10 @@ function inlineSpans(tokens: any[], base: Style): Span[] {
         out.push(...inlineSpans(t.tokens, { ...base, italic: true }));
         break;
       case "codespan":
-        out.push({ text: t.text, color: /[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent, bg: color.codeBg });
+        // Color only, no background box — a dense paragraph of `identifiers` (a
+        // coverage report, a gap list) turned into a wall of grey boxes. The
+        // accent/path color is enough to set inline code apart from prose.
+        out.push({ text: t.text, color: /[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent });
         break;
       case "del":
         out.push(...inlineSpans(t.tokens, { ...base, dim: true }));
@@ -447,8 +450,12 @@ export function staticItemLines(it: Item, width: number): Line[] {
 
 export function itemsToLines(items: Item[], width: number, expand = false): Line[] {
   const out: Line[] = [];
+  let prevKind: string | null = null;
   for (const it of items) {
-    out.push(BLANK);
+    // One blank line separates items — EXCEPT between consecutive tool calls, so a
+    // run of reads/edits reads as one tight block instead of a sparse ladder.
+    if (!(prevKind === "tool" && it.kind === "tool")) out.push(BLANK);
+    prevKind = it.kind;
     if (it.kind === "user" || it.kind === "assistant") {
       out.push(...staticItemLines(it, width));
       continue;

@@ -120,8 +120,11 @@ export function StatusBar({
             The model name is already on the left, so the right reminds you of the
             one thing that's different: it runs its own tools/permissions. */}
         {subscription ? <Text><Text color={color.ok}>subscription</Text><Text color={color.faint}> {glyph.bullet} </Text><Text color={color.text}>own tools/perms</Text></Text> : null}
+        {/* Compact: just "auto · <kind>". The full reason (caps · $/Mtok) lives in
+            the per-turn provenance line; repeating it here overflows the bar and
+            forced both halves to truncate mid-token. */}
         {!subscription && routing ? <Text color={color.accentDim}>auto</Text> : null}
-        {!subscription && routing ? ` ${glyph.bullet} ${routing}` : null}
+        {!subscription && routing ? ` ${glyph.bullet} ${routing.split(" · ")[0]}` : null}
       </Text>
     </Box>
   );

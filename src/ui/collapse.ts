@@ -132,5 +132,7 @@ export function retryPhrase(ok: boolean, attempts: number): string {
   if (attempts <= 1) return "";
   const fails = ok ? attempts - 1 : attempts;
   const n = fails === 1 ? "once" : `${fails} times`;
-  return ok ? `failed ${n}, retried` : `failed after ${attempts} attempts`;
+  // Passed-on-retry reads calmer as "retried N" than "failed N times, retried"
+  // (the latter looks like a failure at a glance even though the check is green).
+  return ok ? `retried ${n}` : `failed after ${attempts} attempts`;
 }
