@@ -6,9 +6,10 @@ import React from "react";
 import { render } from "ink";
 import { createInterface } from "node:readline/promises";
 import { execFileSync, spawnSync } from "node:child_process";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { App } from "./ui/App.tsx";
 import { FixedSelector } from "./model/selector.ts";
 import { RoutingSelector } from "./model/router.ts";
@@ -20,7 +21,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.2.31";
+const VERSION = "0.2.32";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -343,10 +344,23 @@ if (args[0] === "upgrade" || args[0] === "update") {
   // path.resolve. fileURLToPath(import.meta.url) works on both.
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   if (!existsSync(resolve(root, ".git"))) {
-    // The published/installed build: update via the official installer, which
-    // re-fetches the latest version from npm.
-    console.log("Update to the latest version:");
-    console.log("  curl -fsSL https://unpkg.com/gearbox-code@latest/install.sh | bash");
+    // The published/installed build: actually RUN the official installer, which
+    // re-fetches @latest from npm and replaces the binary. No shell string (no
+    // injection): download with curl, then run the script with bash. Skip the
+    // post-install onboarding prompt — this is an update, already set up.
+    const url = "https://unpkg.com/gearbox-code@latest/install.sh";
+    const script = join(tmpdir(), "gearbox-install.sh");
+    const manual = `  curl -fsSL ${url} | bash`;
+    try {
+      console.log("→ updating Gearbox to the latest version…");
+      execFileSync("curl", ["-fsSL", url, "-o", script], { stdio: ["ignore", "ignore", "inherit"] });
+      execFileSync("bash", [script], { stdio: "inherit", env: { ...process.env, GEARBOX_SKIP_ONBOARD: "1" } });
+      console.log("✓ updated · run `gearbox` to use the new version");
+    } catch (e: any) {
+      console.log(`Update failed: ${e?.shortMessage ?? e?.message ?? e}`);
+      console.log("Run it manually:");
+      console.log(manual);
+    }
     process.exit(0);
   }
   try {
