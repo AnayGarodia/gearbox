@@ -30,27 +30,27 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ◑ **i** end-of-turn summary — FIXED for the big gap: delegated edits now emit `file-change` events (delegate.ts merge-back), so a delegation turn gets a real summary + post-turn verification + /undo + /diff (they were invisible before). file-change now also feeds `changedFiles`. REMAINING: pure read-only/chat turns still rely on the assistant prose + the `took Ns` line (no structured recap). [v0.2.41]
 - ◑ **ii** cost: FIXED cache pricing (reads 10% / writes 125%), flat-rate seats now $0, profile-corpus fallback; cache tokens threaded into TurnMeta + ledger so both views agree. [v0.2.39] REMAINING: session-vs-account divergence is mostly correct-by-design (account ledger spans sessions + delegation); discovered/gateway models still have no price (unknown, not $0-by-bug). C-A (dropped failed-attempt tokens) → network group.
 - ☑ **iii** looks dead on reads/delegate — FIXED: the mascot "tool" state animated `anim:{}`→`overlay:"load"` (a loading fill) and "thinking"→`overlay:"dots"`, so Boo visibly moves through a long read/90s delegate; the Working strip already ticks live elapsed + "esc to interrupt". (Mascot.tsx) [v0.2.41]  ⚠ verify the feel in a live terminal.
-- ☐ **iv** ↑ history doesn't recall once you've typed (multi-line draft + no live-draft preservation; histIdx not reset on edit). *(input)*
-- ☐ **v** /prefer no-op when pinned (setSelector keeps FixedSelector); also silently ignored when the model is below the kind's quality bar. *(routing/input)*
+- ☑ **iv** ↑ history + draft — FIXED: navHistory takes a liveLine, App stashes the draft when stepping into history and restores it on the way down; typing now detaches from the history cursor (I-E). (history.ts, App.tsx) [v0.2.42]
+- ☑ **v** /prefer no-op — FIXED: applies immediately on routing, else saved with a clear "applies once routing is on" notice; and an explicit /prefer now overrides the quality bar (R-2: preferredIn searches the full pool). (App.tsx, router.ts) [v0.2.42]
 - ☐ **vi** /ask refuses on subscription (hard-wired to runCompletion/AI-SDK). → route via CLI seat. *(subscription)*
 - ☑ **vii** offline ~30s freeze — FIXED: `maxRetries` is now threaded (runTask/runCompletion/compact) and dropped to 0 when the probe says offline, so a no-network turn fails in one connect-timeout instead of the 3-attempt storm; + L-G friendlier message. (run.ts, App.tsx onlineRef, compact.ts) [v0.2.40]
 - ⚠ **viii** blank screenful after exit: no SIGINT/SIGHUP restore; restore order wrong; title/cursor not reset. *(terminal)*
 - ☑ **ix** status bar truncates "auto"→"a…" — FIXED: `fitStatusFields` sheds low-priority left fields by width, reserves the right side. (StatusBar.tsx + statusbar-layout.test) [v0.2.38]
 - ☑ **x** /context 1M window on haiku — FIXED: route with the real last prompt + use the answering model's / subscription window. (App.tsx /context handler) [v0.2.39]
 - ⚠ **xi** scrolling jumpy: 1 line/notch + per-frame easing re-render + atBottom re-pin fighting manual scroll. *(terminal)*
-- ☐ **xii** large paste floods: markerless-paste fallback too narrow (needs >240 chars AND newline AND single read). *(input)*
+- ☑ **xii** paste flood — FIXED: the markerless fallback now sanitizes first and treats any >200-char clean chunk as a paste (single-line or multi-line, and even when a stray marker byte slips past the bracketed branch). (App.tsx) [v0.2.42]  (I-A: split-across-reads still floods — needs a time-window coalescer; noted.)
 - ⚠ **xiii** usage shows "ok ok": real % probe only runs behind the statusPinned toggle, never at boot / inline; silent null fallback to seeded "ok". *(subscription)*
 - ☐ **xiv** images refused on subscription: cli-backend has no image support; App hard-blocks. → pass image paths to CLI. *(subscription)*
 - ☐ **xv** /model <name> leaves subscription for metered API (pin path ignores seats). *(subscription/routing)*
 - ☐ **xvi** "use opus" ignored → ran sonnet (no NL model parser; delegation re-routes independently). *(routing)*
 - ☑ **xvii** "took 1m 60s" — FIXED: round whole seconds before splitting; carry to minutes. (App.tsx formatDuration + duration.test) [v0.2.38]
 - ☑ **xviii** /budget no-op — FIXED: routing-context synthesizes an `env:<provider>` state from budget−spend; env turns now ledger under `env:<provider>` so the budget depletes + shows in /usage. (routing-context.ts + App.tsx) [v0.2.39]
-- ☐ **xix** clear+resume loads the empty post-clear session (listSessions sorts purely by updatedAt; /clear doesn't persist outgoing first). *(session)*
+- ☑ **xix** clear+resume wrong session — FIXED: /clear persists the outgoing conversation first; /resume excludes the session you're in (it was the newest entry you kept landing on) and labels rows with turn count + relative time. (App.tsx) [v0.2.42]
 
 ## Additional bugs found by the audit (~48)
 ### Routing
 - ☐ R-1 status-bar model can disagree with what ran (failover + /ask don't set lastPick).
-- ☐ R-2 /prefer below the quality bar silently ignored (preferredIn only searches `clears`).
+- ☑ R-2 /prefer below the bar — FIXED with v (preferredIn searches p.pool). [v0.2.42]
 - ☐ R-3 subscription seat for a non-native sdkId loses all profile data → can fail the quality bar and drop the subscription from candidacy.
 - ☐ R-4 effort can hard-THROW mid-turn when routing picks a model lacking the active effort tier (should clamp).
 - ☐ R-5 env-provider cooldown is provider-wide: one 402/quota on one model benches the whole provider for 5 min.
@@ -77,9 +77,9 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 ### Session / input / paste
 - ☐ I-A markerless paste split across reads still floods (per-read size check, no time-window coalescer).
 - ☐ I-B unterminated bracketed paste freezes input (no timeout/escape).
-- ☐ I-C typed @mention with trailing punctuation silently doesn't attach.
+- ☑ I-C @mention trailing punctuation — FIXED: progressively strips trailing )].,;:!?"'>}  (files.ts). [v0.2.42]
 - ☐ I-D quitting never persists (only turn-end); exit()/⌃C-quit have no persist hook.
-- ☐ I-E histIdx not reset on edit (edit a recalled entry then ↑ discards edits).
+- ☑ I-E histIdx reset on edit — FIXED with iv. [v0.2.42]
 - ☐ I-F /resume <n> uses a stale snapshot (resumeListRef vs fresh sessions).
 - ☐ I-G title truncation mismatch (80 vs 42 vs untruncated) — cosmetic.
 - ☐ I-H paste chip store cleared globally on first submit.

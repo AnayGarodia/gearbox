@@ -52,11 +52,17 @@ export function expandMentions(prompt: string, cwd = process.cwd()): { text: str
   const tokens = [...prompt.matchAll(/@([^\s]+)/g)].map((m) => m[1]!);
   const attached: string[] = [];
   let extra = "";
-  for (const t of tokens) {
-    const p = resolve(cwd, t);
-    if (!existsSync(p)) continue;
+  for (const raw of tokens) {
+    // A hand-typed mention often carries trailing punctuation ("@foo.ts," or
+    // "(@foo.ts)") — try the literal, then progressively strip trailing )].,;:!?"'>}
+    // so the file still attaches instead of silently dropping.
+    let trimmed = raw;
+    const candidates = [raw];
+    while (/[)\].,;:!?'"}>]$/.test(trimmed)) { trimmed = trimmed.slice(0, -1); if (trimmed) candidates.push(trimmed); }
+    const t = candidates.find((c) => existsSync(resolve(cwd, c)));
+    if (!t) continue;
     try {
-      const content = readFileSync(p, "utf8").slice(0, MAX_ATTACH);
+      const content = readFileSync(resolve(cwd, t), "utf8").slice(0, MAX_ATTACH);
       extra += `\n\n=== ${t} ===\n${content}`;
       attached.push(t);
     } catch {

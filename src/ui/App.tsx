@@ -531,6 +531,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const curAsstRef = useRef<number | null>(null);
   const historyRef = useRef<string[]>([]);
   const histIdxRef = useRef<number | null>(null);
+  const liveLineRef = useRef(""); // the in-progress draft, stashed when you step up into history so ↓ restores it
   const lastPromptRef = useRef<string | null>(null);
   const routedRef = useRef<{ model: ModelSpec; reason: string } | null>(null); // the real per-turn pick
   // Active CLI-backed subscription account (claude/codex). When set, turns run
@@ -2278,6 +2279,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           exit();
           return;
         case "clear":
+          persist(); // save the outgoing conversation BEFORE resetting, so it's resumable (not silently abandoned)
           setItems([]);
           msgRef.current = [];
           itemsRef.current = [];
@@ -2294,16 +2296,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return;
         case "resume": {
           echo(text);
-          const sessions = listSessions();
+          // Exclude the session you're already in — it was listed as the newest
+          // entry, so after /clear+talk "/resume 1" kept loading the just-cleared
+          // conversation instead of the real one before it.
+          const sessions = listSessions().filter((s) => s.id !== sessionRef.current.id);
           if (!arg) {
             resumeListRef.current = sessions;
             if (!sessions.length) {
-              notice("no saved sessions for this project yet");
+              notice("no other saved sessions for this project yet");
               return;
             }
+            const rel = (t: number) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
             const rows = sessions
               .slice(0, 10)
-              .map((s, i) => `  ${i + 1}. ${new Date(s.updatedAt).toLocaleString()} · ${s.title || "(untitled)"} (${s.items.length} msgs)`)
+              .map((s, i) => `  ${i + 1}. ${rel(s.updatedAt)} · ${s.turns?.length ?? 0} turn${(s.turns?.length ?? 0) === 1 ? "" : "s"} · ${s.title || "(untitled)"}`)
               .join("\n");
             notice("resume a session · /resume <n>:\n" + rows);
             return;
@@ -2694,8 +2700,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           const pref = confirmRoutingPreference({ kind: kindRaw as PreferenceKind, modelId: r.modelId, repo: process.cwd() });
-          setSelector((s) => (s instanceof RoutingSelector ? new RoutingSelector() : s));
-          notice(`remembered: prefer ${pref.modelId} for ${pref.kind} tasks`);
+          // A preference only takes effect under routing. If a model is pinned
+          // (FixedSelector) or a subscription is active, switching selectors here
+          // would either be a silent no-op (the old bug) or yank their pin — so
+          // save it and say plainly when it applies.
+          if (selectorRef.current instanceof RoutingSelector) {
+            setSelector(new RoutingSelector()); // re-instantiate so the new pref is read
+            notice(`remembered: prefer ${pref.modelId} for ${pref.kind} tasks`);
+          } else {
+            notice(`remembered: prefer ${pref.modelId} for ${pref.kind} tasks · applies once routing is on (/model auto${activeCliRef.current ? " · /account off to leave the subscription" : ""})`);
+          }
           return;
         }
         case "budget": {
@@ -3599,17 +3613,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (!busyRef.current && input.length > 3 && !input.includes("\n")) {
       if (attachPastedPath(input, editRef.current)) return;
     }
-    // Fallback for terminals that DON'T wrap pastes in bracketed markers: a single
-    // large multi-line chunk is almost certainly a paste · collapse it too.
-    if (!busyRef.current && input.length > 240 && input.includes("\n")) {
+    // Fallback for terminals that DON'T wrap pastes in bracketed markers (tmux
+    // without passthrough, some emulators, SSH) — and for ones that leave a stray
+    // marker byte so the bracketed branch above misses. SANITIZE first (drops ESC
+    // sequences / paste markers / control bytes), then treat a large clean chunk as
+    // a paste: you can't type 200+ chars in one keypress event, newline or not, so
+    // the old "&& includes('\n')" requirement let big single-line pastes flood. A
+    // control burst sanitizes to ~nothing, so it's never caught here.
+    if (!busyRef.current) {
       const clean = sanitizeInputText(input);
-      const lines = clean.split("\n").length;
-      if (lines > 4 || clean.length > 400) {
-        const id = ++pasteIdRef.current;
-        const ph = `[Pasted #${id}: ${lines} line${lines === 1 ? "" : "s"} · ${clean.length.toLocaleString()} chars]`;
-        pasteStoreRef.current.set(ph, clean);
+      if (clean.length > 200) {
+        const lines = clean.split("\n").length;
         const e = editRef.current;
-        setEdit({ value: e.value.slice(0, e.cursor) + ph + e.value.slice(e.cursor), cursor: e.cursor + ph.length });
+        if (clean.length > 400 || lines > 4) {
+          const id = ++pasteIdRef.current;
+          const ph = `[Pasted #${id}: ${lines} line${lines === 1 ? "" : "s"} · ${clean.length.toLocaleString()} chars]`;
+          pasteStoreRef.current.set(ph, clean);
+          setEdit({ value: e.value.slice(0, e.cursor) + ph + e.value.slice(e.cursor), cursor: e.cursor + ph.length });
+        } else {
+          // Medium paste: insert literally (no per-line submit), don't chip.
+          setEdit({ value: e.value.slice(0, e.cursor) + clean + e.value.slice(e.cursor), cursor: e.cursor + clean.length });
+        }
         return;
       }
     }
@@ -3621,13 +3645,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       switch (action.type) {
         case "edit":
           if (suggestion) setSuggestion(null);
+          histIdxRef.current = null; // typing detaches from the history cursor (I-E)
           setEdit(action.state);
           break;
         case "submit":
           submit(editRef.current.value);
           break;
         case "history": {
-          const r = navHistory(historyRef.current, histIdxRef.current, action.dir);
+          if (histIdxRef.current === null) liveLineRef.current = editRef.current.value; // stash the live draft before stepping into history
+          const r = navHistory(historyRef.current, histIdxRef.current, action.dir, liveLineRef.current);
           histIdxRef.current = r.idx;
           setEdit({ value: r.value, cursor: r.value.length });
           break;
@@ -3646,13 +3672,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     switch (action.type) {
       case "edit":
         if (suggestion) setSuggestion(null);
+        histIdxRef.current = null; // typing detaches from the history cursor (I-E)
         setEdit(action.state);
         break;
       case "submit":
         submit(editRef.current.value);
         break;
       case "history": {
-        const r = navHistory(historyRef.current, histIdxRef.current, action.dir);
+        if (histIdxRef.current === null) liveLineRef.current = editRef.current.value; // stash the live draft before stepping into history
+        const r = navHistory(historyRef.current, histIdxRef.current, action.dir, liveLineRef.current);
         histIdxRef.current = r.idx;
         setEdit({ value: r.value, cursor: r.value.length });
         break;

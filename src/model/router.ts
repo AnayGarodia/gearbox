@@ -191,7 +191,10 @@ export class RoutingSelector implements ModelSelector {
       return { model: p.fallback, reason: "only model with a key", backend: { kind: "in-loop" } };
     }
     const candidates = p.clears.length ? p.clears : p.pool;
-    const preferred = this.preferredIn(p.kind, candidates);
+    // An EXPLICIT /prefer overrides the quality-bar default, so look it up in the
+    // whole pool — otherwise "prefer haiku for code" was silently ignored because
+    // haiku sits below the code bar and never entered `clears`.
+    const preferred = this.preferredIn(p.kind, p.pool);
     if (preferred) return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
 
     const best = pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens });
@@ -209,7 +212,7 @@ export class RoutingSelector implements ModelSelector {
       return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: p.fallback ? `only ${p.fallback.label} has a key` : "no model available" };
     }
     const candidates = p.clears.length ? p.clears : p.pool;
-    const preferred = this.preferredIn(p.kind, candidates);
+    const preferred = this.preferredIn(p.kind, p.pool); // explicit pref overrides the bar (match select())
 
     // Score the WHOLE pool (incl. below-bar) for display; the winner is chosen
     // only from the bar-clearing set, matching select().

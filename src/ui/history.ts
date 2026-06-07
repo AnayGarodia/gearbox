@@ -4,16 +4,17 @@ export function navHistory(
   history: string[],
   idx: number | null,
   dir: "up" | "down",
+  liveLine = "", // the in-progress draft to restore when returning to the live line
 ): { value: string; idx: number | null } {
-  if (history.length === 0) return { value: "", idx };
+  if (history.length === 0) return { value: liveLine, idx };
   if (dir === "up") {
     const next = idx === null ? history.length - 1 : Math.max(0, idx - 1);
     return { value: history[next] ?? "", idx: next };
   }
   // down
-  if (idx === null) return { value: "", idx: null };
+  if (idx === null) return { value: liveLine, idx: null };
   const next = idx + 1;
-  if (next >= history.length) return { value: "", idx: null }; // back to the live line
+  if (next >= history.length) return { value: liveLine, idx: null }; // back to the live line → restore the draft
   return { value: history[next] ?? "", idx: next };
 }
 
