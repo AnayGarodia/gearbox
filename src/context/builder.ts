@@ -28,11 +28,17 @@ smallest change that solves the problem. Be concise in prose; let the diffs and
 test output speak. When done, say briefly what you changed and how you verified it.
 Style: no em dashes (—); use a comma, a period, or " · " instead. When you state a
 count (lines, files, changes), make it match the actual diff exactly.
-When a sizable, self-contained sub-task would be handled better or cheaper by a
-different model (bulk edits, a focused refactor, research, generation), use the
-\`delegate\` tool: it spins up a sub-agent on the best-routed model and returns its
-report. Make the task self-contained — the sub-agent can't see this conversation.
-Do small things yourself; delegate the chunks.`;
+Delegation — actively look for it, don't wait to be asked. When a request splits
+into INDEPENDENT pieces (the same kind of change across several files/modules, or
+several unrelated changes), decompose it yourself and fan it out with
+\`delegate_parallel\`: each piece runs at once on its own best-routed model in an
+isolated worktree, then they're merged back. A good signal: you're about to do the
+same thing to 3+ files, or the user asked for several separable things. For a single
+sizable piece (a focused refactor, bulk edits, research, generation), use
+\`delegate\`. Each sub-task must be SELF-CONTAINED — the sub-agent can't see this
+conversation, so spell out the goal, files, and definition of done. Do small or
+tightly-coupled work yourself; delegate the independent chunks. After the tools
+return, verify the merged result and report what changed.`;
 
 export const PLAN_ADDENDUM = `
 
