@@ -31,6 +31,7 @@ import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSp
 import { Panel } from "./components/Panel.tsx";
 import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, type PanelState, type PanelModelRow } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
+import { classifyTask, type TaskKind } from "../agent/classify.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount, defaultAccount } from "../accounts/store.ts";
@@ -1588,7 +1589,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // account is out of quota/credit/rate, park it (the router then routes
       // around it), narrate plainly, re-select, and continue · up to MAX hops.
       const MAX_FAILOVERS = 2;
-      let choice = sel.select({ prompt, kind: plan ? "plan" : undefined, requires });
+      // Intelligent routing: a cheap model classifies the task → the router sets the
+      // right quality bar (e.g. "explain this regex" → chat → Haiku, not Sonnet).
+      // Plan mode forces "plan"; a pinned model (FixedSelector) ignores kind, so we
+      // only spend the classify call when auto-routing. Falls back to keyword internally.
+      let routedKind: TaskKind | undefined = plan ? "plan" : undefined;
+      if (!routedKind && sel instanceof RoutingSelector) {
+        onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
+        routedKind = await classifyTask(prompt, signal);
+      }
+      let choice = sel.select({ prompt, kind: routedKind, requires });
       for (let hop = 0; ; hop++) {
         const a = await runAttempt(choice);
         if (!a.failure) { emitTerminal(false, undefined, a.usage); return { messages: a.messages, usage: a.usage }; }
@@ -1596,7 +1606,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (!exhausted || hop >= MAX_FAILOVERS) { emitTerminal(true, a.failure.message, a.usage); return { messages: a.messages, usage: a.usage }; }
         markExhausted(a.cooldownKey, DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: plan ? "plan" : undefined, requires }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
         const nextKey = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         if (!next || nextKey === a.cooldownKey) { emitTerminal(true, a.failure.message, a.usage); return { messages: a.messages, usage: a.usage }; }
         onEvent({ type: "phase", label: "failover", detail: `${choice.model.label} ${shortFailure(a.failure.message)} → ${next.model.label}, continuing`, state: "running" });
