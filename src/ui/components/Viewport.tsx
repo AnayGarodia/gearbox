@@ -84,9 +84,11 @@ export function Viewport({ lines, scrollTop, height, width, selection }: { lines
       <Box flexDirection="column" width={1}>
         {Array.from({ length: height }, (_, i) => {
           const on = hasBar && i >= thumbStart && i < thumbStart + thumb;
+          // Thumb only — a full-height track (a column of `│` down the edge) read
+          // as visual noise. The short thumb floating on its position is enough.
           return (
-            <Text key={i} color={on ? color.accentDim : color.faint}>
-              {on ? "┃" : hasBar ? "│" : " "}
+            <Text key={i} color={color.accentDim}>
+              {on ? "┃" : " "}
             </Text>
           );
         })}

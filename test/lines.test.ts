@@ -79,3 +79,30 @@ test("diff output paints added and removed rows with full-line backgrounds", () 
     expect(lineLen(row)).toBe(72);
   }
 });
+
+test("markdown tables render as aligned columns, not a '·'-joined blob", () => {
+  const md = "| File | Tests |\n| --- | --- |\n| `a.ts` | 103 |\n| `b.ts` | 14 |";
+  const lines = itemsToLines([{ kind: "assistant", id: 1, text: md, done: true }], 80);
+  const text = lines.map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(text).toContain("File");
+  expect(text).toContain("Tests");
+  expect(text).toContain("103");
+  expect(text).toMatch(/─{3,}/); // a header underline rule
+  expect(text).not.toContain("·  "); // the old flattened cell separator is gone
+  // header label and its column value line up (same start column)
+  const fileCol = lines.find((l) => l.map((s) => s.text).join("").includes("File"))!;
+  const aCol = lines.find((l) => l.map((s) => s.text).join("").includes("a.ts"))!;
+  const startOf = (l: typeof fileCol, needle: string) => l.map((s) => s.text).join("").indexOf(needle);
+  expect(startOf(aCol, "a.ts")).toBe(startOf(fileCol, "File"));
+});
+
+test("consecutive tool calls render tight (no blank line between them)", () => {
+  const tools: Item[] = [
+    { kind: "tool", id: 1, callId: "a", name: "read_file", arg: "x.ts", status: "ok", summary: "10 lines" },
+    { kind: "tool", id: 2, callId: "b", name: "read_file", arg: "y.ts", status: "ok", summary: "20 lines" },
+  ];
+  const lines = itemsToLines(tools, 80);
+  const blanks = lines.filter((l) => l.length === 0).length;
+  // exactly ONE leading blank for the whole block — not one per tool.
+  expect(blanks).toBe(1);
+});

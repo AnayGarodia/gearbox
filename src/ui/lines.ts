@@ -309,10 +309,42 @@ function blockLines(tok: any, width: number): Line[] {
       return out;
     }
     case "table": {
-      const row = (cells: any[]) => cells.map((c) => (c.text ?? "")).join("  ·  ");
-      const out: Line[] = [];
-      out.push(...wrapSpans([{ text: row(tok.header ?? []), bold: true }], width));
-      for (const r of tok.rows ?? []) out.push(...wrapSpans([{ text: row(r) }], width));
+      // Aligned columns (was: cells flattened to a "·"-joined run that wrapped into
+      // an unreadable blob). Size each column to its content, shrink to fit width,
+      // truncate overflow with "…", keep inline styling (code/bold) in cells.
+      const header = (tok.header ?? []) as any[];
+      const rows = (tok.rows ?? []) as any[][];
+      const ncols = Math.max(header.length, ...rows.map((r) => r.length), 0);
+      if (!ncols) return [];
+      const cellSpans = (c: any, base: Style): Span[] =>
+        c?.tokens?.length ? inlineSpans(c.tokens, base) : [{ text: String(c?.text ?? ""), ...base }];
+      const spanW = (s: Span[]) => s.reduce((n, sp) => n + sp.text.length, 0);
+      const head = Array.from({ length: ncols }, (_, ci) => cellSpans(header[ci], { bold: true, color: color.text }));
+      const body = rows.map((r) => Array.from({ length: ncols }, (_, ci) => cellSpans(r[ci], { color: color.text })));
+
+      const GAP = 2; // spaces between columns
+      const natural = Array.from({ length: ncols }, (_, ci) => Math.max(spanW(head[ci]!), ...body.map((r) => spanW(r[ci]!)), 1));
+      const avail = Math.max(ncols * 5, width - GAP * (ncols - 1));
+      const totalNat = natural.reduce((a, b) => a + b, 0);
+      const widths = totalNat <= avail ? natural : natural.map((w) => Math.max(5, Math.floor((w / totalNat) * avail)));
+
+      const padCell = (spans: Span[], w: number): Span[] => {
+        if (spanW(spans) > w) {
+          const clipped = clipSpans(spans, Math.max(1, w - 1));
+          const len = spanW(clipped);
+          return [...clipped, { text: "…" + " ".repeat(Math.max(0, w - len - 1)), color: color.faint }];
+        }
+        const pad = w - spanW(spans);
+        return pad > 0 ? [...spans, { text: " ".repeat(pad) }] : spans;
+      };
+      const joinRow = (cells: Span[][]): Line => {
+        const line: Line = [];
+        cells.forEach((c, i) => { if (i > 0) line.push({ text: " ".repeat(GAP) }); line.push(...padCell(c, widths[i]!)); });
+        return line;
+      };
+      const out: Line[] = [joinRow(head)];
+      out.push([{ text: widths.map((w) => "─".repeat(w)).join("─".repeat(GAP)), color: color.faint }]);
+      for (const r of body) out.push(joinRow(r));
       return out;
     }
     default:

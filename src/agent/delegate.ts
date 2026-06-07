@@ -50,6 +50,17 @@ const reportLine = (text: string): string => {
   return l.length > 64 ? l.slice(0, 63).trimEnd() + "…" : l;
 };
 
+// One-line task preview for the tool head: collapse whitespace and truncate at a
+// word boundary, stripping a dangling quote/backtick/punctuation so it never ends
+// mid-token (the "… test/tokens.test.ts for `" cut-off).
+const clipTask = (s: string, max: number): string => {
+  const one = s.replace(/\s+/g, " ").trim();
+  if (one.length <= max) return one;
+  const cut = one.slice(0, max);
+  const at = cut.lastIndexOf(" ");
+  return (at > max * 0.6 ? cut.slice(0, at) : cut).replace(/[\s,.;:`'"(–-]+$/, "") + "…";
+};
+
 // ── routing a sub-task ────────────────────────────────────────────────────────
 type Routed = { model: ModelSpec; account?: Account };
 function routeSubTask(task: string, kind?: z.infer<typeof KIND>): Routed | { error: string } {
@@ -178,7 +189,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       const routed = routeSubTask(task, kind);
       if ("error" in routed) return `delegation skipped: ${routed.error}. Do it yourself.`;
       const id = `delegate-${++counter}`;
-      onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label} · ${task.slice(0, 72)}` });
+      onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label} · ${clipTask(task, 72)}` });
       let res: { ok: boolean; text: string };
       try {
         res = await runOne(run, routed, task, { signal }); // sequential → runs in the main workspace
@@ -225,7 +236,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
         // 2) Run all sub-agents CONCURRENTLY, each in its own worktree.
         const outcomes = await Promise.all(jobs.map(async (j) => {
           const jid = `${groupId}:${j.idx}`;
-          onEvent({ type: "tool-start", id: jid, name: "delegate", arg: `#${j.idx + 1} → ${j.routed.model.label} · ${j.task.slice(0, 56)}` });
+          onEvent({ type: "tool-start", id: jid, name: "delegate", arg: `#${j.idx + 1} → ${j.routed.model.label} · ${clipTask(j.task, 56)}` });
           let res: { ok: boolean; text: string };
           try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir }); }
           catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
