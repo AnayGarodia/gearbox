@@ -7,7 +7,9 @@ import { color, glyph } from "../theme.ts";
 // canonical home); the working dir lives in /context. The right corner is the
 // account so it never echoes the wordmark (the project dir is literally
 // "gearbox", which read as the wordmark twice).
-export function Banner({ account, width }: { model?: string; account?: string | null; width?: number }) {
+// Memoized: props (account, width) are stable while scrolling/streaming, so the
+// title bar skips those re-renders (it only changes on account switch or resize).
+function BannerImpl({ account, width }: { model?: string; account?: string | null; width?: number }) {
   const { stdout } = useStdout();
   const w = width ?? Math.min(stdout?.columns ?? 80, 100);
   return (
@@ -26,3 +28,5 @@ export function Banner({ account, width }: { model?: string; account?: string | 
     </Box>
   );
 }
+
+export const Banner = React.memo(BannerImpl);

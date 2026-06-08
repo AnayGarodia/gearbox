@@ -723,7 +723,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     atBottomRef.current = target >= max;
     setScrollTop(target);
   }, [stopScrollAnim]);
+  // Frame-throttle wheel scrolling. A trackpad / momentum scroll fires FAR more than
+  // 60 events/sec, and each one re-renders + re-diffs the whole fullscreen frame —
+  // the residual "mouse scroll feels laggy". Accumulate the delta and apply it at
+  // most once per ~16ms: leading edge so the first notch is instant, trailing edge
+  // so the rest stays smooth. Caps scroll renders at ~60fps regardless of event rate.
+  const scrollAccumRef = useRef(0);
+  const scrollFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushScroll = useCallback(() => {
+    scrollFlushRef.current = null;
+    const d = scrollAccumRef.current;
+    scrollAccumRef.current = 0;
+    if (d) scrollBy(d);
+  }, [scrollBy]);
+  const queueScroll = useCallback((delta: number) => {
+    scrollAccumRef.current += delta;
+    if (scrollFlushRef.current) return; // a trailing flush is scheduled; it picks up the accumulated delta
+    flushScroll(); // leading edge: instant first response
+    scrollFlushRef.current = setTimeout(flushScroll, 16);
+  }, [flushScroll]);
   useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear any glide timer on unmount
+  useEffect(() => () => { if (scrollFlushRef.current) clearTimeout(scrollFlushRef.current); }, []); // clear the scroll-throttle timer on unmount
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
   useEffect(() => () => { if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current); }, []); // clear the paste coalescer timer on unmount
 
@@ -986,14 +1006,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           else if (p.kind === "accounts") setPanel({ ...p, index: clampIndex(p.index + delta, panelAccountSlugsRef.current.length) });
           else if (p.kind === "sessions") setPanel({ ...p, index: clampIndex(p.index + delta, panelSessionsRef.current.length) });
           else setPanel({ ...p, index: clampIndex(p.index + delta, filterModelRows(buildPanelModelRows(), p.filter).length) });
-        } else scrollBy(delta);
+        } else queueScroll(delta); // frame-throttled (≤~60fps) so fast scrolls don't flood renders
       }
     };
     stdin.on("data", onData);
     return () => {
       stdin.off?.("data", onData);
     };
-  }, [stdin, fullscreen, rows, scrollBy, copyWithFeedback]);
+  }, [stdin, fullscreen, rows, scrollBy, queueScroll, copyWithFeedback]);
 
   // Save the current conversation (best-effort) · model-agnostic messages + the UI
   // transcript + per-turn model/usage, so it resumes faithfully and feeds routing.

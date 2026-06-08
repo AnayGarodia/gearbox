@@ -6,7 +6,9 @@ import { caretPos, selectionRange, type Edit } from "../input.ts";
 // Borderless composer: a hairline rule, then a `❯` prompt with the input and a
 // terminal-native block cursor (`inverse`). Multi-line aware · continuation lines
 // align under the prompt and the cursor lands on the right row/column. No box.
-export function Composer({
+// Memoized: its props (value/cursor/placeholder/…, all primitives) don't change
+// while scrolling or streaming, so it skips re-rendering on those frames.
+function ComposerImpl({
   value,
   cursor,
   selectionAnchor,
@@ -119,3 +121,5 @@ export function Composer({
     </Box>
   );
 }
+
+export const Composer = React.memo(ComposerImpl);
