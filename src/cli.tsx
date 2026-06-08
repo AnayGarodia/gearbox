@@ -22,7 +22,7 @@ import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 import { wordmarkGradient } from "./ui/theme.ts";
 
-const VERSION = "0.2.56";
+const VERSION = "0.2.57";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -621,6 +621,19 @@ for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) {
 // newlines are literal (not Enter-presses that submit mid-paste) and the whole
 // blob can be assembled + collapsed to a chip. The App strips the markers and
 // buffers across chunks (see the paste assembly in useInput).
+// Strip \x1b[3J (erase-scrollback) from everything we write in fullscreen. Ink's
+// ansi-escapes `clearTerminal` is "\x1b[2J\x1b[3J\x1b[H" and it fires that on every
+// render once a frame is as tall as the screen — the 3J wipes the terminal's
+// SCROLLBACK, so leaving the alt-screen on exit showed a blank pre-launch screen.
+// We never want to erase the user's scrollback; a 2J+H full redraw is harmless.
+// (The App also under-fills by a row so this rarely triggers; this is the guard.)
+if (fullscreen && process.stdout.isTTY) {
+  const rawWrite = process.stdout.write.bind(process.stdout) as (chunk: any, ...rest: any[]) => boolean;
+  process.stdout.write = function (chunk: any, ...rest: any[]): boolean {
+    if (typeof chunk === "string" && chunk.includes("\x1b[3J")) chunk = chunk.replaceAll("\x1b[3J", "");
+    return rawWrite(chunk, ...rest);
+  } as typeof process.stdout.write;
+}
 if (process.stdout.isTTY) process.stdout.write("\x1b[?2004h\x1b[?25l");
 if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H");
 if (mouse) process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");

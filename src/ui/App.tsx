@@ -724,6 +724,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   }, [stopScrollAnim]);
   useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear any glide timer on unmount
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
+  useEffect(() => () => { if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current); }, []); // clear the paste coalescer timer on unmount
 
   const copyWithFeedback = useCallback((text: string) => {
     const clean = text.replace(/[ \t]+\n/g, "\n").trim();
@@ -1826,7 +1827,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const runInteractive = (cmd: string, cmdArgs: string[], env?: Record<string, string>): number | null => {
     try {
       setRawMode?.(false);
-      if (process.env.GEARBOX_MOUSE !== "0") process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l"); // mouse off
+      if (fullscreen && process.env.GEARBOX_MOUSE !== "0") process.stdout.write("\x1b[?1006l\x1b[?1002l\x1b[?1000l"); // mouse off (fullscreen-only — matches cli.tsx)
       if (fullscreen) process.stdout.write("\x1b[?1049l"); // leave alt-screen
       process.stdout.write("\x1b[?2004l\x1b[?25h"); // bracketed paste off, cursor on
       process.stdout.write(`\n→ running \`${cmd} ${cmdArgs.join(" ")}\` · follow the prompts…\n\n`);
@@ -1836,7 +1837,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       return null;
     } finally {
       if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H");
-      if (process.env.GEARBOX_MOUSE !== "0") process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+      if (fullscreen && process.env.GEARBOX_MOUSE !== "0") process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h"); // mouse back on (fullscreen-only)
       process.stdout.write("\x1b[?2004h\x1b[?25l"); // re-enable bracketed paste (and hide cursor) on return
       setRawMode?.(true);
     }
@@ -3893,7 +3894,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const stripApi = stripView ? ((usedAccountRef.current ? stripView.apiKeys.find((a) => a.id === usedAccountRef.current) : null) ?? stripView.apiKeys[0] ?? null) : null;
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
   const HEADER = 3;
-  const transcriptHeight = Math.max(1, rows - HEADER - footer);
+  // Keep the whole frame STRICTLY under `rows`. Ink redraws with a full
+  // clearTerminal (\x1b[2J\x1b[3J\x1b[H — the 3J wipes SCROLLBACK) the moment the
+  // output height reaches the terminal height; under-filling by one row keeps it on
+  // the cheap incremental-erase path, which is why exit no longer blanks the
+  // pre-launch screen (and rendering is less flickery). cli.tsx also strips any
+  // stray 3J as a belt-and-suspenders.
+  const transcriptHeight = Math.max(1, rows - HEADER - footer - 1);
   const maxScroll = Math.max(0, lines.length - transcriptHeight);
   const effScroll = atBottomRef.current ? maxScroll : Math.min(scrollTop, maxScroll);
   linesRef.current = lines;
