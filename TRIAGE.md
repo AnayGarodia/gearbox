@@ -96,7 +96,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☑ L-B auto-compaction retry storm — FIXED: compaction generateText now maxRetries:1. [v0.2.40]
 - ☑ L-C queue error-loop — FIXED: the drain pauses after an error/interrupt; a successful manual turn resumes it. [v0.2.49]
 - ☑ L-D post-turn throw wedging the app — FIXED: the finally's summary/linger block is wrapped in try/catch so it can never reject runTurn (→ unhandled rejection). [v0.2.47]
-- ◑ L-E single-done — will be covered by the integration harness (next).
+- ☑ L-E single-done / turn lifecycle — COVERED by the new integration harness (test/turn-lifecycle.test.tsx): success/error/summary/queue-drain/queue-pause/history/clear, all driven through the real App via the runner seam. [v0.2.50]
 - ☑ L-F CLI subprocess SIGKILL escalation — FIXED: onAbort sends SIGTERM then SIGKILL after 2s so a wedged claude/codex can't pin busy forever. (proc.ts kill(signal), cli-backend.ts) [v0.2.40]
 - ☑ L-G isNetworkError regex misses "Connect Timeout Error" — FIXED: added undici/AI-SDK shapes (connect timeout, attempted address, failed after N attempts). (net.ts + net.test) [v0.2.38]
 - ☑ L-H linger timer cleanup — FIXED: cleared on unmount. [v0.2.47]
