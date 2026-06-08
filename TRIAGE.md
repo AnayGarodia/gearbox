@@ -1,12 +1,12 @@
 # Gearbox bug triage (overnight sprint)
 
-## ☀️ MORNING STATUS (2026-06-08)
-Shipped **10 versions, v0.2.38 → v0.2.47** (each pushed to main + npm; every commit green: typecheck + build + 424 tests).
-- **All 19 of your reported bugs (i–xix): fixed.** ~21 of the ~48 audit bugs also fixed.
-- Fixes are grouped by root cause and each is its own commit — `git log --oneline` for the per-version breakdown.
-- **Do the ⚠ MORNING CHECKLIST below first.** ~7 fixes are correct in code + unit-tested but only YOU can confirm live (terminal teardown, scroll feel, paste in your terminal, the usage probe, images-on-subscription, /model-on-subscription, "use opus"). If one feels off, the per-version commits make it a one-line revert.
-- **Remaining (lower-priority, not done):** the ☐ items under "Additional bugs" are edge cases / minor polish (status-bar↔ledger model drift on /ask, classifier quality floor, split-across-reads paste, banner width budget, scrollbar thumb, mid-conversation-system beta, etc.). None are in your 19. Plus a recommended **integration-test harness** for the turn lifecycle (R4 root cause) — I did NOT attempt it overnight (a half-baked harness unattended is risky); it's the best next step to stop this class regressing.
-- Latest: `gearbox update` (npm @ 0.2.47).
+## ☀️ MORNING STATUS (2026-06-08) — sprint complete
+Shipped **14 versions, v0.2.38 → v0.2.51** (each pushed to main + npm; every commit green: typecheck + build + now **431 tests**).
+- **All 19 reported bugs (i–xix): fixed.** **~34 of the ~48 audit bugs: fixed.**
+- **The R4 root cause is addressed:** a real integration-test harness for the turn lifecycle now exists (`test/turn-lifecycle.test.tsx`, 7 scenarios) driving the real App headless — success/error/summary/queue-drain/queue-pause/history/clear. This guards the class that produced almost all the bugs.
+- **Do the ⚠ MORNING CHECKLIST below first** — ~7 fixes are unit-tested but only YOU can confirm live (terminal teardown, scroll feel, paste in your terminal, the usage probe, images-on-sub, /model-on-sub, "use opus"). Each is its own commit → a one-line revert if off.
+- **Genuinely remaining (7, all minor):** I-A/I-B (paste-hot-path coalescer/timeout — deferred: risky to add unverified, paste regressed once mid-sprint), I-F (rare), T-C/T-D (mouse edge cases, can't verify headless), S-D (CLI session resume — stale-id risk). I-G is not a bug. None are from your 19. Rationale on each below.
+- Latest: `gearbox update` (npm @ 0.2.51).
 
 Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs live verification (implemented + unit-tested, but only you can confirm in a real terminal/with your accounts) · ✗ won't-fix/by-design · ↷ already handled by your recent push
 
