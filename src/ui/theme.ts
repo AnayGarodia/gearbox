@@ -50,6 +50,16 @@ export const color: Theme = {
   diffAddBg: "#103A22", diffDelBg: "#3A1414", diffContextBg: "#16181E",
 };
 
+// Spinner pulse for the working indicator — a calm in-family ramp
+// (accent → accentDim → faint), never an off-palette rainbow. Streaming state
+// reuses `ok` directly, so the only motion color literals live here.
+export const spinnerPalette = [color.accent, color.accentDim, color.faint];
+
+// Install-screen wordmark gradient: same hue as the in-app accent so the
+// onboarding figlet and the running app read as one brand. Bright accent →
+// mid teal → deep teal. Same-hue cyan→teal only — NO blue/indigo stop.
+export const wordmarkGradient = [color.accent, "#3AA7B5", "#1F6B76"];
+
 // A considered set, not emoji: a quarter-block spine for your turns, a filled
 // circle + result connector for tool calls (status shown by the circle's COLOR,
 // not a tick), an angle prompt, a hairline rule. Restraint over decoration.

@@ -1,12 +1,11 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { color } from "../theme.ts";
+import { color, spinnerPalette } from "../theme.ts";
 import type { MascotState, GhostSkin } from "./Mascot.tsx";
 
 const THINK_FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 const STREAM_FRAMES = ["▁","▂","▃","▄","▅","▆","▇","█","▇","▆","▅","▄","▃","▂"];
 const TOOL_FRAMES = ["◐","◓","◑","◒"];
-const SPIN_PALETTE = ["#8B9EFF","#A78BFA","#C084FC","#9AE8FF","#7EF8A8","#8B9EFF"];
 
 function spinFrame(state: MascotState): string {
   const f = Math.floor(Date.now() / 80);
@@ -16,9 +15,9 @@ function spinFrame(state: MascotState): string {
 }
 
 function spinColor(state: MascotState): string {
-  if (state === "streaming") return "#7EF8A8";
+  if (state === "streaming") return color.ok;
   const f = Math.floor(Date.now() / 180);
-  return SPIN_PALETTE[f % SPIN_PALETTE.length]!;
+  return spinnerPalette[f % spinnerPalette.length]!;
 }
 
 // One-line working strip. The larger ghost stays out of the transcript and

@@ -20,8 +20,9 @@ import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
+import { wordmarkGradient } from "./ui/theme.ts";
 
-const VERSION = "0.2.54";
+const VERSION = "0.2.55";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -69,11 +70,13 @@ function onboardingBanner(termWidth: number): void {
   const rgb  = (r: number, g: number, b: number) =>
     supportsAnsi ? `\x1b[38;2;${Math.round(r)};${Math.round(g)};${Math.round(b)}m` : "";
 
-  // A smooth horizontal gradient across the wordmark (aqua → cyan → soft indigo),
-  // so the letters flow instead of sitting flat. The solid fills (█) are the lit
-  // face at the column's hue; the box-drawing 3-D edge tracks the SAME hue, darker.
+  // A smooth horizontal gradient across the wordmark (bright cyan → mid → deep
+  // teal), so the letters flow instead of sitting flat. Same-hue ramp derived
+  // from the in-app theme accent, so install and running app read as one brand
+  // (no off-palette indigo). The solid fills (█) are the lit face at the column's
+  // hue; the box-drawing 3-D edge tracks the SAME hue, darker.
   type RGB = [number, number, number];
-  const STOPS: RGB[] = [[40, 226, 255], [60, 176, 246], [124, 122, 250]];
+  const STOPS: RGB[] = wordmarkGradient.map((h) => hexRgb(h) as RGB);
   const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
   const grad = (t: number): RGB => {
     const x = Math.max(0, Math.min(1, t)) * (STOPS.length - 1);
