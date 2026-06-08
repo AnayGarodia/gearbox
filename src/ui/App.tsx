@@ -62,7 +62,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
@@ -91,6 +91,7 @@ export type Runner = (opts: {
   onEvent: OnEvent;
   selector: ModelSelector;
   signal: AbortSignal;
+  escalate?: number; // prior failed-check count → router climbs to a stronger model
 }) => Promise<{ messages: ModelMessage[]; usage: Usage }>;
 
 const KEYS_HELP = [
@@ -742,7 +743,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     atBottomRef.current = target >= max;
     setScrollTop(target);
   }, [stopScrollAnim]);
+  // Frame-throttle wheel scrolling. A trackpad / momentum scroll fires FAR more than
+  // 60 events/sec, and each one re-renders + re-diffs the whole fullscreen frame —
+  // the residual "mouse scroll feels laggy". Accumulate the delta and apply it at
+  // most once per ~16ms: leading edge so the first notch is instant, trailing edge
+  // so the rest stays smooth. Caps scroll renders at ~60fps regardless of event rate.
+  const scrollAccumRef = useRef(0);
+  const scrollFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushScroll = useCallback(() => {
+    scrollFlushRef.current = null;
+    const d = scrollAccumRef.current;
+    scrollAccumRef.current = 0;
+    if (d) scrollBy(d);
+  }, [scrollBy]);
+  const queueScroll = useCallback((delta: number) => {
+    scrollAccumRef.current += delta;
+    if (scrollFlushRef.current) return; // a trailing flush is scheduled; it picks up the accumulated delta
+    flushScroll(); // leading edge: instant first response
+    scrollFlushRef.current = setTimeout(flushScroll, 16);
+  }, [flushScroll]);
   useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear any glide timer on unmount
+  useEffect(() => () => { if (scrollFlushRef.current) clearTimeout(scrollFlushRef.current); }, []); // clear the scroll-throttle timer on unmount
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
   useEffect(() => () => { if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current); }, []); // clear the paste coalescer timer on unmount
 
@@ -1016,14 +1037,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           else if (p.kind === "accounts") setPanel({ ...p, index: clampIndex(p.index + delta, panelAccountSlugsRef.current.length) });
           else if (p.kind === "sessions") setPanel({ ...p, index: clampIndex(p.index + delta, panelSessionsRef.current.length) });
           else setPanel({ ...p, index: clampIndex(p.index + delta, filterModelRows(buildPanelModelRows(), p.filter).length) });
-        } else scrollBy(delta);
+        } else queueScroll(delta); // frame-throttled (≤~60fps) so fast scrolls don't flood renders
       }
     };
     stdin.on("data", onData);
     return () => {
       stdin.off?.("data", onData);
     };
-  }, [stdin, fullscreen, rows, scrollBy, copyWithFeedback]);
+  }, [stdin, fullscreen, rows, scrollBy, queueScroll, copyWithFeedback]);
 
   // Save the current conversation (best-effort) · model-agnostic messages + the UI
   // transcript + per-turn model/usage, so it resumes faithfully and feeds routing.
@@ -1602,7 +1623,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   );
 
   const defaultRunner: Runner = useCallback(
-    async ({ prompt, messages, onEvent, selector: sel, signal }) => {
+    async ({ prompt, messages, onEvent, selector: sel, signal, escalate = 0 }) => {
       // /ask (and auto-detected meta-questions): answer from the bundled Gearbox
       // docs via a cheap routed model, NO tools · runs before routing/pin so it
       // works even when /model is pinned to something broken. Read-and-clear.
@@ -1695,7 +1716,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        const { system, messages: ctx, cacheBreak } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = account ? await resolveCreds(account) : undefined;
         usedAccountRef.current = account?.id ?? null;
@@ -1713,7 +1734,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
           } // else: model has no effort control → omit effort (leave null)
         }
-        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, pinnedModelId: explicitModelId });
+        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, pinnedModelId: explicitModelId, cacheBreak });
         if (account && r.headers) {
           const apiRates = parseRateHeaders(account.provider, r.headers, Date.now());
           if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };
@@ -1744,7 +1765,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       let choice: ModelChoice;
       try {
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate });
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
       }
@@ -2133,7 +2154,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       };
 
       try {
-        const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal });
+        // Confidence-gated escalation: a fix attempt (attempt ≥ 1) tells the router
+        // the cheap pick already missed, so it climbs to a stronger model instead of
+        // re-running the too-weak one — fixing the false economy of a cheap pick that
+        // fails and forces an expensive retry anyway.
+        const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal, escalate: attempt });
         msgRef.current = r.messages;
         if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && !interruptedRef.current && changedFiles.size && checks.length === 0) {
           const commands = detectVerificationCommands(process.cwd(), [...changedFiles]);
@@ -2271,11 +2296,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const changed = uniq([...changedFiles]);
           const doneChecks = checkItems.map((c) => c.intent ?? c.command);
           const failed = checkItems.filter((c) => !c.ok).map((c) => `${c.intent ?? c.command}: ${c.summary}`).slice(0, 4);
+          // Honest "done with proof": on a successful edited turn, state which tier was
+          // cleared (tests green > types/build > nothing verified) so the agent never
+          // implies "done" when nothing was actually checked.
+          const tier = changed.length && !failed.length ? provenTier(checkItems.filter((c) => c.ok).map((c) => c.intent ?? c.command)) : undefined;
           // Green with edits → forward move (commit), never a retry of something
           // that already passed. Retry only when a check actually ended red.
           const next = failed.length ? nextStepFor(failed, changed) : changed.length && !doneChecks.length ? "run tests" : changed.length ? "commit changes" : "/context";
           // A no-op turn (no edits, no checks) gets no summary at all.
-          const summaryItem: Item | null = (changed.length || doneChecks.length) ? { kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next } : null;
+          const summaryItem: Item | null = (changed.length || doneChecks.length) ? { kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next, tier } : null;
           setItems(summaryItem ? [...collapsed, summaryItem] : collapsed);
           // Time awareness after every prompt: how long the turn took, plus the
           // prompt-cache hit when the provider served part of the input from cache.

@@ -180,6 +180,7 @@ export async function runTask(opts: {
   root?: string; // workspace root for file/shell tools (a parallel sub-agent gets its own git worktree)
   maxRetries?: number; // SDK retry budget; the caller drops this to 0 when offline so a no-network turn fails in one connect-timeout instead of the ~30s 3-attempt storm
   pinnedModelId?: string; // when the user EXPLICITLY chose a model (a /model pin or "use opus"), delegated sub-tasks inherit it instead of re-routing to the cheapest
+  cacheBreak?: number; // index of the last settled-history message (from the context engine) → cache that prefix; the volatile turn-context tail rides after it
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
 }): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
   const { model, messages, onEvent, signal, plan } = opts;
@@ -222,7 +223,7 @@ export async function runTask(opts: {
   // Prompt caching: mark the stable prefix (tools+system+settled history) so a
   // provider with explicit breakpoints reuses it cheaply next turn. No-op on
   // providers that cache automatically (OpenAI/DeepSeek/Gemini).
-  const cached = withPromptCaching(model, opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM), messages);
+  const cached = withPromptCaching(model, opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM), messages, opts.cacheBreak);
   const result = opts._stream
     ? null
     : streamText({

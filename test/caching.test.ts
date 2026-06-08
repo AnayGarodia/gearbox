@@ -76,6 +76,26 @@ test("anthropic edge cases: empty system, empty messages", () => {
   expect(anthropicMark(noMsgs.messages[0])).toBe("ephemeral");
 });
 
+test("an explicit cacheBreakIndex marks that message, leaving the volatile tail uncached", () => {
+  // [settled user, settled assistant, volatile user turn]; break at the settled end (1).
+  const msgs: ModelMessage[] = [
+    { role: "user", content: "q1" },
+    { role: "assistant", content: "a1" },
+    { role: "user", content: "turn-context + q2" },
+  ];
+  const { messages } = withPromptCaching(spec("anthropic", "claude-sonnet-4-6"), "SYS", msgs, 1);
+  const settled = messages.find((m) => m.role === "assistant");
+  expect(anthropicMark(settled)).toBe("ephemeral"); // settled-history end cached
+  expect(anthropicMark(messages[messages.length - 1])).toBeUndefined(); // volatile tail NOT cached
+});
+
+test("cacheBreakIndex of -1 marks only the system block (first turn, no settled history)", () => {
+  const { messages } = withPromptCaching(spec("anthropic", "claude-sonnet-4-6"), "SYS", [{ role: "user", content: "first" }], -1);
+  expect(messages[0]!.role).toBe("system");
+  expect(anthropicMark(messages[0])).toBe("ephemeral");
+  expect(anthropicMark(messages[messages.length - 1])).toBeUndefined(); // the lone user turn is the volatile tail
+});
+
 test("an existing providerOptions on the last message is preserved (merged, not clobbered)", () => {
   const msgs: ModelMessage[] = [
     { role: "user", content: "q", providerOptions: { anthropic: { foo: "bar" } } } as any,

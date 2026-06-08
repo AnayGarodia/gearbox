@@ -28,6 +28,12 @@ export interface Task {
   estTokens?: number; // estimated working-set size for this turn
   touchedFiles?: string[]; // files in play, for locality-aware routing
   requires?: ModelRequirement[]; // runtime capabilities needed by this turn
+  // Confidence-gated escalation: how many times the cheap pick already MISSED on
+  // this work (a verification failure / failed auto-fix attempt). Each step raises
+  // the quality bar so the router climbs to a stronger model rather than re-running
+  // the same too-weak one — the reactive half of "cheapest model that clears the
+  // bar". 0 (the default) is today's behavior; FixedSelector ignores it.
+  escalate?: number;
 }
 
 export interface ModelChoice {

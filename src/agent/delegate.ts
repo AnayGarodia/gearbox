@@ -51,6 +51,27 @@ const reportLine = (text: string): string => {
   return l.length > 64 ? l.slice(0, 63).trimEnd() + "…" : l;
 };
 
+// A structured digest of a sub-agent's result for the ORCHESTRATOR (not the UI):
+// a bounded outcome plus the concrete files it changed. The first-line-only report
+// used to drop files-changed / test-status, so the orchestrator would re-read or
+// re-delegate to rediscover what happened — a whole wasted turn. The files list is
+// already computed (git status of the worktree), so this costs ~nothing and pays
+// for itself by preventing redundant exploration.
+const subAgentDigest = (text: string, changed: { path: string }[]): string => {
+  const outcome = text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" ")
+    .slice(0, 220);
+  const files = changed.map((c) => c.path);
+  const filesStr = files.length
+    ? ` · changed: ${files.slice(0, 8).join(", ")}${files.length > 8 ? `, +${files.length - 8} more` : ""}`
+    : " · no file changes";
+  return (outcome || "(no report)") + filesStr;
+};
+
 // One-line task preview for the tool head: collapse whitespace and truncate at a
 // word boundary, stripping a dangling quote/backtick/punctuation so it never ends
 // mid-token (the "… test/tokens.test.ts for `" cut-off).
@@ -280,7 +301,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
 
         // 4) Report.
         const lines: string[] = [];
-        for (const o of outcomes) lines.push(`#${o.j.idx + 1} (${o.j.routed.model.label}): ${o.res.text.split("\n")[0]?.slice(0, 160) ?? ""}`);
+        for (const o of outcomes) lines.push(`#${o.j.idx + 1} (${o.j.routed.model.label}): ${subAgentDigest(o.res.text, o.changed)}`);
         const parts = [`Ran ${outcomes.length} sub-tasks in parallel · applied ${applied} file change(s)${autoMerged ? `, 3-way-merged ${autoMerged} shared file(s)` : ""}.`];
         if (conflicted.length) parts.push(`Conflict markers left in (resolve these): ${conflicted.join(", ")}.`);
         if (skipped.length) parts.push(`Skipped: ${skipped.join("; ")}.`);

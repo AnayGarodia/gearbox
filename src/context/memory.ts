@@ -11,7 +11,7 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
-const DOC_CANDIDATES = ["GEARBOX.md", "CLAUDE.md", "AGENTS.md"];
+const DOC_CANDIDATES = ["GEARBOX.md", "CLAUDE.md", "AGENTS.md", "CONVENTIONS.md"];
 const DOC_CAP = 8_000; // chars
 const FACTS_CAP = 6_000; // chars
 

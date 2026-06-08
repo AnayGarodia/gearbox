@@ -8,7 +8,10 @@ import { caretPos, selectionRange, type Edit } from "../input.ts";
 // with the input and a terminal-native block cursor (`inverse`). Multi-line aware ·
 // continuation lines align under the prompt and the cursor lands on the right
 // row/column. The left bar takes 1 column (innerWidth = width − 1).
-export function Composer({
+// Memoized (export at the bottom): its props (value/cursor/placeholder/…, all
+// primitives) don't change while scrolling or streaming, so it skips re-rendering
+// on those frames.
+function ComposerImpl({
   value,
   cursor,
   selectionAnchor,
@@ -146,3 +149,5 @@ export function Composer({
     </Box>
   );
 }
+
+export const Composer = React.memo(ComposerImpl);
