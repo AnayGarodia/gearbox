@@ -453,11 +453,23 @@ export async function runCompletion(opts: {
   const parts: AsyncIterable<any> = opts._stream ?? (result!.fullStream as AsyncIterable<any>);
 
   let text = "";
+  // Yield to the event loop between deltas so Ink actually repaints AND the App's
+  // 45ms text-coalesce timer can fire mid-stream — otherwise the whole answer
+  // arrives on back-to-back microtasks and paints in one dump (the /ask "not
+  // streamed" bug). Mirrors runTask's maybePaint.
+  let lastYield = 0;
+  const yieldPaint = async () => {
+    if (opts._stream) return;
+    const now = Date.now();
+    if (now - lastYield < 16) return;
+    lastYield = now;
+    await new Promise((r) => setTimeout(r, 0));
+  };
   try {
     for await (const part of parts) {
       if (part.type === "text-delta") {
         const t = part.text ?? part.textDelta ?? "";
-        if (t) { text += t; onEvent({ type: "text", text: t }); }
+        if (t) { text += t; onEvent({ type: "text", text: t }); await yieldPaint(); }
       } else if (part.type === "error") {
         emitErr(part.error);
       } else if (part.type === "finish") {

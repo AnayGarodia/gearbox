@@ -157,3 +157,26 @@ test("/clear resets the transcript", async () => {
   stdin.write("/clear"); await flush(); stdin.write("\r"); await flush(); await flush();
   expect(lastFrame() ?? "").not.toContain("ephemeral reply"); // gone after clear
 });
+
+test("↑/↑/↓ cycle through multiple past inputs (v)", async () => {
+  const { lastFrame, stdin } = render(<App selector={new FixedSelector("claude-haiku-4-5")} fullscreen runner={scripted(() => ok("ok"))} />);
+  await flush();
+  stdin.write("first cmd"); await flush(); stdin.write("\r"); await flush(); await flush();
+  stdin.write("second cmd"); await flush(); stdin.write("\r"); await flush(); await flush();
+  stdin.write("\x1b[A"); await flush(); // ↑ → most recent
+  expect(lastFrame() ?? "").toContain("second cmd");
+  stdin.write("\x1b[A"); await flush(); // ↑ → older
+  expect(lastFrame() ?? "").toContain("first cmd");
+  stdin.write("\x1b[B"); await flush(); // ↓ → back to newer
+  expect(lastFrame() ?? "").toContain("second cmd");
+});
+
+test("`!` enters sticky bash mode (consumed), esc exits (iii)", async () => {
+  const { lastFrame, stdin } = render(<App selector={new FixedSelector("claude-haiku-4-5")} fullscreen runner={scripted(() => ok("x"))} />);
+  await flush();
+  stdin.write("hi"); await flush(); stdin.write("\r"); await flush(); await flush(); // clear the welcome splash
+  stdin.write("!"); await flush();
+  expect(lastFrame() ?? "").toContain("esc to exit bash mode"); // entered bash mode, the ! is consumed
+  stdin.write("\x1b"); await flush(); // esc
+  expect(lastFrame() ?? "").not.toContain("esc to exit bash mode"); // back to normal input
+});

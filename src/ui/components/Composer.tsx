@@ -15,6 +15,7 @@ export function Composer({
   busy,
   width,
   vim = "off",
+  bashMode = false,
   onEdit,
 }: {
   value: string;
@@ -25,16 +26,18 @@ export function Composer({
   busy: boolean;
   width: number;
   vim?: "off" | "insert" | "normal";
+  bashMode?: boolean; // sticky bash mode (entered with `!`); pink `!` prompt, esc exits
   onEdit?: (edit: Edit) => void;
 }) {
   const lines = value.split("\n");
   const { lineIdx: curLine, col: curCol } = caretPos(value, cursor);
   const selected = selectionRange({ value, cursor, selectionAnchor });
-  // Shell mode: a leading `!` runs the line as a shell command. Give it a distinct
-  // pink accent + badge so it never reads like a chat message or a /command.
-  const shellMode = value.startsWith("!");
+  // Shell mode: a leading `!` (or sticky bash mode) runs the line as a shell
+  // command. A distinct pink accent + `!` prompt so it never reads as chat/command.
+  const shellMode = bashMode || value.startsWith("!");
   const accent = shellMode ? color.shell : color.accent;
-  const prefix = (i: number) => (i === 0 ? glyph.prompt + " " : "  ");
+  const promptGlyph = bashMode ? "!" : glyph.prompt;
+  const prefix = (i: number) => (i === 0 ? promptGlyph + " " : "  ");
   const offsetOfLine = (line: number) => {
     let off = 0;
     for (let i = 0; i < line; i++) off += lines[i]!.length + 1;
@@ -91,10 +94,10 @@ export function Composer({
         // Empty composer: idle placeholder. While busy, the cue is "type to queue".
         <Box paddingX={1}>
           <Text color={busy ? color.faint : accent} bold backgroundColor={color.panelBg}>
-            {glyph.prompt}{" "}
+            {promptGlyph}{" "}
           </Text>
           {!busy ? <Text inverse backgroundColor={color.panelBg}> </Text> : null}
-          <Text color={color.faint} backgroundColor={color.panelBg}>{busy ? "type to queue · esc interrupts" : suggestion ?? placeholder}</Text>
+          <Text color={color.faint} backgroundColor={color.panelBg}>{busy ? "type to queue · esc interrupts" : bashMode ? "shell command · esc to exit bash mode" : suggestion ?? placeholder}</Text>
         </Box>
       ) : (
         // Non-empty: render the live editable input WITH the cursor, even while

@@ -381,6 +381,12 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const pasteStoreRef = useRef<Map<string, string>>(new Map());
   const pasteBufRef = useRef<string | null>(null); // accumulates a bracketed paste (\x1b[200~ … \x1b[201~) across reads
   const pasteIdRef = useRef(0);
+  // Markerless-paste coalescer: terminals without bracketed paste (tmux/ssh/some
+  // emulators) deliver a paste as several rapid reads. We accumulate them within a
+  // short quiet window so ONE paste becomes ONE chip + one render — not N chips and
+  // N re-renders (the "splits up badly" + 3s-lag bug).
+  const pasteCoalesceRef = useRef<string | null>(null);
+  const pasteCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedSelectionRef = useRef("");
   const mouseAnchorRef = useRef<number | null>(null);
   const transcriptMouseAnchorRef = useRef<{ line: number; col: number } | null>(null);
@@ -509,6 +515,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const proj = basename(process.cwd());
     setTitle(busy ? `✳ ${proj} · working` : `${proj} · gearbox`);
   }, [busy]);
+
+  // Sticky bash mode: `!` on an empty composer enters it (the ! is consumed), each
+  // Enter runs the line as a shell command, esc exits back to normal input. (iii)
+  const [bashMode, setBashMode] = useState(false);
+  const bashModeRef = useRef(false);
+  bashModeRef.current = bashMode;
 
   // Refs read by the (closure-captured) input handler · avoids stale state.
   const editRef = useRef(edit);
@@ -692,41 +704,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const stopScrollAnim = useCallback(() => {
     if (scrollAnimRef.current) { clearInterval(scrollAnimRef.current); scrollAnimRef.current = null; }
   }, []);
+  // DIRECT scroll: one setScrollTop per wheel/key event, no easing glide. The
+  // glide fired a 16ms setInterval that re-rendered the whole transcript several
+  // times per scroll — on a tall buffer that's the "scroll is laggy". Terminals
+  // are line-quantized, so a direct jump is both crisper and far cheaper.
   const scrollBy = useCallback((delta: number) => {
+    stopScrollAnim();
     const max = maxScrollRef.current;
     const cur = atBottomRef.current ? max : scrollTopRef.current;
-    // Accumulate onto any in-flight target so a multi-event swipe adds up.
-    const target = Math.max(0, Math.min(max, (scrollTargetRef.current ?? cur) + delta));
-    if (noMotion) {
-      scrollTargetRef.current = null;
-      atBottomRef.current = target >= max;
-      setScrollTop(target);
-      return;
-    }
-    scrollTargetRef.current = target;
-    if (scrollAnimRef.current) return; // a glide is already running toward the new target
-    let pos = cur;
-    scrollAnimRef.current = setInterval(() => {
-      const m = maxScrollRef.current;
-      const tgt = Math.max(0, Math.min(m, scrollTargetRef.current ?? pos));
-      const diff = tgt - pos;
-      // Snappier than a long ease: settle small moves instantly and big swipes in
-      // a couple frames. Fewer frames = fewer full re-renders = crisper feel.
-      if (Math.abs(diff) <= 3) {
-        pos = tgt;
-        scrollTargetRef.current = null;
-        stopScrollAnim();
-      } else {
-        // Ease ~55% of the remaining distance per frame (min 2 lines).
-        const step = Math.sign(diff) * Math.max(2, Math.round(Math.abs(diff) * 0.55));
-        pos += step;
-        if ((diff > 0 && pos > tgt) || (diff < 0 && pos < tgt)) pos = tgt;
-      }
-      atBottomRef.current = pos >= m;
-      setScrollTop(pos);
-    }, 16);
-  }, [noMotion, stopScrollAnim]);
-  useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear the glide timer on unmount
+    const target = Math.max(0, Math.min(max, cur + delta));
+    atBottomRef.current = target >= max;
+    setScrollTop(target);
+  }, [stopScrollAnim]);
+  useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear any glide timer on unmount
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
 
   const copyWithFeedback = useCallback((text: string) => {
@@ -3324,6 +3314,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const h = historyRef.current;
       if (h[h.length - 1] !== text) h.push(text);
       appendHistory(text); // persist across runs
+      // In bash mode every line is a shell command — route it through the `!` path
+      // and STAY in bash mode (a sticky shell REPL). `/`-commands still escape. (iii)
+      if (bashModeRef.current && !text.startsWith("/") && !text.startsWith("!")) text = "!" + text;
       if (text.startsWith("!")) {
         const cmd = text.slice(1).trim();
         echo(text);
@@ -3412,6 +3405,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     curAsstRef.current = null;
     setEdit({ value: userText, cursor: userText.length });
     notice("rewound the last turn · edit and resend");
+  };
+
+  // Commit an accumulated markerless paste as ONE unit (chip if large, else insert).
+  const commitCoalescedPaste = () => {
+    if (pasteCoalesceTimerRef.current) { clearTimeout(pasteCoalesceTimerRef.current); pasteCoalesceTimerRef.current = null; }
+    const raw = pasteCoalesceRef.current;
+    pasteCoalesceRef.current = null;
+    if (raw == null) return;
+    const clean = sanitizeInputText(raw);
+    if (!clean) return;
+    const e = editRef.current;
+    if (!clean.includes("\n") && clean.length <= 400 && attachPastedPath(clean, e)) return; // a single file path → drag-drop
+    const lines = clean.split("\n").length;
+    if (clean.length > 400 || lines > 4) {
+      const id = ++pasteIdRef.current;
+      const ph = `[Pasted #${id}: ${lines} line${lines === 1 ? "" : "s"} · ${clean.length.toLocaleString()} chars]`;
+      pasteStoreRef.current.set(ph, clean);
+      setEdit({ value: e.value.slice(0, e.cursor) + ph + e.value.slice(e.cursor), cursor: e.cursor + ph.length });
+    } else {
+      setEdit({ value: e.value.slice(0, e.cursor) + clean + e.value.slice(e.cursor), cursor: e.cursor + clean.length });
+    }
   };
 
   useInput((input, key) => {
@@ -3682,29 +3696,23 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (!busyRef.current && input.length > 3 && !input.includes("\n")) {
       if (attachPastedPath(input, editRef.current)) return;
     }
-    // Fallback for terminals that DON'T wrap pastes in bracketed markers (tmux
-    // without passthrough, some emulators, SSH) — and for ones that leave a stray
-    // marker byte so the bracketed branch above misses. SANITIZE first (drops ESC
-    // sequences / paste markers / control bytes), then treat a large clean chunk as
-    // a paste: you can't type 200+ chars in one keypress event, newline or not, so
-    // the old "&& includes('\n')" requirement let big single-line pastes flood. A
-    // control burst sanitizes to ~nothing, so it's never caught here.
-    if (!busyRef.current) {
-      const clean = sanitizeInputText(input);
-      if (clean.length > 200) {
-        const lines = clean.split("\n").length;
-        const e = editRef.current;
-        if (clean.length > 400 || lines > 4) {
-          const id = ++pasteIdRef.current;
-          const ph = `[Pasted #${id}: ${lines} line${lines === 1 ? "" : "s"} · ${clean.length.toLocaleString()} chars]`;
-          pasteStoreRef.current.set(ph, clean);
-          setEdit({ value: e.value.slice(0, e.cursor) + ph + e.value.slice(e.cursor), cursor: e.cursor + ph.length });
-        } else {
-          // Medium paste: insert literally (no per-line submit), don't chip.
-          setEdit({ value: e.value.slice(0, e.cursor) + clean + e.value.slice(e.cursor), cursor: e.cursor + clean.length });
-        }
-        return;
-      }
+    // Markerless paste (tmux/ssh/some emulators, or a stray-marker terminal). A read
+    // this big can't be a single keypress — it's a paste chunk — so accumulate it and
+    // any rapid follow-up reads within a short quiet window, then commit ONCE. This is
+    // what stops a multi-read paste from "splitting up" into several chips and from
+    // re-rendering N times (the 3s lag). Typing (a char or an escape seq, which
+    // sanitizes to ~nothing) stays under the threshold and flows normally below.
+    if (!busyRef.current && (pasteCoalesceRef.current !== null || sanitizeInputText(input).length > 16)) {
+      pasteCoalesceRef.current = (pasteCoalesceRef.current ?? "") + input;
+      if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current);
+      pasteCoalesceTimerRef.current = setTimeout(commitCoalescedPaste, 30);
+      return;
+    }
+    // `!` on an empty composer enters sticky bash mode (the ! is consumed). esc
+    // exits (handled in the interrupt action). (iii)
+    if (!bashModeRef.current && input === "!" && editRef.current.value === "" && !busyRef.current && !permRef.current && !panelRef.current) {
+      setBashMode(true);
+      return;
     }
     const action = applyKey(editRef.current, input, key, vimRef.current === "off" ? undefined : { normal: vimRef.current === "normal" });
     if (busyRef.current) {
@@ -3755,6 +3763,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         break;
       }
       case "interrupt": {
+        // esc exits bash mode first, back to normal input (iii).
+        if (bashModeRef.current) { setBashMode(false); setEdit({ value: "", cursor: 0 }); break; }
         // esc clears the composer; esc-esc on an empty composer rewinds the last
         // turn back into the composer for editing (Claude Code's rewind).
         const now = Date.now();
@@ -3927,7 +3937,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} />
   );
 
   const footerJsx = (

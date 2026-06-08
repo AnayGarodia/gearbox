@@ -19,7 +19,11 @@ function selectedRangeForLine(sel: ViewSelection | null, absLine: number): [numb
   return [start, end];
 }
 
-function LineRow({ line, absLine, selection, lineWidth }: { line: Line; absLine: number; selection?: ViewSelection | null; lineWidth: number }) {
+// Memoized by line REFERENCE (the line buffer keeps stable refs for unchanged
+// items via the WeakMap cache), so a re-render that didn't change a row's content
+// (streaming the tail, a status tick, a paste landing) skips re-rendering every
+// other row — a big cut in Ink reconciliation on a tall transcript.
+const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidth }: { line: Line; absLine: number; selection?: ViewSelection | null; lineWidth: number }) {
   // No canvas color — let the terminal's own background show through. Only spans
   // with an explicit semantic bg (code block / your message / diff) are painted;
   // empty rows and trailing space stay transparent.
@@ -57,7 +61,7 @@ function LineRow({ line, absLine, selection, lineWidth }: { line: Line; absLine:
       {trailing > 0 ? <Text backgroundColor={tailBg}>{" ".repeat(trailing)}</Text> : null}
     </Text>
   );
-}
+}, (a, b) => a.line === b.line && a.absLine === b.absLine && a.lineWidth === b.lineWidth && a.selection === b.selection);
 
 // The scroll region: shows exactly `height` rows from the line buffer starting at
 // `scrollTop`, padded so the chrome below stays pinned, with a scrollbar on the
