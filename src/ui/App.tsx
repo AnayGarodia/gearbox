@@ -18,7 +18,7 @@ import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
-import { nextVerb } from "./character.ts";
+import { nextVerb, toolVerbFromName, lowContextNotice } from "./character.ts";
 import { color, glyph } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
@@ -1877,7 +1877,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const runTurn = useCallback(
     async (prompt: string, attempt = 0) => {
-      setVerb(nextVerb());
+      // One workshop phrase per turn; tool calls temporarily swap in the action
+      // verb (Reading/Editing/Running) and restore this between calls.
+      const turnVerb = nextVerb();
+      setVerb(turnVerb);
       activeImagesRef.current = [];
       let { text: modelPrompt, attached } = expandMentions(prompt);
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
@@ -2054,6 +2057,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (!textFlushTimer) textFlushTimer = setTimeout(flushText, 45);
         } else if (e.type === "tool-start") {
           setMascotState("tool");
+          setVerb(toolVerbFromName(e.name)); // the live verb names the running tool
           finishAssistant();
           const id = idRef.current++;
           toolMap.set(e.id, id);
@@ -2066,6 +2070,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           appendToolOutput(id, e.text);
         } else if (e.type === "tool-end") {
           setMascotState("thinking"); // back to reasoning until the next text/tool
+          setVerb(turnVerb); // restore the turn's workshop phrase between tool calls
           flushToolStreams();
           const id = toolMap.get(e.id);
           const endedAt = Date.now();
@@ -3931,6 +3936,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (!perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
   footer += PALETTE_ROWS;
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
+  if (busy && lowContextNotice(ctxPct)) footer += 1; // optional low-context notice row under it
   if (busy) footer += 2; // compact current-turn activity rail
   if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
@@ -4055,7 +4061,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const footerJsx = (
     <>
-      {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} tps={(() => { const t0 = firstOutputAtRef.current; if (!t0) return 0; const secs = (Date.now() - t0) / 1000; return secs > 0.7 ? Math.round(outCharsRef.current / 4 / secs) : 0; })()} linger={linger && !busy} width={width} /> : null}
+      {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} tps={(() => { const t0 = firstOutputAtRef.current; if (!t0) return 0; const secs = (Date.now() - t0) / 1000; return secs > 0.7 ? Math.round(outCharsRef.current / 4 / secs) : 0; })()} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
       {busy ? <ActivityRail items={items} width={width} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">

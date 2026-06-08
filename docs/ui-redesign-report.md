@@ -114,6 +114,22 @@ recorded cost. Model/provider come from the spec that actually ran (`routedRef` 
 structurally supported by the classifier but **gated** (their signals aren't captured yet — see
 Step 4 / TODOs). 704 pass / 0 fail.
 
+### Step 1d/1e — input box + footer split (commit 9dbd2aa)
+**Input box**: the Composer is now a box with a single accent left bar (Ink 5 per-side border,
+pink in bash mode) and a policy/branch line inside: `auto-route · ⎇ main` (or `plan · auto-route`,
+`pinned <model>`, or the subscription label). Shows the **policy**, never a bare model name in the
+auto case. New pure `policyLabel()` (`src/ui/policy.ts`) + 6 tests; the line is omitted during
+onboarding (keeps the first-run splash uncluttered and avoids a height overflow).
+**Footer split**: keys left (a quiet legend + rare attention chips: offline / yolo / low-context),
+model + session cost right. Branch moved to the input box; routing pick moved to the per-turn line;
+effort/tokens dropped from the footer. **Context shows only when low** (≤15% remaining ⇒ ctxPct≥85),
+amber. `statusBarLayout`/`statusBarHit` rewritten for the right-aligned model click zone (effort
+click dropped — still set via `/effort` + shift+tab); chrome constants reconciled (`-2`→`-3`, footer
+`3`→`4`). 713 pass / 0 fail. App launches clean.
+
+Used a parallel architect fan-out (6 read-only agents) to produce apply-ready blueprints for the
+remaining surfaces before implementing each.
+
 ## Data provenance — anything on screen NOT backed by real data
 
 This list MUST be empty at the end.
