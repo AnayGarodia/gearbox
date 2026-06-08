@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import { lowContextNotice } from "../character.ts";
-import { shimmer, shimmerFrame, pulse } from "../shimmer.ts";
+import { shimmer, shimmerFrame, bloom } from "../shimmer.ts";
 import type { MascotState } from "./Mascot.tsx";
 
 // One-line working strip. The larger ghost stays out of the transcript and
@@ -28,12 +28,13 @@ export function Working({
   const ctxNotice = linger ? null : lowContextNotice(ctxPct);
   const label = linger ? (state === "error" ? "something broke" : "done") : verb;
   const labelColor = linger && state === "error" ? color.err : linger && state === "celebrate" ? color.ok : color.text;
-  // The working animation: a breathing indicator dot + a soft glow gliding through
-  // the verb (shimmer.ts). Calm, continuous, on-brand — not a spinner. No tok/s: a
-  // live char-rate guess is dragged down by tool-call gaps, so the elapsed clock is
-  // the only honest "still alive" figure we show.
+  // The working animation: a blooming flower + a soft glow gliding through the verb
+  // (shimmer.ts). Calm, continuous, on-brand — not a spinner. No tok/s: a live
+  // char-rate guess is dragged down by tool-call gaps, so the elapsed clock is the
+  // only honest "still alive" figure we show.
   const frame = shimmerFrame();
   const glow = shimmer(label, frame);
+  const flower = bloom(frame);
   return (
     <Box flexDirection="column" width={width}>
       <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
@@ -44,7 +45,7 @@ export function Working({
           </Text>
         ) : (
           <Text>
-            <Text color={pulse(frame)}>● </Text>
+            <Text color={flower.color}>{flower.glyph} </Text>
             {glow.map((s, i) => <Text key={i} color={s.color}>{s.ch}</Text>)}
           </Text>
         )}

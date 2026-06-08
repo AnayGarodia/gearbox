@@ -25,13 +25,19 @@ export function shimmer(text: string, frame: number): { ch: string; color: strin
   });
 }
 
-// A single indicator dot that breathes through the same ramp — a gentle heartbeat
-// beside the verb, in sync with the glow. Up the ramp and back down, no hard edges.
-export function pulse(frame: number): string {
-  const span = GLOW.length * 2 - 2; // 0..3..0 triangle wave
+// A blooming flower beside the verb: an asterisk that opens its petals from a tiny
+// point to a full sixteen-point burst and closes again, brightening as it opens and
+// dimming as it closes — one breath of light. The petal count and the color move
+// together, so it reads as a flower breathing, not a glyph cycling. Calm, on-brand
+// (a sparkle, never a spinning glyph).
+const PETALS = ["✦", "✶", "✷", "✸", "✹", "✺"]; // closed → full bloom
+export function bloom(frame: number): { glyph: string; color: string } {
+  const span = PETALS.length * 2 - 2; // open then close: 0,1,2,3,4,5,4,3,2,1
   const p = ((frame % span) + span) % span;
-  const idx = p < GLOW.length ? p : span - p;
-  return GLOW[idx]!;
+  const i = p < PETALS.length ? p : span - p;
+  const openness = i / (PETALS.length - 1); // 0 (closed) → 1 (full)
+  const c = GLOW[Math.round(openness * (GLOW.length - 1))]!;
+  return { glyph: PETALS[i]!, color: c };
 }
 
 // The monotonic frame for the animation — one step every ~130ms (calm cadence;
