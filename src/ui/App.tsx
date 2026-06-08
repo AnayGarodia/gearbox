@@ -16,6 +16,8 @@ import { itemsToLines, type Line } from "./lines.ts";
 import { collapseTurn } from "./collapse.ts";
 import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
+import { buildProvidersView } from "./providers-view.ts";
+import { ProvidersView } from "./components/ProvidersView.tsx";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName, lowContextNotice } from "./character.ts";
@@ -4006,6 +4008,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (atBottomRef.current) setScrollTop(maxScroll);
   }, [lines.length, maxScroll]);
 
+  // Cold-open providers block: when there's no conversation yet and accounts are
+  // configured, show their real status + honest balances (a pure, synchronous read;
+  // usageTick keeps it fresh after spend changes).
+  const coldOpenProviders = welcome && !setupRequired ? buildProvidersView(listAccounts(), accountUsage, Date.now()) : [];
+  const coldOpenW = Math.min(Math.max(width - 8, 24), 64);
   const hero = (
     <Box flexDirection="column" alignItems="center">
       {setupRequired ? (
@@ -4023,6 +4030,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             <Text color={color.accentDim}>!</Text>
             <Text color={color.dim}>shell</Text>
           </Box>
+          {coldOpenProviders.length ? (
+            <Box marginTop={1} width={coldOpenW}>
+              <ProvidersView rows={coldOpenProviders} width={coldOpenW} title="providers" max={6} />
+            </Box>
+          ) : null}
           {firstRunRef.current ? (
             <Box marginTop={1} flexDirection="column" alignItems="center">
               <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
