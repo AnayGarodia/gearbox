@@ -70,7 +70,7 @@ export function statusBarHit(args: {
   // Composer chrome above the input: marginTop + rule [+ policy]. The optional hint
   // row sits BELOW the input, so it adds to the rows under the status bar. Coupled to
   // App.tsx's footer estimate and Composer.tsx's layout · keep in sync.
-  const chrome = 2 + (args.hasPolicy === false ? 0 : 1);
+  const chrome = 3 + (args.hasPolicy === false ? 0 : 1); // marginTop + rule + marginBottom [+ policy]
   const statusRow = args.termRows - args.composerLines - (args.hintRows ?? 0) - args.paletteRows - chrome;
   if (args.y !== statusRow || !args.model) return null;
   const { modelZone } = statusBarLayout(args);

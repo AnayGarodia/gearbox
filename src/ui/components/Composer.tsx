@@ -60,9 +60,9 @@ function ComposerImpl({
     const hasSel = selected && selStart < selEnd;
     const cursorHere = line === curLine;
     if (!hasSel) {
-      if (!cursorHere) return <Text>{ln}</Text>;
+      if (!cursorHere) return <Text color={color.text}>{ln}</Text>;
       return (
-        <Text>
+        <Text color={color.text}>
           {ln.slice(0, curCol)}
           <Text inverse>{ln[curCol] ?? " "}</Text>
           {ln.slice(curCol + 1)}
@@ -70,7 +70,7 @@ function ComposerImpl({
       );
     }
     return (
-      <Text>
+      <Text color={color.text}>
         {ln.slice(0, selStart)}
         <Text inverse>{ln.slice(selStart, selEnd)}</Text>
         {ln.slice(selEnd)}
@@ -95,6 +95,7 @@ function ComposerImpl({
       flexDirection="column"
       width={width}
       marginTop={1}
+      marginBottom={1}
       borderStyle="single"
       borderTop={false}
       borderRight={false}

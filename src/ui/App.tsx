@@ -785,10 +785,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
     copiedTimerRef.current = setTimeout(() => setCopiedNotice(null), 1400);
   }, []);
-  const flashStatus = useCallback((text: string) => {
+  const flashStatus = useCallback((text: string, ms = 1200) => {
     setCopiedNotice(text);
     if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-    copiedTimerRef.current = setTimeout(() => setCopiedNotice(null), 1200);
+    copiedTimerRef.current = setTimeout(() => setCopiedNotice(null), ms);
   }, []);
 
   const lineText = (line: Line) => line.map((s) => s.text).join("");
@@ -853,8 +853,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (busyRef.current || permRef.current) return null;
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      const firstInputRow = rows - lineCount + 1;
-      if (y < firstInputRow || y > rows) return null;
+      const firstInputRow = rows - lineCount; // input bottom is rows-1 (composer marginBottom leaves a gap)
+      if (y < firstInputRow || y > rows - 1) return null;
       const lineIdx = y - firstInputRow;
       const col = Math.max(0, x - 5); // 1 border + 1 pad + prompt + space, SGR coords are 1-based
       return offsetAt(value, lineIdx, col);
@@ -959,7 +959,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             // 0-based line index from y so applyMouse gets correct col/line.
             const value = editRef.current.value;
             const lineCount = Math.max(1, value.split("\n").length);
-            const firstInputRow = rows - lineCount + 1;
+            const firstInputRow = rows - lineCount;
             const lineIdx = y - firstInputRow;
             const col = Math.max(0, x - 4);
             const shift = (b & 4) !== 0;
@@ -3357,8 +3357,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             // Refresh real 5h/7d % on open (the live strip re-renders, so the async
             // probe result lands) instead of showing the seeded "ok". (xiii)
             if (on) void probeAccountUsage(listAccounts().find((x) => x.id === activeCli?.id && x.exec === "cli"));
-            // One state per toggle, each naming the inverse command (canonical /usage).
-            notice(on ? "usage pinned · /usage to hide" : "usage hidden · /usage to show");
+            // Transient footer flash (a few seconds) — not a permanent transcript line.
+            flashStatus(on ? "usage pinned · /usage to hide" : "usage hidden · /usage to show", 3000);
             return;
           }
           const accounts = listAccounts();
@@ -4008,7 +4008,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const quickRows = quickPicker ? quickPickerRows(quickPicker) : [];
   const quickPickerLimit = Math.min(7, Math.max(1, quickRows.length));
   let footer = 2; // status line + its top margin
-  footer += perm ? 9 : 4; // permission card vs composer (rule + policy line + input + marginTop)
+  footer += perm ? 9 : 5; // permission card vs composer (rule + policy + input + marginTop + marginBottom)
   // Composer hint row: "↵ queues…" while busy, or "↵ runs in your shell" in ! mode.
   if (!perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
   footer += PALETTE_ROWS;
