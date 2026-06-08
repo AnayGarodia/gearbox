@@ -235,7 +235,7 @@ export class RoutingSelector implements ModelSelector {
     const preferred = this.preferredIn(p.kind, p.pool);
     if (preferred) return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
 
-    const best = pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens });
+    const best = pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive });
     const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
     return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
@@ -259,7 +259,7 @@ export class RoutingSelector implements ModelSelector {
     for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c), { candidates: [], now: p.ctx.now, estInputTokens: p.estInputTokens }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
       ? preferred.spec.id
-      : pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens }).candidate.id;
+      : pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive }).candidate.id;
 
     const clearsForBar = clearsBar(p.bar);
     for (const c of p.pool) {

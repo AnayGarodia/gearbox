@@ -33,6 +33,7 @@ export interface ScoreWeights {
   wPlan: number; // subscription plan bonus (subtracted)
   wLimit: number; // extra push away from a seat in the rate-limit red zone
   wApiThrottle: number; // push away from a metered key whose live API window is near-empty
+  wLatency: number; // INTERACTIVE only: pull faster (higher-tps) models forward; 0 = off
   planHeadroomKnee: number; // headroom ≥ knee ⇒ seat treated as ~free; below, ramps
   apiThrottleKnee: number; // API headroom ≥ knee ⇒ ignored (per-minute noise); below, ramps
   scarcityStaleMs: number; // a balance snapshot older than this is treated as unknown
@@ -44,10 +45,15 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
   wPlan: 1.0,
   wLimit: 2.0,
   wApiThrottle: 0.5,
+  wLatency: 0.5,
   planHeadroomKnee: 0.2,
   apiThrottleKnee: 0.15,
   scarcityStaleMs: 15 * 60_000,
 };
+
+// tps at/above which a model is treated as fully "fast" (≈ haiku-class). A model
+// with no latency data (tps 0) is treated as mid-speed, not assumed slow.
+const TPS_REF = 150;
 
 export interface ScoreInput {
   candidates: ScoreCandidate[];
@@ -56,6 +62,7 @@ export interface ScoreInput {
   estInputTokens: number; // calibrated working-set size for the turn
   estOutputTokens?: number; // defaults to 0.2 × input (agent turns are input-heavy)
   warm?: { accountId: string; modelId: string }; // the currently-loaded model, if any
+  interactive?: boolean; // the user is WAITING (foreground turn) → prefer faster models
 }
 
 export interface ScoreTerms {
@@ -65,6 +72,7 @@ export interface ScoreTerms {
   limitPenalty: number;
   apiThrottlePenalty: number;
   planBonus: number; // subtracted in the score
+  latencyBonus: number; // subtracted in the score (interactive: faster = lower score)
   meteredEquiv: number; // what a subscription pick would have cost metered (for logging)
 }
 
@@ -126,8 +134,20 @@ export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCand
   const warm = !!input.warm && input.warm.accountId === a.accountId && input.warm.modelId === c.id;
   const switchPenalty = input.warm && !warm ? w.wSwitch * costEst : 0;
 
-  const score = costEst + scarcity + switchPenalty + limitPenalty + apiThrottlePenalty - planBonus;
-  return { candidate: c, score, costEst, terms: { costEst, scarcity, switchPenalty, limitPenalty, apiThrottlePenalty, planBonus, meteredEquiv } };
+  // Latency class: when the user is WAITING (interactive foreground turn), pull faster
+  // models forward by a fraction of THIS turn's cost — so a near-tie favors the snappier
+  // model, but a clearly cheaper model still wins (scaled by costEst, so we never pay a
+  // big premium for speed). Background/delegated turns leave interactive unset and skip
+  // it entirely (latency is free there → stay cheapest). Unknown tps (0) ⇒ mid-speed,
+  // not assumed slow.
+  let latencyBonus = 0;
+  if (input.interactive) {
+    const speed = c.tps > 0 ? clamp(c.tps / TPS_REF, 0, 1) : 0.5;
+    latencyBonus = w.wLatency * speed * costEst;
+  }
+
+  const score = costEst + scarcity + switchPenalty + limitPenalty + apiThrottlePenalty - planBonus - latencyBonus;
+  return { candidate: c, score, costEst, terms: { costEst, scarcity, switchPenalty, limitPenalty, apiThrottlePenalty, planBonus, latencyBonus, meteredEquiv } };
 }
 
 /** Rank all candidates and return the best. Total-order tie-break keeps it

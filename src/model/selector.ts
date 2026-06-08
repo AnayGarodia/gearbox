@@ -34,6 +34,11 @@ export interface Task {
   // the same too-weak one — the reactive half of "cheapest model that clears the
   // bar". 0 (the default) is today's behavior; FixedSelector ignores it.
   escalate?: number;
+  // Latency class: true when the user is WAITING on this turn (a foreground request),
+  // so the router prefers a faster model among bar-clearing candidates (done > FAST >
+  // cheap when waiting). Omitted/false for background work (delegated sub-tasks,
+  // compaction) where latency is free and cheapest should win.
+  interactive?: boolean;
 }
 
 export interface ModelChoice {

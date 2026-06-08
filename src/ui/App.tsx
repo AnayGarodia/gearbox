@@ -1769,7 +1769,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       let choice: ModelChoice;
       try {
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate });
+        // interactive: true — this is the foreground turn the user is waiting on, so
+        // routing prefers a faster model among bar-clearing candidates (done > FAST >
+        // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true });
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
       }

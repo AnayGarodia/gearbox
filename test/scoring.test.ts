@@ -42,6 +42,22 @@ test("the plan bonus ramps monotonically as headroom falls 1→0", () => {
   for (let i = 1; i < scores.length; i++) expect(scores[i]!).toBeGreaterThanOrEqual(scores[i - 1]! - 1e-9);
 });
 
+// ── latency class: interactive prefers fast; background prefers cheap ──
+test("interactive prefers a faster model over a slightly cheaper slower one; background does not", () => {
+  const slowCheap = cand({ id: "slow-cheap", inUSDPerMtok: 1, outUSDPerMtok: 5, tps: 65, account: state({ accountId: "a" }) });
+  const fastPricey = cand({ id: "fast-pricey", inUSDPerMtok: 1.2, outUSDPerMtok: 6, tps: 180, account: state({ accountId: "b" }) });
+  // Background (default): cheapest wins.
+  expect(pickBest(input([slowCheap, fastPricey])).candidate.id).toBe("slow-cheap");
+  // Interactive (user waiting): the latency nudge flips a SMALL cost gap toward fast.
+  expect(pickBest(input([slowCheap, fastPricey], { interactive: true })).candidate.id).toBe("fast-pricey");
+});
+
+test("interactive does NOT pay a large premium for speed (scaled by the turn's own cost)", () => {
+  const cheap = cand({ id: "cheap", inUSDPerMtok: 1, outUSDPerMtok: 5, tps: 65, account: state({ accountId: "a" }) });
+  const pricey = cand({ id: "pricey", inUSDPerMtok: 4, outUSDPerMtok: 20, tps: 180, account: state({ accountId: "b" }) });
+  expect(pickBest(input([cheap, pricey], { interactive: true })).candidate.id).toBe("cheap"); // 4x gap stays cheap
+});
+
 // ── scarcity (metered balance) ──
 test("a scarce metered balance is deprioritized; a flush one is not", () => {
   const a = cand({ id: "a", inUSDPerMtok: 3, account: state({ accountId: "scarce", provider: "deepseek", balanceRemainingUSD: 0.4, balanceAt: NOW }) });
