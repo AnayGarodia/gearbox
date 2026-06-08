@@ -22,7 +22,7 @@ import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 import { wordmarkGradient } from "./ui/theme.ts";
 
-const VERSION = "0.2.55";
+const VERSION = "0.2.56";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -591,7 +591,12 @@ const explicitFullscreen = args.includes("--fullscreen") || process.env.GEARBOX_
 const wantsInline = explicitInline || (!explicitFullscreen && uiPrefs.fullscreen === false);
 const wantsFullscreen = !wantsInline;
 const fullscreen = Boolean(process.stdout.isTTY) && wantsFullscreen;
-const mouse = Boolean(process.stdout.isTTY) && process.env.GEARBOX_MOUSE !== "0";
+// Mouse reporting is FULLSCREEN-ONLY. Grabbing the mouse (1000/1002/1006) is what
+// powers wheel-scroll + click-to-select in the alt-screen Viewport — but it also
+// DISABLES the terminal's own selection. In inline mode there's no Viewport to
+// drive, so grabbing the mouse there just broke native double-click-drag selection
+// (and scrollback) for no gain. Leave it off inline so the terminal selects natively.
+const mouse = fullscreen && process.env.GEARBOX_MOUSE !== "0";
 let restored = false;
 const restore = () => {
   if (restored || !process.stdout.isTTY) return;

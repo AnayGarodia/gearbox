@@ -793,8 +793,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   // SGR mouse handling. Wheel scrolls the transcript; drag inside the bottom
   // composer selects input text so Backspace/Delete can edit it like a real field.
+  // FULLSCREEN-ONLY: inline mode doesn't grab the mouse (cli.tsx leaves reporting
+  // off), so the terminal handles selection/scrollback natively — don't attach here.
   useEffect(() => {
-    if (!stdin || process.env.GEARBOX_MOUSE === "0") return;
+    if (!stdin || !fullscreen || process.env.GEARBOX_MOUSE === "0") return;
     const composerOffset = (x: number, y: number): number | null => {
       if (busyRef.current || permRef.current) return null;
       const value = editRef.current.value;
