@@ -11,7 +11,7 @@ import { Composer } from "./components/Composer.tsx";
 import { MascotSplash, SKINS, type GhostSkin, type MascotState } from "./components/Mascot.tsx";
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working } from "./components/Working.tsx";
-import { Viewport, type ViewSelection } from "./components/Viewport.tsx";
+import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
 import { itemsToLines, type Line } from "./lines.ts";
 import { collapseTurn } from "./collapse.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
@@ -57,7 +57,7 @@ import { missingRequirements, capabilitySummary, type ModelRequirement } from ".
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
@@ -391,6 +391,12 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const mouseAnchorRef = useRef<number | null>(null);
   const transcriptMouseAnchorRef = useRef<{ line: number; col: number } | null>(null);
   const transcriptRangeAnchorRef = useRef<{ line: number; col: number } | null>(null);
+  // An in-progress transcript drag and its granularity. `char` extends by the
+  // raw point (single-click drag); `word`/`line` extend by the hull of the
+  // anchor range and the word/line under the cursor (double/triple-click drag),
+  // so dragging keeps whole-word / whole-line selection instead of collapsing to
+  // a single word.
+  const transcriptDragRef = useRef<{ mode: "char" | "word" | "line"; anchor: ViewSelection } | null>(null);
   const lastComposerClickRef = useRef<{ time: number; x: number; y: number; count: number } | null>(null);
   const lastTranscriptClickRef = useRef<{ time: number; x: number; y: number; count: number } | null>(null);
   const linesRef = useRef<Line[]>([]);
@@ -860,7 +866,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             continue;
           }
           if (up) {
-            if (transcriptMouseAnchorRef.current) {
+            const drag = transcriptDragRef.current;
+            transcriptDragRef.current = null;
+            if (drag && (drag.mode === "word" || drag.mode === "line")) {
+              // Word/line drag: the live ref already holds the hull selection; just
+              // commit it (discrete) + copy on release.
+              transcriptMouseAnchorRef.current = null;
+              const sel = transcriptSelectionRef.current;
+              if (sel) { setTranscriptSel(sel); copyTranscriptSelection(sel); }
+            } else if (transcriptMouseAnchorRef.current) {
               const end = point;
               const start = transcriptMouseAnchorRef.current;
               transcriptMouseAnchorRef.current = null;
@@ -894,6 +908,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const click: MouseClick = { line: lineIdx, col, count: clickCount, shift };
             mouseAnchorRef.current = off;
             transcriptMouseAnchorRef.current = null;
+            transcriptDragRef.current = null;
             setTranscriptSel(null);
             const action = applyMouse({ value, cursor: editRef.current.cursor, selectionAnchor: editRef.current.selectionAnchor }, click);
             if (action.type === "edit") setEdit(action.state);
@@ -915,6 +930,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               const existing = transcriptSelectionRef.current ? normalizedTranscriptSelection(transcriptSelectionRef.current) : null;
               const anchor = transcriptRangeAnchorRef.current ?? (existing ? { line: existing.startLine, col: existing.startCol } : point);
               transcriptMouseAnchorRef.current = null;
+              transcriptDragRef.current = null;
               transcriptRangeAnchorRef.current = anchor;
               const sel = { startLine: anchor.line, startCol: anchor.col, endLine: point.line, endCol: point.col };
               setTranscriptSel(sel);
@@ -924,6 +940,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               const norm = normalizedTranscriptSelection(sel);
               transcriptMouseAnchorRef.current = null;
               transcriptRangeAnchorRef.current = { line: norm.startLine, col: norm.startCol };
+              transcriptDragRef.current = { mode: "line", anchor: sel }; // drag extends line-wise
               setTranscriptSel(sel);
               copyTranscriptSelection(sel);
             } else if (clickCount === 2) {
@@ -931,12 +948,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               const norm = normalizedTranscriptSelection(sel);
               transcriptMouseAnchorRef.current = null;
               transcriptRangeAnchorRef.current = { line: norm.startLine, col: norm.startCol };
+              transcriptDragRef.current = { mode: "word", anchor: sel }; // drag extends word-wise
               setTranscriptSel(sel);
               copyTranscriptSelection(sel);
             } else {
               transcriptMouseAnchorRef.current = point;
               transcriptRangeAnchorRef.current = point;
+              transcriptDragRef.current = { mode: "char", anchor: { startLine: point.line, startCol: point.col, endLine: point.line, endCol: point.col } };
               setTranscriptSel({ startLine: point.line, startCol: point.col, endLine: point.line, endCol: point.col });
+            }
+          } else if (point && isDrag && transcriptDragRef.current) {
+            // Extend the in-progress selection at its granularity. word/line take the
+            // hull of the anchor range and the word/line under the cursor, so whole
+            // words/lines stay selected on both sides; char tracks the raw point.
+            const d = transcriptDragRef.current;
+            if (d.mode === "char") {
+              setTranscriptSelLive({ startLine: d.anchor.startLine, startCol: d.anchor.startCol, endLine: point.line, endCol: point.col });
+            } else {
+              const head = d.mode === "line" ? transcriptLineRange(point) : transcriptWordRange(point);
+              setTranscriptSelLive(hullSelection(d.anchor, head));
             }
           } else if (point && isDrag && transcriptMouseAnchorRef.current) {
             setTranscriptSelLive({ startLine: transcriptMouseAnchorRef.current.line, startCol: transcriptMouseAnchorRef.current.col, endLine: point.line, endCol: point.col });
@@ -1071,6 +1101,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (!p || p.includes("\n") || p.length >= 1024 || !/[/\\.]/.test(p)) return false;
     const abs = p.startsWith("~") ? p.replace(/^~/, process.env.HOME ?? "~") : resolve(process.cwd(), p);
     if (!existsSync(abs)) return false;
+    // Reject a directory. A pasted path that arrives in chunks (macOS screenshot
+    // paths do) can momentarily resolve to a real DIR prefix (e.g. `…/TemporaryItems/`
+    // before the `NSIRD…/Screenshot….png` tail lands); accepting it here on the
+    // per-read drag-drop path would `@dir`-mention that prefix and orphan the rest.
+    // Bailing lets the chunk fall through to the paste coalescer, which reassembles
+    // the whole path and attaches the real file. (A bare dir paste isn't a useful
+    // mention anyway.)
+    try { if (statSync(abs).isDirectory()) return false; } catch { return false; }
     if (isImageFilePath(abs)) {
       const marker = imageMarkerFor(abs);
       setEdit({ value: e.value.slice(0, e.cursor) + marker + " " + e.value.slice(e.cursor), cursor: e.cursor + marker.length + 1 });
@@ -3591,7 +3629,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const mention = currentMention(draft, cursor);
       const fileMatches = mention ? matchFiles(listProjectFiles(), mention.token) : [];
       const pickerRows = commandPickerRows(draft);
-      const cmdMatches = draft.startsWith("/") ? matchCommands(draft) : [];
+      const cmdMatches = commandNameMatches(draft);
       const activeCount = pickerRows.length || fileMatches.length || cmdMatches.length;
       const exactPickerValue = pickerRows.length === 1 && pickerRows[0]!.value.trim() === draft.trim();
       const paletteShouldOwnArrows = activeCount > 1 || (activeCount === 1 && !exactPickerValue && !isExactSlashCommand(draft));
@@ -3791,7 +3829,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const welcome = items.length === 0;
   const pickerRows = commandPickerRows(edit.value);
-  const cmdMatches = matchCommands(edit.value);
+  const cmdMatches = commandNameMatches(edit.value);
   const paletteCount = pickerRows.length || fileMatches.length || cmdMatches.length;
   const selectedPalette = paletteCount ? Math.min(paletteIndex, paletteCount - 1) : 0;
   const paletteKey = [

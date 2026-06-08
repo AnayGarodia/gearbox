@@ -91,6 +91,20 @@ export function matchCommands(draft: string): CommandMeta[] {
   return fuzzyRank(COMMANDS, head.slice(1), (c) => c.name.slice(1), 12);
 }
 
+// Command-NAME completions, but ONLY while the name is still being typed. Once an
+// argument follows (`/ask how do I…`, `/prefer code haiku`), the name is settled,
+// so we return none — otherwise the lone name-match keeps the palette "active",
+// which lets it swallow ↑/↓ (capping the index at `% 1` → it never moves) and
+// blocks prompt-history navigation, and clutters the dropdown with a command
+// you've already finished typing. Commands with real argument pickers (/model,
+// /account, /effort, /resume) surface their rows through commandPickerRows, not
+// here, so this gate doesn't affect them.
+export function commandNameMatches(draft: string): CommandMeta[] {
+  if (!draft.startsWith("/")) return [];
+  if (/^\/\S+\s/.test(draft.trimStart())) return []; // a space after the name → typing args
+  return matchCommands(draft);
+}
+
 const GROUP_TITLES: { id: Group; title: string }[] = [
   { id: "models", title: "models & routing" },
   { id: "chat", title: "conversation" },

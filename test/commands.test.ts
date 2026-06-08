@@ -2,7 +2,7 @@ import { test, expect, beforeEach, afterAll } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { matchCommands, helpText, formatModelList, resolveModelSwitch, COMMANDS } from "../src/commands.ts";
+import { matchCommands, commandNameMatches, helpText, formatModelList, resolveModelSwitch, COMMANDS } from "../src/commands.ts";
 
 // Isolate the account store so model resolution is deterministic and never reads
 // the developer's real ~/.gearbox (whose discovered accounts would change which
@@ -20,6 +20,20 @@ test("matchCommands filters by prefix", () => {
   expect(matchCommands("/mo").map((c) => c.name)).toEqual(["/model"]);
   expect(matchCommands("/").length).toBe(COMMANDS.length);
   expect(matchCommands("hello").length).toBe(0);
+});
+
+test("commandNameMatches suppresses matches once you're typing arguments", () => {
+  // Still typing the name → suggest (so the palette + tab-complete work).
+  expect(commandNameMatches("/as").map((c) => c.name)).toContain("/ask");
+  expect(commandNameMatches("/").length).toBe(COMMANDS.length);
+  expect(commandNameMatches("/ask").map((c) => c.name)).toEqual(["/ask"]);
+  // A space after the name = arguments. The name is settled, so no match —
+  // otherwise the lone match keeps the palette active and it swallows ↑/↓,
+  // blocking prompt-history navigation (the /ask + /prefer "stuck arrows" bug).
+  expect(commandNameMatches("/ask how do I route")).toEqual([]);
+  expect(commandNameMatches("/prefer code haiku")).toEqual([]);
+  expect(commandNameMatches("/ask ")).toEqual([]);
+  expect(commandNameMatches("hello there")).toEqual([]);
 });
 
 test("helpText lists every command", () => {

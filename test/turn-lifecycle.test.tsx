@@ -171,6 +171,22 @@ test("↑/↑/↓ cycle through multiple past inputs (v)", async () => {
   expect(lastFrame() ?? "").toContain("second cmd");
 });
 
+test("↑ still recalls history when a /ask or /prefer command (with args) sits in the composer", async () => {
+  // The bug: a finished command line like `/ask foo` still matched the command
+  // NAME, so the palette stayed "active" and swallowed ↑/↓ (index capped at % 1),
+  // freezing prompt-history navigation. The composer should leave the draft and
+  // pull the prior prompt back.
+  const { lastFrame, stdin } = render(<App selector={new FixedSelector("claude-haiku-4-5")} fullscreen runner={scripted(() => ok("ok"))} />);
+  await flush();
+  stdin.write("older prompt"); await flush(); stdin.write("\r"); await flush(); await flush();
+  stdin.write("/ask how does routing pick a model"); await flush(); // a complete command line, NOT submitted
+  expect(lastFrame() ?? "").toContain("/ask how does routing pick a model");
+  stdin.write("\x1b[A"); await flush(); // ↑ → must recall history, not get stuck on the draft
+  const f = lastFrame() ?? "";
+  expect(f).toContain("older prompt");
+  expect(f).not.toContain("/ask how does routing pick a model");
+});
+
 test("`!` enters sticky bash mode (consumed), esc exits (iii)", async () => {
   const { lastFrame, stdin } = render(<App selector={new FixedSelector("claude-haiku-4-5")} fullscreen runner={scripted(() => ok("x"))} />);
   await flush();

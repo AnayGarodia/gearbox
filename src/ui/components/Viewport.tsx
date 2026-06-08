@@ -11,6 +11,23 @@ function normalized(sel?: ViewSelection | null): ViewSelection | null {
   return aBeforeB ? sel : { startLine: sel.endLine, startCol: sel.endCol, endLine: sel.startLine, endCol: sel.startCol };
 }
 
+// The outer hull of two selection ranges — min(start) … max(end) compared by
+// (line, col). Word/line-granular drag uses this: dragging out from a double- or
+// triple-click always covers WHOLE words/lines on both sides of the anchor and
+// never splits the one under the cursor. Pure + tested.
+export function hullSelection(a: ViewSelection, b: ViewSelection): ViewSelection {
+  const na = normalized(a)!;
+  const nb = normalized(b)!;
+  const beforeEq = (l1: number, c1: number, l2: number, c2: number) => l1 < l2 || (l1 === l2 && c1 <= c2);
+  const start = beforeEq(na.startLine, na.startCol, nb.startLine, nb.startCol)
+    ? { line: na.startLine, col: na.startCol }
+    : { line: nb.startLine, col: nb.startCol };
+  const end = beforeEq(na.endLine, na.endCol, nb.endLine, nb.endCol)
+    ? { line: nb.endLine, col: nb.endCol }
+    : { line: na.endLine, col: na.endCol };
+  return { startLine: start.line, startCol: start.col, endLine: end.line, endCol: end.col };
+}
+
 function selectedRangeForLine(sel: ViewSelection | null, absLine: number): [number, number] | null {
   if (!sel || absLine < sel.startLine || absLine > sel.endLine) return null;
   const start = absLine === sel.startLine ? sel.startCol : 0;
