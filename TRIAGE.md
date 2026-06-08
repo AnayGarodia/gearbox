@@ -6,7 +6,15 @@ Shipped **14 versions, v0.2.38 → v0.2.51** (each pushed to main + npm; every c
 - **The R4 root cause is addressed:** a real integration-test harness for the turn lifecycle now exists (`test/turn-lifecycle.test.tsx`, 7 scenarios) driving the real App headless — success/error/summary/queue-drain/queue-pause/history/clear. This guards the class that produced almost all the bugs.
 - **Do the ⚠ MORNING CHECKLIST below first** — ~7 fixes are unit-tested but only YOU can confirm live (terminal teardown, scroll feel, paste in your terminal, the usage probe, images-on-sub, /model-on-sub, "use opus"). Each is its own commit → a one-line revert if off.
 - **Genuinely remaining (7, all minor):** I-A/I-B (paste-hot-path coalescer/timeout — deferred: risky to add unverified, paste regressed once mid-sprint), I-F (rare), T-C/T-D (mouse edge cases, can't verify headless), S-D (CLI session resume — stale-id risk). I-G is not a bug. None are from your 19. Rationale on each below.
-- Latest: `gearbox update` (npm @ 0.2.51).
+- Latest: `gearbox update` (npm @ 0.2.53).
+
+### 🔧 PHASE 5 (2026-06-08) — the 5 re-reported live issues → v0.2.53
+After live-testing, you re-reported 5 of the ⚠-needs-verification items. All fixed in one commit (f91b949), each isolated:
+- ☑ **i** lag after paste / laggy scroll — root cause was the scroll **glide easing** (a setInterval animating scrollTop → N re-renders per wheel tick) compounded by an **un-memoized `LineRow`** (every row re-rendered on any scroll/stream/paint). Fix: direct `scrollBy` (no easing) + `React.memo(LineRow)` keyed by line reference. (App.tsx, Viewport.tsx)
+- ☑ **ii** paste splits up badly — markerless terminals (tmux/ssh strip the bracketed-paste markers) deliver one paste across several stdin reads, and we acted per-read. Fix: a **30ms coalescer** buffers reads, then decides chip-vs-insert once on the whole paste. (App.tsx `commitCoalescedPaste`)
+- ☑ **iii** `!` → bash mode — typing `!` on an empty composer now flips to a **sticky bash mode** (pink `!` prompt, `!` consumed not inserted); every line runs in the shell; **esc exits** back to chat. (App.tsx `bashMode`, Composer.tsx)
+- ☑ **iv** /ask dumped not streamed — `runCompletion` was hot-looping over text deltas and only flushing at the end. Fix: **yield to the event loop** (`yieldPaint`, 16ms throttle) between deltas so the 45ms coalesce timer paints mid-stream. (run.ts)
+- ☑ **v** ↑/↓ history "doesn't work" — not a logic bug (the headless harness `↑↑↓` already passed); the "stuck" feel was the same re-render lag as (i). Resolved by the perf fixes; **new multi-step-history + bash-mode integration tests** lock both. (turn-lifecycle.test.tsx — now 9 scenarios)
 
 Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs live verification (implemented + unit-tested, but only you can confirm in a real terminal/with your accounts) · ✗ won't-fix/by-design · ↷ already handled by your recent push
 
