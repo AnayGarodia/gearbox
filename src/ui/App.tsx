@@ -12,7 +12,7 @@ import { MascotSplash, SKINS, type GhostSkin, type MascotState } from "./compone
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
-import { itemsToLines, type Line } from "./lines.ts";
+import { itemsToLines, relPath, friendlyTool, fmtElapsed, type Line } from "./lines.ts";
 import { collapseTurn } from "./collapse.ts";
 import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
@@ -248,22 +248,39 @@ function isWriteLikeTool(name: string): boolean {
   return n === "write_file" || n === "edit_file" || n === "write" || n === "edit" || n === "file_change";
 }
 
+// A pinned, live "what's it doing NOW" rail (two lines): the current action with
+// its target and a ticking elapsed, then a short trail of recent steps. So a long
+// agent/tool run reads as alive and legible without chasing the scrolling transcript.
 function ActivityRail({ items, width }: { items: Item[]; width: number }) {
   const lastUser = items.map((it, i) => ({ it, i })).reverse().find((x) => x.it.kind === "user")?.i ?? -1;
   const turn = items.slice(lastUser + 1);
-  const model = [...turn].reverse().find((i) => i.kind === "model") as Extract<Item, { kind: "model" }> | undefined;
-  const phase = [...turn].reverse().find((i) => i.kind === "phase") as Extract<Item, { kind: "phase" }> | undefined;
-  const tools = turn.filter((i): i is Extract<Item, { kind: "tool" }> => i.kind === "tool").slice(-3);
+  const tools = turn.filter((i): i is Extract<Item, { kind: "tool" }> => i.kind === "tool");
+  const phase = [...turn].reverse().find((i) => i.kind === "phase" && i.state === "running") as Extract<Item, { kind: "phase" }> | undefined;
+  const running = [...tools].reverse().find((t) => t.status === "running");
+  const cur = running ?? tools[tools.length - 1];
   const checks = turn.filter((i): i is Extract<Item, { kind: "verification" }> => i.kind === "verification").slice(-2);
-  if (!model && !phase && !tools.length && !checks.length) return null;
+  if (!cur && !phase && !checks.length) return null;
+
+  // Line 1 — what's happening now: action + target + a live ticking elapsed.
+  const isShell = !!cur && (cur.name === "run_shell" || cur.name === "command_execution" || cur.name === "Bash");
+  const target = cur?.arg ? (isShell ? cur.arg : relPath(cur.arg)).replace(/\n/g, " ").slice(0, Math.max(width - 26, 12)) : "";
+  const head = cur ? `${friendlyTool(cur.name)}${target ? " " + target : ""}` : phase ? phase.label : "working";
+  const timer = running?.startedAt ? fmtElapsed(Math.floor((Date.now() - running.startedAt) / 1000)) : "";
+
+  // Line 2 — the recent trail (last few steps) + checks, dim.
   const spin = ["◐", "◓", "◑", "◒"][Math.floor(Date.now() / 160) % 4]!;
-  const toolText = tools.map((t) => `${t.status === "running" ? spin : t.status === "err" ? "!" : "✓"} ${t.name.replace(/_file$/, "").replace("run_shell", "shell")}`).join(" · ");
-  const checkText = checks.map((c) => `${c.ok ? "✓" : "!"} ${c.command}`).join(" · ");
-  const line = [model ? model.model : null, phase ? phase.label : null, toolText || null, checkText || null].filter(Boolean).join("  ·  ");
+  const trail = tools.slice(-3).map((t) => `${t.status === "running" ? spin : t.status === "err" ? "✗" : "✓"} ${friendlyTool(t.name)}`).join("  ");
+  const checkText = checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.command}`).join("  ");
+  const sub = [trail || null, checkText || null].filter(Boolean).join("   ");
+
   return (
-    <Box paddingX={1} marginTop={1} width={width}>
-      <Text color={color.accentDim}>activity </Text>
-      <Text color={color.faint}>{line.slice(0, Math.max(width - 10, 20))}</Text>
+    <Box flexDirection="column" paddingX={1} marginTop={1} width={width}>
+      <Box>
+        <Text color={color.accentDim}>▸ </Text>
+        <Text color={color.text}>{head.slice(0, Math.max(width - 14, 12))}</Text>
+        {timer ? <Text color={color.faint}>{"  · " + timer}</Text> : null}
+      </Box>
+      {sub ? <Text color={color.faint}>{"  " + sub.slice(0, Math.max(width - 4, 12))}</Text> : null}
     </Box>
   );
 }
@@ -4002,7 +4019,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   footer += PALETTE_ROWS;
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
   if (busy && lowContextNotice(ctxPct)) footer += 1; // optional low-context notice row under it
-  if (busy) footer += 2; // compact current-turn activity rail
+  if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
   if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;

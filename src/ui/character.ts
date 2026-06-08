@@ -49,8 +49,12 @@ export function toolVerbFromName(name: string): string {
   if (n === "list_dir" || n === "list_files" || n === "ls" || n === "list") return "Listing";
   if (n === "glob") return "Globbing";
   if (n === "search") return "Searching";
-  if (n === "web_search") return "Searching the web";
-  if (n.startsWith("delegate")) return "Delegating";
+  if (n === "web_search" || n === "websearch") return "Searching the web";
+  if (n === "webfetch") return "Fetching";
+  if (n === "grep") return "Searching";
+  if (n === "todowrite") return "Planning";
+  if (n === "multiedit") return "Editing";
+  if (n.startsWith("delegate") || n === "task" || n === "agent") return "Delegating";
   return "Working";
 }
 

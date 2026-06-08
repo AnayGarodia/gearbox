@@ -421,12 +421,18 @@ function previewHighlight(line: string, lang: string | undefined, doc: { open: b
   return highlightLine(line, lang) as Span[];
 }
 
-const friendlyTool = (name: string) =>
+export const friendlyTool = (name: string) =>
   name === "AskUserQuestion" ? "question" :
   name === "Write" ? "write" :
-  name === "Edit" ? "edit" :
+  name === "Edit" || name === "MultiEdit" ? "edit" :
   name === "Read" ? "read" :
   name === "Bash" ? "shell" :
+  name === "Task" || name === "Agent" ? "agent" :
+  name === "TodoWrite" ? "todo" :
+  name === "Glob" ? "glob" :
+  name === "Grep" ? "search" :
+  name === "WebFetch" ? "fetch" :
+  name === "WebSearch" ? "search" :
   name === "read_file" ? "read" :
   name === "write_file" ? "write" :
   name === "edit_file" ? "edit" :
@@ -438,7 +444,14 @@ const friendlyTool = (name: string) =>
   name === "search" ? "search" :
   name;
 
+// Strip the workspace prefix so a read shows `src/ui/App.tsx`, not the full
+// absolute path (which also got its filename clipped off at 64 chars upstream).
+const CWD = (() => { try { return process.cwd(); } catch { return ""; } })();
+export const relPath = (p: string) => (CWD && p.startsWith(CWD + "/") ? p.slice(CWD.length + 1) : p);
+
 const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+// Coarse elapsed for a STILL-RUNNING step (ticks every second): "8s" / "1m 24s".
+export const fmtElapsed = (secs: number) => (secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`);
 const motionFrame = () => Math.floor(Date.now() / 360);
 const spinnerFrame = () => ["●", "◌", "○", "◌"][motionFrame() % 4]!;
 const activePhrase = (label: string) => `${label}${["", ".", "..", "..."][motionFrame() % 4]}`;
@@ -500,8 +513,17 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         const isWrite = !isShell && (it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change");
         const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: toolColor(it), bold: true }];
         const headUsed = 2 + 1 + 2 + 6; // pad + dot + spaces + name
-        if (it.arg) head.push({ text: " " + it.arg.slice(0, Math.max(width - headUsed - 1, 0)), color: isShell ? color.text : color.path, bold: true });
-        if (it.status === "running") head.push({ text: "  " + activePhrase(isWrite ? "writing" : isShell ? "running" : "working"), color: color.run, bg: color.panelBg });
+        if (it.arg) {
+          const shownArg = isShell ? it.arg : relPath(it.arg);
+          head.push({ text: " " + shownArg.slice(0, Math.max(width - headUsed - 1, 0)), color: isShell ? color.text : color.path, bold: true });
+        }
+        if (it.status === "running") {
+          head.push({ text: "  " + activePhrase(isWrite ? "writing" : isShell ? "running" : "working"), color: color.run, bg: color.panelBg });
+          // A live, ticking elapsed once a step runs past ~2s — the clearest "it's
+          // alive, not hung" signal, right where the eye is (re-renders on the spinner tick).
+          const secs = it.startedAt ? Math.floor((Date.now() - it.startedAt) / 1000) : 0;
+          if (secs >= 2) head.push({ text: "  " + fmtElapsed(secs), color: color.faint });
+        }
         if (it.status !== "running" && it.durationMs != null) head.push({ text: "  " + fmtMs(it.durationMs), color: color.faint });
         if (it.exitCode != null) head.push({ text: "  exit " + it.exitCode, color: it.exitCode === 0 ? color.faint : color.err });
         if (it.diff?.length) head.push({ text: "  " + diffStats(it.diff), color: color.faint });
@@ -509,8 +531,8 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         if (it.status === "running" && !it.outputTail && !it.stream) {
           out.push(...indent([[
             { text: "└─ ", color: color.accentDim },
-            { text: activePhrase(isWrite ? "drafting file" : "waiting"), color: color.ok, bg: color.panelBg },
-            { text: " " + (isWrite ? "provider has not streamed code yet" : "waiting for tool output"), color: color.faint },
+            { text: activePhrase(isWrite ? "drafting file" : isShell ? "running" : "working"), color: color.ok, bg: color.panelBg },
+            { text: " " + (isWrite ? "provider has not streamed code yet" : isShell ? "waiting for output" : "no output streamed yet"), color: color.faint },
           ]], 3));
         }
         if (it.preview) {
@@ -551,7 +573,10 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         // The summary line repeats the tool's headline result. For a shell that's
         // the first output line, which we already render in the tail above — so
         // skip it for shells (it read as `$ tsc --noEmit` printed twice).
-        if (it.status !== "running" && it.summary && !(isShell && outTail)) {
+        // Skip the summary when it just repeats the tool name (the CLI backend sets
+        // tool-end summary to the tool name, e.g. a "read" with a "⎿ Read" echo).
+        const redundantSummary = it.summary != null && (it.summary === it.name || it.summary.toLowerCase() === name);
+        if (it.status !== "running" && it.summary && !redundantSummary && !(isShell && outTail)) {
           out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: it.summary.slice(0, Math.max(width - 5, 1)), color: it.status === "err" ? color.err : color.dim }]);
         }
         if (it.diff?.length) out.push(...diffLines(it.diff, width, expand));

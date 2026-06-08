@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text, Static } from "ink";
 import { color, glyph } from "../theme.ts";
+import { friendlyTool, relPath, fmtElapsed } from "../lines.ts";
 import type { Item } from "../types.ts";
 import { Markdown } from "./Markdown.tsx";
 import { highlightLine } from "../highlight.ts";
@@ -240,23 +241,6 @@ function DiffView({ lines, width }: { lines: { sign: "+" | "-"; text: string }[]
   );
 }
 
-const friendlyTool = (name: string) =>
-  name === "AskUserQuestion" ? "question" :
-  name === "Write" ? "write" :
-  name === "Edit" ? "edit" :
-  name === "Read" ? "read" :
-  name === "Bash" ? "shell" :
-  name === "read_file" ? "read" :
-  name === "write_file" ? "write" :
-  name === "edit_file" ? "edit" :
-  name === "run_shell" ? "shell" :
-  name === "command_execution" ? "shell" :
-  name === "file_change" ? "write" :
-  name === "list_dir" ? "list" :
-  name === "glob" ? "glob" :
-  name === "search" ? "search" :
-  name;
-
 const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
 const frame = () => Math.floor(Date.now() / 360);
 const TOOL_SPIN = ["◐","◓","◑","◒"];
@@ -369,8 +353,9 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
       <Box>
         <Text color={dotColor}>{item.status === "running" ? spin() : glyph.tool}</Text>
         <Text color={dotColor} bold>{"  " + verb}</Text>
-        {item.arg ? <Text color={isShell ? color.text : color.path} bold>{" " + item.arg}</Text> : null}
+        {item.arg ? <Text color={isShell ? color.text : color.path} bold>{" " + (isShell ? item.arg : relPath(item.arg))}</Text> : null}
         {item.status === "running" ? <Text color={color.run}>{"  " + activePhrase(isWrite ? "writing" : isShell ? "running" : "working")}</Text> : null}
+        {item.status === "running" && item.startedAt && Date.now() - item.startedAt >= 2000 ? <Text color={color.faint}>{"  " + fmtElapsed(Math.floor((Date.now() - item.startedAt) / 1000))}</Text> : null}
         {item.status !== "running" && item.durationMs != null ? <Text color={color.faint}>{"  " + fmtMs(item.durationMs)}</Text> : null}
         {item.exitCode != null ? <Text color={item.exitCode === 0 ? color.faint : color.err}>{"  exit " + item.exitCode}</Text> : null}
         {item.diff?.length ? <Text color={color.faint}>{"  " + diffStats(item.diff)}</Text> : null}
@@ -378,8 +363,8 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
       {item.status === "running" && !out && !item.stream ? (
         <Box marginLeft={3} marginTop={1}>
           <Text color={color.accentDim}>└─ </Text>
-          <Text color={color.ok}>{activePhrase(isWrite ? "drafting file" : "waiting")}</Text>
-          <Text color={color.faint}> {isWrite ? "provider has not streamed code yet" : "waiting for tool output"}</Text>
+          <Text color={color.ok}>{activePhrase(isWrite ? "drafting file" : isShell ? "running" : "working")}</Text>
+          <Text color={color.faint}> {isWrite ? "provider has not streamed code yet" : isShell ? "waiting for output" : "no output streamed yet"}</Text>
         </Box>
       ) : null}
       {item.preview ? (
@@ -456,7 +441,7 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
           })()}
         </Box>
       ) : null}
-      {item.status !== "running" && item.summary ? (
+      {item.status !== "running" && item.summary && item.summary !== item.name && item.summary.toLowerCase() !== friendlyTool(item.name) ? (
         <Box marginLeft={1}>
           <Text color={color.faint}>{glyph.result} </Text>
           <Box flexGrow={1}>

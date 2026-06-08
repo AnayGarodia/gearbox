@@ -153,11 +153,17 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
   }
 }
 
+// Relativize a workspace path BEFORE clipping, so a long absolute path keeps its
+// meaningful tail (the filename) instead of being cut mid-path at the 64-char cap.
+function relWorkspace(s: string): string {
+  const cwd = process.cwd();
+  return s.startsWith(cwd + "/") ? s.slice(cwd.length + 1) : s;
+}
 function shortArg(x: any): string {
   if (x == null) return "";
-  if (typeof x === "string") return x.slice(0, 64);
+  if (typeof x === "string") return relWorkspace(x).slice(0, 64);
   const s = x.command ?? x.path ?? x.file_path ?? x.cmd ?? "";
-  return String(s).slice(0, 64);
+  return relWorkspace(String(s)).slice(0, 64);
 }
 
 // Render an AskUserQuestion tool input (one or more questions, each with labeled

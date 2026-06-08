@@ -124,3 +124,27 @@ test("a multi-line error keeps the left bar on every line and stays within width
     expect(l.reduce((n, s) => n + s.text.length, 0)).toBeLessThanOrEqual(40);
   }
 });
+
+test("a read tool shows a path relative to the cwd, not the noisy absolute path", () => {
+  const cwd = process.cwd();
+  const items: Item[] = [{ kind: "tool", id: 1, callId: "a", name: "read", arg: `${cwd}/src/ui/App.tsx`, status: "ok", summary: "" }];
+  const text = itemsToLines(items, 110).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(text).toContain("src/ui/App.tsx");
+  expect(text).not.toContain(cwd); // the absolute prefix is gone
+});
+
+test("a long-running tool shows a live ticking elapsed (the 'it's alive' signal)", () => {
+  const items: Item[] = [{ kind: "tool", id: 1, callId: "a", name: "Agent", arg: "analyze the codebase", status: "running", summary: "", startedAt: Date.now() - 84_000 }];
+  const text = itemsToLines(items, 110).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(text).toContain("agent"); // friendlyTool(Agent)
+  expect(text).toMatch(/1m \d+s/); // ~84s shown as 1m 2Ns
+});
+
+test("a tool whose summary just repeats its name omits the redundant result line", () => {
+  const redundant: Item[] = [{ kind: "tool", id: 1, callId: "a", name: "Read", arg: "src/x.ts", status: "ok", summary: "Read" }];
+  const t1 = itemsToLines(redundant, 110).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(t1).not.toContain("⎿ Read");
+  const useful: Item[] = [{ kind: "tool", id: 2, callId: "b", name: "Read", arg: "src/x.ts", status: "ok", summary: "42 lines" }];
+  const t2 = itemsToLines(useful, 110).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(t2).toContain("42 lines"); // a real summary IS kept
+});
