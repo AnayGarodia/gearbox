@@ -13,6 +13,11 @@ import { findModel, type ModelSpec } from "../src/providers.ts";
 
 const sonnet = findModel("sonnet-4.6")!;
 
+// The current user turn now FOLDS the volatile context (git + retrieved files) into
+// its content, so it can be a string OR an array of text parts. Flatten for asserts.
+const userMsgText = (m: ModelMessage): string =>
+  typeof m.content === "string" ? m.content : (m.content as any[]).map((p) => p.text ?? "").join(" ");
+
 // ── tokenizer: calibration is real, model-aware, and never under tiktoken ──
 test("countTokens applies measured per-model calibration", () => {
   const text = "export function debounce(fn: () => void, ms: number) { /* ... */ }".repeat(8);
@@ -54,16 +59,30 @@ test("retrieveFiles packs file bodies within the token budget", () => {
 });
 
 // ── builder: assembly order, current user always last ──
-test("buildContext puts memory/repomap in system and ends with the user message", () => {
-  const { system, messages } = buildContext({
+test("buildContext keeps the stable prefix in system and ends with the user turn", () => {
+  const { system, messages, cacheBreak } = buildContext({
     history: [],
     userText: "fix the off-by-one in the pager",
     model: sonnet,
   });
-  expect(system).toContain("Gearbox"); // base prompt
+  expect(system).toContain("Gearbox"); // base prompt stays in the cached system
+  expect(system).toContain("REPO MAP"); // repo map stays in the cached system prefix
+  // The volatile turn-context (git + retrieved files) is NOT in system (it busted
+  // the cache); its header only ever appears in the user turn.
+  expect(system).not.toContain("CONTEXT FOR THIS TURN");
   const last = messages[messages.length - 1]!;
   expect(last.role).toBe("user");
-  expect(last.content).toBe("fix the off-by-one in the pager");
+  expect(userMsgText(last)).toContain("fix the off-by-one in the pager");
+  // No settled history yet → only the system block caches.
+  expect(cacheBreak).toBe(-1);
+});
+
+test("cacheBreak marks the settled-history end so the volatile turn rides after it", () => {
+  const history = [...toolTurn(1)]; // one settled prior turn
+  const { messages, cacheBreak } = buildContext({ history, userText: "do the next thing", model: sonnet, recentTurns: 5 });
+  expect(messages[messages.length - 1]!.role).toBe("user"); // user turn last
+  expect(cacheBreak).toBe(messages.length - 2); // breakpoint is the message before it
+  expect(cacheBreak).toBeGreaterThanOrEqual(0); // there is settled history to cache
 });
 
 test("plan mode injects the read-only addendum", () => {
@@ -160,7 +179,7 @@ test("buildContext trims oldest whole turns when over budget", () => {
   const { messages } = buildContext({ history, userText: "final", model: tiny, recentTurns: 99 });
   // Not everything fit → some turns dropped, but the current user message survives.
   expect(messages.length).toBeLessThan(history.length + 1);
-  expect(messages[messages.length - 1]!.content).toBe("final");
+  expect(userMsgText(messages[messages.length - 1]!)).toContain("final");
 });
 
 // ── project memory: append/load round-trip (isolated GEARBOX_HOME) ──
@@ -248,7 +267,7 @@ test("compacted history feeds buildContext into a valid send (the integration se
   expect(res).not.toBeNull();
   const { messages } = buildContext({ history: res!.messages, userText: "next", model: sonnet });
   expect(messages[messages.length - 1]!.role).toBe("user");
-  expect(messages[messages.length - 1]!.content).toBe("next");
+  expect(userMsgText(messages[messages.length - 1]!)).toContain("next");
   const { calls, results } = toolIds(messages);
   expect([...calls].sort()).toEqual([...results].sort());
 });

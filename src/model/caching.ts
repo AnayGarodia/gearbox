@@ -53,6 +53,13 @@ export function withPromptCaching(
   spec: ModelSpec,
   system: string | undefined,
   messages: ModelMessage[],
+  // Which message ends the cacheable prefix. Default = the last message (cache the
+  // whole conversation). The context engine passes the index of the last SETTLED
+  // history message so the per-turn VOLATILE tail (freshly retrieved files + git
+  // state, which change every turn) rides AFTER the breakpoint and doesn't bust the
+  // cached prefix. Out of range (e.g. -1 on the first turn) → only the system block
+  // is marked.
+  cacheBreakIndex?: number,
 ): { system: string | undefined; messages: ModelMessage[] } {
   const kind = cacheKind(spec);
   if (!kind) return { system, messages };
@@ -63,13 +70,13 @@ export function withPromptCaching(
     out.push({ role: "system", content: system, providerOptions: mark } as ModelMessage);
   }
   const n = messages.length;
+  const breakAt = cacheBreakIndex === undefined ? n - 1 : cacheBreakIndex;
   for (let i = 0; i < n; i++) {
     const m = messages[i]!;
-    // Mark the LAST message → the whole conversation so far becomes one cache
-    // breakpoint (everything up to the marker is cached). Deep-merge into any
-    // existing providerOptions so a pre-existing provider option is kept, not
-    // clobbered (the marker has exactly one provider key).
-    if (i === n - 1) {
+    // Mark the breakpoint message → everything up to it becomes one cached prefix.
+    // Deep-merge into any existing providerOptions so a pre-existing provider option
+    // is kept, not clobbered (the marker has exactly one provider key).
+    if (i === breakAt) {
       const prev = ((m as { providerOptions?: Record<string, Record<string, unknown>> }).providerOptions ?? {});
       const merged: Record<string, Record<string, unknown>> = { ...prev };
       for (const [provider, opts] of Object.entries(mark)) {

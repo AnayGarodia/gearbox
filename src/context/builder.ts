@@ -5,9 +5,14 @@
 // overflowing, and makes the same correct edits — so curation is what enables
 // routing (a switched model gets a small, clean context, not the whole history).
 //
-// Assembly order (Anthropic-style, stable prefix first for prompt caching):
-//   system  = base prompt + plan addendum + project memory + repo map + retrieved code
-//   messages = curated history + current user message
+// Assembly order (stable cacheable prefix first, volatile per-turn context last):
+//   system   = base prompt + plan addendum + verification commands + project memory
+//              + repo map   (session-stable → stays a byte-identical cached prefix)
+//   messages = curated history + a user turn that FOLDS IN the volatile context
+//              (git state + freshly retrieved files). The cache breakpoint sits at
+//              the end of the settled history, so that volatile tail rides after it
+//              and never busts the cached prefix. (Earlier this volatile content
+//              lived in `system` and broke the cache on every turn.)
 //
 // THE INVARIANT: never split a tool_use from its tool_result. Curation and
 // trimming operate only at whole-turn boundaries; eliding an old turn drops
@@ -81,6 +86,11 @@ export interface BuiltContext {
   system: string;
   messages: ModelMessage[];
   sections: ContextSection[];
+  // Index of the last SETTLED-history message — where the cacheable prefix ends.
+  // The per-turn volatile context (git + retrieved files) rides in the final user
+  // message AFTER this, so the stable system + growing history stay a byte-identical
+  // cacheable prefix across turns. -1 when there's no settled history yet.
+  cacheBreak: number;
 }
 
 // ── token helpers ──
@@ -259,12 +269,6 @@ export function buildContext(opts: {
     sections.push({ name: "memory", tokens: countTokens(memory, modelId) });
   }
 
-  const git = safe(() => gitContext(cwd), "");
-  if (git) {
-    system += `\n\n# GIT CONTEXT (current repository state; do not overwrite unrelated user changes)\n${git}`;
-    sections.push({ name: "git", tokens: countTokens(git, modelId) });
-  }
-
   const mapBudget = Math.min(4_000, Math.floor(inputBudget * 0.05));
   const map = safe(() => repoMap(cwd, mapBudget), "");
   if (map) {
@@ -272,18 +276,39 @@ export function buildContext(opts: {
     sections.push({ name: "repomap", tokens: countTokens(map, modelId) });
   }
 
+  const systemTokens = countTokens(system, modelId);
+
+  // ── volatile per-turn context: git state + files retrieved for THIS prompt ──
+  // These change every turn (git after each edit; retrieval is prompt-keyed), so
+  // keeping them in the system prefix busted the prompt cache on every turn. They
+  // are folded into the current user message instead, riding AFTER the cache
+  // breakpoint, so the stable system + settled history stay cacheable. Still token-
+  // accounted in `sections` so /context stays honest about where the budget goes.
+  const volatileParts: string[] = [];
+  const git = safe(() => gitContext(cwd), "");
+  if (git) {
+    volatileParts.push(`# GIT CONTEXT (current repository state; do not overwrite unrelated user changes)\n${git}`);
+    sections.push({ name: "git", tokens: countTokens(git, modelId) });
+  }
   const retrieveBudget = Math.min(12_000, Math.floor(inputBudget * 0.15));
   const hits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), []);
   if (hits.length) {
     const block = hits.map((h) => `=== ${h.file} ===\n${h.content}`).join("\n\n");
-    system += `\n\n# RELEVANT FILES (retrieved for this task)\n${block}`;
+    volatileParts.push(`# RELEVANT FILES (retrieved for this task)\n${block}`);
     sections.push({ name: "retrieved", tokens: hits.reduce((s, h) => s + h.tokens, 0) });
   }
 
-  const systemTokens = countTokens(system, modelId);
-
-  // ── curated history + current user message, budgeted ──
-  const userMsg: ModelMessage = { role: "user", content: opts.userContent ?? userText };
+  // ── curated history + current user message (with the volatile context), budgeted ──
+  const turnContext = volatileParts.length
+    ? `# CONTEXT FOR THIS TURN (current repo state + files retrieved for your task — reference material, not part of our conversation)\n\n${volatileParts.join("\n\n")}`
+    : "";
+  const baseUserContent = opts.userContent ?? userText;
+  const userContent = turnContext
+    ? typeof baseUserContent === "string"
+      ? [{ type: "text" as const, text: turnContext }, { type: "text" as const, text: baseUserContent }]
+      : [{ type: "text" as const, text: turnContext }, ...(baseUserContent as any[])]
+    : baseUserContent;
+  const userMsg: ModelMessage = { role: "user", content: userContent as any };
   const userTokens = msgTokens(userMsg, modelId);
 
   const turns = groupTurns(history);
@@ -309,7 +334,12 @@ export function buildContext(opts: {
 
   // Defensive: a kept recent turn could carry an unpaired tool_use (e.g. an
   // interrupted turn). Sanitize so the send is always valid.
-  return { system, messages: sanitizeToolPairs([...flat, userMsg]), sections };
+  const finalMessages = sanitizeToolPairs([...flat, userMsg]);
+  // Cache breakpoint = the last SETTLED message (the one before the user turn).
+  // Computed AFTER sanitize so a dropped orphan can't shift the index. -1 when the
+  // user message is the only one (first turn) → only the system block caches.
+  const cacheBreak = finalMessages.length - 2;
+  return { system, messages: finalMessages, sections, cacheBreak };
 }
 
 function safe<T>(fn: () => T, fallback: T): T {

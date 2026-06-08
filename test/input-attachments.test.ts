@@ -41,7 +41,12 @@ test("buildContext preserves multimodal user content as the current turn", () =>
   const model = findModel("sonnet-4.6")!;
   const content = [{ type: "text" as const, text: "describe this" }, { type: "image" as const, image: new Uint8Array([1, 2]), mediaType: "image/png" }];
   const { messages } = buildContext({ history: [], userText: "describe this", userContent: content, model });
-  expect(messages[messages.length - 1]).toEqual({ role: "user", content });
+  const last = messages[messages.length - 1] as any;
+  expect(last.role).toBe("user");
+  // The volatile turn-context may be prepended as a text part, but the user's own
+  // multimodal parts (text + image) are preserved, in order, at the end.
+  const parts: any[] = Array.isArray(last.content) ? last.content : [{ type: "text", text: last.content }];
+  expect(parts.slice(-2)).toEqual(content);
 });
 
 test("web search formatting gives the model citations it can fetch next", () => {

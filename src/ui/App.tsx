@@ -1687,7 +1687,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        const { system, messages: ctx } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        const { system, messages: ctx, cacheBreak } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = account ? await resolveCreds(account) : undefined;
         usedAccountRef.current = account?.id ?? null;
@@ -1705,7 +1705,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
           } // else: model has no effort control → omit effort (leave null)
         }
-        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, pinnedModelId: explicitModelId });
+        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, pinnedModelId: explicitModelId, cacheBreak });
         if (account && r.headers) {
           const apiRates = parseRateHeaders(account.provider, r.headers, Date.now());
           if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };
