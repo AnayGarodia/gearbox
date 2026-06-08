@@ -101,6 +101,19 @@ function qualityOf(c: Candidate): number {
   return 0.5;
 }
 
+// Whether a model has a REAL quality prior (vs the neutral-0.5 fallback used when no
+// profile exists). A seat with an UNKNOWN quality clears the bar unconditionally (we
+// don't drop it on a 0.5 guess); a seat with a KNOWN quality is held to the bar.
+function hasKnownQuality(c: Candidate): boolean {
+  const pr = profileFor(c.canonicalId ?? c.spec.id);
+  return !!pr && (pr.quality.sweBenchVerified != null || pr.quality.intelligenceIndex != null);
+}
+
+// Bar-clearing predicate (curried on the bar). API candidates clear iff quality ≥
+// bar. Seats clear iff quality ≥ bar OR the model's quality is unknown.
+const clearsBar = (bar: number) => (c: Candidate): boolean =>
+  c.backend?.kind === "cli" ? !hasKnownQuality(c) || qualityOf(c) >= bar : qualityOf(c) >= bar;
+
 function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {
   const cost = profileFor(c.canonicalId ?? c.spec.id)?.cost ?? c.spec.cost;
   // Unknown cost sorts last (matches the old POSITIVE_INFINITY behavior).
@@ -179,10 +192,13 @@ export class RoutingSelector implements ModelSelector {
     const fits = need > 0 ? capable.filter((c) => c.spec.contextWindow >= need) : capable;
     let pool = fits.length ? fits : capable;
     pool = applyGlobalPreference(pool);
-    // Subscription seats clear the bar unconditionally: the user chose that flat-rate
-    // plan, and a seat for a non-native sdkId (e.g. some codex ids) has no profile so
-    // qualityOf falls to the neutral 0.5 — which would wrongly drop it for code (R-3).
-    let clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= bar);
+    // A subscription seat clears the bar when its model's quality clears it, OR when
+    // the model has NO known quality profile (a seat for a non-native sdkId — e.g.
+    // some codex ids — falls to the neutral 0.5, and we shouldn't drop it on that
+    // guess; R-3). But a seat with a KNOWN-weak quality (e.g. a Claude haiku seat)
+    // is still held to the bar, so it isn't picked for a hard task just because it's
+    // free and fast — that was the regression when haiku became a routable seat.
+    let clears = pool.filter(clearsBar(bar));
     // Under escalation the bar can rise above every available model's quality, which
     // would empty `clears` and (via select's fallback) wrongly drop us back to the
     // CHEAPEST model — the opposite of escalating. Instead, climb to the strongest
@@ -245,9 +261,10 @@ export class RoutingSelector implements ModelSelector {
       ? preferred.spec.id
       : pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens }).candidate.id;
 
+    const clearsForBar = clearsBar(p.bar);
     for (const c of p.pool) {
       const s = scored.get(c.spec.id)!;
-      const clears = qualityOf(c) >= p.bar;
+      const clears = clearsForBar(c); // same rule select() uses (seats: unknown-quality clears, known-weak doesn't)
       const chosen = c.spec.id === winnerId;
       entries.push({
         label: c.spec.label,

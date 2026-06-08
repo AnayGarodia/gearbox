@@ -78,7 +78,7 @@ export const CATALOG: CatalogProvider[] = [
   { id: "llamacpp", label: "llama.cpp (local)", group: "local", exec: "in-loop", authKind: "openai-compat", envVars: [], baseUrl: "http://localhost:8080/v1", signupUrl: "https://github.com/ggml-org/llama.cpp" },
 
   // ── CLI-backed subscriptions (subprocess; never token extraction) ──
-  { id: "claude-cli", label: "Claude (Pro/Max via claude CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "claude", signupUrl: "https://claude.com/product/claude-code", defaultModels: ["claude-opus-4-8", "claude-sonnet-4-6"], notes: "Wraps the official binary (like Conductor). Runs its own tools/permissions. ToS-clean: no token is read." },
+  { id: "claude-cli", label: "Claude (Pro/Max via claude CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "claude", signupUrl: "https://claude.com/product/claude-code", defaultModels: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"], notes: "Wraps the official binary (like Conductor). Runs its own tools/permissions. ToS-clean: no token is read. Haiku/Sonnet/Opus are all usable on Pro/Max (claude --model haiku)." },
   { id: "codex-cli", label: "ChatGPT (Plus/Pro via codex CLI)", group: "cli", exec: "cli", authKind: "cli", envVars: [], binary: "codex", signupUrl: "https://developers.openai.com/codex/cli", defaultModels: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini"], notes: "Wraps the official binary. Runs its own tools/permissions. ToS-clean." },
 ];
 

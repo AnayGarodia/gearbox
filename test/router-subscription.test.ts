@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoutingSelector, SubscriptionPinSelector } from "../src/model/router.ts";
+import { subscriptionSeats } from "../src/providers.ts";
 import { putAccount } from "../src/accounts/store.ts";
 import { recordUsage, recordRateLimits } from "../src/accounts/usage.ts";
 import type { Account } from "../src/accounts/types.ts";
@@ -29,6 +30,32 @@ function claudeSeat(): Account {
     enabled: true, addedAt: 0,
   };
 }
+
+// A Claude Pro/Max seat with NO explicit model list falls back to the claude-cli
+// catalog defaultModels — which must expose haiku (usable via `claude --model
+// haiku`), not just sonnet/opus. Regression: haiku showed as API-only.
+test("a claude subscription seat exposes haiku/sonnet/opus from the catalog", () => {
+  putAccount({ id: "claude-max-cat", label: "Claude Max", provider: "claude-cli", exec: "cli", auth: { kind: "cli", binary: "claude" }, enabled: true, addedAt: 0 });
+  const ids = subscriptionSeats().filter((s) => s.account.id === "claude-max-cat").map((s) => s.spec.sdkId);
+  expect(ids).toContain("claude-haiku-4-5");
+  expect(ids).toContain("claude-sonnet-4-6");
+  expect(ids).toContain("claude-opus-4-8");
+});
+
+test("a stale CLI account snapshot still gains new catalog models (haiku) via union", () => {
+  // Mirrors a real account added BEFORE haiku was in the catalog (the reported bug).
+  putAccount({ id: "claude-stale", label: "Claude Max", provider: "claude-cli", exec: "cli", auth: { kind: "cli", binary: "claude" }, models: ["claude-opus-4-8", "claude-sonnet-4-6"], enabled: true, addedAt: 0 });
+  const ids = subscriptionSeats().filter((s) => s.account.id === "claude-stale").map((s) => s.spec.sdkId);
+  expect(ids).toContain("claude-haiku-4-5"); // healed from the live catalog despite the frozen snapshot
+  expect(ids).toContain("claude-sonnet-4-6"); // existing snapshot models preserved
+});
+
+test("a cheap task can route to the free claude seat once haiku is exposed", () => {
+  putAccount({ id: "claude-max-cheap", label: "Claude Max", provider: "claude-cli", exec: "cli", auth: { kind: "cli", binary: "claude" }, enabled: true, addedAt: 0 });
+  // A bounded sub-task (bar 0): a ~free subscription seat wins over the metered key.
+  const choice = new RoutingSelector().select({ prompt: "summarize this transcript", kind: "summarize" });
+  expect(choice.backend?.kind).toBe("cli");
+});
 
 test("a configured subscription seat wins over the same model on a metered key", () => {
   putAccount(claudeSeat());

@@ -181,7 +181,13 @@ export function subscriptionSeats(): SubscriptionSeat[] {
     const binary = (a.auth.kind === "cli" ? a.auth.binary : undefined) ?? catalogProvider(a.provider)?.binary;
     if (!binary) continue;
     const profile = a.auth.kind === "cli" ? a.auth.loginProfile : undefined;
-    const sdkIds = a.models ?? catalogProvider(a.provider)?.defaultModels ?? [];
+    // CLI subscriptions have no per-account model discovery, so the catalog is the
+    // source of truth for what the plan can run. UNION the account's stored list (a
+    // snapshot frozen at add-time) with the live catalog defaults, so a model added
+    // to the catalog later (e.g. haiku) reaches already-configured subscriptions
+    // without the user re-adding them.
+    const catalogModels = catalogProvider(a.provider)?.defaultModels ?? [];
+    const sdkIds = [...new Set([...(a.models ?? []), ...catalogModels])];
     for (const sdkId of sdkIds) {
       if (!sdkId) continue;
       const canon = CURATED.find((c) => c.sdkId === sdkId && NATIVE.has(c.provider));
