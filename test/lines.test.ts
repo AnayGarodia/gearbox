@@ -106,3 +106,21 @@ test("consecutive tool calls render tight (no blank line between them)", () => {
   // exactly ONE leading blank for the whole block — not one per tool.
   expect(blanks).toBe(1);
 });
+
+test("an error item renders one red left-bar lane (▎), not the old ▲ marker", () => {
+  const items: Item[] = [{ kind: "error", id: 1, text: "rate limited · try /account" }];
+  const lines = itemsToLines(items, 60);
+  const text = lines.map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(text).toContain("▎"); // the red left bar spine
+  expect(text).not.toContain("▲"); // the triangle marker is gone from errors
+  expect(text).toContain("rate limited");
+});
+
+test("a multi-line error keeps the left bar on every line and stays within width", () => {
+  const items: Item[] = [{ kind: "error", id: 1, text: "line one is here\nline two is also here" }];
+  const lines = itemsToLines(items, 40).filter((l) => l.some((s) => s.text.includes("▎")));
+  expect(lines.length).toBeGreaterThanOrEqual(2); // a bar on each paragraph line
+  for (const l of itemsToLines(items, 40)) {
+    expect(l.reduce((n, s) => n + s.text.length, 0)).toBeLessThanOrEqual(40);
+  }
+});

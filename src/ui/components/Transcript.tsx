@@ -619,12 +619,17 @@ function Row({ item, width, expandAll = false }: { item: Item; width: number; ex
         </Box>
       );
     case "error":
+      // One error lane: a single red left bar down the whole message, shown once.
       return (
-        <Box marginTop={1} marginLeft={2}>
-          <Text color={color.err}>{glyph.err} </Text>
-          <Box flexGrow={1}>
-            <Text color={color.err}>{item.text}</Text>
-          </Box>
+        <Box marginTop={1} flexDirection="column">
+          {item.text.split("\n").map((line, i) => (
+            <Box key={i}>
+              <Text color={color.err}>{glyph.userBar} </Text>
+              <Box flexGrow={1}>
+                <Text color={color.err}>{line}</Text>
+              </Box>
+            </Box>
+          ))}
         </Box>
       );
   }

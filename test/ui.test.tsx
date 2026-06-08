@@ -48,7 +48,7 @@ test("transcript renders user, assistant, tools, error with the right glyphs", (
   expect(f).toContain("▌"); // user prompt band
   expect(f).toContain("⏺"); // tool call marker
   expect(f).toContain("⎿"); // tool result connector
-  expect(f).toContain("▲"); // error marker
+  expect(f).toContain("▎"); // error lane: a single red left bar (was a ▲ marker)
 });
 
 test("transcript renders live phase, model, verification, and preference rows", () => {
