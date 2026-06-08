@@ -23,6 +23,11 @@ You re-tested v0.2.53: paste no longer splits, bash mode works. Three new/refine
 - ☑ **screenshot paste → `@/var/folders/…/TemporaryItems/ ` + orphaned tail** — a chunked path paste momentarily resolves to a real DIR prefix, and the per-read drag-drop handler `@dir`-mentioned it before the rest landed. Fix: `attachPastedPath()` rejects directories, so a partial prefix falls through to the coalescer, which reassembles the full path and attaches the image. (App.tsx)
 - ✓ confirmed working by you: paste no longer splits (Phase 5 coalescer), bash mode (iii).
 
+### 🔧 PHASE 7 (2026-06-08) — double-click-drag, the real root cause → v0.2.56
+You re-reported double-click-drag still broken after v0.2.54. It was NOT the selection logic — a headless harness driving the real SGR mouse sequence proves v0.2.54 works in fullscreen (double-click copies one word; drag extends to the hull, 5→30 chars). The real bug was one layer up:
+- ☑ **mouse grab was enabled in inline mode (the default)** — `cli.tsx` set `mouse = isTTY` (NOT gated on fullscreen), so it sent `1000/1002/1006` always. Grabbing the mouse disables the terminal's OWN selection; inline has no in-app selection to replace it, so double-click-drag (and scrollback) did nothing. Contradicted the documented "inline = no mouse grab, native selection" design. Fix: `mouse = fullscreen && GEARBOX_MOUSE !== "0"`; also gated the App SGR `useEffect` on `fullscreen`. Inline → native selection; fullscreen → unchanged (app selection + wheel scroll). (cli.tsx, App.tsx)
+- Lesson: when a fullscreen-proven interaction "doesn't work" live, check the MODE — inline vs fullscreen change who owns the mouse.
+
 Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs live verification (implemented + unit-tested, but only you can confirm in a real terminal/with your accounts) · ✗ won't-fix/by-design · ↷ already handled by your recent push
 
 **Base:** synced to `main` @ b7e4842 (your "reliability + UX" + "edit/shell/verify" pushes folded in). Audits below were run on pre-merge v0.2.37, so file:line may have shifted (+179 in App.tsx); each is re-verified against the merged tree before fixing.
