@@ -53,7 +53,10 @@ export interface ProseStyle {
 // Map a matched token (leading whitespace already stripped by the caller) to its
 // style. Derived from the token's shape, so both render paths color it the same.
 export function proseTokenStyle(token: string): ProseStyle {
-  if (token.startsWith("`")) return { color: color.accent, bg: color.codeBg };
+  // Code-ish tokens read in the calm path-blue, never the bright accent — accent
+  // is reserved for interactive/now (the composer, a clickable command, the active
+  // tab), so a symbol name in prose can't be mistaken for something you act on.
+  if (token.startsWith("`")) return { color: color.path, bg: color.codeBg };
   if (token.startsWith("/")) return { color: color.path, bold: true, bg: color.accentBg };
   if (token.startsWith('"')) return { color: color.codeString };
   if (/^\d/.test(token)) return { color: color.codeNumber };
@@ -61,5 +64,5 @@ export function proseTokenStyle(token: string): ProseStyle {
   // path/filename: contains a slash or ends in a dotted extension
   if (token.includes("/") || /\.[A-Za-z0-9]+$/.test(token)) return { color: color.path };
   // otherwise a code identifier (call / snake / camel / Pascal)
-  return { color: color.accent };
+  return { color: color.path };
 }

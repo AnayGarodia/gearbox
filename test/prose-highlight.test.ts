@@ -17,7 +17,9 @@ test("highlights code identifiers (camelCase, snake_case, calls) but not plain w
   expect(tokens("the markdownToLines helper")).toContain("markdownToLines");
   expect(tokens("uses user_name here")).toContain("user_name");
   expect(tokens("call proseSpans() please")).toContain("proseSpans");
-  expect(styleOf("markdownToLines x").color).toBe(color.accent);
+  // Code identifiers read in the calm path-blue, never the bright accent (which is
+  // reserved for interactive/now — the composer, a clickable command, the active tab).
+  expect(styleOf("markdownToLines x").color).toBe(color.path);
   // plain English words are not identifiers
   expect(tokens("the thing to remember here")).toEqual([]);
 });
@@ -70,7 +72,7 @@ test("end-to-end: plain prose has no string/accent false positives", () => {
 
 test("end-to-end: technical prose lights up the right tokens", () => {
   const md = "The markdownToLines helper in src/ui/lines.ts returns 2 spans.";
-  expect(has(md, color.accent)).toBe(true); // markdownToLines
-  expect(has(md, color.path)).toBe(true); // src/ui/lines.ts
+  expect(has(md, color.path)).toBe(true); // markdownToLines (identifier) + src/ui/lines.ts (path)
+  expect(has(md, color.accent)).toBe(false); // accent is reserved for interactive, not prose tokens
   expect(has(md, color.codeNumber)).toBe(true); // 2
 });

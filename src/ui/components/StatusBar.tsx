@@ -112,7 +112,7 @@ export function StatusBar({
 
   // Budget the left so the right (model + cost) stays whole and right-aligned — the
   // click hit-test depends on that exact alignment. Truncate the legend to fit.
-  const legend = `/ commands${SEP}@ files${SEP}↵ send${SEP}esc`;
+  const legend = `↵ send${SEP}@ files${SEP}/ commands${SEP}esc interrupt`;
   const leftBudget = Math.max(0, width - 2 /*paddingX*/ - right.length - 2 /*gap*/);
   const legendRoom = Math.max(0, leftBudget - chipLen);
   const legendShown =
@@ -128,7 +128,7 @@ export function StatusBar({
         <Text color={color.faint}>{legendShown}</Text>
       </Text>
       <Text wrap="truncate-end">
-        <Text color={color.dim}>{model}</Text>
+        <Text color={color.text}>{model}</Text>
         {costText ? <Text color={color.faint}>{SEP + costText}</Text> : null}
       </Text>
     </Box>

@@ -2,6 +2,16 @@
 // Restraint is the aesthetic: one cool accent (periwinkle — the ghost mascot),
 // near-black canvas so the accent reads without competing background hues,
 // color only used to mean something (running / ok / error).
+//
+// Color discipline — each hue means ONE thing, so a glance decodes the screen:
+//   accent  = interactive / now — the live composer, the active tab, a clickable
+//             command. NEVER static prose, a filename, or a severity level (that
+//             dilution is exactly what made the UI read as undifferentiated cyan).
+//   ok      = healthy / passed / signed in.   warn = attention, not broken
+//             (near-limit, expired, a surprising route).   err = broken / at-limit.
+//   path    = code references (filenames, inline code, symbol names) — a calm blue,
+//             a step below accent.   user = your text + product names.
+//   money is neutral `text` (faint when zero), never `ok` — spend isn't "good".
 
 export interface Theme {
   accent: string;

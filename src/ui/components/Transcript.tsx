@@ -12,7 +12,7 @@ import type { Scorecard } from "../../model/selector.ts";
 
 // Limit-utilization color: green when there's headroom, accent mid, coral when
 // you're nearly maxed (≥85%) so it reads as a warning.
-const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
+const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.warn : color.ok);
 
 function Bar({ frac, width, on }: { frac: number; width: number; on: string }) {
   const { fill, empty } = barCells(frac, width);
@@ -55,7 +55,7 @@ function UsageCard({ view }: { view: UsageView }) {
                           <Text color={limitColor(l.pct)}>{" " + l.pct + "%"}</Text>
                         </>
                       ) : (
-                        <Text color={l.status === "limited" ? color.err : l.status === "warn" ? color.accent : color.ok}>
+                        <Text color={l.status === "limited" ? color.err : l.status === "warn" ? color.warn : color.ok}>
                           {l.status === "limited" ? "limited" : l.status === "warn" ? "near limit" : "ok"}
                         </Text>
                       )}
@@ -77,7 +77,7 @@ function UsageCard({ view }: { view: UsageView }) {
           {view.apiKeys.map((a, i) => (
             <Box key={i}>
               <Text color={color.text}>{"    " + a.name.padEnd(labelPad)}</Text>
-              <Text color={a.spendPos ? color.ok : color.faint}>{"  " + (a.spend ?? "").padStart(spendPad)}</Text>
+              <Text color={a.spendPos ? color.text : color.faint}>{"  " + (a.spend ?? "").padStart(spendPad)}</Text>
               <Text color={color.faint}>{"   " + a.turns + " turn" + (a.turns === 1 ? "" : "s") + " · " + a.tok}</Text>
               {a.balanceLeft ? <Text color={color.faint}>{" · " + a.balanceLeft}</Text> : null}
               {a.balanceNote ? <Text color={color.faint}>{" · " + a.balanceNote}</Text> : null}
@@ -98,9 +98,8 @@ function UsageCard({ view }: { view: UsageView }) {
 
 const accountStateColor = (status: string) =>
   status === "active" || status === "signed in" || status === "ready" || status.startsWith("✓") ? color.ok :
-  status === "duplicate" ? color.accent :
-  status === "not signed in" || status.startsWith("✗") ? color.run :
-  status.startsWith("⚠") || status.startsWith("⏳") ? color.accent :
+  status === "not signed in" || status.startsWith("✗") ? color.err :
+  status === "duplicate" || status.startsWith("⚠") || status.startsWith("⏳") ? color.warn :
   color.faint;
 
 function AccountCard({ view }: { view: AccountView }) {

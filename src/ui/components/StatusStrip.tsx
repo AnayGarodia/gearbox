@@ -73,7 +73,7 @@ export function StatusStrip({
             {l.status === "limited" ? (
               <Text color={color.err}>at limit{l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}</Text>
             ) : l.status === "warn" ? (
-              <Text color={color.run}>near limit{l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}</Text>
+              <Text color={color.warn}>near limit{l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}</Text>
             ) : subProbing ? (
               <Text color={color.faint}>checking…</Text>
             ) : l.resetsIn ? (
@@ -91,7 +91,7 @@ export function StatusStrip({
       ) : null}
       {api?.spend ? (
         <Row label={api.name.slice(0, pad)}>
-          <Text color={api.spendPos ? color.ok : color.faint}>{api.spend}</Text>
+          <Text color={api.spendPos ? color.text : color.faint}>{api.spend}</Text>
           {api.balanceLeft ? <Text color={color.faint}>  ·  {api.balanceLeft}</Text> : null}
           {!api.balanceLeft && api.balanceNote ? <Text color={color.faint}>  ·  {api.balanceNote}</Text> : null}
         </Row>

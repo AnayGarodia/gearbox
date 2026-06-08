@@ -93,9 +93,10 @@ function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
             );
           case "codespan":
             // Color only, no background box (keeps dense `identifier`-heavy prose
-            // calm) — mirrors the fullscreen lines.ts codespan path.
+            // calm) — mirrors the fullscreen lines.ts codespan path. Path-blue, not
+            // the bright accent: accent is reserved for interactive/now.
             return (
-              <Text key={i} color={/[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent}>
+              <Text key={i} color={color.path}>
                 {decode(t.text)}
               </Text>
             );
@@ -136,7 +137,7 @@ function CodeBlock({ lang, code, width }: { lang: string; code: string; width: n
   );
   return (
     <Box flexDirection="column" marginY={1} paddingX={1} borderStyle="single" borderColor={color.accentDim}>
-      {lang ? renderPaddedLine("lang", [<Text key="lang-text" color={color.accent} bold backgroundColor={color.codeBg}>{` ${lang} `}</Text>], visibleLen(lang) + 2) : null}
+      {lang ? renderPaddedLine("lang", [<Text key="lang-text" color={color.accentDim} bold backgroundColor={color.codeBg}>{` ${lang} `}</Text>], visibleLen(lang) + 2) : null}
       {lines.map((l, i) => {
         const row = diffRow(l, lang);
         const prefix = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} │ `;

@@ -15,21 +15,26 @@ import { retryPhrase } from "./collapse.ts";
 import { scorecardRows } from "../commands.ts";
 import { PROSE_RE, proseTokenStyle } from "./prose.ts";
 
-const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
+// Severity ramp for a utilization bar: healthy → attention → broken. Amber (warn),
+// never accent — the cyan accent means "interactive/now", so keeping it out of the
+// severity scale lets a single glance read the bar as a health gradient.
+const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.warn : color.ok);
 // Limit window value: a utilization bar when a percentage is known, else a status word.
 const limitValueSpans = (l: { pct?: number; status?: "ok" | "warn" | "limited" }): Span[] => {
   if (typeof l.pct === "number") {
     const lim = barCells(l.pct / 100, 10);
     return [{ text: lim.fill, color: limitColor(l.pct) }, { text: lim.empty, color: color.faint }, { text: " " + l.pct + "%", color: limitColor(l.pct) }];
   }
-  const c = l.status === "limited" ? color.err : l.status === "warn" ? color.accent : color.ok;
+  const c = l.status === "limited" ? color.err : l.status === "warn" ? color.warn : color.ok;
   return [{ text: l.status === "limited" ? "limited" : l.status === "warn" ? "near limit" : "ok", color: c }];
 };
+// Account health → semantic color. ok=ready, err=invalid/not-signed-in (can't be
+// used), warn=expired/limited/duplicate (attention, not broken), faint=unknown.
+// No accent here: a state is never "interactive", so it never wears the now-color.
 const accountStateColor = (status: string) =>
   status === "active" || status === "signed in" || status === "ready" || status.startsWith("✓") ? color.ok :
-  status === "duplicate" ? color.accent :
-  status === "not signed in" || status.startsWith("✗") ? color.run :
-  status.startsWith("⚠") || status.startsWith("⏳") ? color.accent :
+  status === "not signed in" || status.startsWith("✗") ? color.err :
+  status === "duplicate" || status.startsWith("⚠") || status.startsWith("⏳") ? color.warn :
   color.faint;
 
 export type Span = { text: string; color?: string; bold?: boolean; italic?: boolean; dim?: boolean; bg?: string };
@@ -101,7 +106,7 @@ function codeBlockLines(code: string, lang: string, width: number): Line[] {
   );
   const out: Line[] = [];
   if (lang) {
-    out.push(padBg([{ text: ` ${lang} `, color: color.accent, bold: true, bg: color.codeBg }], blockWidth, color.codeBg));
+    out.push(padBg([{ text: ` ${lang} `, color: color.accentDim, bold: true, bg: color.codeBg }], blockWidth, color.codeBg));
   }
   for (let i = 0; i < lines.length; i++) {
     const row = codeRow(lines[i]!, lang);
@@ -230,8 +235,9 @@ function inlineSpans(tokens: any[], base: Style): Span[] {
         break;
       case "codespan":
         // No background box: dense paragraphs of `identifiers` become a wall of
-        // grey boxes with it. Accent/path color alone sets inline code apart.
-        out.push({ text: t.text, color: /[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent });
+        // grey boxes with it. Path-blue alone sets inline code apart — never the
+        // bright accent, which is reserved for interactive/now.
+        out.push({ text: t.text, color: color.path });
         break;
       case "del":
         out.push(...inlineSpans(t.tokens, { ...base, dim: true }));
@@ -741,7 +747,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
               clipSpans(
                 [
                   { text: "    " + a.name.padEnd(v.labelPad), color: color.text },
-                  { text: "  " + (a.spend ?? "").padStart(v.spendPad), color: a.spendPos ? color.ok : color.faint },
+                  { text: "  " + (a.spend ?? "").padStart(v.spendPad), color: a.spendPos ? color.text : color.faint },
                   { text: "   " + a.turns + " turn" + (a.turns === 1 ? "" : "s") + " · " + a.tok, color: color.faint },
                   ...(a.balanceLeft ? [{ text: " · " + a.balanceLeft, color: color.faint }] : []),
                   ...(a.balanceNote ? [{ text: " · " + a.balanceNote, color: color.faint }] : []),
