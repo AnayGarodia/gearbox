@@ -120,15 +120,17 @@ const subVerb = (name: string): string => {
   if (n.includes("verif")) return "verifying";
   return name;
 };
-const subActivityLine = (name: string, arg: string | undefined, root?: string): string => {
+const relSub = (arg: string | undefined, root?: string): string => {
   const a = (arg ?? "").replace(/\s+/g, " ").trim();
   const base = root ?? process.cwd();
   const rel = a.startsWith(base + "/") ? a.slice(base.length + 1) : a;
-  return ("→ " + subVerb(name) + (rel ? " " + rel : "")).slice(0, 72);
+  return rel.slice(0, 48);
 };
 
 // Run one routed sub-agent. Records its spend; returns its report text. When
-// `onActivity` is given, each tool the sub-agent starts streams up as a live line.
+// `onActivity` is given, the sub-agent's progress streams up as ONE compact,
+// replacing line — "reading src/x.ts · 12 tools" — never a growing log. The target
+// streams in AFTER tool-start, so we also pick it up from the tool-stream arg.
 async function runOne(
   run: SubAgentRunner,
   routed: Routed,
@@ -136,8 +138,23 @@ async function runOne(
   opts: { signal?: AbortSignal; root?: string; onActivity?: (line: string) => void },
 ): Promise<{ ok: boolean; text: string }> {
   const creds = routed.account ? await resolveCreds(routed.account) : undefined;
+  let tools = 0;
+  let verb = "working";
+  let target = "";
+  const seen = new Set<string>();
+  const emit = () => opts.onActivity?.(`${verb}${target ? " " + target : ""}  ·  ${tools} tool${tools === 1 ? "" : "s"}`);
   const subOnEvent: OnEvent = opts.onActivity
-    ? (e) => { if (e.type === "tool-start") opts.onActivity!(subActivityLine(e.name, e.arg, opts.root)); }
+    ? (e) => {
+        if (e.type === "tool-start") {
+          if (!seen.has(e.id)) { seen.add(e.id); tools++; }
+          verb = subVerb(e.name);
+          target = e.arg ? relSub(e.arg, opts.root) : "";
+          emit();
+        } else if (e.type === "tool-stream" && e.arg) {
+          target = relSub(e.arg, opts.root); // the real target streams in after tool-start
+          emit();
+        }
+      }
     : () => {};
   const r = await run({ model: routed.model, creds, system: SUBAGENT_SYSTEM, prompt: task, onEvent: subOnEvent, signal: opts.signal, root: opts.root });
   const costUSD = estimateCost([{ model: routed.model.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
@@ -242,8 +259,8 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label} · ${clipTask(task, 72)}` });
       let res: { ok: boolean; text: string };
       try {
-        // sequential → runs in the main workspace; stream its actions onto this line.
-        res = await runOne(run, routed, task, { signal, onActivity: (line) => onEvent({ type: "tool-stream", id, delta: line + "\n" }) });
+        // sequential → runs in the main workspace; its live status replaces this line.
+        res = await runOne(run, routed, task, { signal, onActivity: (line) => onEvent({ type: "tool-stream", id, activity: line }) });
       } catch (e: any) {
         onEvent({ type: "tool-end", id, ok: false, summary: `${routed.model.label} · crashed` });
         return `sub-agent (${routed.model.label}) crashed: ${e?.message ?? e}`;
@@ -289,7 +306,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
           const jid = `${groupId}:${j.idx}`;
           onEvent({ type: "tool-start", id: jid, name: "delegate", arg: `#${j.idx + 1} → ${j.routed.model.label} · ${clipTask(j.task, 56)}` });
           let res: { ok: boolean; text: string };
-          try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, delta: line + "\n" }) }); }
+          try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, activity: line }) }); }
           catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
           onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: reportLine(res.text) || j.routed.model.label });
           return { j, res, changed: res.ok ? changesIn(j.dir, true) : [] }; // sub-agent's changes vs the seeded baseline

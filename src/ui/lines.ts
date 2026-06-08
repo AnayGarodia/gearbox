@@ -528,7 +528,10 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         if (it.exitCode != null) head.push({ text: "  exit " + it.exitCode, color: it.exitCode === 0 ? color.faint : color.err });
         if (it.diff?.length) head.push({ text: "  " + diffStats(it.diff), color: color.faint });
         out.push(head);
-        if (it.status === "running" && !it.outputTail && !it.stream) {
+        if (it.status === "running" && it.activity) {
+          // A single REPLACING live status line (delegate progress), not a growing log.
+          out.push(...indent([clipSpans([{ text: "└─ ", color: color.accentDim }, { text: it.activity, color: color.dim }], Math.max(width - 3, 8))], 3));
+        } else if (it.status === "running" && !it.outputTail && !it.stream) {
           out.push(...indent([[
             { text: "└─ ", color: color.accentDim },
             { text: activePhrase(isWrite ? "drafting file" : isShell ? "running" : "working"), color: color.ok, bg: color.panelBg },

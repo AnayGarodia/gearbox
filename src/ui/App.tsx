@@ -2017,7 +2017,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const ac = new AbortController();
       abortRef.current = ac;
       const toolMap = new Map<string, number>();
-      const pendingToolStreams = new Map<number, { arg?: string; delta: string; lines: number }>();
+      const pendingToolStreams = new Map<number, { arg?: string; activity?: string; delta: string; lines: number }>();
       let toolFlushTimer: ReturnType<typeof setTimeout> | null = null;
       // Assistant text is coalesced like tool streams: buffer deltas and flush on a
       // ~45ms timer instead of setItems-per-token. Per-token re-renders re-flatten
@@ -2081,18 +2081,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             if (i.kind !== "tool") return i;
             const p = pending.get(i.id);
             if (!p) return i;
-            if (!p.delta) return { ...i, arg: p.arg ?? i.arg };
+            const base = { ...i, arg: p.arg ?? i.arg, activity: p.activity ?? i.activity };
+            if (!p.delta) return base;
             const tail = ((i.stream ?? "") + p.delta).slice(-2400);
-            return { ...i, arg: p.arg ?? i.arg, stream: tail, streamCount: (i.streamCount ?? 0) + p.lines };
+            return { ...base, stream: tail, streamCount: (i.streamCount ?? 0) + p.lines };
           }),
         );
       };
-      const queueToolStream = (toolId: number | undefined, arg?: string, delta?: string) => {
+      const queueToolStream = (toolId: number | undefined, arg?: string, delta?: string, activity?: string) => {
         if (toolId == null) return;
         const prev = pendingToolStreams.get(toolId) ?? { delta: "", lines: 0 };
         const text = delta ?? "";
         pendingToolStreams.set(toolId, {
           arg: arg ?? prev.arg,
+          activity: activity ?? prev.activity,
           delta: prev.delta + text,
           lines: prev.lines + (text.match(/\n/g) || []).length,
         });
@@ -2121,7 +2123,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           setItems((prev) => [...prev, { kind: "tool", id, callId: e.id, name: e.name, arg: e.arg, status: "running", summary: "", startedAt: Date.now() }]);
         } else if (e.type === "tool-stream") {
           const id = toolMap.get(e.id);
-          queueToolStream(id, e.arg, e.delta);
+          queueToolStream(id, e.arg, e.delta, e.activity);
         } else if (e.type === "tool-output") {
           const id = e.id ? toolMap.get(e.id) : undefined;
           appendToolOutput(id, e.text);

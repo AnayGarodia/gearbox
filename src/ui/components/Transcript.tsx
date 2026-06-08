@@ -360,7 +360,12 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
         {item.exitCode != null ? <Text color={item.exitCode === 0 ? color.faint : color.err}>{"  exit " + item.exitCode}</Text> : null}
         {item.diff?.length ? <Text color={color.faint}>{"  " + diffStats(item.diff)}</Text> : null}
       </Box>
-      {item.status === "running" && !out && !item.stream ? (
+      {item.status === "running" && item.activity ? (
+        <Box marginLeft={3}>
+          <Text color={color.accentDim}>└─ </Text>
+          <Text color={color.dim}>{item.activity}</Text>
+        </Box>
+      ) : item.status === "running" && !out && !item.stream ? (
         <Box marginLeft={3} marginTop={1}>
           <Text color={color.accentDim}>└─ </Text>
           <Text color={color.ok}>{activePhrase(isWrite ? "drafting file" : isShell ? "running" : "working")}</Text>

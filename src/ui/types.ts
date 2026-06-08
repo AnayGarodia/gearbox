@@ -51,6 +51,7 @@ export type Item =
       diff?: { sign: "+" | "-"; text: string }[];
       stream?: string;
       streamCount?: number;
+      activity?: string; // a single REPLACING live status line (e.g. a delegate's "reading X · 12 tools")
       outputTail?: string;
       outputLines?: number;
       preview?: string;

@@ -16,7 +16,7 @@ export type AgentEvent =
   | { type: "phase"; label: string; detail?: string; state?: "running" | "ok" | "err" }
   | { type: "text"; text: string } // a chunk of assistant prose
   | { type: "tool-start"; id: string; name: string; arg: string } // tool call began (fires as input starts streaming)
-  | { type: "tool-stream"; id: string; arg?: string; delta?: string } // tool input streaming: `arg` updates the head, `delta` appends streamed content (e.g. a file being written)
+  | { type: "tool-stream"; id: string; arg?: string; delta?: string; activity?: string } // `arg` updates the head, `delta` appends streamed content, `activity` REPLACES a single live status line (delegate progress)
   | { type: "tool-output"; id?: string; name?: string; arg?: string; stream: "stdout" | "stderr"; text: string }
   | { type: "tool-end"; id: string; ok: boolean; summary: string; diff?: DiffLine[] } // tool call finished
   | { type: "file-change"; path: string; before: string; existed: boolean } // a write/edit mutated a file (for /undo + /diff)

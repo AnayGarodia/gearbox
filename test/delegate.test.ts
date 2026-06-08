@@ -42,8 +42,10 @@ test("streams the sub-agent's actions onto the delegate line (not a silent black
   await (t as any).execute({ task: "edit foo", kind: "code" }, {});
   const streams = events.filter((e) => e.type === "tool-stream");
   expect(streams.length).toBe(2);
-  expect(streams[0].delta).toContain("reading src/foo.ts"); // verb-mapped + path relativized
-  expect(streams[1].delta).toContain("editing src/foo.ts");
+  // a single REPLACING activity line: verb-mapped, path relativized, with a tool count
+  expect(streams[0].activity).toBe("reading src/foo.ts  ·  1 tool");
+  expect(streams[1].activity).toBe("editing src/foo.ts  ·  2 tools");
+  expect(streams.every((s) => s.delta === undefined)).toBe(true); // no growing log
   const start = events.find((e) => e.type === "tool-start" && e.name === "delegate");
   expect(streams.every((s) => s.id === start.id)).toBe(true); // onto the SAME delegate line
 });
