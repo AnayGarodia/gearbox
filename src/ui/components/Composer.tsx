@@ -23,6 +23,7 @@ function ComposerImpl({
   bashMode = false,
   policy,
   branch,
+  lift = false,
   onEdit,
 }: {
   value: string;
@@ -36,6 +37,7 @@ function ComposerImpl({
   bashMode?: boolean; // sticky bash mode (entered with `!`); pink `!` prompt, esc exits
   policy?: string; // routing policy shown in the box (e.g. "auto-route"); never a bare model name
   branch?: string | null; // current git branch, shown after the policy
+  lift?: boolean; // fullscreen only: a 1-row bottom margin so the input sits off the screen's bottom edge. Inline has no edge to lift off (the terminal owns the rows below), so it stays flush — no stray trailing blank.
   onEdit?: (edit: Edit) => void;
 }) {
   const lines = value.split("\n");
@@ -95,7 +97,7 @@ function ComposerImpl({
       flexDirection="column"
       width={width}
       marginTop={1}
-      marginBottom={1}
+      marginBottom={lift ? 1 : 0}
       borderStyle="single"
       borderTop={false}
       borderRight={false}

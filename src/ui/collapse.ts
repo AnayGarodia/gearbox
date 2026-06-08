@@ -103,7 +103,11 @@ export function collapseTurn(items: Item[], nextId: () => number): Item[] {
 export function collapseDelegateGroups(items: Item[]): Item[] {
   const groups = new Set<string>();
   for (const it of items) {
-    if (it.kind === "tool" && it.name === "delegate_parallel" && (it.status === "ok" || it.status === "err")) groups.add(it.callId);
+    // Only a NOT-yet-collapsed settled group needs folding. An already-collapsed
+    // group keeps its children in `.children` (not top-level), so re-folding it
+    // would wipe them. This must be idempotent: it runs live on every render AND
+    // again at end-of-turn — applying twice has to be a no-op.
+    if (it.kind === "tool" && it.name === "delegate_parallel" && !it.collapsed && (it.status === "ok" || it.status === "err")) groups.add(it.callId);
   }
   if (!groups.size) return items;
   const childrenByGroup = new Map<string, Item[]>();

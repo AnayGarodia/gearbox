@@ -13,7 +13,7 @@ import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
 import { itemsToLines, relPath, friendlyTool, fmtElapsed, type Line } from "./lines.ts";
-import { collapseTurn } from "./collapse.ts";
+import { collapseTurn, collapseDelegateGroups } from "./collapse.ts";
 import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
 import { buildProvidersView } from "./providers-view.ts";
@@ -3999,9 +3999,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     }
   }, [paletteCount]);
 
+  // Fold a delegate_parallel batch into one collapsed row the MOMENT it settles —
+  // not at end-of-turn. The group finishes long before the parent turn does (the
+  // agent keeps working with the results), so collapsing only at turn-end leaves a
+  // finished 5-task ladder sprawled across the screen the whole time. This live
+  // fold (idempotent; end-of-turn collapseTurn re-applies harmlessly) keeps the
+  // running view detailed and compacts each batch as soon as it's done.
+  const displayItems = useMemo(() => collapseDelegateGroups(items), [items]);
+
   // The transcript as a flat styled-line buffer, wrapped to the full content width.
   const lineWidth = Math.max(width - 3, 20);
-  const lines = useMemo(() => itemsToLines(items, lineWidth, expandAll), [items, lineWidth, expandAll]);
+  const lines = useMemo(() => itemsToLines(displayItems, lineWidth, expandAll), [displayItems, lineWidth, expandAll]);
 
   // Footer height · over-estimated so the fullscreen frame never exceeds the
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
@@ -4145,12 +4153,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} lift={fullscreen} />
   );
 
   const footerJsx = (
     <>
-      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} tps={(() => { const t0 = firstOutputAtRef.current; if (!t0) return 0; const secs = (Date.now() - t0) / 1000; return secs > 0.7 ? Math.round(outCharsRef.current / 4 / secs) : 0; })()} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
       {busy ? <ActivityRail items={items} width={width} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
@@ -4187,6 +4195,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const inlineFooterJsx = (
     <>
+      {/* Inline mode has no Viewport/footer frame, so the working strip lives right
+          above the composer — otherwise inline shows no "still alive" signal at all
+          while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
+      {queued.length ? (
+        <Box paddingX={1} marginTop={1} flexDirection="column">
+          {queued.map((q, i) => (
+            <Text key={i} color={color.faint}>↳ queued: {q.length > 60 ? q.slice(0, 57) + "…" : q}</Text>
+          ))}
+        </Box>
+      ) : null}
       {paletteJsx}
       {composerJsx}
     </>
@@ -4253,7 +4272,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           <Box marginTop={1}>{hero}</Box>
         </>
       ) : (
-        <Transcript items={items} width={width} header={banner} expandAll={expandAll} />
+        <Transcript items={displayItems} width={width} header={banner} expandAll={expandAll} />
       )}
       {inlineFooterJsx}
     </Box>

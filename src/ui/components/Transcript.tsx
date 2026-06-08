@@ -333,6 +333,24 @@ const spanLen = (spans: { text: string }[]) => spans.reduce((n, s) => n + s.text
 const pad = (used: number, width: number) => " ".repeat(Math.max(0, width - used));
 
 function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { kind: "tool" }>; width: number; expandAll?: boolean }) {
+  // Collapsed delegate_parallel group: one summary row that ⌃O expands to the
+  // folded children. Mirrors the fullscreen lines.ts collapsed branch.
+  if (item.collapsed) {
+    return (
+      <Box flexDirection="column" marginLeft={2} marginTop={1}>
+        <Box>
+          <Text color={toolColor(item)}>{glyph.tool}</Text>
+          <Text color={color.dim} bold>{"  " + friendlyTool(item.name)}</Text>
+          {item.summary ? <Text color={color.dim}>{"  ·  " + item.summary}</Text> : null}
+          {item.durationMs != null ? <Text color={color.faint}>{"  ·  ~" + fmtMs(item.durationMs) + " total"}</Text> : null}
+          {item.children?.length ? <Text color={color.faint}>{expandAll ? "  ⌃O collapses" : "  ⌃O expands"}</Text> : null}
+        </Box>
+        {expandAll && item.children?.length
+          ? item.children.map((c, i) => <Row key={i} item={c} width={Math.max(width - 2, 8)} expandAll={expandAll} />)
+          : null}
+      </Box>
+    );
+  }
   const dotColor = toolColor(item);
   const out = item.outputTail ?? item.stream;
   const outLines = item.outputLines ?? item.streamCount ?? 0;
@@ -360,7 +378,7 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
           <Text color={color.dim}>{item.activity}</Text>
         </Box>
       ) : item.status === "running" && !out && !item.stream ? (
-        <Box marginLeft={3} marginTop={1}>
+        <Box marginLeft={3}>
           <Text color={color.accentDim}>└─ </Text>
           <Text color={color.faint}>{isWrite ? "drafting file · no code streamed yet" : isShell ? "waiting for output" : "no output yet"}</Text>
         </Box>
