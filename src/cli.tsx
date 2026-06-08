@@ -22,7 +22,7 @@ import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 import { wordmarkGradient } from "./ui/theme.ts";
 
-const VERSION = "0.2.57";
+const VERSION = "0.2.58";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -609,6 +609,45 @@ const restore = () => {
   // was the "screenful of empty space after exit" (viii). Don't touch it.
   if (fullscreen) process.stdout.write("\x1b[?1049l");
 };
+
+// A small parting card printed to the NORMAL buffer on a clean quit (after the
+// alt-screen is gone), so it persists in scrollback: the wordmark, a one-line
+// recap, and the exact command to pick up where you left off.
+const gradientWord = (word: string): string => {
+  if (!supportsAnsi) return word;
+  const stops = wordmarkGradient.map(hexRgb);
+  const at = (i: number) => {
+    const t = word.length <= 1 ? 0 : (i / (word.length - 1)) * (stops.length - 1);
+    const lo = Math.floor(t), hi = Math.min(stops.length - 1, lo + 1), f = t - lo;
+    const c = [0, 1, 2].map((k) => Math.round(stops[lo]![k]! + (stops[hi]![k]! - stops[lo]![k]!) * f));
+    return `\x1b[38;2;${c[0]};${c[1]};${c[2]}m${word[i]}`;
+  };
+  return "\x1b[1m" + word.split("").map((_, i) => at(i)).join("") + "\x1b[0m";
+};
+let goodbyeShown = false;
+const printGoodbye = () => {
+  if (goodbyeShown || !process.stdout.isTTY) return;
+  goodbyeShown = true;
+  try {
+    const dim = supportsAnsi ? "\x1b[2m" : "";
+    const rst = supportsAnsi ? "\x1b[0m" : "";
+    const s = latestSession();
+    let out = `\n  ${gradientWord("gearbox")}${dim}  ·  see you soon${rst}\n`;
+    if (s && s.turns && s.turns.length) {
+      const turns = s.turns.length;
+      const tokens = s.turns.reduce((n, t) => n + (t.inputTokens || 0) + (t.outputTokens || 0) + (t.cachedInputTokens || 0), 0);
+      const tok = tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : `${tokens}`;
+      const mins = Math.max(1, Math.round((s.updatedAt - s.createdAt) / 60000));
+      const title = ((s.title || "").replace(/\s+/g, " ").trim().slice(0, 50)) || "untitled session";
+      out += `\n  ${accent("◇")} ${title}\n`;
+      out += `    ${dim}${turns} turn${turns === 1 ? "" : "s"} · ${tok} tokens · ${mins}m${rst}\n`;
+      out += `\n  ${dim}resume →${rst} ${accent("gearbox --continue")}${dim}   (or /resume to pick one)${rst}\n\n`;
+    } else {
+      out += "\n";
+    }
+    process.stdout.write(out);
+  } catch { /* a goodbye must never block or crash the exit */ }
+};
 // Ensure restore runs even on uncaught errors or signals — including SIGINT and
 // SIGHUP (terminal closed), which were missing, so a signal exit left the alt
 // screen up / cursor hidden / title stuck. (raw mode means in-app ⌃C is a
@@ -640,5 +679,13 @@ if (mouse) process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
 
 // exitOnCtrlC:false so the app can handle ⌃C itself (interrupt / clear / confirm-quit).
 const app = render(<App selector={selector} fullscreen={fullscreen} resumeId={resumeId} />, { exitOnCtrlC: false });
-app.waitUntilExit().then(restore, restore);
+// Force the process down right after teardown. Background work keeps the event
+// loop alive — un-unref'd probe/refresh intervals and, worst case, an in-flight
+// usage-probe SUBPROCESS whose kill-guard is `timeoutMs + 6000` (~15s) — so without
+// an explicit exit the shell prompt didn't come back for ~15s after quitting.
+// stdout is a TTY here, so the restore + goodbye writes flush synchronously first.
+app.waitUntilExit().then(
+  () => { restore(); printGoodbye(); process.exit(0); },
+  () => { restore(); process.exit(1); },
+);
 process.on("exit", restore);
