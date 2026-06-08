@@ -101,7 +101,7 @@ const KEYS_HELP = [
   "  ⌃Y copy last reply · ⌃V paste image from clipboard · shift+tab cycle mode",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
-  "  click the model or effort label in the status bar to pick (fullscreen)",
+  "  click the model label in the status bar to pick (fullscreen)",
   "  input stays fixed at the bottom; /config inline on uses terminal scrollback",
 ].join("\n");
 
@@ -447,6 +447,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const [tab, setTabState] = useState<AppTab>("session");
   const tabRef = useRef<AppTab>("session");
   const setTab = (t: AppTab) => { tabRef.current = t; setTabState(t); };
+  const setupRequiredRef = useRef(false); // mirrors setupRequired for the raw mouse handler
   const cycleTab = () => setTab(TABS[(TABS.indexOf(tabRef.current) + 1) % TABS.length]!);
   // Dismissable command panel (fullscreen only): big info dumps + interactive
   // account/model lists render here instead of in the transcript; esc closes.
@@ -830,9 +831,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
     const statusBarZoneAt = (x: number, y: number): "model" | null => {
-      const lineCount = Math.max(1, editRef.current.value.split("\n").length);
+      const value = editRef.current.value;
+      const lineCount = Math.max(1, value.split("\n").length);
+      // The policy row is hidden during onboarding; the bash hint row sits below the
+      // input. Both shift the status bar — keep the hit-test exact (matches App's footer).
+      const hasPolicy = !setupRequiredRef.current;
+      const hintRows = value !== "" && value.startsWith("!") ? 1 : 0;
       const { model, costText, width: w } = statusBarRenderRef.current;
-      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, width: w });
+      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, width: w, hasPolicy, hintRows });
     };
     const viewportTop = 5; // Banner (3 rows) + tab strip (1 row); viewport begins on row 5.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
@@ -865,7 +871,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // else closes an open one before normal click handling resumes.
           // Tab strip click (row 4, just under the 3-row Banner). Works even while
           // busy — switching the view never touches the running turn.
-          if (fullscreen && isPrimary && !isDrag && !up) {
+          if (fullscreen && !setupRequiredRef.current && isPrimary && !isDrag && !up) {
             const t = tabStripHit(x, y, 4);
             if (t) { setTab(t); continue; }
           }
@@ -1344,6 +1350,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [items.length, activeCli?.id, usageTick], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const setupRequired = needsOnboarding(onboardingState);
+  setupRequiredRef.current = setupRequired;
   useEffect(() => {
     if (!setupRequired && firstRunRef.current) {
       firstRunRef.current = false;
@@ -1382,19 +1389,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     ? (activeCliRef.current?.binary?.includes("codex") ? (findModel(activeCliModel ?? "")?.contextWindow ?? 272_000) : 200_000)
     : model?.contextWindow ?? null;
   const ctxPct = !setupRequired && activeCtxWindow && lastInput > 0 ? Math.round((lastInput / activeCtxWindow) * 100) : null;
-  // Only show effort when the active model actually supports reasoning · avoids showing
-  // "effort medium" on models like haiku that have no reasoning support.
-  const activeModelEfforts = (() => {
-    const cli = activeCliRef.current;
-    if (cli) {
-      const choices = cliModelChoices(cli.binary);
-      const m = choices.find((c) => c.id === activeCliModel) ?? choices[0];
-      return m?.efforts ?? [];
-    }
-    return model ? effortLevels(model) : [];
-  })();
-  const displayEffort = activeModelEfforts.length > 0 ? effort : undefined;
-  // Mirror exactly what the status bar renders, so the click hit-test matches.
   // Mirror exactly what the status bar renders (model + session cost + width), so
   // the click hit-test's right-aligned model zone matches the rendered position.
   statusBarRenderRef.current = { model: modelLabel, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), width };
@@ -2181,8 +2175,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // fallback today; escalation/cap-hit are gated until captured — see the report).
         if (modelId && modelId !== "unknown") {
           const ranSpec = routedRef.current?.model ?? findModel(modelId);
+          // On an explicitly-pinned subscription, routedRef is null and modelId is the
+          // ACCOUNT slug — resolve the real CLI model label instead of showing the slug.
+          const subLabel = findModel(activeCliModelRef.current ?? "")?.label ?? activeCliModelRef.current;
           const line = buildRoutingLine({
-            model: ranSpec?.label ?? modelId,
+            model: ranSpec?.label ?? (isSub ? (subLabel ?? modelId) : modelId),
             provider: isSub ? (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude") : (ranSpec?.provider ?? "—"),
             costUSD: cost,
             kind: isSub ? "subscription" : "metered",
@@ -3502,7 +3499,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (busy || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
     const next = queueRef.current.shift();
     setQueued([...queueRef.current]);
-    if (next) void runTurn(next);
+    if (next) { setTab("session"); void runTurn(next); } // surface the response, not a tab
   }, [busy, runTurn]);
 
   // Rewind the last user turn back into the composer for editing, dropping that
@@ -3985,7 +3982,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // the right account's data immediately without waiting for spend to accumulate.
   const stripApi = stripView ? ((usedAccountRef.current ? stripView.apiKeys.find((a) => a.id === usedAccountRef.current) : null) ?? stripView.apiKeys[0] ?? null) : null;
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
-  const HEADER = 4; // Banner (marginTop + title + rule) + the tab strip
+  const HEADER = setupRequired ? 3 : 4; // Banner (marginTop + title + rule) + the tab strip (hidden during setup)
   // Keep the whole frame STRICTLY under `rows`. Ink redraws with a full
   // clearTerminal (\x1b[2J\x1b[3J\x1b[H — the 3J wipes SCROLLBACK) the moment the
   // output height reaches the terminal height; under-filling by one row keeps it on
@@ -4095,7 +4092,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const footerJsx = (
     <>
-      {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} tps={(() => { const t0 = firstOutputAtRef.current; if (!t0) return 0; const secs = (Date.now() - t0) / 1000; return secs > 0.7 ? Math.round(outCharsRef.current / 4 / secs) : 0; })()} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} tps={(() => { const t0 = firstOutputAtRef.current; if (!t0) return 0; const secs = (Date.now() - t0) / 1000; return secs > 0.7 ? Math.round(outCharsRef.current / 4 / secs) : 0; })()} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
       {busy ? <ActivityRail items={items} width={width} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">

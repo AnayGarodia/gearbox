@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color, spinnerPalette } from "../theme.ts";
 import { lowContextNotice } from "../character.ts";
-import type { MascotState, GhostSkin } from "./Mascot.tsx";
+import type { MascotState } from "./Mascot.tsx";
 
 const THINK_FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
 const STREAM_FRAMES = ["▁","▂","▃","▄","▅","▆","▇","█","▇","▆","▅","▄","▃","▂"];
@@ -26,7 +26,6 @@ function spinColor(state: MascotState): string {
 
 export function Working({
   state,
-  skin,
   verb,
   elapsed,
   tps = 0,
@@ -35,7 +34,6 @@ export function Working({
   ctxPct = null,
 }: {
   state: MascotState;
-  skin: GhostSkin;
   verb: string;
   elapsed: number;
   tps?: number; // live output tokens/sec estimate

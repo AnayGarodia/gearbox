@@ -53,6 +53,18 @@ test("no model label means no hit", () => {
   expect(statusBarHit({ ...base, model: "", x: 84, y: 36 })).toBeNull();
 });
 
+test("hasPolicy=false (onboarding) drops the policy chrome row, raising the status row by 1", () => {
+  // chrome 2 instead of 3 → statusRow = 40 - 1 - 0 - 2 = 37
+  expect(statusBarHit({ ...base, hasPolicy: false, x: 84, y: 37 })).toBe("model");
+  expect(statusBarHit({ ...base, hasPolicy: false, x: 84, y: 36 })).toBeNull();
+});
+
+test("a bash hint row below the input lowers the status row by 1", () => {
+  // hintRows 1 → statusRow = 40 - 1 - 1 - 0 - 3 = 35
+  expect(statusBarHit({ ...base, hintRows: 1, x: 84, y: 35 })).toBe("model");
+  expect(statusBarHit({ ...base, hintRows: 1, x: 84, y: 36 })).toBeNull();
+});
+
 test("fitStatusFields keeps the first field and sheds lowest-priority ones to fit width", () => {
   const fields = [
     { text: "sonnet-4.6", priority: 100 },

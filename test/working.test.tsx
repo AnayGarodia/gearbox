@@ -3,7 +3,7 @@ import { test, expect } from "bun:test";
 import { render } from "ink-testing-library";
 import { Working } from "../src/ui/components/Working.tsx";
 
-const base = { state: "tool" as const, skin: "base" as const, elapsed: 3, width: 100 };
+const base = { state: "tool" as const, elapsed: 3, width: 100 };
 
 test("the live status line keeps the verb and 'esc to interrupt' visible", () => {
   const out = render(<Working {...base} verb="Reading" />).lastFrame() ?? "";

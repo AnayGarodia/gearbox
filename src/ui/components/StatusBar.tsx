@@ -64,11 +64,14 @@ export function statusBarHit(args: {
   model: string;
   costText?: string;
   width: number;
+  hasPolicy?: boolean; // policy row above the input (default true; hidden during onboarding)
+  hintRows?: number; // a hint row below the input (e.g. bash "↵ runs in your shell"); default 0
 }): "model" | null {
-  // The `- 3` is the composer chrome above its input (marginTop + rule + policy
-  // line). It is coupled to App.tsx's footer estimate (`footer += perm ? 9 : 4`)
-  // and to Composer.tsx's layout · keep in sync.
-  const statusRow = args.termRows - args.composerLines - args.paletteRows - 3;
+  // Composer chrome above the input: marginTop + rule [+ policy]. The optional hint
+  // row sits BELOW the input, so it adds to the rows under the status bar. Coupled to
+  // App.tsx's footer estimate and Composer.tsx's layout · keep in sync.
+  const chrome = 2 + (args.hasPolicy === false ? 0 : 1);
+  const statusRow = args.termRows - args.composerLines - (args.hintRows ?? 0) - args.paletteRows - chrome;
   if (args.y !== statusRow || !args.model) return null;
   const { modelZone } = statusBarLayout(args);
   const col = args.x - 1; // SGR x is 1-based; zones are 0-based
@@ -104,7 +107,7 @@ export function StatusBar({
   const chips: { text: string; c: string; bold?: boolean }[] = [];
   if (!online) chips.push({ text: "⚠ offline", c: color.err, bold: true });
   if (yolo) chips.push({ text: "yolo", c: color.err, bold: true });
-  if (lowCtx) chips.push({ text: `${ctxPct}% ctx`, c: color.warn });
+  if (lowCtx) chips.push({ text: `${Math.max(0, 100 - ctxPct!)}% ctx left`, c: color.warn }); // REMAINING, matching the working-strip notice
   const chipLen = chips.reduce((n, c) => n + c.text.length, 0) + Math.max(0, chips.length - 1) * 2 + (chips.length ? 2 : 0);
 
   // Budget the left so the right (model + cost) stays whole and right-aligned — the

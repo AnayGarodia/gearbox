@@ -63,6 +63,9 @@ const BALANCE_STALE_MS = 60 * 60 * 1000; // 1h — older cached balances fall ba
 function moneyRight(account: Account, usage: AccountUsage | undefined, now: number): string {
   const exposed = balanceExposed(account.provider);
   const bal = usage?.balance;
+  // `now === 0` is the default sentinel meaning "skip the freshness check" (tests
+  // only); production always passes Date.now(), so a stale cached balance there
+  // falls back to spend rather than being shown as current.
   const fresh = bal?.remainingUSD != null && (now === 0 || bal.at == null || now - bal.at < BALANCE_STALE_MS);
   if (exposed && fresh && bal?.remainingUSD != null) return `$${bal.remainingUSD.toFixed(2)} left`;
   const spent = usage?.spentUSD ?? 0;

@@ -37,5 +37,5 @@ test("context appears ONLY when low (≤15% left ⇒ ctxPct ≥ 85), as an amber
   const fine = render(<StatusBar {...base} ctxPct={40} />).lastFrame() ?? "";
   expect(fine).not.toContain("ctx");
   const low = render(<StatusBar {...base} ctxPct={92} />).lastFrame() ?? "";
-  expect(low).toContain("92% ctx");
+  expect(low).toContain("8% ctx left"); // remaining, not used
 });
