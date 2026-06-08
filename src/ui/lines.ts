@@ -600,10 +600,17 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         if (it.changed.length) bits.push(`${it.changed.length} file${it.changed.length === 1 ? "" : "s"}`);
         if (it.checks.length) bits.push(`${it.checks.length} check${it.checks.length === 1 ? "" : "s"}`);
         if (it.failures.length) bits.push(`${it.failures.length} failed`);
+        // Honest "done with proof": state which tier the turn actually cleared.
+        const proof =
+          it.tier === "tests" ? { text: " · tests green", color: color.ok }
+          : it.tier === "types" ? { text: " · types/build pass", color: color.ok }
+          : it.tier === "none" ? { text: " · unverified", color: color.faint }
+          : null;
         out.push(clipSpans([
           { text: "  " + (it.failures.length ? "◇ " : "✓ "), color: it.failures.length ? color.accentDim : color.ok },
           { text: "turn summary", color: color.text },
           ...(bits.length ? [{ text: " · " + bits.join(" · "), color: color.faint }] : []),
+          ...(proof ? [proof] : []),
         ], width));
         if (it.changed.length) out.push(clipSpans([{ text: "    changed ", color: color.faint }, { text: it.changed.slice(0, 4).join(", ") + (it.changed.length > 4 ? ` +${it.changed.length - 4}` : ""), color: color.path }], width));
         if (it.next) out.push(clipSpans([{ text: "    next ", color: color.dim }, { text: it.next, color: color.accent }], width));

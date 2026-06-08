@@ -1,5 +1,16 @@
 import { test, expect } from "bun:test";
-import { nextStepFor } from "../src/verify.ts";
+import { nextStepFor, provenTier } from "../src/verify.ts";
+
+// ── honest "done with proof" tiering ──
+test("provenTier: tests beat types beat nothing", () => {
+  expect(provenTier(["typecheck", "test"])).toBe("tests"); // a green test run is the highest proof
+  expect(provenTier(["test"])).toBe("tests");
+  expect(provenTier(["typecheck"])).toBe("types"); // types/build/lint only
+  expect(provenTier(["build"])).toBe("types");
+  expect(provenTier(["lint"])).toBe("types");
+  expect(provenTier([])).toBe("none"); // edited but nothing was verified
+  expect(provenTier([undefined])).toBe("none");
+});
 
 test("a merge-conflict marker → resolve the conflict, never /retry", () => {
   const out = nextStepFor(["bun run typecheck: src/agent/run.ts(174,1): error TS1185: Merge conflict marker encountered."], ["src/foo.ts"]);

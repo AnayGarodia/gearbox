@@ -75,7 +75,7 @@ export type Item =
       output?: string; // last attempt's output, revealed by ⌃O
     }
   | { kind: "preference"; id: number; text: string; acceptCommand: string }
-  | { kind: "summary"; id: number; changed: string[]; checks: string[]; failures: string[]; next?: string }
+  | { kind: "summary"; id: number; changed: string[]; checks: string[]; failures: string[]; next?: string; tier?: "tests" | "types" | "none" }
   | { kind: "notice"; id: number; text: string }
   | { kind: "accounts"; id: number; view: AccountView }
   | { kind: "usage"; id: number; view: UsageView } // structured /usage card (colored bars)

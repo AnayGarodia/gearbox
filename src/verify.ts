@@ -58,6 +58,17 @@ export function checkIntent(command: string): string | null {
   return null;
 }
 
+// "Done with proof" tiering (DESIGN M3): which bar a turn actually cleared, from
+// the intents of the checks that PASSED. tests (ran tests, green) > types (typecheck
+// / build / lint green, but no test run) > none (edited files, nothing to verify).
+// Lets the summary state honestly what was proven instead of implying "done".
+export type ProofTier = "tests" | "types" | "none";
+export function provenTier(passedIntents: (string | undefined)[]): ProofTier {
+  if (passedIntents.includes("test")) return "tests";
+  if (passedIntents.some((i) => i === "typecheck" || i === "build" || i === "lint")) return "types";
+  return "none";
+}
+
 function summarize(output: string): string {
   const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
   const fail = lines.find((l) => /\b(error|failed|failures?|exception|panic)\b/i.test(l));

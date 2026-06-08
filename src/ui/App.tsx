@@ -55,7 +55,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
@@ -2237,11 +2237,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const changed = uniq([...changedFiles]);
           const doneChecks = checkItems.map((c) => c.intent ?? c.command);
           const failed = checkItems.filter((c) => !c.ok).map((c) => `${c.intent ?? c.command}: ${c.summary}`).slice(0, 4);
+          // Honest "done with proof": on a successful edited turn, state which tier was
+          // cleared (tests green > types/build > nothing verified) so the agent never
+          // implies "done" when nothing was actually checked.
+          const tier = changed.length && !failed.length ? provenTier(checkItems.filter((c) => c.ok).map((c) => c.intent ?? c.command)) : undefined;
           // Green with edits → forward move (commit), never a retry of something
           // that already passed. Retry only when a check actually ended red.
           const next = failed.length ? nextStepFor(failed, changed) : changed.length && !doneChecks.length ? "run tests" : changed.length ? "commit changes" : "/context";
           // A no-op turn (no edits, no checks) gets no summary at all.
-          const summaryItem: Item | null = (changed.length || doneChecks.length) ? { kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next } : null;
+          const summaryItem: Item | null = (changed.length || doneChecks.length) ? { kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next, tier } : null;
           setItems(summaryItem ? [...collapsed, summaryItem] : collapsed);
           // Time awareness after every prompt: how long the turn took, plus the
           // prompt-cache hit when the provider served part of the input from cache.
