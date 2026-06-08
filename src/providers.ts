@@ -246,7 +246,10 @@ export function findModel(idOrLabel: string): ModelSpec | undefined {
 // models that aren't in the live registry). Discovered/gateway models have no
 // price and return undefined — the caller treats that as "unknown", not $0.
 function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | undefined {
-  return modelRegistry().find((m) => m.id === id)?.cost ?? profileFor(id)?.cost;
+  const spec = modelRegistry().find((m) => m.id === id);
+  // spec cost → profile by id → profile by the bare sdkId (so a gateway model like
+  // "openrouter/claude-opus-4-8" still prices off the canonical profile, not $0).
+  return spec?.cost ?? profileFor(id)?.cost ?? (spec ? profileFor(spec.sdkId)?.cost : undefined);
 }
 
 /**

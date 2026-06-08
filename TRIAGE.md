@@ -57,31 +57,31 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 
 ## Additional bugs found by the audit (~48)
 ### Routing
-- ☐ R-1 status-bar model can disagree with what ran (failover + /ask don't set lastPick).
+- ☑ R-1 status-bar model drift — FIXED: /ask sets lastPick; failover already did. [v0.2.48]
 - ☑ R-2 /prefer below the bar — FIXED with v (preferredIn searches p.pool). [v0.2.42]
-- ☐ R-3 subscription seat for a non-native sdkId loses all profile data → can fail the quality bar and drop the subscription from candidacy.
+- ☑ R-3 seat below quality bar — FIXED: subscription seats clear the bar unconditionally (router). [v0.2.48]
 - ☑ R-4 effort throw → clamp — FIXED: an auto-routed model that lacks the active effort tier now clamps to the nearest supported level (with a phase note) instead of failing the whole turn. (App.tsx) [v0.2.45]
 - ☐ R-5 env-provider cooldown is provider-wide: one 402/quota on one model benches the whole provider for 5 min.
-- ☐ R-6 classifier model chosen by pure cost (no quality floor) → nova-micro/flash-lite can misclassify, cached for 256 prompts.
-- ☐ R-7 reason "$X/Mtok" is a made-up blend (in + 0.2·out), not a real rate, and diverges from estimateCost.
-- ☐ R-8 `/model auto` on a subscription just clears the seat model (doesn't enable routing); confusing message.
-- ☐ R-9 SubscriptionPinSelector is dead code; subscription pin bypasses the seam entirely (root R1).
+- ☑ R-6 classifier quality floor — FIXED: skip sub-0.3-quality models, fall back to cheapest if none clear. (classify.ts) [v0.2.48]
+- ☑ R-7/C-C reason rate — FIXED: shows real $in/$out per Mtok, not a blended number. (router.ts) [v0.2.48]
+- ☑ R-8 /model auto message — FIXED: says plainly routing isn't on while a subscription is active. [v0.2.48]
+- ⚠ R-9 SubscriptionPinSelector — NOT dead (tested + documented); App bypasses it via activeCliRef. Practical impact mitigated (pinnedModelId threads the pin to delegation). Full refactor (route the subscription pin through the seam) deferred — too big to do safely.
 ### Subscription / CLI
 - ☑ S-A compaction — FIXED: modelSummarizer takes creds (works for STORED API accounts, not just env); compactNow resolves them and skips cleanly with a message when the summarize pick is a flat-rate seat (was a silent failure → context overflow). CLI-hosted summary still future. (compact.ts, App.tsx) [v0.2.44]
 - ☐ S-B delegate/delegate_parallel error out entirely on a subscription-only setup (no fallback).
 - ☑ S-C codex resume argv — FIXED: `resume <ID>` now immediately follows `exec` (codex exec resume <ID> [opts] [prompt]); was appended after flags so it was eaten as a prompt arg. (cli-backend.ts + test) [v0.2.45] ⚠ live-verify on codex.
 - ☐ S-D CLI session id never persisted → no real resume across restarts for subscription turns.
 - ☐ S-E effort silently dropped for the claude CLI (only codex gets it), yet App validates/throws on it.
-- ☐ S-F flat-rate CLI cost recorded as real metered spend (inflates ledger); codex falls back to estimateCost.
+- ☑ S-F flat-rate cost — FIXED: subscription turns record $0 (the CLI's metered $ is fictional for a flat-rate seat). (App.tsx) [v0.2.48]
 - ☐ S-G image ledger note only on API path (history divergence once xiv fixed).
 - ☑ S-H /export and /copy DO work on subscription (no bug; noted).
 ### Cost / context
-- ☐ C-A failed/retried attempts' tokens dropped from BOTH session and ledger (under-count).
-- ☐ C-B estimateCost returns $0 for any model not in modelRegistry (discovered/gateway/seeded).
-- ☐ C-C reason "$/Mtok" blend (dup of R-7).
+- ☑ C-A dropped failed-attempt tokens — FIXED: the failover hop-loop accumulates usage across attempts. (App.tsx) [v0.2.48]
+- ◑ C-B discovered-model $0 — IMPROVED: costFor falls back to the profile by bare sdkId, so a gateway serving a known model prices correctly. Truly-unknown models still have no price (data gap, not a logic bug). [v0.2.48]
+- ☑ C-C — dup of R-7, fixed. [v0.2.48]
 - ☐ C-D strip shows two unrelated "context" numbers (cumulative `tokens` vs lastInput/ctxPct).
 - ☑ C-E ctx% ignores cache — FIXED: lastInput now = inputTokens + cache read + cache write, so ctx% reflects the whole prompt. [v0.2.47]
-- ☐ C-F auto-compact budget keys off a different model's window than the one answering.
+- ☑ C-F auto-compact budget — FIXED with x: triggers off the answering model's window, not the summarizer's. [v0.2.39]
 ### Session / input / paste
 - ☐ I-A markerless paste split across reads still floods (per-read size check, no time-window coalescer).
 - ☐ I-B unterminated bracketed paste freezes input (no timeout/escape).

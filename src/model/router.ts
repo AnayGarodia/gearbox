@@ -168,7 +168,10 @@ export class RoutingSelector implements ModelSelector {
     const fits = need > 0 ? capable.filter((c) => c.spec.contextWindow >= need) : capable;
     let pool = fits.length ? fits : capable;
     pool = applyGlobalPreference(pool);
-    const clears = pool.filter((c) => qualityOf(c) >= bar);
+    // Subscription seats clear the bar unconditionally: the user chose that flat-rate
+    // plan, and a seat for a non-native sdkId (e.g. some codex ids) has no profile so
+    // qualityOf falls to the neutral 0.5 — which would wrongly drop it for code (R-3).
+    const clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= bar);
     return { kind, bar, required, ctx, pool, clears, estInputTokens };
   }
 
@@ -284,7 +287,9 @@ function reasonFor(c: Candidate, kind: Kind, required: string[]): string {
   const caps = required.length ? ` · ${required.join("+")} required` : "";
   if (c.backend.kind === "cli") return `${kind}${caps} · ${c.backend.binary} subscription · seat`;
   const { inUSDPerMtok, outUSDPerMtok } = costPair(c);
-  return `${kind}${caps} · $${(inUSDPerMtok + 0.2 * outUSDPerMtok).toFixed(2)}/Mtok`;
+  // Show the real in/out prices, not a single blended number presented as a rate
+  // (the old "$X/Mtok" was in + 0.2·out, which is neither price — misleading). R-7.
+  return `${kind}${caps} · $${inUSDPerMtok.toFixed(2)}/$${outUSDPerMtok.toFixed(2)} per Mtok in/out`;
 }
 
 // Wall clock, isolated so the rest of select() reads as pure (everything else is

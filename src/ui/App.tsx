@@ -1554,6 +1554,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return { messages, usage: r.usage };
         }
         routedRef.current = { model: choice.model, reason: choice.reason };
+        setLastPick({ model: choice.model, reason: choice.reason }); // keep the status bar honest about what /ask ran (R-1)
         onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
         const acct = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = acct ? await resolveCreds(acct) : undefined;
@@ -1677,16 +1678,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // When the user explicitly chose the model (a directive or a /model pin),
       // delegated sub-tasks inherit it instead of re-routing to the cheapest.
       const explicitModelId = directiveId || (sel instanceof FixedSelector ? choice.model.id : undefined);
+      // Tokens a FAILED attempt already burned must still be counted (C-A) — they
+      // hit the wire. Accumulate across hops so cost/ledger aren't under-counted.
+      const prior = { inputTokens: 0, outputTokens: 0 };
       for (let hop = 0; ; hop++) {
         const a = await runAttempt(choice);
-        if (!a.failure) { emitTerminal(false, undefined, a.usage); return { messages: a.messages, usage: a.usage }; }
+        const total = { inputTokens: prior.inputTokens + a.usage.inputTokens, outputTokens: prior.outputTokens + a.usage.outputTokens };
+        if (!a.failure) { emitTerminal(false, undefined, total); return { messages: a.messages, usage: total }; }
+        prior.inputTokens = total.inputTokens; prior.outputTokens = total.outputTokens; // this attempt burned tokens too
         const exhausted = classifyFailure(a.failure.message) === "exhausted";
-        if (!exhausted || hop >= MAX_FAILOVERS) { emitTerminal(true, a.failure.message, a.usage); return { messages: a.messages, usage: a.usage }; }
+        if (!exhausted || hop >= MAX_FAILOVERS) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
         markExhausted(a.cooldownKey, DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
         try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
         const nextKey = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
-        if (!next || nextKey === a.cooldownKey) { emitTerminal(true, a.failure.message, a.usage); return { messages: a.messages, usage: a.usage }; }
+        if (!next || nextKey === a.cooldownKey) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
         onEvent({ type: "phase", label: "failover", detail: `${choice.model.label} ${shortFailure(a.failure.message)} → ${next.model.label}, continuing`, state: "running" });
         choice = next;
       }
@@ -2074,8 +2080,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // `/budget <provider>` actually depletes; falls back to the model id.
         const acctId = usedAccountRef.current ?? (findModel(modelId)?.provider ? `env:${findModel(modelId)!.provider}` : modelId);
         const cm = cliMetaRef.current;
-        const cost = cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens }]);
-        recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: cm?.costUSD == null });
+        // Flat-rate subscription seats cost $0 marginal — the CLI's reported dollars
+        // are the metered-equivalent (fictional here) and were inflating spend (S-F).
+        const isSub = getAccount(acctId)?.exec === "cli";
+        const cost = isSub ? 0 : (cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens }]));
+        recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: !isSub && cm?.costUSD == null });
         if (!hadError && getAccount(acctId)?.exec === "cli") {
           // Real rate events carry actual utilization when near a limit (e.g.
           // seven_day at 81%) — record them as-is.
@@ -2661,7 +2670,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (arg.toLowerCase() === "auto" || arg.toLowerCase() === "route") {
             if (activeCliRef.current) {
               setActiveCliModelId(undefined);
-              notice(`subscription model cleared · ${activeCliRef.current.binary} will use its default. /account off for API routing`);
+              // "/model auto" on a subscription does NOT turn on routing (the seat
+              // still owns the turn) — it just clears the pinned seat model. Say so
+              // plainly so it doesn't read as "routing is now on". (R-8)
+              notice(`still on the ${activeCliRef.current.binary} subscription · cleared the pinned model, it'll use its default. Routing isn't on while a subscription is active — /account off to auto-route across API keys.`);
               return;
             }
             const left = leaveSubscription();

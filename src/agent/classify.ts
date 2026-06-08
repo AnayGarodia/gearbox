@@ -45,15 +45,23 @@ const SYSTEM = [
 // they run via the vendor CLI and can't serve a raw completion. Cost, then speed.
 function cheapestInLoop(): { model: ModelSpec; account?: Account } | null {
   let best: { model: ModelSpec; account?: Account; cost: number; tps: number } | null = null;
+  let fallback: { model: ModelSpec; account?: Account; cost: number } | null = null;
   for (const m of modelRegistry()) {
     if (!providerAvailable(m.provider)) continue;
     const account = accountsForProvider(m.provider).filter((a) => a.enabled && a.exec !== "cli")[0];
     const pr = profileFor(m.id);
     const cost = pr?.cost?.inUSDPerMtok ?? m.cost?.inUSDPerMtok ?? 1e6;
     const tps = pr?.latency?.tps ?? m.speed?.tps ?? 0;
+    if (!fallback || cost < fallback.cost) fallback = { model: m, account, cost };
+    // Quality floor (R-6): a sub-haiku-class model (e.g. nova-micro ≈0.25) misclassifies
+    // AND the verdict is cached for 256 prompts. Unknown profile → 0.5 (don't exclude);
+    // falls back to the cheapest if nothing clears the floor.
+    const q = pr?.quality?.sweBenchVerified ?? ((pr?.quality?.intelligenceIndex ?? 50) / 100);
+    if (q < 0.3) continue;
     if (!best || cost < best.cost || (cost === best.cost && tps > best.tps)) best = { model: m, account, cost, tps };
   }
-  return best ? { model: best.model, account: best.account } : null;
+  const pick = best ?? fallback;
+  return pick ? { model: pick.model, account: pick.account } : null;
 }
 
 // Cache persists across runs so a repeated prompt never re-pays the model call.
