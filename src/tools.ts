@@ -37,6 +37,30 @@ function makeSafe(root: string) {
 
 const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
 
+// Default line cap for a full read so a huge file (App.tsx is 4k lines) doesn't
+// dump into context and ride in history for several turns. Matches the dominant
+// convention (Claude Code / OpenCode cap at ~2000). The model pages with
+// offset/limit when it needs more; small files are returned whole, unchanged.
+const READ_LINE_CAP = 2000;
+
+async function readRanged(abs: string, displayPath: string, offset?: number, limit?: number): Promise<string> {
+  const raw = await readFile(abs, "utf8");
+  const lines = raw.split("\n");
+  const total = lines.length;
+  const start = offset ? offset - 1 : 0;
+  if (total > 0 && start >= total)
+    return `(file has ${total} lines; offset ${offset} is past the end of ${displayPath})`;
+  // Explicit limit, else page size = remaining capped at READ_LINE_CAP for a default read.
+  const count = limit ?? Math.min(total - start, READ_LINE_CAP);
+  const end = Math.min(total, start + count);
+  const body = lines.slice(start, end).join("\n");
+  const shownAll = start === 0 && end === total;
+  const footer = shownAll
+    ? ""
+    : `\n\n… showing lines ${start + 1}-${end} of ${total}. Pass offset/limit to read another range.`;
+  return clip(body + footer);
+}
+
 function notFoundHint(path: string, before: string, find: string): string {
   const needle = find.trim().split(/\s+/).filter((w) => w.length >= 3)[0]?.toLowerCase();
   if (!needle) return `text not found in ${path}`;
@@ -53,13 +77,19 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
   const safe = makeSafe(root);
   return {
   read_file: tool({
-    description: "Read a UTF-8 file from the workspace.",
-    inputSchema: z.object({ path: z.string().describe("file path, relative to the workspace root") }),
-    execute: async ({ path }) => clip(await readFile(safe(path), "utf8")),
+    description:
+      "Read a UTF-8 file from the workspace. Returns the whole file by default (capped at 2000 lines); for a large file pass offset (1-based start line) and/or limit to read just the range you need instead of pulling it all into context.",
+    inputSchema: z.object({
+      path: z.string().describe("file path, relative to the workspace root"),
+      offset: z.number().int().min(1).optional().describe("1-based line to start reading from"),
+      limit: z.number().int().min(1).optional().describe("max number of lines to read from offset"),
+    }),
+    execute: async ({ path, offset, limit }) => readRanged(safe(path), path, offset, limit),
   }),
 
   write_file: tool({
-    description: "Create or overwrite a file with the given contents.",
+    description:
+      "Create a NEW file, or fully replace an existing file's contents. To change PART of an existing file, prefer edit_file — it sends only the diff and is far cheaper than a full rewrite.",
     inputSchema: z.object({ path: z.string(), content: z.string() }),
     execute: async ({ path, content }) => {
       const abs = safe(path);

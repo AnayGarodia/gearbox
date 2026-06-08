@@ -20,6 +20,7 @@ import { loadProjectMemory } from "./memory.ts";
 import { repoMap } from "./repomap.ts";
 import { retrieveFiles } from "./retrieve.ts";
 import { gitContext } from "./git.ts";
+import { detectVerificationCommands } from "../verify.ts";
 
 export const BASE_SYSTEM = `You are Gearbox, a precise terminal coding agent.
 Work in small, verifiable steps. Use the tools to read before you write, and
@@ -38,7 +39,26 @@ sizable piece (a focused refactor, bulk edits, research, generation), use
 \`delegate\`. Each sub-task must be SELF-CONTAINED — the sub-agent can't see this
 conversation, so spell out the goal, files, and definition of done. Do small or
 tightly-coupled work yourself; delegate the independent chunks. After the tools
-return, verify the merged result and report what changed.`;
+return, verify the merged result and report what changed.
+
+Efficiency and restraint (these save the user's tokens and time):
+- After edit_file or write_file succeeds, the change is applied; a failed edit
+  throws. Do NOT re-read a file just to confirm an edit landed, and do not reprint
+  a file you just wrote (reference its path).
+- For an existing file, prefer edit_file (a targeted diff) over write_file; reserve
+  write_file for a new file or a full rewrite.
+- When independent read-only lookups (read_file, search, glob, list_dir) don't
+  depend on each other, issue them in ONE step, not one at a time.
+- Make the smallest change that solves the task. Don't add features, refactor, or
+  introduce abstractions beyond what was asked; prefer a small local fix over a
+  cross-file change, and reuse patterns and libraries already in the repo.
+- Default to no comments; add one only where the WHY is non-obvious. Don't create
+  *.md or README files unless asked. Prefer editing an existing file to a new one.
+- The RELEVANT FILES block already holds the top matches for the task; act on it
+  and widen the search only on a concrete miss, rather than re-reading broadly.
+- Act directly on simple tasks; don't narrate a plan you're about to execute, and
+  don't end a turn with only a plan unless asked (plan mode excepted). The
+  deliverable is the diff.`;
 
 export const PLAN_ADDENDUM = `
 
@@ -170,6 +190,17 @@ export function buildContext(opts: {
   let system = plan ? BASE_SYSTEM + PLAN_ADDENDUM : BASE_SYSTEM;
   sections.push({ name: "system", tokens: countTokens(system, modelId) });
 
+  // Verification commands the project actually exposes (typecheck/test/build, or a
+  // language toolchain). Telling the model the real bar UP FRONT lets it check its
+  // own work in-turn instead of discovering the bar by failing it post-turn. Stable
+  // per cwd, so it rides the cached prefix at ~0 recurring cost.
+  const checks = safe(() => detectVerificationCommands(cwd), []);
+  if (checks.length) {
+    const block = checks.map((c) => `- ${c.command}  (${c.reason})`).join("\n");
+    system += `\n\n# VERIFICATION COMMANDS (run the relevant ones to check your work before reporting done)\n${block}`;
+    sections.push({ name: "verify", tokens: countTokens(block, modelId) });
+  }
+
   const memory = safe(() => loadProjectMemory(cwd), "");
   if (memory) {
     system += `\n\n# PROJECT MEMORY\n${memory}`;
@@ -189,7 +220,7 @@ export function buildContext(opts: {
     sections.push({ name: "repomap", tokens: countTokens(map, modelId) });
   }
 
-  const retrieveBudget = Math.min(8_000, Math.floor(inputBudget * 0.15));
+  const retrieveBudget = Math.min(12_000, Math.floor(inputBudget * 0.15));
   const hits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), []);
   if (hits.length) {
     const block = hits.map((h) => `=== ${h.file} ===\n${h.content}`).join("\n\n");

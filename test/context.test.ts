@@ -71,6 +71,16 @@ test("plan mode injects the read-only addendum", () => {
   expect(system).toContain("PLAN MODE");
 });
 
+// The model should learn the project's real check commands up front (cache-stable),
+// not discover the bar by failing post-turn. cwd here is the gearbox repo, which
+// has typecheck/test/build scripts.
+test("buildContext injects the project's verification commands into the system prefix", () => {
+  const { system, sections } = buildContext({ history: [], userText: "add a feature", model: sonnet });
+  expect(system).toContain("VERIFICATION COMMANDS");
+  expect(system).toMatch(/typecheck|test/);
+  expect(sections.some((s) => s.name === "verify")).toBe(true);
+});
+
 // ── THE INVARIANT: curation never splits a tool_use from its tool_result ──
 function toolIds(messages: ModelMessage[]): { calls: Set<string>; results: Set<string> } {
   const calls = new Set<string>();
