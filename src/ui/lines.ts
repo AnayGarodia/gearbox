@@ -564,7 +564,17 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "model": {
-        out.push(clipSpans([{ text: "  ◇ ", color: color.accentDim }, { text: "using " + it.model, color: color.text }, { text: " · " + it.provider + " · " + it.reason, color: color.faint }], width));
+        // Post-turn provenance: routed → provider · model · cost. Dim when routine;
+        // the whole line brightens to warn (amber) + a reason for a surprising pick.
+        const head = it.surprising ? color.warn : color.faint;
+        const body = it.surprising ? color.warn : color.dim;
+        const spans = [
+          { text: "  ↳ routed → ", color: head },
+          { text: it.provider + " · " + it.model, color: body },
+        ];
+        if (it.costText) spans.push({ text: " · " + it.costText, color: head });
+        if (it.surprising && it.reason) spans.push({ text: " · " + it.reason, color: color.warn });
+        out.push(clipSpans(spans, width));
         break;
       }
       case "verification": {
@@ -753,12 +763,13 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "error": {
-        let first = true;
+        // One error lane: a single red left bar (▎) down the whole message, shown
+        // once — matches the user spine but in red. No floating/boxed duplicate.
+        out.push(BLANK);
         for (const para of it.text.split("\n")) {
-          const wrapped = wrapSpans([{ text: para, color: color.err }], Math.max(width - 4, 1));
+          const wrapped = wrapSpans([{ text: para, color: color.err }], Math.max(width - 2, 1));
           wrapped.forEach((l) => {
-            out.push([{ text: first ? "  " + glyph.err + " " : "    ", color: color.err }, ...l]);
-            first = false;
+            out.push([{ text: glyph.userBar + " ", color: color.err }, ...l]);
           });
         }
         break;

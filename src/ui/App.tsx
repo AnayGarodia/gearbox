@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput, useStdin } from "ink";
 import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
 import { Transcript } from "./components/Transcript.tsx";
-import { StatusBar, statusBarHit } from "./components/StatusBar.tsx";
+import { StatusBar, statusBarHit, formatStatusCost } from "./components/StatusBar.tsx";
 import { StatusStrip } from "./components/StatusStrip.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
@@ -14,9 +14,16 @@ import { Working } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
 import { itemsToLines, type Line } from "./lines.ts";
 import { collapseTurn } from "./collapse.ts";
+import { buildRoutingLine } from "./routing-line.ts";
+import { policyLabel, type SelectorKind } from "./policy.ts";
+import { buildProvidersView } from "./providers-view.ts";
+import { ProvidersView } from "./components/ProvidersView.tsx";
+import { TabStrip, tabStripHit, TABS, type AppTab } from "./components/TabStrip.tsx";
+import { CostView, RoutingView } from "./components/TabViews.tsx";
+import { premiumRate, estimateSavings, formatPolicyString, savingsLine } from "./cost-tab.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
-import { nextVerb } from "./character.ts";
+import { nextVerb, toolVerbFromName, lowContextNotice } from "./character.ts";
 import { color, glyph } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
@@ -25,7 +32,7 @@ import { FixedSelector, type ModelSelector, type ModelChoice } from "../model/se
 import { classifyFailure, markExhausted, DEFAULT_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
-import { confirmRoutingPreference, setBudget, loadBudgets, type PreferenceKind } from "../model/preferences.ts";
+import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loadRoutingPreferences, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
@@ -42,7 +49,7 @@ import { discoverModels } from "../accounts/discover.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
-import { recordUsage, recordRateLimits, recordBalance, buildUsageView, accountUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
+import { recordUsage, recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
 import { checkCaps, type BudgetCaps } from "../model/budget-guard.ts";
 import { recordChange, planUndo, type FileChange } from "../undo.ts";
 import { probeUsage } from "../accounts/usage-probe.ts";
@@ -95,7 +102,7 @@ const KEYS_HELP = [
   "  ⌃Y copy last reply · ⌃V paste image from clipboard · shift+tab cycle mode",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
-  "  click the model or effort label in the status bar to pick (fullscreen)",
+  "  click the model label in the status bar to pick (fullscreen)",
   "  input stays fixed at the bottom; /config inline on uses terminal scrollback",
 ].join("\n");
 
@@ -435,6 +442,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     quickPickerIndexRef.current = n;
     setQuickPickerIndexState(n);
   };
+  // Top tab strip (fullscreen only): Session · Routing · Providers · Cost. The
+  // active tab switches the main region between the transcript and the read-only
+  // Routing/Providers/Cost views. tabRef mirrors it for the raw mouse handler.
+  const [tab, setTabState] = useState<AppTab>("session");
+  const tabRef = useRef<AppTab>("session");
+  const setTab = (t: AppTab) => { tabRef.current = t; setTabState(t); };
+  const setupRequiredRef = useRef(false); // mirrors setupRequired for the raw mouse handler
+  const cycleTab = () => setTab(TABS[(TABS.indexOf(tabRef.current) + 1) % TABS.length]!);
   // Dismissable command panel (fullscreen only): big info dumps + interactive
   // account/model lists render here instead of in the transcript; esc closes.
   const [panel, setPanelState] = useState<PanelState | null>(null);
@@ -555,6 +570,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const liveLineRef = useRef(""); // the in-progress draft, stashed when you step up into history so ↓ restores it
   const lastPromptRef = useRef<string | null>(null);
   const routedRef = useRef<{ model: ModelSpec; reason: string } | null>(null); // the real per-turn pick
+  // The model label this turn FELL BACK FROM, when same-turn failover moved off the
+  // intended account. Set in the failover loop, read once at the turn-completion seam
+  // (drives the surprising-amber per-turn line), cleared in the turn's finally.
+  const fellOverFromRef = useRef<string | null>(null);
   // Active CLI-backed subscription account (claude/codex). When set, turns run
   // through the vendor binary (its own loop/tools/permissions), not the in-loop
   // path. cliSessionRef keeps the binary's session id for resume.
@@ -577,7 +596,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const viewportHeightRef = useRef(1);
   const maxScrollRef = useRef(0);
   const paletteRowsLiveRef = useRef(0); // PALETTE_ROWS, for status-bar click hit-testing
-  const statusBarRenderRef = useRef<{ model: string; effort?: string; mode: "normal" | "auto-accept" | "plan" }>({ model: "", mode: "normal" });
+  const statusBarRenderRef = useRef<{ model: string; costText: string; width: number }>({ model: "", costText: "", width: 0 });
 
   const setPerm = (p: PermRequest | null) => {
     permRef.current = p;
@@ -827,17 +846,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const firstInputRow = rows - lineCount + 1;
       if (y < firstInputRow || y > rows) return null;
       const lineIdx = y - firstInputRow;
-      const col = Math.max(0, x - 4); // 1 pad + prompt + space, SGR coords are 1-based
+      const col = Math.max(0, x - 5); // 1 border + 1 pad + prompt + space, SGR coords are 1-based
       return offsetAt(value, lineIdx, col);
     };
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
-    const statusBarZoneAt = (x: number, y: number): "model" | "effort" | null => {
-      const lineCount = Math.max(1, editRef.current.value.split("\n").length);
-      const { model, effort, mode } = statusBarRenderRef.current;
-      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, effort, mode });
+    const statusBarZoneAt = (x: number, y: number): "model" | null => {
+      const value = editRef.current.value;
+      const lineCount = Math.max(1, value.split("\n").length);
+      // The policy row is hidden during onboarding; the bash hint row sits below the
+      // input. Both shift the status bar — keep the hit-test exact (matches App's footer).
+      const hasPolicy = !setupRequiredRef.current;
+      const hintRows = value !== "" && value.startsWith("!") ? 1 : 0;
+      const { model, costText, width: w } = statusBarRenderRef.current;
+      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, width: w, hasPolicy, hintRows });
     };
-    const viewportTop = 4; // Banner is 3 rows; viewport begins on row 4.
+    const viewportTop = 5; // Banner (3 rows) + tab strip (1 row); viewport begins on row 5.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
       const viewportBottom = viewportTop + transcriptHeightLiveRef.current - 1;
       if (y < viewportTop || y > viewportBottom) return null;
@@ -866,6 +890,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Status-bar click pickers (fullscreen only). A primary press on the
           // model or effort label toggles its floating picker; a press anywhere
           // else closes an open one before normal click handling resumes.
+          // Tab strip click (row 4, just under the 3-row Banner). Works even while
+          // busy — switching the view never touches the running turn.
+          if (fullscreen && !setupRequiredRef.current && isPrimary && !isDrag && !up) {
+            const t = tabStripHit(x, y, 4);
+            if (t) { setTab(t); continue; }
+          }
           if (fullscreen && isPrimary && !isDrag && !up && !busyRef.current && !permRef.current) {
             const zone = statusBarZoneAt(x, y);
             if (zone) {
@@ -1341,6 +1371,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [items.length, activeCli?.id, usageTick], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const setupRequired = needsOnboarding(onboardingState);
+  setupRequiredRef.current = setupRequired;
   useEffect(() => {
     if (!setupRequired && firstRunRef.current) {
       firstRunRef.current = false;
@@ -1351,6 +1382,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // On a subscription, the status reflects the CLI account, not the in-loop model/routing.
   const modelLabel = setupRequired ? "setup required" : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}` : (model?.label ?? "none");
   const subscription = activeCli ? activeCli.label : null;
+  // Routing POLICY for the input box (intent, not a model name). Derived from the
+  // live selector: a subscription pins the seat, a FixedSelector is an explicit
+  // model pin, otherwise the RoutingSelector auto-routes per task.
+  const selectorKind: SelectorKind = activeCli ? "subscription" : selector instanceof FixedSelector ? "fixed" : "routing";
+  // Omit the policy line during onboarding — the setup splash already conveys the
+  // state, and the extra row isn't worth crowding the first-run screen.
+  const composerPolicy: string | undefined = setupRequired
+    ? undefined
+    : policyLabel({ selectorKind, pinnedModelLabel: model?.label, subscriptionLabel: activeCli?.label, mode });
   // Compact identity for the top-right corner: "claude · Max · you@host" for a
   // subscription (id stays the slug under the hood), else nothing.
   const bannerAccount = (() => {
@@ -1370,20 +1410,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     ? (activeCliRef.current?.binary?.includes("codex") ? (findModel(activeCliModel ?? "")?.contextWindow ?? 272_000) : 200_000)
     : model?.contextWindow ?? null;
   const ctxPct = !setupRequired && activeCtxWindow && lastInput > 0 ? Math.round((lastInput / activeCtxWindow) * 100) : null;
-  // Only show effort when the active model actually supports reasoning · avoids showing
-  // "effort medium" on models like haiku that have no reasoning support.
-  const activeModelEfforts = (() => {
-    const cli = activeCliRef.current;
-    if (cli) {
-      const choices = cliModelChoices(cli.binary);
-      const m = choices.find((c) => c.id === activeCliModel) ?? choices[0];
-      return m?.efforts ?? [];
-    }
-    return model ? effortLevels(model) : [];
-  })();
-  const displayEffort = activeModelEfforts.length > 0 ? effort : undefined;
-  // Mirror exactly what the status bar renders, so the click hit-test matches.
-  statusBarRenderRef.current = { model: modelLabel, effort: displayEffort, mode };
+  // Mirror exactly what the status bar renders (model + session cost + width), so
+  // the click hit-test's right-aligned model zone matches the rendered position.
+  statusBarRenderRef.current = { model: modelLabel, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), width };
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const pushPhase = (label: string, detail?: string) => {
@@ -1759,6 +1788,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const nextKey = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         if (!next || nextKey === a.cooldownKey) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
         onEvent({ type: "phase", label: "failover", detail: `${choice.model.label} ${shortFailure(a.failure.message)} → ${next.model.label}, continuing`, state: "running" });
+        // Remember what we fell back FROM so the post-turn routing line can flag the
+        // provider fallback (a real "surprising" signal) in amber.
+        fellOverFromRef.current = choice.model.label;
         choice = next;
       }
     },
@@ -1878,7 +1910,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   const runTurn = useCallback(
     async (prompt: string, attempt = 0) => {
-      setVerb(nextVerb());
+      // One workshop phrase per turn; tool calls temporarily swap in the action
+      // verb (Reading/Editing/Running) and restore this between calls.
+      const turnVerb = nextVerb();
+      setVerb(turnVerb);
       activeImagesRef.current = [];
       let { text: modelPrompt, attached } = expandMentions(prompt);
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
@@ -2042,7 +2077,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
       const onEvent: OnEvent = (e) => {
         if (e.type === "model-pick") {
-          push({ kind: "model", id: idRef.current++, model: e.model, provider: e.provider, reason: e.reason });
+          // No transcript item here: the live model shows in the footer during the
+          // turn, and the single canonical `routed → …` provenance line is printed
+          // POST-turn (with the real cost) at the turn-completion seam below.
         } else if (e.type === "phase") {
           push({ kind: "phase", id: idRef.current++, label: e.label, detail: e.detail, state: e.state ?? "running" });
         } else if (e.type === "text") {
@@ -2053,6 +2090,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (!textFlushTimer) textFlushTimer = setTimeout(flushText, 45);
         } else if (e.type === "tool-start") {
           setMascotState("tool");
+          setVerb(toolVerbFromName(e.name)); // the live verb names the running tool
           finishAssistant();
           const id = idRef.current++;
           toolMap.set(e.id, id);
@@ -2065,6 +2103,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           appendToolOutput(id, e.text);
         } else if (e.type === "tool-end") {
           setMascotState("thinking"); // back to reasoning until the next text/tool
+          setVerb(turnVerb); // restore the turn's workshop phrase between tool calls
           flushToolStreams();
           const id = toolMap.get(e.id);
           const endedAt = Date.now();
@@ -2154,6 +2193,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const isSub = getAccount(acctId)?.exec === "cli";
         const cost = isSub ? 0 : (cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens }]));
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: !isSub && cm?.costUSD == null });
+        // The single canonical per-turn routing line: `routed → provider · model · cost`.
+        // Every field is real — the model/provider that actually ran (routedRef tracks
+        // failover), the same `cost` figure recorded just above ($0 ⇒ subscription seat),
+        // and the failover signal. Amber only on a real surprising signal (provider
+        // fallback today; escalation/cap-hit are gated until captured — see the report).
+        if (modelId && modelId !== "unknown") {
+          const ranSpec = routedRef.current?.model ?? findModel(modelId);
+          // On an explicitly-pinned subscription, routedRef is null and modelId is the
+          // ACCOUNT slug — resolve the real CLI model label instead of showing the slug.
+          const subLabel = findModel(activeCliModelRef.current ?? "")?.label ?? activeCliModelRef.current;
+          const line = buildRoutingLine({
+            model: ranSpec?.label ?? (isSub ? (subLabel ?? modelId) : modelId),
+            provider: isSub ? (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude") : (ranSpec?.provider ?? "—"),
+            costUSD: cost,
+            kind: isSub ? "subscription" : "metered",
+            fellOverFrom: fellOverFromRef.current,
+          });
+          push({ kind: "model", id: idRef.current++, model: line.model, provider: line.provider, costText: line.costText, surprising: line.surprising, reason: line.reason ?? undefined });
+        }
         if (!hadError && getAccount(acctId)?.exec === "cli") {
           // Real rate events carry actual utilization when near a limit (e.g.
           // seven_day at 81%) — record them as-is.
@@ -2206,6 +2264,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
       } finally {
         activeImagesRef.current = [];
+        fellOverFromRef.current = null; // per-turn failover signal consumed; reset for the next turn
         flushText(); // commit any buffered text on interrupt (no done/error fired)
         flushToolStreams();
         abortRef.current = null;
@@ -3456,6 +3515,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         notice("↳ answering from Gearbox's own docs · rephrase as a task, or /help, to run it as a normal turn");
         askModeRef.current = true;
       }
+      setTab("session"); // a new prompt belongs to the live conversation
       void runTurn(text);
     },
     [handleCommand, runTurn, setupRequired, onboardingState],
@@ -3468,7 +3528,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (busy || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
     const next = queueRef.current.shift();
     setQueued([...queueRef.current]);
-    if (next) void runTurn(next);
+    if (next) { setTab("session"); void runTurn(next); } // surface the response, not a tab
   }, [busy, runTurn]);
 
   // Rewind the last user turn back into the composer for editing, dropping that
@@ -3771,6 +3831,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (!busyRef.current) cycleMode();
       return;
     }
+    // ⌃T cycles the top tabs (Session · Routing · Providers · Cost), fullscreen only.
+    if (key.ctrl && (input === "t" || input === "\x14")) {
+      if (fullscreen) cycleTab();
+      return;
+    }
     if (key.tab) {
       if (!busyRef.current) {
         const m = currentMention(editRef.current.value, editRef.current.cursor);
@@ -3916,11 +3981,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const quickRows = quickPicker ? quickPickerRows(quickPicker) : [];
   const quickPickerLimit = Math.min(7, Math.max(1, quickRows.length));
   let footer = 2; // status line + its top margin
-  footer += perm ? 9 : 3; // permission card vs composer (rule + input + marginTop)
+  footer += perm ? 9 : 4; // permission card vs composer (rule + policy line + input + marginTop)
   // Composer hint row: "↵ queues…" while busy, or "↵ runs in your shell" in ! mode.
   if (!perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
   footer += PALETTE_ROWS;
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
+  if (busy && lowContextNotice(ctxPct)) footer += 1; // optional low-context notice row under it
   if (busy) footer += 2; // compact current-turn activity rail
   if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
@@ -3945,7 +4011,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // the right account's data immediately without waiting for spend to accumulate.
   const stripApi = stripView ? ((usedAccountRef.current ? stripView.apiKeys.find((a) => a.id === usedAccountRef.current) : null) ?? stripView.apiKeys[0] ?? null) : null;
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
-  const HEADER = 3;
+  const HEADER = setupRequired ? 3 : 4; // Banner (marginTop + title + rule) + the tab strip (hidden during setup)
   // Keep the whole frame STRICTLY under `rows`. Ink redraws with a full
   // clearTerminal (\x1b[2J\x1b[3J\x1b[H — the 3J wipes SCROLLBACK) the moment the
   // output height reaches the terminal height; under-filling by one row keeps it on
@@ -3990,6 +4056,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (atBottomRef.current) setScrollTop(maxScroll);
   }, [lines.length, maxScroll]);
 
+  // Cold-open providers block: when there's no conversation yet and accounts are
+  // configured, show their real status + honest balances (a pure, synchronous read;
+  // usageTick keeps it fresh after spend changes).
+  const coldOpenProviders = welcome && !setupRequired ? buildProvidersView(listAccounts(), accountUsage, Date.now()) : [];
+  const coldOpenW = Math.min(Math.max(width - 8, 24), 64);
   const hero = (
     <Box flexDirection="column" alignItems="center">
       {setupRequired ? (
@@ -4007,6 +4078,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             <Text color={color.accentDim}>!</Text>
             <Text color={color.dim}>shell</Text>
           </Box>
+          {coldOpenProviders.length ? (
+            <Box marginTop={1} width={coldOpenW}>
+              <ProvidersView rows={coldOpenProviders} width={coldOpenW} title="providers" max={6} />
+            </Box>
+          ) : null}
           {firstRunRef.current ? (
             <Box marginTop={1} flexDirection="column" alignItems="center">
               <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
@@ -4040,12 +4116,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} />
   );
 
   const footerJsx = (
     <>
-      {busy || linger ? <Working state={mascotState} skin={ghostSkin} verb={verb} elapsed={elapsed} tps={(() => { const t0 = firstOutputAtRef.current; if (!t0) return 0; const secs = (Date.now() - t0) / 1000; return secs > 0.7 ? Math.round(outCharsRef.current / 4 / secs) : 0; })()} linger={linger && !busy} width={width} /> : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} tps={(() => { const t0 = firstOutputAtRef.current; if (!t0) return 0; const secs = (Date.now() - t0) / 1000; return secs > 0.7 ? Math.round(outCharsRef.current / 4 / secs) : 0; })()} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
       {busy ? <ActivityRail items={items} width={width} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
@@ -4074,7 +4150,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       ) : null}
       {quickPickerJsx}
       {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} width={width} /> : null}
-      <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={displayEffort} online={online} />
+      <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}
     </>
@@ -4087,10 +4163,32 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     </>
   );
 
+  // Tab views (fullscreen only): every value is real — session spend + the honest
+  // savings estimate (tokens × the priciest model's price − actual), the policy
+  // string (only what the engine honours), per-account spend, the last routed pick,
+  // and remembered per-kind preferences. Computed ONLY when a non-session tab is
+  // shown (it reads usage.json / routing-preferences.json — off the session hot path).
+  let tabView: React.ReactNode = null;
+  if (fullscreen && tab !== "session") {
+    const tabPolicy = formatPolicyString({ mode: selectorKind, pinnedModel: model?.label, subscriptionLabel: activeCli?.label, prefer: globalPreference()?.prefer, caps: capsRef.current });
+    if (tab === "cost") {
+      const tabSavings = savingsLine(estimateCost(sessionRef.current.turns), estimateSavings(sessionRef.current.turns, premiumRate(modelRegistry()), (t) => estimateCost([t])));
+      const tabSpendRows = loadUsage().slice(0, 6).filter((u) => u.spentUSD > 0).map((u) => ({ label: getAccount(u.accountId)?.label ?? u.accountId, spent: `$${u.spentUSD.toFixed(2)} spent` }));
+      tabView = <CostView width={width - 2} savingsText={tabSavings} policyText={tabPolicy} spendRows={tabSpendRows} />;
+    } else if (tab === "providers") {
+      tabView = <Box paddingX={1}><ProvidersView width={width - 2} rows={buildProvidersView(listAccounts(), accountUsage, Date.now())} title="providers" /></Box>;
+    } else if (tab === "routing") {
+      const tabLastPick = lastPick ? `${lastPick.model.provider} · ${lastPick.model.label} · ${lastPick.reason}` : null;
+      const tabKindPrefs = Object.entries(loadRoutingPreferences().byKind).map(([kind, p]) => ({ kind, model: p?.modelId ?? "" })).filter((p) => p.model);
+      tabView = <RoutingView width={width - 2} policyText={tabPolicy} lastPick={tabLastPick} kindPrefs={tabKindPrefs} />;
+    }
+  }
+
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
         <Banner model={modelLabel} account={bannerAccount} width={width} />
+        {setupRequired ? null : <TabStrip active={tab} width={width} />}
         {/* flexGrow pins the footer (and the composer with it) to the bottom row,
             so however the footer height is estimated, the input bar is always at
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}
@@ -4098,6 +4196,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           <Box paddingX={1} flexGrow={1}>
             <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} sessions={panelSessions} currentModelId={panelCurrentModel} staticLines={panelStaticLines} />
           </Box>
+        ) : tab !== "session" && !setupRequired ? (
+          <Box flexGrow={1}>{tabView}</Box>
         ) : welcome ? (
           <Box flexGrow={1} flexDirection="column" justifyContent="center">
             {hero}

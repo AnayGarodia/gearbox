@@ -499,11 +499,16 @@ function PhaseLine({ item }: { item: Extract<Item, { kind: "phase" }> }) {
 }
 
 function ModelLine({ item }: { item: Extract<Item, { kind: "model" }> }) {
+  // Post-turn provenance: routed → provider · model · cost. Dim when routine;
+  // brightens to warn (amber) + a reason for a surprising routing decision.
+  const head = item.surprising ? color.warn : color.faint;
+  const body = item.surprising ? color.warn : color.dim;
   return (
     <Box marginTop={1} marginLeft={2}>
-      <Text color={color.accentDim}>◇ </Text>
-      <Text color={color.text}>using {item.model}</Text>
-      <Text color={color.faint}>{" · " + item.provider + " · " + item.reason}</Text>
+      <Text color={head}>↳ routed → </Text>
+      <Text color={body}>{item.provider + " · " + item.model}</Text>
+      {item.costText ? <Text color={head}>{" · " + item.costText}</Text> : null}
+      {item.surprising && item.reason ? <Text color={color.warn}>{" · " + item.reason}</Text> : null}
     </Box>
   );
 }
@@ -614,12 +619,17 @@ function Row({ item, width, expandAll = false }: { item: Item; width: number; ex
         </Box>
       );
     case "error":
+      // One error lane: a single red left bar down the whole message, shown once.
       return (
-        <Box marginTop={1} marginLeft={2}>
-          <Text color={color.err}>{glyph.err} </Text>
-          <Box flexGrow={1}>
-            <Text color={color.err}>{item.text}</Text>
-          </Box>
+        <Box marginTop={1} flexDirection="column">
+          {item.text.split("\n").map((line, i) => (
+            <Box key={i}>
+              <Text color={color.err}>{glyph.userBar} </Text>
+              <Box flexGrow={1}>
+                <Text color={color.err}>{line}</Text>
+              </Box>
+            </Box>
+          ))}
         </Box>
       );
   }

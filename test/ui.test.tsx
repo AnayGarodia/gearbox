@@ -48,20 +48,21 @@ test("transcript renders user, assistant, tools, error with the right glyphs", (
   expect(f).toContain("▌"); // user prompt band
   expect(f).toContain("⏺"); // tool call marker
   expect(f).toContain("⎿"); // tool result connector
-  expect(f).toContain("▲"); // error marker
+  expect(f).toContain("▎"); // error lane: a single red left bar (was a ▲ marker)
 });
 
 test("transcript renders live phase, model, verification, and preference rows", () => {
   const items: Item[] = [
     { kind: "phase", id: 1, label: "building context", detail: "sonnet-4.6", state: "running" },
-    { kind: "model", id: 2, model: "sonnet-4.6", provider: "anthropic", reason: "code · remembered preference" },
+    { kind: "model", id: 2, model: "sonnet-4.6", provider: "anthropic", costText: "$0.04" },
     { kind: "tool", id: 3, callId: "s", name: "run_shell", arg: "bun test", status: "running", summary: "", outputTail: "one\ntwo\n", outputLines: 2 },
     { kind: "verification", id: 4, command: "bun test", ok: false, summary: "failed" },
     { kind: "preference", id: 5, text: "Remember sonnet for code tasks?", acceptCommand: "/prefer code claude-sonnet-4-6" },
   ];
   const f = render(<Transcript items={items} width={120} />).lastFrame() ?? "";
   expect(f).toContain("building context");
-  expect(f).toContain("using sonnet-4.6");
+  expect(f).toContain("routed → anthropic · sonnet-4.6");
+  expect(f).toContain("$0.04");
   expect(f).toContain("│ one");
   expect(f).toContain("check");
   expect(f).toContain("/prefer code claude-sonnet-4-6");

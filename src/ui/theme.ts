@@ -11,6 +11,7 @@ export interface Theme {
   faint: string;
   user: string;
   ok: string;
+  warn: string;
   err: string;
   run: string;
   shell: string;
@@ -38,7 +39,11 @@ export interface Theme {
 // background. Syntax uses a single accent family (blues) + violet for types.
 export const color: Theme = {
   accent: "#56D4E0", accentDim: "#4F8C99", text: "#E4E6EB", dim: "#8A909C", faint: "#5B626E",
-  user: "#BFE0F0", ok: "#6FCF97", err: "#E5675C", run: "#7E8AF0", shell: "#E27BB0", navy: "#0E0F13",
+  // `warn` is the ONLY amber in the semantic vocabulary — spent sparingly on a
+  // surprising routing decision, a balance running low, or a key needing
+  // attention. Same hue as the code-number amber, kept distinct from `err` (red
+  // = something went wrong) so amber can mean "look, but nothing is broken".
+  user: "#BFE0F0", ok: "#6FCF97", warn: "#E0B057", err: "#E5675C", run: "#7E8AF0", shell: "#E27BB0", navy: "#0E0F13",
   userBg: "#0E2233", codeBg: "#16181E", panelBg: "#16181E", accentBg: "#0E2027",
   path: "#86B8E0",
   // Distinct hues so a code block isn't a wall of one blue: keyword violet,

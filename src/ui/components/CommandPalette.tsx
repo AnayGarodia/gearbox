@@ -17,11 +17,31 @@ function windowed<T>(items: T[], selected: number, limit: number): { rows: T[]; 
   return { rows: items.slice(start, start + count), start };
 }
 
-/** Live command hints, shown while the input starts with "/". */
-function rowText(marker: string, label: string, detail: string | undefined, width: number): string {
-  const raw = `${marker}${label.padEnd(16)}${detail ? "  " + detail : ""}`;
-  if (raw.length > width) return raw.slice(0, Math.max(0, width - 1)) + "…";
-  return raw.padEnd(width);
+/** Split a row into the command part (primary) and the description part
+ * (secondary) so each can be coloured independently, then pad to fill the row's
+ * background. The description is truncated first when the row is too narrow. */
+function rowParts(marker: string, label: string, detail: string | undefined, width: number): { cmd: string; det: string; pad: string } {
+  const cmd = `${marker}${label.padEnd(16)}`;
+  let det = detail ? "  " + detail : "";
+  if (cmd.length + det.length > width) {
+    const room = Math.max(0, width - cmd.length);
+    det = room > 1 ? det.slice(0, room - 1) + "…" : "";
+  }
+  const pad = " ".repeat(Math.max(0, width - cmd.length - det.length));
+  return { cmd, det, pad };
+}
+
+/** One palette row: command in primary text, description in secondary, with the
+ * selected row carrying the single accent-highlighted background. */
+function Row({ active, marker, label, detail, width }: { active: boolean; marker: string; label: string; detail?: string; width: number }) {
+  const { cmd, det, pad } = rowParts(marker, label, detail, width);
+  return (
+    <Text backgroundColor={active ? color.accentBg : undefined}>
+      <Text color={active ? color.text : color.dim} bold={active}>{cmd}</Text>
+      <Text color={active ? color.dim : color.faint}>{det}</Text>
+      {pad}
+    </Text>
+  );
 }
 
 /** Live command hints, shown while the input starts with "/". */
@@ -33,11 +53,7 @@ export function CommandPalette({ draft, selected = 0, limit = 5, rows, width = 8
       <Box flexDirection="column" paddingX={1} marginTop={1}>
         {shown.rows.map((r, i) => {
           const active = shown.start + i === selected;
-          return (
-            <Text key={r.value} color={active ? color.text : color.dim} bold={active} backgroundColor={active ? color.accentBg : undefined}>
-              {rowText(active ? "● " : "  ", r.label, r.detail, rowWidth)}
-            </Text>
-          );
+          return <Row key={r.value} active={active} marker={active ? "● " : "  "} label={r.label} detail={r.detail} width={rowWidth} />;
         })}
       </Box>
     );
@@ -49,11 +65,7 @@ export function CommandPalette({ draft, selected = 0, limit = 5, rows, width = 8
     <Box flexDirection="column" paddingX={1} marginTop={1}>
       {shown.rows.map((c, i) => {
         const active = shown.start + i === selected;
-        return (
-          <Text key={c.name} color={active ? color.text : color.dim} bold={active} backgroundColor={active ? color.accentBg : undefined}>
-            {rowText(active ? "● " : "  ", c.usage, c.desc, rowWidth)}
-          </Text>
-        );
+        return <Row key={c.name} active={active} marker={active ? "● " : "  "} label={c.usage} detail={c.desc} width={rowWidth} />;
       })}
     </Box>
   );
