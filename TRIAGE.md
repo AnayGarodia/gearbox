@@ -70,16 +70,16 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☑ S-A compaction — FIXED: modelSummarizer takes creds (works for STORED API accounts, not just env); compactNow resolves them and skips cleanly with a message when the summarize pick is a flat-rate seat (was a silent failure → context overflow). CLI-hosted summary still future. (compact.ts, App.tsx) [v0.2.44]
 - ☐ S-B delegate/delegate_parallel error out entirely on a subscription-only setup (no fallback).
 - ☑ S-C codex resume argv — FIXED: `resume <ID>` now immediately follows `exec` (codex exec resume <ID> [opts] [prompt]); was appended after flags so it was eaten as a prompt arg. (cli-backend.ts + test) [v0.2.45] ⚠ live-verify on codex.
-- ☐ S-D CLI session id never persisted → no real resume across restarts for subscription turns.
-- ☐ S-E effort silently dropped for the claude CLI (only codex gets it), yet App validates/throws on it.
+- ⚠ S-D CLI session resume — DEFERRED: persisting the vendor session id risks a stale-id error on resume that I can't verify the CLI handles gracefully; current clear-on-resume is safe (conversation continues via messages, only the binary's internal session restarts).
+- ◑ S-E claude CLI effort — the throw is gone (now clamps, mirrors R-4); effort still not passed to the claude CLI (no documented flag), so it clamps then is dropped. [v0.2.49]
 - ☑ S-F flat-rate cost — FIXED: subscription turns record $0 (the CLI's metered $ is fictional for a flat-rate seat). (App.tsx) [v0.2.48]
-- ☐ S-G image ledger note only on API path (history divergence once xiv fixed).
+- ☑ S-G — RESOLVED by xiv: image paths are in the CLI prompt, so the CLI ledger records them too.
 - ☑ S-H /export and /copy DO work on subscription (no bug; noted).
 ### Cost / context
 - ☑ C-A dropped failed-attempt tokens — FIXED: the failover hop-loop accumulates usage across attempts. (App.tsx) [v0.2.48]
 - ◑ C-B discovered-model $0 — IMPROVED: costFor falls back to the profile by bare sdkId, so a gateway serving a known model prices correctly. Truly-unknown models still have no price (data gap, not a logic bug). [v0.2.48]
 - ☑ C-C — dup of R-7, fixed. [v0.2.48]
-- ☐ C-D strip shows two unrelated "context" numbers (cumulative `tokens` vs lastInput/ctxPct).
+- ☑ C-D strip two numbers — FIXED: the context row derives its absolute from the same % so they agree. (StatusStrip.tsx) [v0.2.49]
 - ☑ C-E ctx% ignores cache — FIXED: lastInput now = inputTokens + cache read + cache write, so ctx% reflects the whole prompt. [v0.2.47]
 - ☑ C-F auto-compact budget — FIXED with x: triggers off the answering model's window, not the summarizer's. [v0.2.39]
 ### Session / input / paste
@@ -92,15 +92,15 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ I-G title truncation mismatch (80 vs 42 vs untruncated) — cosmetic.
 - ☐ I-H paste chip store cleared globally on first submit.
 ### Lifecycle / errors / offline
-- ☐ L-A verification can run after interrupt; post-turn test run not interruptible.
+- ☑ L-A verify after interrupt — FIXED: the post-turn verify gate now also checks !interruptedRef. [v0.2.49]
 - ☑ L-B auto-compaction retry storm — FIXED: compaction generateText now maxRetries:1. [v0.2.40]
-- ☐ L-C type-ahead queue auto-fires next prompt into a still-broken state after an errored turn; no clear-queue.
+- ☑ L-C queue error-loop — FIXED: the drain pauses after an error/interrupt; a successful manual turn resumes it. [v0.2.49]
 - ☑ L-D post-turn throw wedging the app — FIXED: the finally's summary/linger block is wrapped in try/catch so it can never reject runTurn (→ unhandled rejection). [v0.2.47]
-- ☐ L-E single-`done` invariant fragile/untested (ask path vs failover vs CLI).
+- ◑ L-E single-done — will be covered by the integration harness (next).
 - ☑ L-F CLI subprocess SIGKILL escalation — FIXED: onAbort sends SIGTERM then SIGKILL after 2s so a wedged claude/codex can't pin busy forever. (proc.ts kill(signal), cli-backend.ts) [v0.2.40]
 - ☑ L-G isNetworkError regex misses "Connect Timeout Error" — FIXED: added undici/AI-SDK shapes (connect timeout, attempted address, failed after N attempts). (net.ts + net.test) [v0.2.38]
 - ☑ L-H linger timer cleanup — FIXED: cleared on unmount. [v0.2.47]
-- ☐ L-I network/timeout classified as "other" (terminal) not retryable; backwards vs rate-limit.
+- ✗ L-I — by design: transient retry is handled by the SDK maxRetries (vii); account-failover doesn't help a network outage, so terminal-after-retries is correct.
 ### Terminal / rendering
 - ☑ T-A title reset on exit — FIXED with viii. [v0.2.46]
 - ☑ T-B cursor restore on signal exit — FIXED with viii (SIGINT/SIGHUP → restore). [v0.2.46]
@@ -111,7 +111,7 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☐ T-G Banner has the same truncate-end-no-budget latent bug as the status bar.
 
 ### Newly noted (post-merge)
-- ☐ N-1 your transient-retry landed in `failover.ts`, which is DEAD CODE (not imported in App.tsx); the live path is the inline hop-loop. Decide: wire failover.ts live, or port transient retry into the inline loop. (I'll port the offline fast-fail into the live path now; leaving the "make failover.ts live" refactor for your call.)
+- ✗ N-1 — by design: live transient retry IS the SDK maxRetries (vii). failover.ts stays as the reference impl (tested + documented), not wired. The "make it live" refactor is your call.
 
 ---
 

@@ -365,6 +365,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [mascotState, setMascotState] = useState<MascotState>("thinking");
   const [linger, setLinger] = useState(false);
   const lingerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastTurnFailedRef = useRef(false); // pause the type-ahead drain after an error/interrupt so it doesn't auto-fire the queue into a broken state (L-C)
   // Type-ahead: prompts submitted while busy are queued and sent when the turn ends.
   const queueRef = useRef<string[]>([]);
   const [queued, setQueued] = useState<string[]>([]);
@@ -1462,15 +1463,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           : `${binary}${label ? ` · ${label}` : ""} subscription seat · own tools/permissions`;
         onEvent({ type: "phase", label: "using subscription", detail, state: "running" });
       }
-      // Effort is validated against THIS model's supported set and clamped/omitted
-      // · never sent unsupported (provider effort vocabularies differ).
-      const _cliEffortRaw = normalizeEffort(effortRef.current, efforts);
-      if (_cliEffortRaw === null && effortRef.current !== "medium") {
+      // Effort is validated against THIS model's supported set and CLAMPED/omitted,
+      // never thrown — a mismatch must not kill a subscription turn (S-E; mirrors the
+      // in-loop R-4 fix). (Note: the claude CLI doesn't take an effort flag yet, so
+      // for claude this clamps then gets dropped downstream in buildCliArgs.)
+      let cliEffort = normalizeEffort(effortRef.current, efforts) ?? undefined;
+      if (cliEffort === undefined && effortRef.current !== "medium" && efforts.length) {
         const { level: nearest } = clampEffort(effortRef.current, efforts);
-        const hint = efforts.length ? ` · try /effort ${nearest}` : "";
-        throw new Error(`effort "${effortRef.current}" is not supported by ${label ?? binary} (supports: ${efforts.join(", ") || "none"}${hint})`);
+        cliEffort = normalizeEffort(nearest, efforts) ?? undefined;
       }
-      const cliEffort = _cliEffortRaw ?? undefined;
       const activeAccount = getAccount(accountId);
       const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
       const reloginCommand = binary.includes("codex")
@@ -2052,7 +2053,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       try {
         const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal });
         msgRef.current = r.messages;
-        if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && changedFiles.size && checks.length === 0) {
+        if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && !interruptedRef.current && changedFiles.size && checks.length === 0) {
           const commands = detectVerificationCommands(process.cwd(), [...changedFiles]);
           if (commands.length) {
             const results = await runVerification(commands, { onEvent, signal: ac.signal });
@@ -2149,6 +2150,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           notice("interrupted");
           interruptedRef.current = false;
         }
+        // Pause the type-ahead drain after an error or interrupt so queued prompts
+        // don't auto-fire into a still-broken state; a successful turn re-enables it (L-C).
+        lastTurnFailedRef.current = hadError || interrupted;
         // A brief post-turn beat: confetti on a clean finish, crying on an error.
         // The working line lingers ~1.5s (it unmounts the instant busy goes false
         // otherwise, so these states would never render). Skip on a user interrupt.
@@ -3378,9 +3382,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [handleCommand, runTurn, setupRequired, onboardingState],
   );
 
-  // Drain the type-ahead queue when a turn finishes.
+  // Drain the type-ahead queue when a turn finishes — but NOT after an error/interrupt
+  // (L-C): auto-firing the next queued prompt into a broken state just error-loops the
+  // whole queue. The next manual (successful) turn clears the flag and resumes draining.
   useEffect(() => {
-    if (busy || queueRef.current.length === 0) return;
+    if (busy || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
     const next = queueRef.current.shift();
     setQueued([...queueRef.current]);
     if (next) void runTurn(next);

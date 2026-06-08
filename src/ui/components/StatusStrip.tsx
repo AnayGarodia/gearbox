@@ -51,7 +51,10 @@ export function StatusStrip({
       {ctxPct != null ? (
         <Row label="context">
           <Text color={color.text}>{100 - ctxPct}% left</Text>
-          <Text color={color.faint}>  ·  {fmtTok(tokens)}{contextWindow ? ` / ${fmtTok(contextWindow)}` : ""}</Text>
+          {/* Derive the absolute from the SAME % (≈ this turn's input) so the two
+              numbers agree — `tokens` is cumulative session tokens, a different
+              quantity, and showing it next to the window read as the context fill (C-D). */}
+          <Text color={color.faint}>  ·  {contextWindow ? `${fmtTok(Math.round((ctxPct / 100) * contextWindow))} / ${fmtTok(contextWindow)}` : `${fmtTok(tokens)} tok`}</Text>
         </Row>
       ) : null}
       {sub?.limits?.map((l) =>
