@@ -21,7 +21,7 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 
-const VERSION = "0.2.51";
+const VERSION = "0.2.52";
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -65,20 +65,34 @@ function onboardingBanner(termWidth: number): void {
   };
 
   const RST  = supportsAnsi ? "\x1b[0m" : "";
+  const BOLD = supportsAnsi ? "\x1b[1m" : "";
   const rgb  = (r: number, g: number, b: number) =>
-    supportsAnsi ? `\x1b[38;2;${r};${g};${b}m` : "";
+    supportsAnsi ? `\x1b[38;2;${Math.round(r)};${Math.round(g)};${Math.round(b)}m` : "";
 
-  // Two-tone 3-D: solid fills (█) are the bright lit face;
-  // box-drawing chars (╗╔╝╚║═) are the darker shadow/depth edge.
-  const FACE  = rgb(0, 215, 255);   // bright aqua
-  const DEPTH = rgb(0, 90, 145);    // dark teal
+  // A smooth horizontal gradient across the wordmark (aqua → cyan → soft indigo),
+  // so the letters flow instead of sitting flat. The solid fills (█) are the lit
+  // face at the column's hue; the box-drawing 3-D edge tracks the SAME hue, darker.
+  type RGB = [number, number, number];
+  const STOPS: RGB[] = [[40, 226, 255], [60, 176, 246], [124, 122, 250]];
+  const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+  const grad = (t: number): RGB => {
+    const x = Math.max(0, Math.min(1, t)) * (STOPS.length - 1);
+    const i = Math.min(STOPS.length - 2, Math.floor(x));
+    const f = x - i;
+    const a = STOPS[i]!, b = STOPS[i + 1]!;
+    return [lerp(a[0], b[0], f), lerp(a[1], b[1], f), lerp(a[2], b[2], f)];
+  };
+  const dim = (c: RGB, k: number): RGB => [c[0] * k, c[1] * k, c[2] * k];
 
-  const colorize = (s: string): string =>
-    s.split("").map(c =>
-      c === "█" ? FACE + c + RST :
-      c === " " ? " " :
-      DEPTH + c + RST
-    ).join("");
+  // Color each cell by its column position so the hue advances left-to-right.
+  const colorize = (s: string): string => {
+    const n = Math.max(1, s.length - 1);
+    return s.split("").map((c, i) => {
+      if (c === " ") return " ";
+      const col = grad(i / n);
+      return c === "█" ? rgb(col[0], col[1], col[2]) + c + RST : rgb(...(dim(col, 0.42) as RGB)) + c + RST;
+    }).join("");
+  };
 
   // ANSI-shadow figlet style — box-drawing corners create the 3-D depth.
   const F: Record<string, string[]> = {
@@ -141,14 +155,23 @@ function onboardingBanner(termWidth: number): void {
   };
 
   const letters = "GEARBOX".split("");
+  const wordWidth = letters.map((ch) => visibleLength(F[ch]?.[0] ?? "")).reduce((a, b) => a + b, 0) + (letters.length - 1) * 2;
   console.log("");
   for (let r = 0; r < 6; r++) {
-    const raw = letters.map(ch => F[ch]?.[r] ?? "").join("  ");
+    const raw = letters.map((ch) => F[ch]?.[r] ?? "").join("  ");
     console.log(center(colorize(raw)));
   }
+  // A thin gradient underline the width of the wordmark, ties it together.
+  const rule = Array.from({ length: wordWidth }, (_, i) => {
+    const c = dim(grad(i / Math.max(1, wordWidth - 1)), 0.85);
+    return rgb(c[0], c[1], c[2]) + "▁" + RST;
+  }).join("");
+  console.log(center(rule));
   console.log("");
-  console.log(center(`${rgb(0, 155, 200)}one terminal  ·  every model you pay for${RST}`));
-  console.log(center(`${rgb(0, 125, 165)}keys stay local · never sent anywhere${RST}`));
+  // Taglines: brand promise, then the privacy line — both in the gradient's hue.
+  const m1 = grad(0.32), m2 = grad(0.62);
+  console.log(center(`${rgb(m1[0], m1[1], m1[2])}${BOLD}every model you pay for${RST}${rgb(m1[0], m1[1], m1[2])}, one terminal${RST}`));
+  console.log(center(`${rgb(...(dim(m2, 0.8) as RGB))}your keys stay local · nothing is ever sent anywhere${RST}`));
   console.log("");
 }
 
