@@ -954,14 +954,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             mouseAnchorRef.current = null;
           } else if (off != null && isPrimary && !isDrag) {
             // Composer click: track timing for double/triple-click detection.
-            // SGR x is 1-based. composerOffset computes the 0-based col within
-            // the text (subtracts 4: 1 pad + "❯ " prompt + space). Re-derive the
-            // 0-based line index from y so applyMouse gets correct col/line.
+            // SGR x is 1-based. The 0-based text col subtracts 5 (1 border + 1 pad
+            // + "❯ " prompt + space) — must match composerOffset above, or a single
+            // click lands the cursor one column right of where you clicked and the
+            // drag anchor (set from `off`) disagrees with it. Re-derive the line
+            // index from y so applyMouse gets the correct col/line.
             const value = editRef.current.value;
             const lineCount = Math.max(1, value.split("\n").length);
             const firstInputRow = rows - lineCount;
             const lineIdx = y - firstInputRow;
-            const col = Math.max(0, x - 4);
+            const col = Math.max(0, x - 5);
             const shift = (b & 4) !== 0;
             const now = Date.now();
             const prev = lastComposerClickRef.current;
