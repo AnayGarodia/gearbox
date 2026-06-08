@@ -104,16 +104,42 @@ function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?:
   return { model: choice.model, account };
 }
 
-// Run one routed sub-agent. Records its spend; returns its report text.
+// A compact "what the sub-agent is doing right now" line, streamed onto its
+// delegate line so the sub-agent is never a silent black box. Dependency-free (no
+// UI imports — this is the agent layer): a tiny verb map over the in-loop tools +
+// a path relativized against the sub-agent's workspace root.
+const subVerb = (name: string): string => {
+  const n = name.toLowerCase();
+  if (n.includes("read")) return "reading";
+  if (n === "file_change" || n.includes("write")) return "writing";
+  if (n.includes("edit")) return "editing";
+  if (n === "run_shell" || n === "command_execution" || n === "bash") return "running";
+  if (n.includes("list")) return "listing";
+  if (n === "glob") return "globbing";
+  if (n === "search") return "searching";
+  if (n.includes("verif")) return "verifying";
+  return name;
+};
+const subActivityLine = (name: string, arg: string | undefined, root?: string): string => {
+  const a = (arg ?? "").replace(/\s+/g, " ").trim();
+  const base = root ?? process.cwd();
+  const rel = a.startsWith(base + "/") ? a.slice(base.length + 1) : a;
+  return ("→ " + subVerb(name) + (rel ? " " + rel : "")).slice(0, 72);
+};
+
+// Run one routed sub-agent. Records its spend; returns its report text. When
+// `onActivity` is given, each tool the sub-agent starts streams up as a live line.
 async function runOne(
   run: SubAgentRunner,
   routed: Routed,
   task: string,
-  opts: { signal?: AbortSignal; root?: string },
+  opts: { signal?: AbortSignal; root?: string; onActivity?: (line: string) => void },
 ): Promise<{ ok: boolean; text: string }> {
   const creds = routed.account ? await resolveCreds(routed.account) : undefined;
-  const noop: OnEvent = () => {};
-  const r = await run({ model: routed.model, creds, system: SUBAGENT_SYSTEM, prompt: task, onEvent: noop, signal: opts.signal, root: opts.root });
+  const subOnEvent: OnEvent = opts.onActivity
+    ? (e) => { if (e.type === "tool-start") opts.onActivity!(subActivityLine(e.name, e.arg, opts.root)); }
+    : () => {};
+  const r = await run({ model: routed.model, creds, system: SUBAGENT_SYSTEM, prompt: task, onEvent: subOnEvent, signal: opts.signal, root: opts.root });
   const costUSD = estimateCost([{ model: routed.model.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
   if (routed.account) recordUsage({ accountId: routed.account.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD, estimated: true });
   if (r.failure) return { ok: false, text: `failed: ${r.failure.message}` };
@@ -216,7 +242,8 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label} · ${clipTask(task, 72)}` });
       let res: { ok: boolean; text: string };
       try {
-        res = await runOne(run, routed, task, { signal }); // sequential → runs in the main workspace
+        // sequential → runs in the main workspace; stream its actions onto this line.
+        res = await runOne(run, routed, task, { signal, onActivity: (line) => onEvent({ type: "tool-stream", id, delta: line + "\n" }) });
       } catch (e: any) {
         onEvent({ type: "tool-end", id, ok: false, summary: `${routed.model.label} · crashed` });
         return `sub-agent (${routed.model.label}) crashed: ${e?.message ?? e}`;
@@ -262,7 +289,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
           const jid = `${groupId}:${j.idx}`;
           onEvent({ type: "tool-start", id: jid, name: "delegate", arg: `#${j.idx + 1} → ${j.routed.model.label} · ${clipTask(j.task, 56)}` });
           let res: { ok: boolean; text: string };
-          try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir }); }
+          try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, delta: line + "\n" }) }); }
           catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
           onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: reportLine(res.text) || j.routed.model.label });
           return { j, res, changed: res.ok ? changesIn(j.dir, true) : [] }; // sub-agent's changes vs the seeded baseline

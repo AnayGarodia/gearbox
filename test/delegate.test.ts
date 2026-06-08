@@ -30,6 +30,24 @@ test("routes a sub-task, runs the sub-agent, returns its report", async () => {
   expect(events.some((e) => e.type === "tool-end")).toBe(true);
 });
 
+test("streams the sub-agent's actions onto the delegate line (not a silent black box)", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test";
+  const events: any[] = [];
+  const t = makeTool(async (p: any) => {
+    // the sub-agent does some work, emitting its own tool-starts
+    p.onEvent({ type: "tool-start", id: "s1", name: "read_file", arg: `${process.cwd()}/src/foo.ts` });
+    p.onEvent({ type: "tool-start", id: "s2", name: "edit_file", arg: `${process.cwd()}/src/foo.ts` });
+    return { text: "done", usage: { inputTokens: 10, outputTokens: 5 } };
+  }, events);
+  await (t as any).execute({ task: "edit foo", kind: "code" }, {});
+  const streams = events.filter((e) => e.type === "tool-stream");
+  expect(streams.length).toBe(2);
+  expect(streams[0].delta).toContain("reading src/foo.ts"); // verb-mapped + path relativized
+  expect(streams[1].delta).toContain("editing src/foo.ts");
+  const start = events.find((e) => e.type === "tool-start" && e.name === "delegate");
+  expect(streams.every((s) => s.id === start.id)).toBe(true); // onto the SAME delegate line
+});
+
 test("surfaces a sub-agent failure instead of throwing", async () => {
   process.env.ANTHROPIC_API_KEY = "sk-test";
   const t = makeTool(async () => ({ text: "", usage: { inputTokens: 0, outputTokens: 0 }, failure: { message: "boom" } }));
