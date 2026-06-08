@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countTokens, baseTokens } from "../src/model/tokens.ts";
-import { buildContext, sanitizeToolPairs } from "../src/context/builder.ts";
+import { buildContext, sanitizeToolPairs, dedupeFileReads } from "../src/context/builder.ts";
 import { repoMap } from "../src/context/repomap.ts";
 import { rankFiles, retrieveFiles, resetRetrievalIndex } from "../src/context/retrieve.ts";
 import { appendFact, loadFacts } from "../src/context/memory.ts";
@@ -79,6 +79,27 @@ test("buildContext injects the project's verification commands into the system p
   expect(system).toContain("VERIFICATION COMMANDS");
   expect(system).toMatch(/typecheck|test/);
   expect(sections.some((s) => s.name === "verify")).toBe(true);
+});
+
+// ── free dedup: stale duplicate file reads collapse, most-recent kept ──
+test("dedupeFileReads stubs the stale earlier read and keeps the most recent", () => {
+  const read = (id: string, path: string, body: string): ModelMessage[] => [
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: id, toolName: "read_file", input: { path } }] as any },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: id, toolName: "read_file", output: { type: "text", value: body } }] as any },
+  ];
+  const msgs = [
+    ...read("a", "foo.ts", "OLD CONTENTS of foo"),
+    ...read("b", "foo.ts", "NEW CONTENTS of foo"),
+    ...read("c", "bar.ts", "bar body only once"),
+  ];
+  const out = dedupeFileReads(msgs);
+  const text = JSON.stringify(out);
+  expect(text).not.toContain("OLD CONTENTS"); // stale read stubbed
+  expect(text).toContain("NEW CONTENTS"); // most-recent read kept
+  expect(text).toContain("earlier read of foo.ts elided");
+  expect(text).toContain("bar body only once"); // single read untouched
+  const { calls, results } = toolIds(out); // pairing invariant preserved
+  expect([...calls].sort()).toEqual([...results].sort());
 });
 
 // ── THE INVARIANT: curation never splits a tool_use from its tool_result ──

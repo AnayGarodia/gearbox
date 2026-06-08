@@ -11,8 +11,10 @@
 // genuinely scarce (only where a provider exposes a balance) is preserved. The
 // math lives in the pure scorer (src/model/scoring.ts); account state comes from
 // a per-turn snapshot (src/model/routing-context.ts). Still call-free and
-// deterministic. (Deferred to a follow-up with shadow-eval: confidence-gating a
-// hard task away from a seeded-quality cheap model.)
+// deterministic. Confidence-gating is now REACTIVE: `task.escalate` (set when a
+// cheap pick's checks fail) raises the quality bar so the router climbs to a
+// stronger model instead of re-running the too-weak one. (A proactive, shadow-eval
+// version that escalates BEFORE the first miss is the eventual follow-up.)
 import { modelRegistry, providerAvailable, subscriptionSeats, type ModelSpec } from "../providers.ts";
 import { profileFor } from "./profiles.ts";
 import { pickDefaultModel } from "../config.ts";
@@ -52,6 +54,13 @@ const BAR: Record<Kind, number> = {
   plan: 0.7,
   code: 0.7,
 };
+
+// Each escalation step (one failed verification / auto-fix attempt) raises the
+// quality bar by this much, so the cheapest-that-clears winner climbs the model
+// ladder. Capped so something always clears; if the raised bar would clear nobody,
+// prepare() escalates to the single strongest tier instead of falling to cheapest.
+const ESCALATION_STEP = 0.08;
+const BAR_MAX = 0.95;
 
 // Any unambiguous mutation/repair verb means real work → never downgrade, even
 // if the prompt also says "find" or "summarize" (e.g. "find and fix the bug",
@@ -144,12 +153,14 @@ export class RoutingSelector implements ModelSelector {
   // Throws the same errors select() used to (no capable model). Returns
   // `fallback` when there are no enumerated candidates at all.
   private prepare(task: Task): {
-    kind: Kind; bar: number; required: string[]; ctx: RoutingContext;
+    kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
     pool: Candidate[]; clears: Candidate[]; estInputTokens: number;
     fallback?: ModelSpec;
   } {
     const kind = task.kind ?? classify(task.prompt);
-    const bar = BAR[kind];
+    const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
+    // Reactive confidence-gating: each prior miss lifts the bar a notch.
+    const bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
     const required = task.requires ?? [];
     const ctx = buildRoutingContext(ctx_now());
     const estInputTokens = task.estTokens || NOMINAL_INPUT_TOKENS;
@@ -157,7 +168,7 @@ export class RoutingSelector implements ModelSelector {
     const all = this.enumerate(ctx);
     if (all.length === 0) {
       const m = pickDefaultModel(this.fallbackId);
-      return { kind, bar, required, ctx, pool: [], clears: [], estInputTokens, fallback: m ?? undefined };
+      return { kind, bar, escalate, required, ctx, pool: [], clears: [], estInputTokens, fallback: m ?? undefined };
     }
     const capable = required.length ? all.filter((c) => supportsRequirements(c.spec, required)) : all;
     if (capable.length === 0) {
@@ -171,8 +182,16 @@ export class RoutingSelector implements ModelSelector {
     // Subscription seats clear the bar unconditionally: the user chose that flat-rate
     // plan, and a seat for a non-native sdkId (e.g. some codex ids) has no profile so
     // qualityOf falls to the neutral 0.5 — which would wrongly drop it for code (R-3).
-    const clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= bar);
-    return { kind, bar, required, ctx, pool, clears, estInputTokens };
+    let clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= bar);
+    // Under escalation the bar can rise above every available model's quality, which
+    // would empty `clears` and (via select's fallback) wrongly drop us back to the
+    // CHEAPEST model — the opposite of escalating. Instead, climb to the strongest
+    // tier available so escalation always moves UP the ladder, never down.
+    if (escalate > 0 && clears.length === 0) {
+      const top = Math.max(...pool.map(qualityOf));
+      clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= top - 1e-9);
+    }
+    return { kind, bar, escalate, required, ctx, pool, clears, estInputTokens };
   }
 
   // The per-kind remembered preference, when it's present in the candidate set.
@@ -202,7 +221,8 @@ export class RoutingSelector implements ModelSelector {
 
     const best = pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens });
     const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required), backend: winner.backend };
+    const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
   }
 
   // The full ranked "why": every candidate scored, with the per-term breakdown,

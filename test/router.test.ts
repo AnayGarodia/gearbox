@@ -58,6 +58,20 @@ test("with a DeepSeek key, coding routes to the cheapest model that clears the b
   expect(r.select({ prompt: "refactor the parser" }).model.id).toBe("deepseek-v4-pro");
 });
 
+// ── confidence-gated escalation: climb off the cheap pick after failed checks ──
+test("escalation raises the bar gradually, then climbs to a stronger model", () => {
+  only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+  const r = new RoutingSelector();
+  // baseline: cheapest model that clears the 0.7 code bar
+  expect(r.select({ prompt: "refactor the parser" }).model.id).toBe("deepseek-v4-pro");
+  // one miss → bar 0.78; deepseek (0.806) still clears → gradual, unchanged
+  expect(r.select({ prompt: "refactor the parser", escalate: 1 }).model.id).toBe("deepseek-v4-pro");
+  // several misses → bar climbs past deepseek's quality → router moves UP, not to cheapest
+  const hard = r.select({ prompt: "refactor the parser", escalate: 3 });
+  expect(hard.model.id).not.toBe("deepseek-v4-pro");
+  expect(hard.reason).toContain("escalated");
+});
+
 test("image turns require a vision-capable model even when a cheaper code model is available", () => {
   only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
   const r = new RoutingSelector();

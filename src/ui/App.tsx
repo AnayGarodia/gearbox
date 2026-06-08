@@ -84,6 +84,7 @@ export type Runner = (opts: {
   onEvent: OnEvent;
   selector: ModelSelector;
   signal: AbortSignal;
+  escalate?: number; // prior failed-check count → router climbs to a stronger model
 }) => Promise<{ messages: ModelMessage[]; usage: Usage }>;
 
 const KEYS_HELP = [
@@ -1593,7 +1594,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   );
 
   const defaultRunner: Runner = useCallback(
-    async ({ prompt, messages, onEvent, selector: sel, signal }) => {
+    async ({ prompt, messages, onEvent, selector: sel, signal, escalate = 0 }) => {
       // /ask (and auto-detected meta-questions): answer from the bundled Gearbox
       // docs via a cheap routed model, NO tools · runs before routing/pin so it
       // works even when /model is pinned to something broken. Read-and-clear.
@@ -1735,7 +1736,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       let choice: ModelChoice;
       try {
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate });
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
       }
@@ -2114,7 +2115,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       };
 
       try {
-        const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal });
+        // Confidence-gated escalation: a fix attempt (attempt ≥ 1) tells the router
+        // the cheap pick already missed, so it climbs to a stronger model instead of
+        // re-running the too-weak one — fixing the false economy of a cheap pick that
+        // fails and forces an expensive retry anyway.
+        const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal, escalate: attempt });
         msgRef.current = r.messages;
         if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && !interruptedRef.current && changedFiles.size && checks.length === 0) {
           const commands = detectVerificationCommands(process.cwd(), [...changedFiles]);

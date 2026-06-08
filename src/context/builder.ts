@@ -171,6 +171,58 @@ export function sanitizeToolPairs(messages: ModelMessage[]): ModelMessage[] {
   return out;
 }
 
+/**
+ * Collapse stale duplicate file reads. When the kept history holds more than one
+ * read_file result for the SAME path, keep the most recent (it reflects the
+ * current file) and replace the earlier ones with a one-line stub. Free token
+ * savings AND a correctness win: the model never acts on an outdated copy. Keeps
+ * tool_use/tool_result pairing intact — only the result CONTENT shrinks, the parts
+ * stay. Done deterministically here rather than via a billed compaction call.
+ */
+export function dedupeFileReads(messages: ModelMessage[]): ModelMessage[] {
+  // read_file call id → the path it read
+  const pathOf = new Map<string, string>();
+  for (const m of messages) {
+    const c = (m as any).content;
+    if (!Array.isArray(c)) continue;
+    for (const p of c) {
+      if (p?.type === "tool-call" && p.toolName === "read_file") {
+        const path = p.input?.path ?? p.args?.path;
+        if (typeof path === "string" && p.toolCallId) pathOf.set(p.toolCallId, path);
+      }
+    }
+  }
+  // Per path: how many results, and the index of the LAST (most recent) one.
+  const count = new Map<string, number>();
+  const lastIdx = new Map<string, number>();
+  messages.forEach((m, i) => {
+    const c = (m as any).content;
+    if (!Array.isArray(c)) return;
+    for (const p of c) {
+      if (p?.type === "tool-result") {
+        const path = pathOf.get(p.toolCallId);
+        if (path) {
+          count.set(path, (count.get(path) ?? 0) + 1);
+          lastIdx.set(path, i);
+        }
+      }
+    }
+  });
+  return messages.map((m, i) => {
+    const c = (m as any).content;
+    if (!Array.isArray(c)) return m;
+    let changed = false;
+    const kept = c.map((p: any) => {
+      if (p?.type !== "tool-result") return p;
+      const path = pathOf.get(p.toolCallId);
+      if (!path || (count.get(path) ?? 0) < 2 || lastIdx.get(path) === i) return p; // unique or most-recent → keep
+      changed = true;
+      return { ...p, output: { type: "text", value: `[earlier read of ${path} elided — a more recent read of this file appears later in the conversation]` } };
+    });
+    return changed ? ({ ...(m as any), content: kept } as ModelMessage) : m;
+  });
+}
+
 export function buildContext(opts: {
   history: ModelMessage[];
   userText: string;
@@ -247,7 +299,10 @@ export function buildContext(opts: {
     total -= turnCost(projected.shift()!);
   }
 
-  const flat = projected.flat();
+  // Collapse stale duplicate file reads in the kept (verbatim recent) window
+  // before accounting — free token savings, and the model never sees an outdated
+  // copy of a file it re-read.
+  const flat = dedupeFileReads(projected.flat());
   const historyTokens = flat.reduce((s, m) => s + msgTokens(m, modelId), 0);
   sections.push({ name: "history", tokens: historyTokens });
   sections.push({ name: "user", tokens: userTokens });
