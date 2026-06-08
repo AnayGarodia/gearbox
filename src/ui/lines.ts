@@ -564,7 +564,17 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "model": {
-        out.push(clipSpans([{ text: "  ◇ ", color: color.accentDim }, { text: "using " + it.model, color: color.text }, { text: " · " + it.provider + " · " + it.reason, color: color.faint }], width));
+        // Post-turn provenance: routed → provider · model · cost. Dim when routine;
+        // the whole line brightens to warn (amber) + a reason for a surprising pick.
+        const head = it.surprising ? color.warn : color.faint;
+        const body = it.surprising ? color.warn : color.dim;
+        const spans = [
+          { text: "  ↳ routed → ", color: head },
+          { text: it.provider + " · " + it.model, color: body },
+        ];
+        if (it.costText) spans.push({ text: " · " + it.costText, color: head });
+        if (it.surprising && it.reason) spans.push({ text: " · " + it.reason, color: color.warn });
+        out.push(clipSpans(spans, width));
         break;
       }
       case "verification": {

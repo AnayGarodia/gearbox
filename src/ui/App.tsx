@@ -14,6 +14,7 @@ import { Working } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
 import { itemsToLines, type Line } from "./lines.ts";
 import { collapseTurn } from "./collapse.ts";
+import { buildRoutingLine } from "./routing-line.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb } from "./character.ts";
@@ -554,6 +555,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const liveLineRef = useRef(""); // the in-progress draft, stashed when you step up into history so ↓ restores it
   const lastPromptRef = useRef<string | null>(null);
   const routedRef = useRef<{ model: ModelSpec; reason: string } | null>(null); // the real per-turn pick
+  // The model label this turn FELL BACK FROM, when same-turn failover moved off the
+  // intended account. Set in the failover loop, read once at the turn-completion seam
+  // (drives the surprising-amber per-turn line), cleared in the turn's finally.
+  const fellOverFromRef = useRef<string | null>(null);
   // Active CLI-backed subscription account (claude/codex). When set, turns run
   // through the vendor binary (its own loop/tools/permissions), not the in-loop
   // path. cliSessionRef keeps the binary's session id for resume.
@@ -1738,6 +1743,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const nextKey = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         if (!next || nextKey === a.cooldownKey) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
         onEvent({ type: "phase", label: "failover", detail: `${choice.model.label} ${shortFailure(a.failure.message)} → ${next.model.label}, continuing`, state: "running" });
+        // Remember what we fell back FROM so the post-turn routing line can flag the
+        // provider fallback (a real "surprising" signal) in amber.
+        fellOverFromRef.current = choice.model.label;
         choice = next;
       }
     },
@@ -2021,7 +2029,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
       const onEvent: OnEvent = (e) => {
         if (e.type === "model-pick") {
-          push({ kind: "model", id: idRef.current++, model: e.model, provider: e.provider, reason: e.reason });
+          // No transcript item here: the live model shows in the footer during the
+          // turn, and the single canonical `routed → …` provenance line is printed
+          // POST-turn (with the real cost) at the turn-completion seam below.
         } else if (e.type === "phase") {
           push({ kind: "phase", id: idRef.current++, label: e.label, detail: e.detail, state: e.state ?? "running" });
         } else if (e.type === "text") {
@@ -2129,6 +2139,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const isSub = getAccount(acctId)?.exec === "cli";
         const cost = isSub ? 0 : (cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens }]));
         recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: !isSub && cm?.costUSD == null });
+        // The single canonical per-turn routing line: `routed → provider · model · cost`.
+        // Every field is real — the model/provider that actually ran (routedRef tracks
+        // failover), the same `cost` figure recorded just above ($0 ⇒ subscription seat),
+        // and the failover signal. Amber only on a real surprising signal (provider
+        // fallback today; escalation/cap-hit are gated until captured — see the report).
+        if (modelId && modelId !== "unknown") {
+          const ranSpec = routedRef.current?.model ?? findModel(modelId);
+          const line = buildRoutingLine({
+            model: ranSpec?.label ?? modelId,
+            provider: isSub ? (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude") : (ranSpec?.provider ?? "—"),
+            costUSD: cost,
+            kind: isSub ? "subscription" : "metered",
+            fellOverFrom: fellOverFromRef.current,
+          });
+          push({ kind: "model", id: idRef.current++, model: line.model, provider: line.provider, costText: line.costText, surprising: line.surprising, reason: line.reason ?? undefined });
+        }
         if (!hadError && getAccount(acctId)?.exec === "cli") {
           // Real rate events carry actual utilization when near a limit (e.g.
           // seven_day at 81%) — record them as-is.
@@ -2181,6 +2207,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
       } finally {
         activeImagesRef.current = [];
+        fellOverFromRef.current = null; // per-turn failover signal consumed; reset for the next turn
         flushText(); // commit any buffered text on interrupt (no done/error fired)
         flushToolStreams();
         abortRef.current = null;

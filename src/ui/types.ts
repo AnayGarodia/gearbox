@@ -62,7 +62,11 @@ export type Item =
       exitCode?: number | null;
     }
   | { kind: "phase"; id: number; label: string; detail?: string; state: "running" | "ok" | "err" }
-  | { kind: "model"; id: number; model: string; provider: string; reason: string }
+  // Post-turn routing provenance line: `routed → provider · model · cost`.
+  // `costText` is the formatted per-turn cost; `surprising`/`reason` are set only
+  // for the three brief-defined surprising cases (escalation / fallback / cap hit),
+  // which brighten the line to amber. Built by src/ui/routing-line.ts.
+  | { kind: "model"; id: number; model: string; provider: string; costText?: string; surprising?: boolean; reason?: string }
   | {
       kind: "verification";
       id: number;
