@@ -235,9 +235,26 @@ value is not available, the UI shows an explicit `n/a`, omits the field, or labe
 - **Effort click-picker removed** from the status bar (effort is no longer shown in the footer per the
   redesign's "keys left, model+cost right"); effort is still set via `/effort` and shift+tab.
 
+## Adversarial audit (post-implementation)
+
+Ran a multi-agent audit over the whole diff — the cardinal no-fake-data rule first, then
+correctness, the layout/chrome math, and conventions — with every finding independently verified
+before it counted. 14 confirmed (deduped to 10 distinct), all fixed (commit 7800fc3). None were
+blockers. The three that mattered:
+- **Subscription-PIN routing line showed the account slug** (`claude-work`) in the model slot, because
+  `routedRef` is null on the explicit-pin path. This was the closest thing to a no-fake-data miss (a
+  real value, but in the wrong slot) — now resolves the real CLI model label. The data-provenance
+  table's "model" row is therefore now accurate on every path.
+- **Context chip showed %-used while reading as %-remaining** ("85% ctx" at 85% used) — a misleading
+  number. Now "15% ctx left", consistent with the working-strip notice.
+- **Type-ahead queue drain ran the next turn behind a non-session tab**, hiding the response — now
+  returns to Session first.
+The rest were layout off-by-ones (statusBarHit policy/hint rows, HEADER during onboarding, tab-strip
+click during onboarding) and dead-code/help-text cleanup.
+
 ## Verification
 
-- `bun run typecheck` clean; `bun test` **745 pass / 0 fail** across 93 files; app launches clean.
+- `bun run typecheck` clean; `bun test` **750 pass / 0 fail** across 94 files; app launches clean.
 - New pure logic is unit-tested: `routing-line`, `policy`, `providers-view`, `working-verb`
   (verb + low-context), `cost-tab` (savings + policy classifier + savings-line), `tabstrip`
   (`tabStripHit` + layout), plus render tests for the new components and the rewritten
