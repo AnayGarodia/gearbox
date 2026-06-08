@@ -1,17 +1,35 @@
-// Task delegation — the orchestrator hands a self-contained sub-task to a fresh
-// sub-agent that runs on the model the router picks as best+cheapest for THAT
-// task (any provider — "DeepSeek for code, Haiku for digest" falls out of the
-// scorer, no special-casing).
-//
-//   delegate          — ONE sub-task, runs in the main workspace, sequential.
-//   delegate_parallel — MANY independent sub-tasks at once, each in its OWN git
-//                       worktree (isolated copy) so their concurrent writes can't
-//                       collide; disjoint changes are merged back, overlaps are
-//                       reported as conflicts for the orchestrator to resolve.
-//
-// Depth-1 only: sub-agents don't get these tools, so delegation can't recurse.
-// Wiring note: the sub-agent loop (runTask) is INJECTED via `run` so this module
-// never imports run.ts — that would be a cycle (run.ts imports this).
+/**
+ * Task delegation: the orchestrator hands self-contained sub-tasks to fresh
+ * sub-agents, each running on the model the router selects as best and
+ * cheapest for that specific task (any configured provider, so "DeepSeek for
+ * code, Haiku for digest" falls out of the scorer with no special-casing).
+ *
+ * Two tools are exported via makeDelegateTools:
+ *
+ *   delegate
+ *     Runs one sub-task sequentially in the main workspace. The sub-agent
+ *     gets full file and shell tools, produces a written report, and returns
+ *     it as the tool result. Live progress streams up as a single replacing
+ *     status line so the orchestrator is never blocked by a silent sub-agent.
+ *
+ *   delegate_parallel
+ *     Fans out 2-6 independent sub-tasks concurrently. Each sub-agent runs in
+ *     its own isolated git worktree (seeded with the parent's current
+ *     uncommitted edits) so concurrent writes cannot collide. When all
+ *     sub-agents finish, their changes are merged back into the main workspace:
+ *       - Files touched by exactly one sub-agent are applied directly.
+ *       - Files touched by more than one sub-agent are 3-way auto-merged.
+ *         Non-overlapping edits combine cleanly; truly overlapping edits leave
+ *         conflict markers for the orchestrator to resolve.
+ *     Worktrees are always cleaned up in a finally block, even on error.
+ *
+ * Depth limit: these tools are only given to depth-0 turns. Sub-agents (depth
+ * > 0) never receive them, so delegation cannot recurse.
+ *
+ * Cycle prevention: this module never imports run.ts. Instead, the runTask
+ * function injects itself via the SubAgentRunner type, breaking the cycle
+ * (run.ts imports delegate.ts, not the other way around).
+ */
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { copyFileSync, mkdirSync, rmSync, existsSync, writeFileSync, readFileSync } from "node:fs";
@@ -26,7 +44,13 @@ import { spawnSyncProc } from "../proc.ts";
 import type { Account } from "../accounts/types.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import type { OnEvent, Usage } from "./events.ts";
+import { differentiatingSlice } from "../truncate.ts";
 
+/**
+ * The function signature that run.ts injects into makeDelegateTools as the
+ * sub-agent executor. Keeping this as an injected callback rather than a
+ * direct import breaks the run.ts <-> delegate.ts import cycle.
+ */
 export type SubAgentRunner = (p: {
   model: ModelSpec;
   creds?: ResolvedCreds;
@@ -34,29 +58,37 @@ export type SubAgentRunner = (p: {
   prompt: string;
   onEvent: OnEvent;
   signal?: AbortSignal;
-  root?: string; // workspace root (a parallel sub-agent's git worktree)
+  root?: string; // workspace root for the sub-agent (a parallel sub-agent's git worktree)
 }) => Promise<{ text: string; usage: Usage; failure?: { message: string } }>;
 
 const KIND = z.enum(["code", "search", "summarize", "classify", "plan", "chat"]);
 
+// System prompt given to every sub-agent. It is intentionally minimal: the
+// sub-agent does not see the parent conversation, only its task description.
 const SUBAGENT_SYSTEM =
   "You are a sub-agent inside Gearbox, handling ONE delegated task. You do NOT see the parent conversation — everything you need is in the task description. Use your tools to read the repo, make the requested changes, and verify them. Stay tightly focused on the task; don't do unrelated work. When finished, reply with a short report: which files you changed and anything the orchestrator needs to know.";
 
+// Monotonic counter used to generate unique tool-call IDs and temp-dir names
+// within this process lifetime. Not cryptographically unique, just stable.
 let counter = 0;
 
-// The sub-agent's report's first meaningful line — a far more useful tool-end
-// summary than repeating the model label (already shown in the head).
+// The sub-agent's first meaningful output line, used as the tool-end summary.
+// This is far more useful than repeating the model label (already shown in the
+// tool head), and it fits in the one-line summary slot the UI reserves.
 const reportLine = (text: string): string => {
   const l = (text.split("\n").find((x) => x.trim()) ?? "").trim();
   return l.length > 64 ? l.slice(0, 63).trimEnd() + "…" : l;
 };
 
-// A structured digest of a sub-agent's result for the ORCHESTRATOR (not the UI):
-// a bounded outcome plus the concrete files it changed. The first-line-only report
-// used to drop files-changed / test-status, so the orchestrator would re-read or
-// re-delegate to rediscover what happened — a whole wasted turn. The files list is
-// already computed (git status of the worktree), so this costs ~nothing and pays
-// for itself by preventing redundant exploration.
+/**
+ * Build a structured digest of a sub-agent's result for the ORCHESTRATOR (not
+ * the UI). Includes the first two lines of the report plus the list of files
+ * the sub-agent changed.
+ *
+ * The files list is already computed from git status of the worktree, so it
+ * costs nothing extra. Without it, the orchestrator would need to re-read or
+ * re-delegate just to discover what changed, wasting a full turn.
+ */
 const subAgentDigest = (text: string, changed: { path: string }[]): string => {
   const outcome = text
     .split("\n")
@@ -72,9 +104,10 @@ const subAgentDigest = (text: string, changed: { path: string }[]): string => {
   return (outcome || "(no report)") + filesStr;
 };
 
-// One-line task preview for the tool head: collapse whitespace and truncate at a
-// word boundary, stripping a dangling quote/backtick/punctuation so it never ends
-// mid-token (the "… test/tokens.test.ts for `" cut-off).
+// One-line task preview for the tool head: collapse whitespace and truncate at
+// a word boundary, stripping a dangling quote/backtick/punctuation so the
+// display never ends on a half-token (e.g. the '... test/tokens.test.ts for `'
+// cut-off that looks like broken syntax).
 const clipTask = (s: string, max: number): string => {
   const one = s.replace(/\s+/g, " ").trim();
   if (one.length <= max) return one;
@@ -84,19 +117,29 @@ const clipTask = (s: string, max: number): string => {
 };
 
 // ── routing a sub-task ────────────────────────────────────────────────────────
+
 type Routed = { model: ModelSpec; account?: Account };
+
+/**
+ * Select a model and account for a sub-task. When the user pinned a model
+ * (via /model or "use <name>"), that pin is honored so sub-tasks run on the
+ * same model the user requested. Otherwise the RoutingSelector auto-picks the
+ * best available model for the task kind, which may be a different provider
+ * than the parent turn.
+ *
+ * CLI-backed accounts (vendor subscription seats) cannot host sub-agents
+ * because sub-agents need the in-loop API; those are rejected with an error.
+ */
 function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?: string): Routed | { error: string } {
   const k = kind ?? classify(task);
   let choice;
   try {
-    // An explicit pin (a /model pin or "use opus" on the parent turn) wins, so the
-    // sub-task runs the model the user asked for; otherwise auto-route per task.
     choice = (pinnedModelId ? new FixedSelector(pinnedModelId) : new RoutingSelector()).select({ prompt: task, kind: k, requires: ["tools"] });
   } catch (e: any) {
     return { error: `no model available for this sub-task (${e?.message ?? e})` };
   }
-  // The sub-agent runs in Gearbox's own loop with our tools, so it needs an
-  // in-loop model; a flat-rate subscription seat (vendor CLI) can't host it.
+  // CLI (vendor subscription) accounts run external binaries, not the in-loop
+  // API, so they cannot serve as sub-agent hosts. Require an API key account.
   if (choice.backend?.kind === "cli") {
     return { error: `routed to the ${choice.model.label} subscription, which can't host a sub-agent — add an API key` };
   }
@@ -104,10 +147,13 @@ function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?:
   return { model: choice.model, account };
 }
 
-// A compact "what the sub-agent is doing right now" line, streamed onto its
-// delegate line so the sub-agent is never a silent black box. Dependency-free (no
-// UI imports — this is the agent layer): a tiny verb map over the in-loop tools +
-// a path relativized against the sub-agent's workspace root.
+// ── activity reporting ────────────────────────────────────────────────────────
+
+/**
+ * Map a tool name to a short present-tense verb for the live activity line.
+ * This keeps the sub-agent from being a silent black box while it works.
+ * The function is intentionally free of UI imports; only AgentEvents flow out.
+ */
 const subVerb = (name: string): string => {
   const n = name.toLowerCase();
   if (n.includes("read")) return "reading";
@@ -120,6 +166,9 @@ const subVerb = (name: string): string => {
   if (n.includes("verif")) return "verifying";
   return name;
 };
+
+// Relativize a file path against the sub-agent's workspace root so the
+// activity line shows "reading src/x.ts" not an absolute tmp path.
 const relSub = (arg: string | undefined, root?: string): string => {
   const a = (arg ?? "").replace(/\s+/g, " ").trim();
   const base = root ?? process.cwd();
@@ -127,10 +176,20 @@ const relSub = (arg: string | undefined, root?: string): string => {
   return rel.slice(0, 48);
 };
 
-// Run one routed sub-agent. Records its spend; returns its report text. When
-// `onActivity` is given, the sub-agent's progress streams up as ONE compact,
-// replacing line — "reading src/x.ts · 12 tools" — never a growing log. The target
-// streams in AFTER tool-start, so we also pick it up from the tool-stream arg.
+// ── single sub-agent executor ─────────────────────────────────────────────────
+
+/**
+ * Run one routed sub-agent to completion.
+ *
+ * When `onActivity` is provided, the sub-agent's tool events are translated
+ * into a compact single-line status string ("reading src/x.ts, 12 tools") that
+ * REPLACES the previous line on each update, keeping the orchestrator's UI
+ * tidy. The target path arrives slightly after tool-start (via the tool-stream
+ * arg), so both events are observed and the line is updated on each.
+ *
+ * Spend is recorded against the routed account so usage limits and billing
+ * summaries stay accurate for delegated work.
+ */
 async function runOne(
   run: SubAgentRunner,
   routed: Routed,
@@ -141,7 +200,7 @@ async function runOne(
   let tools = 0;
   let verb = "working";
   let target = "";
-  const seen = new Set<string>();
+  const seen = new Set<string>(); // deduplicate tool IDs so the count is per-call, not per-event
   const emit = () => opts.onActivity?.(`${verb}${target ? " " + target : ""}  ·  ${tools} tool${tools === 1 ? "" : "s"}`);
   const subOnEvent: OnEvent = opts.onActivity
     ? (e) => {
@@ -151,33 +210,43 @@ async function runOne(
           target = e.arg ? relSub(e.arg, opts.root) : "";
           emit();
         } else if (e.type === "tool-stream" && e.arg) {
-          target = relSub(e.arg, opts.root); // the real target streams in after tool-start
+          // The real file path streams in after the initial tool-start arg,
+          // so update the target once we have it.
+          target = relSub(e.arg, opts.root);
           emit();
         }
       }
     : () => {};
   const r = await run({ model: routed.model, creds, system: SUBAGENT_SYSTEM, prompt: task, onEvent: subOnEvent, signal: opts.signal, root: opts.root });
+  // Record spend even on failure so budget tracking stays accurate.
   const costUSD = estimateCost([{ model: routed.model.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
   if (routed.account) recordUsage({ accountId: routed.account.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD, estimated: true });
   if (r.failure) return { ok: false, text: `failed: ${r.failure.message}` };
   return { ok: true, text: r.text || "(no report)" };
 }
 
-// ── git worktree isolation (for parallel writes) ──────────────────────────────
+// ── git worktree isolation (parallel writes) ──────────────────────────────────
+
 function git(args: string[]): { ok: boolean; out: string } {
   const r = spawnSyncProc(["git", ...args], { stdout: "pipe", stderr: "pipe" });
   return { ok: (r.exitCode ?? 1) === 0, out: r.stdout.toString().trim() };
 }
+
 function gitToplevel(): string | null {
   const r = git(["rev-parse", "--show-toplevel"]);
   return r.ok && r.out ? r.out : null;
 }
+
 function removeWorktree(repoRoot: string, dir: string): void {
   git(["-C", repoRoot, "worktree", "remove", "--force", dir]);
-  try { if (existsSync(dir)) rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  try { if (existsSync(dir)) rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
 }
-// Parse `git status --porcelain` into {path, deleted}; optionally stage first so
-// untracked files are included. Handles renames (takes the new path).
+
+/**
+ * Parse `git status --porcelain` lines into path/deleted pairs. If `stage` is
+ * true, `git add -A` runs first so untracked new files appear in the output.
+ * Rename entries (A -> B) produce the destination path only.
+ */
 function changesIn(root: string, stage: boolean): { path: string; deleted: boolean }[] {
   if (stage) git(["-C", root, "add", "-A"]);
   const r = git(["-C", root, "status", "--porcelain"]);
@@ -187,49 +256,62 @@ function changesIn(root: string, stage: boolean): { path: string; deleted: boole
     if (!line) continue;
     const status = line.slice(0, 2);
     let path = line.slice(3).trim();
-    if (path.includes(" -> ")) path = path.split(" -> ")[1]!.trim(); // rename → new path
-    // strip surrounding quotes git adds for paths with spaces
+    if (path.includes(" -> ")) path = path.split(" -> ")[1]!.trim(); // rename, take the new path
+    // git quotes paths that contain spaces
     if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
     if (path) out.push({ path, deleted: status.includes("D") });
   }
   return out;
 }
-// Create an isolated worktree at HEAD, then SEED it with the parent's current
-// uncommitted state (so sub-agents see the orchestrator's in-flight edits) and
-// baseline-commit it — so the sub-agent's own changes later measure against the
-// parent state, not HEAD (otherwise every worktree would re-report the parent's
-// edits and they'd all "conflict").
+
+/**
+ * Create a git worktree at HEAD and seed it with the parent's current
+ * uncommitted changes so every sub-agent starts from the same up-to-date state
+ * (not stale HEAD). A baseline commit is made on the seeded state so that each
+ * sub-agent's own changes can later be measured against it. Without this,
+ * `git status` in the worktree would include the parent's in-flight edits and
+ * every worktree would appear to have the same "changes" to merge back.
+ */
 function addSeededWorktree(repoRoot: string, dir: string): boolean {
   if (!git(["-C", repoRoot, "worktree", "add", "--detach", dir, "HEAD"]).ok) return false;
+  // Copy each parent-dirty file into the worktree before committing.
   for (const c of changesIn(repoRoot, false)) {
     const src = join(repoRoot, c.path), dst = join(dir, c.path);
     try {
       if (c.deleted) { if (existsSync(dst)) rmSync(dst, { force: true }); }
       else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(src, dst); }
-    } catch { /* skip a file we can't seed */ }
+    } catch { /* skip a file we can't seed; the sub-agent will see HEAD for it */ }
   }
   git(["-C", dir, "add", "-A"]);
   git(["-C", dir, "commit", "-q", "-m", "gearbox-fanout-baseline", "--no-verify"]);
   return true;
 }
-// 3-way auto-merge a file that multiple worktrees edited, into repoRoot. base =
-// the parent's current file (the shared seed). Non-overlapping hunks combine
-// cleanly; truly-overlapping edits leave <<<<<< conflict markers. Returns true if
-// markers were left (so the orchestrator knows to resolve them).
+
+/**
+ * 3-way auto-merge a file that was edited by multiple sub-agents back into the
+ * main workspace. `base` is the shared seed state (the parent's file before
+ * any sub-agent ran). Each worktree's version is merged in turn using
+ * `git merge-file`. Non-overlapping hunks combine cleanly; genuinely
+ * overlapping edits leave standard conflict markers. Returns true when markers
+ * were written so the orchestrator knows which files need manual resolution.
+ */
 function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean {
   const baseAbs = join(repoRoot, path);
   const tmps: string[] = [];
   const tmp = (tag: string) => { const p = join(tmpdir(), `gearbox-merge-${++counter}-${tag}`); tmps.push(p); return p; };
+  // Use an empty file as the base for files that are new (didn't exist before).
   const base = tmp("base");
-  try { copyFileSync(baseAbs, base); } catch { writeFileSync(base, ""); } // new file → empty base
+  try { copyFileSync(baseAbs, base); } catch { writeFileSync(base, ""); }
   let current = base;
   let conflicted = false;
   try {
     for (const dir of dirs) {
       const other = join(dir, path);
       if (!existsSync(other)) continue;
+      // git merge-file exits >0 when it leaves conflict markers; <0 means a
+      // hard error. Either way we flag the file as conflicted.
       const r = spawnSyncProc(["git", "merge-file", "-p", current, base, other], { stdout: "pipe", stderr: "pipe" });
-      if ((r.exitCode ?? 0) !== 0) conflicted = true; // >0 = conflicts, <0 = error
+      if ((r.exitCode ?? 0) !== 0) conflicted = true;
       const next = tmp("step");
       writeFileSync(next, r.stdout);
       current = next;
@@ -241,10 +323,12 @@ function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean 
   return conflicted;
 }
 
-// ── the tools ─────────────────────────────────────────────────────────────────
+// ── exported tool factory ─────────────────────────────────────────────────────
+
 export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string }): Record<string, Tool<any, any>> {
   const { onEvent, signal, run } = opts;
 
+  // ── delegate (sequential, single task) ──────────────────────────────────────
   const delegate = tool({
     description:
       "Hand a self-contained sub-task to a fresh sub-agent that runs on the model best suited and cheapest for it (auto-routed across your providers), with full file tools in this same repo. Use it to offload a bounded chunk — a focused refactor, bulk edits, reading/research, code generation — so you stay the orchestrator while a cheaper/faster/specialist model does the legwork. The sub-agent does NOT see this conversation, so make `task` completely self-contained. It runs to completion and returns a report. Do small things yourself; delegate sizable or specialist chunks.",
@@ -259,7 +343,8 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label} · ${clipTask(task, 72)}` });
       let res: { ok: boolean; text: string };
       try {
-        // sequential → runs in the main workspace; its live status replaces this line.
+        // Sequential: runs in the main workspace. Live progress is streamed as
+        // a single replacing "activity" line via onActivity.
         res = await runOne(run, routed, task, { signal, onActivity: (line) => onEvent({ type: "tool-stream", id, activity: line }) });
       } catch (e: any) {
         onEvent({ type: "tool-end", id, ok: false, summary: `${routed.model.label} · crashed` });
@@ -270,6 +355,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
     },
   });
 
+  // ── delegate_parallel (concurrent fan-out, git worktree isolation) ───────────
   const delegate_parallel = tool({
     description:
       "Run SEVERAL independent sub-tasks at once, each on its own best-routed model AND its own isolated git worktree (seeded with your current uncommitted edits), so their concurrent file writes can't collide. Use when you have 2+ chunks that are mostly independent (e.g. 'add tests to module A', 'document module B', 'refactor module C'). Each sub-task is self-contained (the sub-agents don't see this conversation or each other). When all finish, changes are merged back: files touched by one sub-task apply directly; a file touched by several is 3-way auto-merged (non-overlapping edits combine cleanly; only truly-overlapping edits leave conflict markers for you to resolve). Requires a git repo. For tightly-coupled work, use `delegate` one at a time instead.",
@@ -286,11 +372,13 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       const groupId = `delegate_parallel-${batch}`;
       onEvent({ type: "tool-start", id: groupId, name: "delegate_parallel", arg: `${tasks.length} sub-tasks in parallel` });
 
-      // 1) Route + create an isolated worktree per task (sequential setup).
+      // Phase 1: route each task and create an isolated worktree for it.
+      // Done sequentially so worktree creation errors are caught per-task
+      // and can be reported as skips rather than aborting the whole batch.
       type Job = { idx: number; task: string; routed: Routed; dir: string };
       const jobs: Job[] = [];
       const skipped: string[] = [];
-      const created: string[] = [];
+      const created: string[] = []; // track all created dirs for cleanup in finally
       for (const [idx, t] of tasks.entries()) {
         const routed = routeSubTask(t.task, t.kind, opts.pinnedModelId);
         if ("error" in routed) { skipped.push(`#${idx + 1}: ${routed.error}`); continue; }
@@ -301,19 +389,25 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       }
 
       try {
-        // 2) Run all sub-agents CONCURRENTLY, each in its own worktree.
-        const outcomes = await Promise.all(jobs.map(async (j) => {
+        // Phase 2: run all sub-agents concurrently via Promise.all. Each sub-
+        // agent writes only to its own worktree, so no locking is needed here.
+        // Differentiate the per-task labels: 5 near-identical tasks must not all
+        // truncate to the same string — show the part that VARIES (the target).
+        const allTasks = jobs.map((x) => x.task);
+        const outcomes = await Promise.all(jobs.map(async (j, ji) => {
           const jid = `${groupId}:${j.idx}`;
-          onEvent({ type: "tool-start", id: jid, name: "delegate", arg: `#${j.idx + 1} → ${j.routed.model.label} · ${clipTask(j.task, 56)}` });
+          onEvent({ type: "tool-start", id: jid, name: "delegate", arg: `#${j.idx + 1} → ${j.routed.model.label} · ${differentiatingSlice(allTasks, ji, 56)}` });
           let res: { ok: boolean; text: string };
           try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, activity: line }) }); }
           catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
           onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: reportLine(res.text) || j.routed.model.label });
-          return { j, res, changed: res.ok ? changesIn(j.dir, true) : [] }; // sub-agent's changes vs the seeded baseline
+          // Stage and diff the worktree now while it still exists; we need the
+          // change list before cleanup in the finally block.
+          return { j, res, changed: res.ok ? changesIn(j.dir, true) : [] };
         }));
 
-        // 3) Merge back. One writer → apply directly. Multiple writers → 3-way
-        //    auto-merge (non-overlapping edits combine; overlaps leave markers).
+        // Phase 3: merge changes back. Build a map from file path to the list
+        // of worktrees that modified it, then apply or 3-way-merge per file.
         const writers = new Map<string, { dir: string; deleted: boolean }[]>();
         for (const o of outcomes) for (const c of o.changed) {
           writers.set(c.path, [...(writers.get(c.path) ?? []), { dir: o.j.dir, deleted: c.deleted }]);
@@ -322,28 +416,33 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
         const conflicted: string[] = [];
         for (const [path, who] of writers) {
           const dst = join(repoRoot, path);
-          // Capture the pre-merge state so these land in the turn's change set:
-          // drives the end-of-turn summary, post-turn verification, and /undo + /diff
-          // — delegated edits were previously invisible to all three.
+          // Snapshot the pre-merge state so the change is visible to the
+          // end-of-turn summary, post-turn verification, and /undo + /diff.
+          // Without this, delegated edits were invisible to all three.
           const existed = existsSync(dst);
           const before = existed ? (() => { try { return readFileSync(dst, "utf8"); } catch { return ""; } })() : "";
           if (who.length === 1) {
+            // Single writer: copy directly. Skip on error rather than emitting
+            // a phantom file-change event for a file that wasn't applied.
             const w = who[0]!;
             try {
               if (w.deleted) { if (existed) rmSync(dst, { force: true }); }
               else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(join(w.dir, path), dst); }
               applied++;
-            } catch { continue; /* skip a file we couldn't apply — don't emit a phantom change */ }
+            } catch { continue; }
           } else {
+            // Multiple writers: 3-way auto-merge. mergeFileBack returns true
+            // when conflict markers were written.
             const hadMarkers = mergeFileBack(repoRoot, path, who.filter((w) => !w.deleted).map((w) => w.dir));
             autoMerged++;
             if (hadMarkers) conflicted.push(path);
           }
-          // Path relative to cwd to match the edit/write tools' file-change convention.
+          // Emit a file-change event using a cwd-relative path to match the
+          // convention used by the write_file and edit_file tools.
           onEvent({ type: "file-change", path: relative(process.cwd(), dst), before, existed });
         }
 
-        // 4) Report.
+        // Phase 4: assemble the tool result returned to the orchestrator.
         const lines: string[] = [];
         for (const o of outcomes) lines.push(`#${o.j.idx + 1} (${o.j.routed.model.label}): ${subAgentDigest(o.res.text, o.changed)}`);
         const parts = [`Ran ${outcomes.length} sub-tasks in parallel · applied ${applied} file change(s)${autoMerged ? `, 3-way-merged ${autoMerged} shared file(s)` : ""}.`];
@@ -352,7 +451,9 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
         onEvent({ type: "tool-end", id: groupId, ok: true, summary: `${outcomes.length} done · ${applied + autoMerged} merged${conflicted.length ? ` · ${conflicted.length} w/ markers` : ""}` });
         return [parts.join(" "), "", ...lines].join("\n");
       } finally {
-        for (const dir of created) removeWorktree(repoRoot, dir); // always clean up worktrees
+        // Always remove worktrees, even if a sub-agent crashed or was aborted,
+        // to avoid leaving stale git worktree registrations in the repo.
+        for (const dir of created) removeWorktree(repoRoot, dir);
       }
     },
   });

@@ -61,6 +61,11 @@ export type Item =
       endedAt?: number;
       durationMs?: number;
       exitCode?: number | null;
+      // Set ONLY by collapseTurn at turn-settle: a finished delegate_parallel group
+      // folds its child tool items in here and renders as one summary row, expanded
+      // (the children) under ⌃O. Live items never carry these.
+      collapsed?: boolean;
+      children?: Item[];
     }
   | { kind: "phase"; id: number; label: string; detail?: string; state: "running" | "ok" | "err" }
   // Post-turn routing provenance line: `routed → provider · model · cost`.

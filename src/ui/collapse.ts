@@ -91,7 +91,38 @@ export function collapseTurn(items: Item[], nextId: () => number): Item[] {
       });
     }
   }
-  return out;
+  return collapseDelegateGroups(out);
+}
+
+// Once a delegate_parallel batch has SETTLED, fold its per-task child tool items
+// into the group item and mark it collapsed — so a finished 5-task block renders
+// as ONE summary row ("delegate_parallel · 5 done · 31 merged · ~18min") that the
+// transcript expands (⌃O) to show the children. The live, mid-run view stays
+// detailed; this is the transient→durable transition. Child ids are
+// "<groupCallId>:<idx>" (set in delegate.ts), so they fold by callId prefix.
+export function collapseDelegateGroups(items: Item[]): Item[] {
+  const groups = new Set<string>();
+  for (const it of items) {
+    if (it.kind === "tool" && it.name === "delegate_parallel" && (it.status === "ok" || it.status === "err")) groups.add(it.callId);
+  }
+  if (!groups.size) return items;
+  const childrenByGroup = new Map<string, Item[]>();
+  const rest: Item[] = [];
+  for (const it of items) {
+    if (it.kind === "tool" && it.name === "delegate" && it.callId.includes(":")) {
+      const parent = it.callId.slice(0, it.callId.indexOf(":"));
+      if (groups.has(parent)) {
+        childrenByGroup.set(parent, [...(childrenByGroup.get(parent) ?? []), it]);
+        continue; // child folds into its group; don't emit it standalone
+      }
+    }
+    rest.push(it);
+  }
+  return rest.map((it) =>
+    it.kind === "tool" && groups.has(it.callId)
+      ? { ...it, collapsed: true as const, children: childrenByGroup.get(it.callId) ?? [] }
+      : it,
+  );
 }
 
 function fold(

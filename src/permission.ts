@@ -1,37 +1,118 @@
-// Permission broker. Mutating tools (write/edit/shell) call requestPermission()
-// and block until the UI resolves it. Three escalating grants:
-//   - "always": that KIND is auto-approved for the rest of the session
-//   - "all" / YOLO: everything is auto-approved (no more prompts) until toggled off
-// "ask" is the default; YOLO is opt-in (the prompt's "allow all", /yolo, or --yolo).
-// No handler installed (tests / headless) → allow, so non-interactive use is unchanged.
+/**
+ * permission.ts - Permission broker for mutating agent actions.
+ *
+ * Pattern overview
+ * ----------------
+ * Every tool that can change state (write_file, edit_file, run_shell) calls
+ * requestPermission() before acting. requestPermission is async and blocks
+ * until either:
+ *   a) auto-approval applies (yolo mode or a standing per-kind grant), or
+ *   b) the registered UI handler resolves a PermDecision for the request.
+ *
+ * The broker is a module-level singleton. There is exactly one handler slot,
+ * one yolo flag, and one set of standing per-kind grants. This keeps the
+ * call-sites simple: tools call requestPermission() with no knowledge of
+ * whether a TUI, a headless script, or a test harness is on the other end.
+ *
+ * Gate lifecycle
+ * --------------
+ * 1. On startup the handler is null. With no handler installed, every request
+ *    is auto-approved so the agent works unchanged in non-interactive contexts
+ *    (CI, scripts, tests).
+ * 2. The TUI installs a handler via setPermissionHandler() when it starts.
+ *    The handler shows a prompt and returns one of four decisions:
+ *      "once"   - approve this single action only.
+ *      "always" - approve all future actions of the same kind (write, edit,
+ *                 or shell) for the remainder of the session. The kind is
+ *                 added to the `granted` set and never prompted again.
+ *      "all"    - approve everything for the rest of the session (sets yolo).
+ *      "deny"   - reject this action; the tool throws DENIED.
+ * 3. The handler can be swapped or removed at any time (e.g. when the TUI
+ *    unmounts), reverting to auto-approve behavior.
+ *
+ * Yolo mode (auto-approve all)
+ * ----------------------------
+ * Yolo bypasses every permission prompt for the lifetime of the session. It
+ * can be enabled in three ways:
+ *   - The user picks "allow all" in any permission prompt (decision "all").
+ *   - The user runs the /yolo slash command.
+ *   - The --yolo CLI flag is passed at startup.
+ *
+ * Yolo is intentionally opt-in and session-scoped. resetPermissions() clears
+ * both yolo and all standing grants, which is useful in tests between cases.
+ */
+
+/** The category of action being requested. Drives per-kind standing grants. */
 export type PermKind = "write" | "edit" | "shell";
+
+/** Describes a single permission request shown to the user. */
 export interface PermRequest {
   kind: PermKind;
-  title: string; // short label, e.g. "Run a shell command"
-  detail: string; // the concrete thing: a path, or the command
+  /** Short label displayed in the prompt, e.g. "Run a shell command". */
+  title: string;
+  /** The concrete subject of the action: a file path, or the shell command. */
+  detail: string;
 }
+
+/**
+ * The four possible outcomes a permission handler can return.
+ *   "once"   - allow this specific action, then ask again next time.
+ *   "always" - allow all future actions of this kind (standing grant).
+ *   "all"    - allow all future actions of every kind (yolo).
+ *   "deny"   - reject this action; requestPermission returns false.
+ */
 export type PermDecision = "once" | "always" | "all" | "deny";
+
+/** Callback installed by the UI layer to resolve permission prompts. */
 type Handler = (req: PermRequest) => Promise<PermDecision>;
 
+// Module-level broker state. Single handler, per-kind standing grants, yolo flag.
 let handler: Handler | null = null;
 const granted = new Set<PermKind>();
 let yolo = false;
 
+/**
+ * Install or remove the permission handler.
+ * Pass null to revert to headless auto-approve behavior.
+ */
 export function setPermissionHandler(h: Handler | null): void {
   handler = h;
 }
+
+/**
+ * Enable or disable yolo mode (auto-approve all future requests).
+ * Called by the /yolo command and the --yolo CLI flag.
+ */
 export function setYolo(on: boolean): void {
   yolo = on;
 }
+
+/** Returns true if yolo mode is currently active. */
 export function isYolo(): boolean {
   return yolo;
 }
+
+/**
+ * Reset all session grants and yolo back to defaults.
+ * Useful in tests to restore a clean permission state between cases.
+ */
 export function resetPermissions(): void {
   granted.clear();
   yolo = false;
 }
 
-/** True if the action may proceed. YOLO and per-kind "always" skip the prompt. */
+/**
+ * Request permission to perform a mutating action. Returns true if the action
+ * may proceed, false if it was denied.
+ *
+ * Fast-path order (no prompt shown):
+ *   1. yolo is true  - unconditionally approved.
+ *   2. kind is in the standing `granted` set  - approved without a prompt.
+ *   3. No handler is installed  - approved (headless / test mode).
+ *
+ * Otherwise the handler is called and blocks until the user responds. The
+ * resulting decision is applied to the broker state before returning.
+ */
 export async function requestPermission(req: PermRequest): Promise<boolean> {
   if (yolo) return true;
   if (granted.has(req.kind)) return true;

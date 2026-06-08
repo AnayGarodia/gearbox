@@ -1,8 +1,14 @@
 // ── THE ROUTING SEAM ──────────────────────────────────────────────────────
-// Everything that runs a model goes through a ModelSelector. v0.1 ships a
-// FixedSelector (one model). The router will implement this same interface and
-// drop in here with ZERO changes upstream — the agent loop never knows which
-// selector it has. Do not bypass this to call a provider directly.
+// This module defines the ModelSelector interface and the types that flow
+// through it. Every component that invokes a model (agent loop, sub-task
+// dispatcher, compaction, etc.) calls selector.select(task) and receives a
+// ModelChoice. The concrete implementation can be swapped without touching
+// any caller: FixedSelector always returns the configured default, while
+// RoutingSelector (src/model/router.ts) scores all (model, account) pairs and
+// picks the cheapest that clears the task's quality bar.
+//
+// Rule: never bypass this seam to call a provider directly. All routing logic
+// belongs in the selector, so the agent loop stays provider-agnostic.
 import { pickDefaultModel } from "../config.ts";
 import type { ModelSpec } from "../providers.ts";
 import type { ModelRequirement } from "./capabilities.ts";
@@ -13,54 +19,64 @@ import type { Account } from "../accounts/types.ts";
 // `in-loop` = our own agent loop via the AI SDK (creds from `account`, or the
 // env default when absent); `cli` = a subscription seat run through the vendor
 // binary. Optional on ModelChoice so every existing caller is unchanged (absent
-// ⇒ in-loop, today's path).
+// means in-loop, today's path).
 export type Backend =
   | { kind: "in-loop"; account?: Account }
   | { kind: "cli"; account: Account; binary: string; profile?: string };
 
+// The inputs the router uses to decide which model to run. All fields are
+// optional: FixedSelector ignores them, and RoutingSelector reads them to
+// classify the task, set the quality bar, and size the context estimate.
+// Callers only need to fill the fields they have; adding new fields here does
+// not break existing callers.
 export interface Task {
   prompt: string;
-  // Future routing inputs live here (classified type, touched files, history
-  // size, latency class). Adding them must not change the interface shape for
-  // callers — they always just hand over a Task. All optional; FixedSelector
-  // ignores them, so the seam stays intact until the router reads them.
+  // Classified task kind. When omitted the router classifies the prompt itself
+  // (keyword heuristic, then LLM classifier). Callers that already know the
+  // kind (e.g. "summarize the diff") can supply it directly to skip that step.
   kind?: "code" | "search" | "summarize" | "classify" | "plan" | "chat";
   estTokens?: number; // estimated working-set size for this turn
   touchedFiles?: string[]; // files in play, for locality-aware routing
   requires?: ModelRequirement[]; // runtime capabilities needed by this turn
   // Confidence-gated escalation: how many times the cheap pick already MISSED on
-  // this work (a verification failure / failed auto-fix attempt). Each step raises
-  // the quality bar so the router climbs to a stronger model rather than re-running
-  // the same too-weak one — the reactive half of "cheapest model that clears the
-  // bar". 0 (the default) is today's behavior; FixedSelector ignores it.
+  // this work (a verification failure or failed auto-fix attempt). Each increment
+  // raises the quality bar so the router climbs to a stronger model rather than
+  // re-running the same too-weak one. 0 (the default) is the normal path;
+  // FixedSelector ignores this field entirely.
   escalate?: number;
-  // Latency class: true when the user is WAITING on this turn (a foreground request),
-  // so the router prefers a faster model among bar-clearing candidates (done > FAST >
-  // cheap when waiting). Omitted/false for background work (delegated sub-tasks,
-  // compaction) where latency is free and cheapest should win.
+  // Latency class: true when the user is WAITING on this turn (a foreground
+  // request), so the router pulls faster models forward among bar-clearing
+  // candidates (done > fast > cheap when waiting). Omit for background work
+  // (delegated sub-tasks, compaction) where latency is free and cheapest wins.
   interactive?: boolean;
 }
 
 export interface ModelChoice {
   model: ModelSpec;
   reason: string; // shown in the UI; becomes the routing scorecard later
-  backend?: Backend; // how to run it (absent ⇒ in-loop). Set by RoutingSelector.
+  backend?: Backend; // how to run it (absent means in-loop). Set by RoutingSelector.
 }
 
-// The full ranked "why" behind a routing decision — the data the ⌃tab / `/why`
-// scorecard renders. Lives on the seam so any selector can expose it.
+// One row in the "/why" scorecard: the full per-candidate breakdown that lets
+// the user see exactly why each model was or was not chosen. The router populates
+// this from scored candidates; the UI renders it in the tab panel.
 export interface ScorecardEntry {
   label: string;
   backend: "api" | "seat";
   quality: number;
   qualitySrc: string; // "measured" | "researched" | "seeded"
   estCostPerMtok: number;
-  balanceText?: string; // "$12.50" / "$12 est" / undefined
-  headroomText?: string; // subscription "84% left" / "throttling"
+  balanceText?: string; // "$12.50" or "$12 est" or undefined when not applicable
+  headroomText?: string; // subscription "84% left" or "throttling" for near-limit metered keys
   score: number;
   chosen: boolean;
   verdict: string;
 }
+
+// The full ranked "why" behind a routing decision. kind and bar give the
+// routing context; entries list every candidate with its score and verdict,
+// sorted best-first. Exposed on the seam so any selector (not just the router)
+// can implement explain().
 export interface Scorecard {
   kind: NonNullable<Task["kind"]>;
   bar: number;

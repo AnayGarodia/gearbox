@@ -1,23 +1,38 @@
-// The Context Engine: projects the full conversation `history` (the ledger /
-// source of truth in App's msgRef) into a bounded, model-aware working set per
-// turn. Experiments (experiments/context/FINDINGS.md) proved this is ~16×
-// cheaper per turn than dumping the raw transcript, stays bounded instead of
-// overflowing, and makes the same correct edits — so curation is what enables
-// routing (a switched model gets a small, clean context, not the whole history).
-//
-// Assembly order (stable cacheable prefix first, volatile per-turn context last):
-//   system   = base prompt + plan addendum + verification commands + project memory
-//              + repo map   (session-stable → stays a byte-identical cached prefix)
-//   messages = curated history + a user turn that FOLDS IN the volatile context
-//              (git state + freshly retrieved files). The cache breakpoint sits at
-//              the end of the settled history, so that volatile tail rides after it
-//              and never busts the cached prefix. (Earlier this volatile content
-//              lived in `system` and broke the cache on every turn.)
-//
-// THE INVARIANT: never split a tool_use from its tool_result. Curation and
-// trimming operate only at whole-turn boundaries; eliding an old turn drops
-// BOTH the assistant's tool-call parts AND the paired tool-result messages
-// together, so the projected messages always have balanced tool ids.
+/**
+ * Context Engine: `buildContext`
+ *
+ * This module is the single place where every per-turn model request is
+ * assembled. Its job is to project the full conversation history (the
+ * append-only ledger kept in App's msgRef) into a bounded, model-aware
+ * working set that fits within the target model's context window.
+ *
+ * Why curate at all? Experiments (experiments/context/FINDINGS.md) showed
+ * that a curated context is ~16x cheaper per turn than dumping the raw
+ * transcript, stays bounded instead of overflowing, and produces the same
+ * correct edits. Curation is also what enables model routing: a switched
+ * model gets a small, clean context, not the entire raw history.
+ *
+ * Assembly order (stable cacheable prefix first, volatile per-turn tail last):
+ *
+ *   system   = base prompt + plan addendum + verification commands
+ *              + project memory + repo map
+ *              All of these are session-stable, so they form a
+ *              byte-identical cached prefix that Anthropic's prompt cache
+ *              can reuse across turns at ~0 recurring cost.
+ *
+ *   messages = curated history (whole turns only) + a single user message
+ *              that FOLDS IN the volatile context: git state and freshly
+ *              retrieved files for THIS prompt. The cache breakpoint sits at
+ *              the end of the settled history, so the volatile tail rides
+ *              after the breakpoint and never busts the cached prefix. In an
+ *              earlier design this volatile content lived in `system`, which
+ *              broke the prompt cache on every turn.
+ *
+ * THE INVARIANT: never split a tool_use from its tool_result. Curation and
+ * trimming always operate at whole-turn boundaries. Eliding an old turn drops
+ * BOTH the assistant's tool-call parts AND the paired tool-result messages
+ * together, so the messages array always contains balanced tool ids.
+ */
 import type { ModelMessage } from "ai";
 import type { ModelSpec } from "../providers.ts";
 import { countTokens } from "../model/tokens.ts";
@@ -72,10 +87,16 @@ You are in read-only plan mode. Investigate using read-only tools only, then
 produce a concise, numbered plan for the change. DO NOT modify files or run
 commands. End by noting you're ready to implement once the user approves.`;
 
-// Tokens held back from the context window for the model's output + safety.
+// Tokens held back from the context window budget for the model's own output
+// plus a safety margin. The remainder is the input budget for system + history.
 const OUTPUT_RESERVE = 32_000;
-const RECENT_TURNS = 3; // most-recent turns kept verbatim (tool IO intact)
-const PER_MESSAGE_OVERHEAD = 4; // rough role/wrapping tokens per message
+
+// Number of most-recent turns kept verbatim (with full tool call/result pairs).
+// Older turns are elided: assistant text is kept but tool exchanges are stripped.
+const RECENT_TURNS = 3;
+
+// Rough overhead per message for role field and JSON/HTTP framing tokens.
+const PER_MESSAGE_OVERHEAD = 4;
 
 export interface ContextSection {
   name: string;
@@ -86,14 +107,21 @@ export interface BuiltContext {
   system: string;
   messages: ModelMessage[];
   sections: ContextSection[];
-  // Index of the last SETTLED-history message — where the cacheable prefix ends.
-  // The per-turn volatile context (git + retrieved files) rides in the final user
-  // message AFTER this, so the stable system + growing history stay a byte-identical
-  // cacheable prefix across turns. -1 when there's no settled history yet.
+  // Index of the last SETTLED-history message, i.e. where the cacheable prefix
+  // ends. The per-turn volatile context (git + retrieved files) rides in the
+  // final user message AFTER this index, so the stable system + growing history
+  // remain a byte-identical cacheable prefix across turns. Set to -1 when there
+  // is no settled history yet (first turn), meaning only the system block caches.
   cacheBreak: number;
 }
 
-// ── token helpers ──
+// ── token helpers ──────────────────────────────────────────────────────────────
+
+/**
+ * Flatten a ModelMessage content value to a plain string for token counting.
+ * Handles all content shapes: plain string, part arrays (text, image, tool-call,
+ * tool-result), and arbitrary JSON as a fallback.
+ */
 export function textOf(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -111,13 +139,19 @@ export function textOf(content: unknown): string {
   return JSON.stringify(content ?? "");
 }
 
+/** Estimated token cost of a single ModelMessage, including per-message framing. */
 export function msgTokens(m: ModelMessage, modelId?: string): number {
   return countTokens(textOf((m as any).content), modelId) + PER_MESSAGE_OVERHEAD;
 }
 
-// ── turn grouping & elision (the invariant lives here) ──
-// A turn = a user message and everything that follows until the next user
-// message (the assistant text + its tool-calls + the tool-result messages).
+// ── turn grouping and elision (the invariant lives here) ──────────────────────
+
+/**
+ * Group a flat message array into turns. A turn starts with a user message and
+ * includes the following assistant + tool messages up to (but not including) the
+ * next user message. This is the unit of granularity for elision and trimming,
+ * ensuring tool_use/tool_result pairs are never split across group boundaries.
+ */
 export function groupTurns(history: ModelMessage[]): ModelMessage[][] {
   const turns: ModelMessage[][] = [];
   for (const m of history) {
@@ -127,17 +161,22 @@ export function groupTurns(history: ModelMessage[]): ModelMessage[][] {
   return turns;
 }
 
-// Elide an old turn: keep user + assistant *text*, drop the tool exchange
-// entirely (both the assistant's tool-call parts AND the role:"tool" results).
-// Dropping both sides together is what keeps tool ids balanced.
+/**
+ * Elide an old turn to save tokens while preserving context continuity.
+ * Keeps the user message and any assistant prose (text parts), but drops all
+ * tool-call parts from assistant messages and the corresponding tool-result
+ * messages entirely. Dropping both sides together maintains balanced tool ids.
+ * An assistant message that consisted solely of tool-calls is dropped outright.
+ */
 function elideTurn(turn: ModelMessage[]): ModelMessage[] {
   const out: ModelMessage[] = [];
   for (const m of turn) {
-    if (m.role === "tool") continue; // drop tool results
+    if (m.role === "tool") continue; // drop tool results (paired call also stripped below)
     if (m.role === "assistant" && Array.isArray((m as any).content)) {
+      // Keep only plain text parts; strip tool-call parts.
       const kept = (m as any).content.filter((p: any) => typeof p === "string" || p?.type === "text");
       if (kept.length) out.push({ ...(m as any), content: kept } as ModelMessage);
-      // assistant message that was only tool-calls → dropped
+      // If the assistant message was purely tool-calls, it is dropped entirely.
     } else {
       out.push(m);
     }
@@ -148,11 +187,12 @@ function elideTurn(turn: ModelMessage[]): ModelMessage[] {
 /**
  * Drop any tool-call that has no matching tool-result and any tool-result with
  * no matching tool-call, so the message array is always valid to send (every
- * tool_use ↔ tool_result paired). Needed because an INTERRUPTED turn can leave
- * a trailing assistant tool_use whose result never arrived; without this the
- * next request 400s. Idempotent — a balanced array passes through unchanged.
+ * tool_use paired with a tool_result). Needed because an INTERRUPTED turn can
+ * leave a trailing assistant tool_use whose result never arrived; without this
+ * the next request 400s. Idempotent: a balanced array passes through unchanged.
  */
 export function sanitizeToolPairs(messages: ModelMessage[]): ModelMessage[] {
+  // First pass: collect all call ids and result ids present in the array.
   const callIds = new Set<string>();
   const resultIds = new Set<string>();
   for (const m of messages) {
@@ -163,6 +203,7 @@ export function sanitizeToolPairs(messages: ModelMessage[]): ModelMessage[] {
       if (p?.type === "tool-result") resultIds.add(p.toolCallId);
     }
   }
+  // Second pass: retain only parts whose partner exists in the other set.
   const out: ModelMessage[] = [];
   for (const m of messages) {
     const c = (m as any).content;
@@ -175,22 +216,29 @@ export function sanitizeToolPairs(messages: ModelMessage[]): ModelMessage[] {
       if (p?.type === "tool-result") return callIds.has(p.toolCallId);
       return true;
     });
-    if (kept.length === 0 && c.length > 0) continue; // message emptied by sanitizing → drop
+    // If sanitizing emptied the message entirely, drop it rather than sending
+    // an empty content array, which some providers reject.
+    if (kept.length === 0 && c.length > 0) continue;
     out.push(kept.length === c.length ? m : ({ ...(m as any), content: kept } as ModelMessage));
   }
   return out;
 }
 
 /**
- * Collapse stale duplicate file reads. When the kept history holds more than one
- * read_file result for the SAME path, keep the most recent (it reflects the
- * current file) and replace the earlier ones with a one-line stub. Free token
- * savings AND a correctness win: the model never acts on an outdated copy. Keeps
- * tool_use/tool_result pairing intact — only the result CONTENT shrinks, the parts
- * stay. Done deterministically here rather than via a billed compaction call.
+ * Collapse stale duplicate file reads in the kept history window.
+ *
+ * When the history contains more than one read_file result for the SAME path,
+ * keep the most recent (it reflects the current file state) and replace earlier
+ * ones with a one-line stub. This is both a token saving and a correctness win:
+ * the model never acts on an outdated copy of a file it subsequently re-read.
+ *
+ * Pairing is preserved: only the result CONTENT shrinks; the tool_use and
+ * tool_result parts themselves remain so tool ids stay balanced.
+ * Done deterministically here rather than via a billed compaction call.
  */
 export function dedupeFileReads(messages: ModelMessage[]): ModelMessage[] {
-  // read_file call id → the path it read
+  // Map each tool call id to the file path it read, so we can later identify
+  // which tool-result messages correspond to read_file calls.
   const pathOf = new Map<string, string>();
   for (const m of messages) {
     const c = (m as any).content;
@@ -202,7 +250,9 @@ export function dedupeFileReads(messages: ModelMessage[]): ModelMessage[] {
       }
     }
   }
-  // Per path: how many results, and the index of the LAST (most recent) one.
+
+  // Count how many read_file results exist per path, and note the message index
+  // of the last (most recent) result for each path.
   const count = new Map<string, number>();
   const lastIdx = new Map<string, number>();
   messages.forEach((m, i) => {
@@ -218,6 +268,10 @@ export function dedupeFileReads(messages: ModelMessage[]): ModelMessage[] {
       }
     }
   });
+
+  // Rewrite messages: for any read_file result that has a newer counterpart,
+  // replace the output with a short stub so the model knows the stale copy
+  // has been superseded without wasting tokens on its full content.
   return messages.map((m, i) => {
     const c = (m as any).content;
     if (!Array.isArray(c)) return m;
@@ -225,7 +279,9 @@ export function dedupeFileReads(messages: ModelMessage[]): ModelMessage[] {
     const kept = c.map((p: any) => {
       if (p?.type !== "tool-result") return p;
       const path = pathOf.get(p.toolCallId);
-      if (!path || (count.get(path) ?? 0) < 2 || lastIdx.get(path) === i) return p; // unique or most-recent → keep
+      // Keep as-is if: not a read_file result, only one read of this path, or
+      // this IS the most recent read of this path.
+      if (!path || (count.get(path) ?? 0) < 2 || lastIdx.get(path) === i) return p;
       changed = true;
       return { ...p, output: { type: "text", value: `[earlier read of ${path} elided — a more recent read of this file appears later in the conversation]` } };
     });
@@ -233,6 +289,25 @@ export function dedupeFileReads(messages: ModelMessage[]): ModelMessage[] {
   });
 }
 
+/**
+ * Build the complete context for one model turn.
+ *
+ * Steps performed:
+ *   1. Assemble the stable system prefix: base prompt, optional plan addendum,
+ *      verification commands, project memory, and the repo map. These are all
+ *      session-stable and together form the byte-identical cacheable prefix.
+ *   2. Assemble the volatile per-turn block: current git state and files
+ *      retrieved by BM25 for the current user prompt. These are folded into
+ *      the current user message (after the cache breakpoint) rather than into
+ *      the system prompt, so they never break the prompt cache.
+ *   3. Group history into turns, elide old turns beyond RECENT_TURNS, then
+ *      trim whole turns from the front until the working set fits within
+ *      `inputBudget`. Trimming always drops whole turns to maintain pairing.
+ *   4. Deduplicate stale file reads in the kept window, then sanitize any
+ *      orphan tool pairs left by interrupted turns.
+ *   5. Compute `cacheBreak`: the index of the last settled-history message,
+ *      where the provider should insert its cache control marker.
+ */
 export function buildContext(opts: {
   history: ModelMessage[];
   userText: string;
@@ -245,17 +320,21 @@ export function buildContext(opts: {
   const { history, userText, model, plan } = opts;
   const cwd = opts.cwd ?? process.cwd();
   const modelId = model.id;
+
+  // The token budget available for everything we send (system + messages).
+  // OUTPUT_RESERVE is held back so the model has room to write its response.
   const inputBudget = Math.max(8_000, model.contextWindow - OUTPUT_RESERVE);
 
-  // ── stable system prefix: base + plan + memory + repo map + retrieved code ──
+  // ── Step 1: stable system prefix (base + plan + verify + memory + map) ────
+
   const sections: ContextSection[] = [];
   let system = plan ? BASE_SYSTEM + PLAN_ADDENDUM : BASE_SYSTEM;
   sections.push({ name: "system", tokens: countTokens(system, modelId) });
 
-  // Verification commands the project actually exposes (typecheck/test/build, or a
-  // language toolchain). Telling the model the real bar UP FRONT lets it check its
-  // own work in-turn instead of discovering the bar by failing it post-turn. Stable
-  // per cwd, so it rides the cached prefix at ~0 recurring cost.
+  // Verification commands the project actually exposes (typecheck/test/build, or
+  // a language toolchain). Telling the model the real bar up front lets it check
+  // its own work in-turn instead of discovering the bar by failing it post-turn.
+  // Stable per cwd, so it rides the cached prefix at ~0 recurring cost.
   const checks = safe(() => detectVerificationCommands(cwd), []);
   if (checks.length) {
     const block = checks.map((c) => `- ${c.command}  (${c.reason})`).join("\n");
@@ -263,12 +342,16 @@ export function buildContext(opts: {
     sections.push({ name: "verify", tokens: countTokens(block, modelId) });
   }
 
+  // Project memory: GEARBOX.md/CLAUDE.md/AGENTS.md brief plus cross-session
+  // remembered facts. Both are capped; see memory.ts for layering details.
   const memory = safe(() => loadProjectMemory(cwd), "");
   if (memory) {
     system += `\n\n# PROJECT MEMORY\n${memory}`;
     sections.push({ name: "memory", tokens: countTokens(memory, modelId) });
   }
 
+  // Repo map: compact structural signatures ranked by import in-degree. Capped
+  // at 5% of the input budget so it never dominates the window. See repomap.ts.
   const mapBudget = Math.min(4_000, Math.floor(inputBudget * 0.05));
   const map = safe(() => repoMap(cwd, mapBudget), "");
   if (map) {
@@ -278,18 +361,22 @@ export function buildContext(opts: {
 
   const systemTokens = countTokens(system, modelId);
 
-  // ── volatile per-turn context: git state + files retrieved for THIS prompt ──
-  // These change every turn (git after each edit; retrieval is prompt-keyed), so
-  // keeping them in the system prefix busted the prompt cache on every turn. They
-  // are folded into the current user message instead, riding AFTER the cache
-  // breakpoint, so the stable system + settled history stay cacheable. Still token-
-  // accounted in `sections` so /context stays honest about where the budget goes.
+  // ── Step 2: volatile per-turn context (git state + retrieved files) ────────
+
+  // These change every turn (git after each edit, retrieval is prompt-keyed).
+  // They are folded into the current user message rather than the system prompt
+  // so the stable system + settled history stay cacheable. Still token-accounted
+  // in `sections` so /context stays honest about where the budget goes.
   const volatileParts: string[] = [];
+
   const git = safe(() => gitContext(cwd), "");
   if (git) {
     volatileParts.push(`# GIT CONTEXT (current repository state; do not overwrite unrelated user changes)\n${git}`);
     sections.push({ name: "git", tokens: countTokens(git, modelId) });
   }
+
+  // BM25 retrieval: top-k files scored against the current user prompt, packed
+  // within 15% of the input budget. See retrieve.ts for scoring details.
   const retrieveBudget = Math.min(12_000, Math.floor(inputBudget * 0.15));
   const hits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), []);
   if (hits.length) {
@@ -298,7 +385,11 @@ export function buildContext(opts: {
     sections.push({ name: "retrieved", tokens: hits.reduce((s, h) => s + h.tokens, 0) });
   }
 
-  // ── curated history + current user message (with the volatile context), budgeted ──
+  // ── Step 3: curated history + current user message, budgeted ───────────────
+
+  // Wrap the volatile block into the current user message. A header labels the
+  // block as reference material so the model doesn't treat it as part of the
+  // conversation transcript.
   const turnContext = volatileParts.length
     ? `# CONTEXT FOR THIS TURN (current repo state + files retrieved for your task — reference material, not part of our conversation)\n\n${volatileParts.join("\n\n")}`
     : "";
@@ -311,12 +402,19 @@ export function buildContext(opts: {
   const userMsg: ModelMessage = { role: "user", content: userContent as any };
   const userTokens = msgTokens(userMsg, modelId);
 
+  // Split history into turns, then mark the boundary between "old" turns that
+  // will be elided and "recent" turns kept verbatim.
   const turns = groupTurns(history);
   const recent = opts.recentTurns ?? RECENT_TURNS;
   const split = Math.max(0, turns.length - recent);
+
+  // Apply elision to old turns: assistant text survives, tool exchanges are
+  // stripped. Recent turns are projected as-is (full tool IO).
   const projected: ModelMessage[][] = turns.map((t, i) => (i < split ? elideTurn(t) : t));
 
-  // Trim oldest whole turns until the working set fits (pair-safe — whole turns).
+  // Trim the oldest whole turns until the projected history fits in the
+  // remaining budget. Each iteration drops exactly one complete turn so tool
+  // pairing is never broken across the trim boundary.
   let historyBudget = inputBudget - systemTokens - userTokens;
   const turnCost = (t: ModelMessage[]) => t.reduce((s, m) => s + msgTokens(m, modelId), 0);
   let total = projected.reduce((s, t) => s + turnCost(t), 0);
@@ -324,24 +422,36 @@ export function buildContext(opts: {
     total -= turnCost(projected.shift()!);
   }
 
-  // Collapse stale duplicate file reads in the kept (verbatim recent) window
-  // before accounting — free token savings, and the model never sees an outdated
-  // copy of a file it re-read.
+  // ── Step 4: deduplicate stale reads and sanitize orphan tool pairs ─────────
+
+  // Collapse duplicate read_file results in the kept window: free token savings
+  // and a correctness win (model never acts on an outdated file copy).
   const flat = dedupeFileReads(projected.flat());
   const historyTokens = flat.reduce((s, m) => s + msgTokens(m, modelId), 0);
   sections.push({ name: "history", tokens: historyTokens });
   sections.push({ name: "user", tokens: userTokens });
 
-  // Defensive: a kept recent turn could carry an unpaired tool_use (e.g. an
-  // interrupted turn). Sanitize so the send is always valid.
+  // A kept recent turn may carry an unpaired tool_use (e.g. an interrupted turn
+  // where the agent never received the tool result). Sanitize before sending so
+  // the request is always structurally valid.
   const finalMessages = sanitizeToolPairs([...flat, userMsg]);
-  // Cache breakpoint = the last SETTLED message (the one before the user turn).
-  // Computed AFTER sanitize so a dropped orphan can't shift the index. -1 when the
-  // user message is the only one (first turn) → only the system block caches.
+
+  // ── Step 5: compute the cache breakpoint ───────────────────────────────────
+
+  // The breakpoint is the index of the last settled-history message, i.e. the
+  // message just before the current user message. Computed after sanitize so a
+  // dropped orphan part cannot shift the index. -1 means no settled history
+  // exists yet (the first turn), so only the system block is cached.
   const cacheBreak = finalMessages.length - 2;
   return { system, messages: finalMessages, sections, cacheBreak };
 }
 
+/**
+ * Execute `fn` and return its result. On any thrown error, return `fallback`
+ * instead. Used throughout buildContext to keep partial failures from aborting
+ * the turn: a missing GEARBOX.md, an unreadable git repo, or a retrieval error
+ * should degrade gracefully rather than crash the request.
+ */
 function safe<T>(fn: () => T, fallback: T): T {
   try {
     return fn();

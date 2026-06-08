@@ -446,7 +446,9 @@ export const friendlyTool = (name: string) =>
 const CWD = (() => { try { return process.cwd(); } catch { return ""; } })();
 export const relPath = (p: string) => (CWD && p.startsWith(CWD + "/") ? p.slice(CWD.length + 1) : p);
 
-const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+// ms → "237ms" / "6.4s" / "6m 7s" — minutes for long runs so a delegate batch
+// reads "18m 50s total", not "1130.0s".
+const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 // Coarse elapsed for a still-running step, ticking every second: "8s" or "1m 24s".
 export const fmtElapsed = (secs: number) => (secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`);
 const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
@@ -498,9 +500,24 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
     }
     switch (it.kind) {
       case "tool": {
-        // Static dot — colour carries status (run vs done); the ONE animated working
-        // indicator is the bottom strip, so per-tool lines stay calm.
-        const dot: Span = { text: glyph.tool, color: toolColor(it) };
+        // Collapsed delegate_parallel group: ONE summary row that expands (⌃O) to
+        // the per-task children — the finished block compacts to a single fact.
+        if (it.collapsed) {
+          const head: Line = clipSpans([
+            { text: "  " },
+            { text: glyph.tool, color: toolColor(it) },
+            { text: "  " + friendlyTool(it.name), color: color.dim, bold: true },
+            ...(it.summary ? [{ text: "  ·  " + it.summary, color: color.dim }] : []),
+            ...(it.durationMs != null ? [{ text: "  ·  ~" + fmtMs(it.durationMs) + " total", color: color.faint }] : []),
+            ...((it.children?.length ?? 0) ? [{ text: expand ? "  ⌃O collapses" : "  ⌃O expands", color: color.faint }] : []),
+          ], width);
+          out.push(head);
+          if (expand && it.children?.length) out.push(...indent(itemsToLines(it.children, Math.max(width - 2, 8), expand), 2));
+          break;
+        }
+        // Static dot — colour carries status. Running uses a HOLLOW marker so the
+        // filled ⏺ (done) is never confused with the running state (running ≠ passed).
+        const dot: Span = it.status === "running" ? { text: glyph.off, color: toolColor(it) } : { text: glyph.tool, color: toolColor(it) };
         const name = friendlyTool(it.name);
         const isShell = it.name === "run_shell" || it.name === "command_execution" || it.name === "Bash";
         const isWrite = !isShell && (it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change");
@@ -606,7 +623,8 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         ];
         if (it.durationMs != null) head.push({ text: " in " + fmtMs(it.durationMs), color: color.faint });
         const retry = retryPhrase(it.ok, it.attempts ?? 1);
-        if (retry) head.push({ text: " · " + retry, color: color.faint });
+        // A retry is a real event — elevate it (amber + ⚠), don't bury it in faint grey.
+        if (retry) head.push({ text: " · ⚠ " + retry, color: color.warn, bold: true });
         if (!it.ok && it.summary) head.push({ text: " · " + it.summary, color: color.err });
         const body = it.output ?? "";
         if (body && (it.command || it.output)) head.push({ text: "  ⌃O for output", color: color.faint });

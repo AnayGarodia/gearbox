@@ -1,48 +1,118 @@
-// Session persistence. Conversations are saved per-project so they survive across
-// runs (--continue / /resume), and prompt history persists too. The record is
-// deliberately ROUTING-READY: each turn stores the model used + token usage +
-// timestamp, so the future cost engine and router have real data to learn from,
-// and the message log stays provider-neutral (AI SDK ModelMessage). Nothing here
-// assumes a single model.
+/**
+ * Session persistence for Gearbox.
+ *
+ * Each project gets its own subdirectory under GEARBOX_HOME/sessions (default
+ * ~/.gearbox/sessions). The subdirectory name is a URL-safe slug derived from
+ * the current working directory, so different projects never share state.
+ *
+ * Slug format: process.cwd() with every run of non-alphanumeric characters
+ * replaced by a single hyphen, leading/trailing hyphens stripped, and the
+ * string "root" used as a fallback when the result would be empty (e.g. when
+ * cwd is "/").
+ *
+ * Per-turn storage layout (inside a session JSON file):
+ *   messages  -- provider-neutral AI SDK ModelMessage array; the full context
+ *                window sent on every call. Stored without model-specific
+ *                envelope so it works with any future provider.
+ *   items     -- the UI transcript (Item[]); restored verbatim on --continue
+ *                so the terminal view is faithful, not reconstructed.
+ *   turns     -- one TurnMeta per completed assistant response: model id,
+ *                token counts, and wall-clock timestamp. These are the raw
+ *                signals the future cost engine and router will learn from.
+ *
+ * Why usage is always captured: the router needs real per-model token data to
+ * score routing candidates accurately. Capturing it unconditionally (even when
+ * the user never asks for a cost report) means the data is always there when
+ * the router arrives, with no opt-in gap in history. It also lets the live
+ * cost indicator in the status bar work without a separate code path.
+ *
+ * Persistence is best-effort: every write is wrapped in try/catch so a full
+ * disk or permission error never crashes the app. Reads that fail return null
+ * or an empty collection.
+ */
 import { mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ModelMessage } from "ai";
 import type { Item } from "./ui/types.ts";
 
-// GEARBOX_HOME overrides the data dir (defaults to ~/.gearbox); handy for tests
-// and for relocating state.
+// GEARBOX_HOME overrides the data dir (defaults to ~/.gearbox). Useful in
+// tests (set to a temp dir) and for users who want state on a different disk.
 const root = () => join(process.env.GEARBOX_HOME || join(homedir(), ".gearbox"), "sessions");
+
+/**
+ * Returns the slug that names this project's session directory.
+ * Derived from process.cwd(): non-alphanumeric runs become hyphens,
+ * leading/trailing hyphens are stripped. Falls back to "root" for the
+ * filesystem root or any other edge case that produces an empty string.
+ */
 const slug = () =>
   process.cwd().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root";
+
+/** Absolute path to the session directory for the current project. */
 const dir = () => join(root(), slug());
 
+/**
+ * Per-turn metadata captured after every completed assistant response.
+ *
+ * Storing one record per turn (rather than per session) lets the router and
+ * cost engine see how latency and spend vary across calls within a session,
+ * not just totals.
+ */
 export interface TurnMeta {
-  model: string; // model id that ran this turn (per-turn so routing can vary it)
+  /** Model id that ran this turn. Stored per-turn because routing can vary it mid-session. */
+  model: string;
   inputTokens: number;
   outputTokens: number;
-  cachedInputTokens?: number; // prompt-cache read tokens (the hit) when the provider exposes them
-  cacheCreationInputTokens?: number; // prompt-cache write tokens (Anthropic; billed ≈125% for 5m)
+  /** Prompt-cache read tokens (the cache hit) when the provider exposes them. */
+  cachedInputTokens?: number;
+  /**
+   * Prompt-cache write tokens (Anthropic-specific).
+   * Billed at approximately 125% of the normal input rate for a 5-minute TTL.
+   */
+  cacheCreationInputTokens?: number;
+  /** Unix timestamp (ms) when the turn completed. */
   at: number;
 }
 
+/**
+ * A complete persisted conversation.
+ *
+ * The three parallel arrays (messages, items, turns) each serve a different
+ * consumer: messages feeds the model, items restores the UI, turns feeds the
+ * cost/routing layer. They are kept separate so each can evolve independently.
+ */
 export interface Session {
   id: string;
   cwd: string;
   createdAt: number;
   updatedAt: number;
-  title: string; // first user prompt, for listing
-  messages: ModelMessage[]; // provider-neutral model context
-  items: Item[]; // the UI transcript, for faithful restore
-  turns: TurnMeta[]; // per-turn model + usage (routing/cost data)
+  /** First user prompt, used as the display title in session listings. */
+  title: string;
+  /** Provider-neutral model context window sent on every API call. */
+  messages: ModelMessage[];
+  /** Full UI transcript, restored verbatim when resuming a session. */
+  items: Item[];
+  /** One entry per completed turn, carrying model id and token usage. */
+  turns: TurnMeta[];
 }
 
+/** Creates the session directory if it does not already exist. */
 const ensure = () => mkdirSync(dir(), { recursive: true });
 
+/**
+ * Generates a new session id.
+ * Format: "s" + the current timestamp encoded in base-36, e.g. "slr4kj2a".
+ * Monotonically increasing within a single process; compact and filesystem-safe.
+ */
 export function newSessionId(): string {
   return `s${Date.now().toString(36)}`;
 }
 
+/**
+ * Persists a session to disk as `<dir>/<id>.json`.
+ * Failures are silently swallowed so a disk error never crashes the app.
+ */
 export function saveSession(s: Session): void {
   try {
     ensure();
@@ -52,6 +122,10 @@ export function saveSession(s: Session): void {
   }
 }
 
+/**
+ * Loads a session by id from the current project's session directory.
+ * Returns null when the file is missing or cannot be parsed.
+ */
 export function loadSession(id: string): Session | null {
   try {
     return JSON.parse(readFileSync(join(dir(), `${id}.json`), "utf8")) as Session;
@@ -60,7 +134,7 @@ export function loadSession(id: string): Session | null {
   }
 }
 
-/** Recent sessions for this project, newest first. */
+/** Returns all valid sessions for the current project, sorted newest first. */
 export function listSessions(): Session[] {
   try {
     return readdirSync(dir())
@@ -79,13 +153,21 @@ export function listSessions(): Session[] {
   }
 }
 
+/** Returns the most recently updated session for this project, or null. */
 export function latestSession(): Session | null {
   return listSessions()[0] ?? null;
 }
 
-// ── prompt history (cross-session, per project) ──
+// ── prompt history (cross-session, per project) ──────────────────────────────
+//
+// history.json lives alongside the session files in the project's slug dir.
+// It is a plain JSON array of prompt strings, capped at 500 entries, used by
+// the readline-style up-arrow recall in the input box. It is NOT a session
+// file (hence the explicit filter in listSessions).
+
 const histFile = () => join(dir(), "history.json");
 
+/** Loads the prompt history for the current project. Returns [] on any error. */
 export function loadHistory(): string[] {
   try {
     const h = JSON.parse(readFileSync(histFile(), "utf8"));
@@ -95,6 +177,12 @@ export function loadHistory(): string[] {
   }
 }
 
+/**
+ * Appends a prompt to the per-project history file.
+ *
+ * Deduplicates consecutive identical prompts. Trims the array to 500 entries
+ * by dropping the oldest. Failures are silently swallowed (best-effort).
+ */
 export function appendHistory(prompt: string): void {
   const p = prompt.trim();
   if (!p) return;

@@ -1,6 +1,42 @@
-// Provider layer: maps a friendly model id to an AI SDK model instance.
-// Multi-provider from day one so routing (later) just scores over MODELS.
-// This is the ONLY file that touches a concrete provider SDK.
+/**
+ * Provider layer: the only file in Gearbox that imports concrete provider SDKs.
+ *
+ * Responsibility: map a friendly ModelSpec to an AI SDK LanguageModel instance
+ * that the rest of the app can pass to `streamText` / `generateText`. No other
+ * file should import from "@ai-sdk/anthropic", "@ai-sdk/openai", etc. Keeping
+ * all SDK imports here makes it straightforward to swap or add a provider SDK
+ * without touching the rest of the codebase.
+ *
+ * Architecture overview:
+ *
+ *   MODELS (exported const)
+ *     A static array seeded at module load time: CURATED specs (hand-authored,
+ *     data-rich) merged with generatedModels() (one spec per catalog entry that
+ *     is not already in CURATED). MODELS never changes at runtime.
+ *
+ *   modelRegistry() (exported function)
+ *     The live, call-time view of what is selectable. Merges MODELS with
+ *     accountModelSpecs() (models discovered from real accounts), suppresses
+ *     seed entries for any provider that now has a real discovered list, and
+ *     deduplicates by provider+sdkId. The selector, cost estimator, and
+ *     resolveModel all read from here, not from MODELS directly.
+ *
+ *   resolveModel(spec, creds?) (exported function)
+ *     Builds the LanguageModel for a given spec. With explicit creds (from an
+ *     account record) it configures the client directly. Without them it falls
+ *     back to env-var defaults for backward compatibility. The cloud paths
+ *     (Bedrock, Azure, Vertex) are data-driven by catalogProvider().authKind,
+ *     so adding a new cloud provider is a catalog row, not new code here.
+ *
+ * Credential resolution order (per provider):
+ *   1. Explicit ResolvedCreds from a saved account (passed by the caller).
+ *   2. The named environment variable in ENV_KEY / catalogProvider().envVars[0].
+ *   3. The SDK's own ambient credential chain (AWS profile/role, Google ADC, etc.).
+ *
+ * The "only provider SDK touch" constraint means routing, cost estimation, and
+ * the model selector are all free of SDK imports and can be tested without
+ * setting up real credentials.
+ */
 import { anthropic, createAnthropic } from "@ai-sdk/anthropic";
 import { openai, createOpenAI } from "@ai-sdk/openai";
 import { google, createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -14,58 +50,92 @@ import { profileFor } from "./model/profiles.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
 import type { Account, ResolvedCreds } from "./accounts/types.ts";
 
-// Provider id is catalog-driven (open string) — the four below are "native"
+// Provider id is catalog-driven (open string). The four below are "native"
 // (first-party SDK packages); every other provider talks the OpenAI wire.
 export type ProviderId = string;
 export type NativeProviderId = "anthropic" | "openai" | "google" | "deepseek";
+
+/**
+ * The set of providers that have a first-party SDK package installed.
+ * Non-native providers (openai-compat, gateways, local servers) all route
+ * through createOpenAI({ baseURL }) so they require no additional SDK.
+ */
 const NATIVE = new Set<string>(["anthropic", "openai", "google", "deepseek"]);
 
+/**
+ * Static description of a model that Gearbox can run.
+ *
+ * Used by the selector (display + filtering), the cost estimator (cost field),
+ * the context indicator (contextWindow), and resolveModel (provider + sdkId).
+ * All fields except id, provider, sdkId, label, and contextWindow are optional
+ * and additive: omitting them never breaks anything, the router just has less
+ * signal to work with.
+ */
 export interface ModelSpec {
-  id: string; // friendly id used everywhere, e.g. "claude-sonnet-4-6"
+  /** Friendly id used throughout the app, e.g. "claude-sonnet-4-6". */
+  id: string;
   provider: ProviderId;
-  sdkId: string; // the provider's own model string
-  label: string; // short display name, e.g. "sonnet-4.6"
-  contextWindow: number; // approx tokens; used for the context indicator
-  // Routing hints (seeded; the full corpus lives in src/model/profiles.ts).
-  // Optional + additive so nothing breaks; the router will read these later.
+  /** The model string the provider's own API expects, e.g. "claude-sonnet-4-6". */
+  sdkId: string;
+  /** Short display name shown in the status bar and selector, e.g. "sonnet-4.6". */
+  label: string;
+  /** Approximate context-window size in tokens; used for the context-% indicator. */
+  contextWindow: number;
+  // Routing hints. Seeded values are best-effort; the full measured corpus
+  // lives in src/model/profiles.ts. The router reads from both sources.
+  /** Public list price in USD per million tokens. Used for the live cost estimate. */
   cost?: { inUSDPerMtok: number; outUSDPerMtok: number };
+  /** Latency hints (TTFT in ms, throughput in tokens/s) for the router scorer. */
   speed?: { ttftMs: number; tps: number };
-  quality?: number; // 0–1, e.g. SWE-bench Verified
-  reasoning?: boolean; // supports a reasoning/thinking-effort control (see model/reasoning.ts)
-  efforts?: string[]; // model/provider-specific reasoning effort values, e.g. low/high/xhigh/max
+  /** Quality score on a 0-1 scale, e.g. SWE-bench Verified pass rate. */
+  quality?: number;
+  /** True when this model supports a reasoning/thinking-effort control. */
+  reasoning?: boolean;
+  /** Model-specific effort level strings, e.g. ["low","medium","high","max"]. */
+  efforts?: string[];
   capabilities?: {
     tools?: boolean | "unknown";
     images?: boolean | "unknown";
     jsonSchema?: boolean | "unknown";
     systemPrompt?: boolean | "unknown";
     usage?: "exact" | "partial" | "none";
+    /** How this spec was sourced: official docs, live API, user config, or seeded guess. */
     source?: "official" | "api-discovered" | "user-configured" | "seeded";
   };
 }
 
-// The registry. Adding a model is data, not code. Routing will score over this list.
-// contextWindow values are approximate (for the UI's context %); refine as needed.
-// cost values are approximate public list prices ($/Mtok) — used for the live
-// session cost estimate in the status bar (and later by the router).
-// Hand-curated, data-rich specs (real cost + context windows; routing scores
-// over these via src/model/profiles.ts). Keep these the canonical ids.
+/**
+ * MODELS: the static base registry, built once at module load.
+ *
+ * It is the union of CURATED (hand-authored specs with real cost, context
+ * window, and routing data) and generatedModels() (one lightweight spec per
+ * catalog defaultModels entry that is not already in CURATED). Adding a model
+ * is data, not code: drop a row in CURATED or add an entry to the catalog.
+ *
+ * Do NOT iterate this array directly at call time. Use modelRegistry(), which
+ * overlays account-discovered models, suppresses stale seeds, and deduplicates.
+ */
+
+// contextWindow values are approximate (for the UI context-% indicator); refine as needed.
+// cost values are approximate public list prices ($/Mtok) used for the live cost estimate.
+// Hand-curated, data-rich specs: keep these the canonical ids.
 const CURATED: ModelSpec[] = [
-  // Anthropic (native). Opus 4.8 is the flagship; all support adaptive thinking
-  // except Haiku. Sonnet/Opus now carry a 1M context window.
+  // Anthropic (native). Sonnet and Opus carry a 1M context window.
+  // All three support adaptive thinking (extended thinking) except Haiku.
   { id: "claude-opus-4-8", provider: "anthropic", sdkId: "claude-opus-4-8", label: "opus-4.8", contextWindow: 1_000_000, cost: { inUSDPerMtok: 5, outUSDPerMtok: 25 }, reasoning: true, efforts: ["low", "medium", "high", "xhigh", "max"] },
   { id: "claude-sonnet-4-6", provider: "anthropic", sdkId: "claude-sonnet-4-6", label: "sonnet-4.6", contextWindow: 1_000_000, cost: { inUSDPerMtok: 3, outUSDPerMtok: 15 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
   { id: "claude-haiku-4-5", provider: "anthropic", sdkId: "claude-haiku-4-5", label: "haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 1, outUSDPerMtok: 5 } },
-  // OpenAI (native). GPT-5.5 reasoning effort: none/minimal/low/medium/high/xhigh.
+  // OpenAI (native). Reasoning effort levels: none/minimal/low/medium/high/xhigh.
   { id: "gpt-5.5", provider: "openai", sdkId: "gpt-5.5", label: "gpt-5.5", contextWindow: 400_000, cost: { inUSDPerMtok: 2.5, outUSDPerMtok: 10 }, reasoning: true, efforts: ["none", "minimal", "low", "medium", "high", "xhigh"] },
   { id: "gpt-5.5-pro", provider: "openai", sdkId: "gpt-5.5-pro", label: "gpt-5.5-pro", contextWindow: 400_000, cost: { inUSDPerMtok: 15, outUSDPerMtok: 120 }, reasoning: true, efforts: ["none", "minimal", "low", "medium", "high", "xhigh"] },
-  // Google (native). Gemini 3.x with thinking config.
+  // Google (native). Gemini 3.x models with thinking config support.
   { id: "gemini-3.1-pro-preview", provider: "google", sdkId: "gemini-3.1-pro-preview", label: "gemini-3.1-pro", contextWindow: 1_000_000, cost: { inUSDPerMtok: 2, outUSDPerMtok: 12 }, reasoning: true, efforts: ["minimal", "low", "medium", "high"] },
   { id: "gemini-3.5-flash", provider: "google", sdkId: "gemini-3.5-flash", label: "gemini-3.5-flash", contextWindow: 1_000_000, cost: { inUSDPerMtok: 0.3, outUSDPerMtok: 2.5 }, reasoning: true, efforts: ["minimal", "low", "medium", "high"] },
   // DeepSeek (native; deepseek-chat/reasoner retire after 2026-07).
   { id: "deepseek-v4-pro", provider: "deepseek", sdkId: "deepseek-v4-pro", label: "deepseek-v4-pro", contextWindow: 128_000, cost: { inUSDPerMtok: 0.4, outUSDPerMtok: 1.75 } },
   { id: "deepseek-v4-flash", provider: "deepseek", sdkId: "deepseek-v4-flash", label: "deepseek-v4-flash", contextWindow: 128_000, cost: { inUSDPerMtok: 0.27, outUSDPerMtok: 1.1 } },
-  // Amazon Bedrock — Claude and Amazon Nova models hosted on AWS. Pricing is ~10% above direct.
-  // IDs use the provider/sdkId format so they match the generated-model keys and dedup cleanly.
+  // Amazon Bedrock: Claude and Nova models hosted on AWS. Pricing is ~10% above direct.
+  // IDs use "provider/sdkId" format to stay unique and match generated-model keys.
   { id: "bedrock/anthropic.claude-sonnet-4-20250514-v1:0", provider: "bedrock", sdkId: "anthropic.claude-sonnet-4-20250514-v1:0", label: "bedrock/sonnet-4", contextWindow: 200_000, cost: { inUSDPerMtok: 3.3, outUSDPerMtok: 16.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
   { id: "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0", provider: "bedrock", sdkId: "anthropic.claude-haiku-4-5-20251001-v1:0", label: "bedrock/haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 1.1, outUSDPerMtok: 5.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
   { id: "bedrock/anthropic.claude-opus-4-20250514-v1:0", provider: "bedrock", sdkId: "anthropic.claude-opus-4-20250514-v1:0", label: "bedrock/opus-4", contextWindow: 200_000, cost: { inUSDPerMtok: 5.5, outUSDPerMtok: 27.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
@@ -74,24 +144,36 @@ const CURATED: ModelSpec[] = [
   { id: "bedrock/amazon.nova-micro-v1:0", provider: "bedrock", sdkId: "amazon.nova-micro-v1:0", label: "bedrock/nova-micro", contextWindow: 128_000, cost: { inUSDPerMtok: 0.035, outUSDPerMtok: 0.14 } },
   { id: "bedrock/meta.llama4-maverick-17b-instruct-v1:0", provider: "bedrock", sdkId: "meta.llama4-maverick-17b-instruct-v1:0", label: "bedrock/llama-4-mav", contextWindow: 128_000, cost: { inUSDPerMtok: 0.24, outUSDPerMtok: 0.97 } },
   { id: "bedrock/meta.llama4-scout-17b-instruct-v1:0", provider: "bedrock", sdkId: "meta.llama4-scout-17b-instruct-v1:0", label: "bedrock/llama-4-scout", contextWindow: 128_000, cost: { inUSDPerMtok: 0.17, outUSDPerMtok: 0.66 } },
-  // Google Vertex AI — Gemini models via GCP. Same SDK IDs as google native; pricing may differ by project.
+  // Google Vertex AI: Gemini models via GCP. Same SDK IDs as the google-native provider;
+  // pricing may differ by project. Credentials come from the Vertex auth chain (ADC/SA).
   { id: "vertex/gemini-3.1-pro-preview", provider: "vertex", sdkId: "gemini-3.1-pro-preview", label: "vertex/gemini-3.1-pro", contextWindow: 1_000_000, cost: { inUSDPerMtok: 2, outUSDPerMtok: 12 }, reasoning: true, efforts: ["minimal", "low", "medium", "high"] },
   { id: "vertex/gemini-3.5-flash", provider: "vertex", sdkId: "gemini-3.5-flash", label: "vertex/gemini-3.5-flash", contextWindow: 1_000_000, cost: { inUSDPerMtok: 0.3, outUSDPerMtok: 2.5 }, reasoning: true, efforts: ["minimal", "low", "medium", "high"] },
   { id: "vertex/gemini-3.1-flash-lite", provider: "vertex", sdkId: "gemini-3.1-flash-lite", label: "vertex/gemini-3.1-flash-lite", contextWindow: 1_000_000, cost: { inUSDPerMtok: 0.1, outUSDPerMtok: 0.4 } },
 ];
 
-// Everything else is DATA: derive a spec per catalog `defaultModels` entry so all
-// the openai-compat / gateway / cloud providers are selectable, not just stored.
-// id is namespaced (`provider/model`) to stay unique; deduped against CURATED by
-// provider+sdkId so the canonical natives win. cli providers run via subprocess
-// (P3), not resolveModel, so they're excluded here.
+/**
+ * Builds lightweight ModelSpec entries from catalog defaultModels for every
+ * non-CLI, non-discoverOnly provider that is not already covered by CURATED.
+ *
+ * Resulting specs are tagged source:"seeded" to mark them as catalog examples,
+ * not confirmed callable ids. modelRegistry() drops them for any provider that
+ * has a real account-discovered model list, preventing the "listed model 404s"
+ * bug on any provider, not just Azure.
+ *
+ * CLI providers are excluded here because they run via subprocess (not
+ * resolveModel) and are handled separately by subscriptionSeats().
+ *
+ * discoverOnly providers (e.g. Azure, Foundry) are also excluded: their
+ * catalog defaultModels are deployment-name examples, and advertising them
+ * as callable before discovery is the root cause of deployment-404 errors.
+ */
 function generatedModels(): ModelSpec[] {
   const out: ModelSpec[] = [];
   for (const p of CATALOG) {
     if (p.group === "cli") continue;
     // discoverOnly providers (Azure, Foundry): the catalog `defaultModels` are
     // examples, not callable ids — advertising them as "ready to use" is exactly
-    // the deployment-404 bug. Their real set comes from discovery → account.models.
+    // the deployment-404 bug. Their real set comes from discovery -> account.models.
     if (p.discoverOnly) continue;
     for (const m of p.defaultModels ?? []) {
       if (CURATED.some((c) => c.provider === p.id && c.sdkId === m)) continue;
@@ -107,6 +189,15 @@ function generatedModels(): ModelSpec[] {
 
 export const MODELS: ModelSpec[] = [...CURATED, ...generatedModels()];
 
+/**
+ * Builds ModelSpec entries for every model that has been discovered from a
+ * real account (via src/accounts/discover.ts) and stored in account.models.
+ *
+ * Specs are tagged source:"api-discovered" and capabilities are marked
+ * "unknown" because the discovery endpoint does not expose them. CURATED
+ * models are excluded: their canonical spec always takes precedence, and
+ * the dedup in modelRegistry() enforces that order.
+ */
 function accountModelSpecs(): ModelSpec[] {
   const out: ModelSpec[] = [];
   for (const account of listAccounts()) {
@@ -131,9 +222,16 @@ function accountModelSpecs(): ModelSpec[] {
   return out;
 }
 
-// Providers whose seed examples should be hidden: deployment-named ones always
-// (discoverOnly), plus any provider where an account has a real, discovered model
-// set — there, the discovered list is the truth and the seeds are stale guesses.
+/**
+ * Returns the set of provider ids whose seeded (catalog example) entries
+ * should be hidden from the registry.
+ *
+ * A provider is suppressed when:
+ *   - It is flagged discoverOnly in the catalog (deployment-named providers
+ *     like Azure where the defaultModels are never callable as-is), OR
+ *   - It has an enabled account with at least one discovered model (the
+ *     real list is available so the seeded guesses are stale and misleading).
+ */
 function seedSuppressedProviders(): Set<string> {
   const s = new Set<string>();
   for (const p of CATALOG) if (p.discoverOnly) s.add(p.id);
@@ -143,6 +241,22 @@ function seedSuppressedProviders(): Set<string> {
   return s;
 }
 
+/**
+ * Returns the live, call-time model registry.
+ *
+ * This is the authoritative list of models that can be selected, resolved,
+ * and costed. It is computed fresh on every call (no module-level cache) so
+ * changes to the account store are reflected immediately.
+ *
+ * Algorithm:
+ *   1. Start from MODELS (static base).
+ *   2. Drop seeded entries for any provider in seedSuppressedProviders().
+ *   3. Append accountModelSpecs() (discovered models from saved accounts).
+ *   4. Deduplicate by provider+sdkId, with the static base winning over
+ *      discovered duplicates (earlier entries are kept).
+ *
+ * Only models returned here are valid inputs to resolveModel().
+ */
 export function modelRegistry(): ModelSpec[] {
   const suppressed = seedSuppressedProviders();
   // Drop seed examples for any provider that now has a real (discovered) list.
@@ -158,20 +272,34 @@ export function modelRegistry(): ModelSpec[] {
   return out;
 }
 
-// A subscription seat the router can score as a candidate: the canonical model
-// (so quality/cost/efforts come from ONE source of truth — the profile/registry)
-// surfaced as a `cli:<binary>` candidate that runs through the vendor binary. The
-// seat's marginal cost is ≈0 until its rate limit; the scorer's plan bonus, not a
-// faked cost, is what makes it preferred — so `canonicalId` keeps the real metered
-// price available for the "what it would have cost" comparison. Not added to
-// modelRegistry() (which must stay resolvable-only — it feeds resolveModel /
-// estimateCost). Empty unless a cli account is configured (default users unaffected).
+/**
+ * A CLI subscription seat that the router can score as a candidate.
+ *
+ * Subscription accounts (claude, codex, etc.) run through a vendor binary
+ * rather than an API key, so they never appear in modelRegistry(). They are
+ * surfaced here instead, as SubscriptionSeat records, so the router can
+ * compare them against metered API candidates.
+ *
+ * The `spec` id uses the format "cli:<accountId>:<sdkId>" and its provider is
+ * "cli:<binary>", which resolveModel never sees (the caller routes these to
+ * the subprocess path). `canonicalId` points to the matching CURATED entry so
+ * quality, cost, and effort data come from one source of truth. The marginal
+ * cost of a subscription seat is ~0 until its rate limit; the scorer uses a
+ * plan bonus rather than faking a price, and `canonicalId` keeps the real
+ * metered price available for "what it would have cost" comparisons.
+ *
+ * Empty unless a CLI account is configured; default (API-key) users are
+ * unaffected.
+ */
 export interface SubscriptionSeat {
-  spec: ModelSpec; // display spec: id `cli:<accountId>:<sdkId>`, provider `cli:<binary>`
-  canonicalId?: string; // the registry model id this seat mirrors (profile lookup)
+  /** Display spec with id "cli:<accountId>:<sdkId>", provider "cli:<binary>". */
+  spec: ModelSpec;
+  /** Registry model id this seat mirrors, for profile/cost lookups. */
+  canonicalId?: string;
   account: Account;
   binary: string;
-  profile?: string; // login profile / config dir for multi-account
+  /** Login profile / config dir, for multi-account CLI setups. */
+  profile?: string;
 }
 
 export function subscriptionSeats(): SubscriptionSeat[] {
@@ -204,6 +332,18 @@ export function subscriptionSeats(): SubscriptionSeat[] {
   return out;
 }
 
+/**
+ * Maps each native provider id to the environment variable that carries its
+ * API key. These are the canonical env var names documented by each provider.
+ *
+ * Credential resolution order for native providers:
+ *   1. ResolvedCreds.apiKey (from a saved account record).
+ *   2. The env var listed here (backward-compatible path for users who set
+ *      keys directly in their shell environment).
+ *   3. The provider SDK's own ambient lookup (varies by SDK).
+ *
+ * Non-native providers fall back to catalogProvider(id).envVars[0].
+ */
 const ENV_KEY: Record<NativeProviderId, string> = {
   anthropic: "ANTHROPIC_API_KEY",
   openai: "OPENAI_API_KEY",
@@ -211,59 +351,96 @@ const ENV_KEY: Record<NativeProviderId, string> = {
   deepseek: "DEEPSEEK_API_KEY",
 };
 
-// The env var that carries a provider's key (native first, else the catalog's).
+/** Returns the primary env var name for a provider's API key. */
 function envVarFor(provider: string): string | undefined {
   return ENV_KEY[provider as NativeProviderId] ?? catalogProvider(provider)?.envVars[0];
 }
 
-// Cloud creds from the environment (the fallback when there's no account — the
-// SDKs also consult their own chains: ~/.aws, ADC, etc.).
+/**
+ * Reads AWS credentials from environment variables.
+ * Returns undefined when neither AWS_REGION nor AWS_ACCESS_KEY_ID is set,
+ * allowing the SDK's own credential chain (instance role, ~/.aws/credentials,
+ * etc.) to run instead.
+ */
 function awsFromEnv(): ResolvedCreds["aws"] | undefined {
   const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
   const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
   if (!region && !accessKeyId) return undefined;
   return { region: region ?? "us-east-1", accessKeyId: accessKeyId ?? "", secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY ?? "", sessionToken: process.env.AWS_SESSION_TOKEN };
 }
+
+/**
+ * Reads Azure credentials from environment variables.
+ * Returns undefined when neither AZURE_RESOURCE_NAME nor AZURE_API_KEY is set.
+ */
 function azureFromEnv(): ResolvedCreds["azure"] | undefined {
   const resourceName = process.env.AZURE_RESOURCE_NAME;
   const apiKey = process.env.AZURE_API_KEY;
   if (!resourceName && !apiKey) return undefined;
   return { resourceName: resourceName ?? "", apiKey: apiKey ?? "" };
 }
+
+/**
+ * Reads Vertex AI credentials from environment variables.
+ * Returns undefined when GOOGLE_VERTEX_PROJECT is not set, allowing the SDK
+ * to fall through to Application Default Credentials (ADC).
+ */
 function vertexFromEnv(): ResolvedCreds["vertex"] | undefined {
   const project = process.env.GOOGLE_VERTEX_PROJECT;
   if (!project) return undefined;
   return { project, location: process.env.GOOGLE_VERTEX_LOCATION ?? "us-central1" };
 }
 
-// Available if a stored account exists for it OR a key is in the env
-// (back-compat). Accounts are the durable onboarding path; env is the fallback.
+/**
+ * Returns true when a provider has usable credentials.
+ *
+ * A provider is considered available when:
+ *   - At least one saved account exists for it (the durable onboarding path), OR
+ *   - The provider's primary env var is set (backward-compatible fallback).
+ */
 export function providerAvailable(p: ProviderId): boolean {
   if (accountsForProvider(p).length > 0) return true;
   const ev = envVarFor(p);
   return ev ? Boolean(process.env[ev]) : false;
 }
 
+/** Finds a ModelSpec by id or label. Returns undefined if not found. */
 export function findModel(idOrLabel: string): ModelSpec | undefined {
   return modelRegistry().find((m) => m.id === idOrLabel || m.label === idOrLabel);
 }
 
-// Cost lookup: registry spec first, then the profile corpus (covers canonical
-// models that aren't in the live registry). Discovered/gateway models have no
-// price and return undefined — the caller treats that as "unknown", not $0.
+/**
+ * Resolves the cost for a model id, used by estimateCost.
+ *
+ * Lookup order:
+ *   1. The spec's own cost field from the live registry.
+ *   2. The model profile corpus (src/model/profiles.ts) by exact id.
+ *   3. The profile corpus by the bare sdkId, so a gateway model like
+ *      "openrouter/claude-opus-4-8" inherits the canonical profile price
+ *      rather than falling back to $0.
+ *
+ * Returns undefined for discovered/gateway models with no price data.
+ * Callers should treat undefined as "unknown cost", not zero.
+ */
 function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | undefined {
   const spec = modelRegistry().find((m) => m.id === id);
-  // spec cost → profile by id → profile by the bare sdkId (so a gateway model like
+  // spec cost -> profile by id -> profile by the bare sdkId (so a gateway model like
   // "openrouter/claude-opus-4-8" still prices off the canonical profile, not $0).
   return spec?.cost ?? profileFor(id)?.cost ?? (spec ? profileFor(spec.sdkId)?.cost : undefined);
 }
 
 /**
- * Approximate USD cost of a set of turns, from each turn's model + token usage.
- * Cache-aware: Anthropic-style usage reports cache tokens SEPARATELY from
- * `inputTokens`, so we add them at their real rates (reads ≈10% of input, 5m
- * writes ≈125%). Flat-rate subscription seats (`cli:` ids) cost $0 — the marginal
- * price is zero, so pricing them at metered list rates was wrong.
+ * Estimates the approximate USD cost of a set of turns from per-turn usage data.
+ *
+ * Cache-aware: Anthropic-style usage reports cache tokens separately from
+ * inputTokens, so they are priced at their real rates:
+ *   - cachedInputTokens (cache reads): approximately 10% of the normal input rate.
+ *   - cacheCreationInputTokens (cache writes): approximately 125% of the normal
+ *     input rate (billed higher because the provider stores the KV cache).
+ *
+ * Flat-rate subscription seats (model ids starting with "cli:") have zero
+ * marginal cost and are always skipped. Pricing them at list rates was wrong
+ * because the seat fee is sunk, not per-call.
  */
 export function estimateCost(
   turns: { model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheCreationInputTokens?: number }[],
@@ -281,11 +458,30 @@ export function estimateCost(
   return usd;
 }
 
-// Build the AI SDK model instance. With `creds` (from an account) we configure
-// the provider explicitly; without them we use the env-default instances
-// (back-compat). Any `creds.baseURL` routes through the OpenAI wire
-// protocol — that one path covers every openai-compat provider, gateway, and
-// local server, so adding those is data (a catalog row), not code here.
+/**
+ * Builds an AI SDK LanguageModel instance for a given spec and optional credentials.
+ *
+ * This is the single point where provider SDKs are instantiated. The rest of
+ * the app passes the returned LanguageModel to streamText/generateText without
+ * knowing which SDK produced it.
+ *
+ * Resolution order for credentials:
+ *   1. Explicit ResolvedCreds (from a saved account, passed by the caller).
+ *   2. Env-var fallback via envVarFor() (backward-compatible path).
+ *   3. SDK ambient chain (AWS profile/role, Google ADC, etc.).
+ *
+ * Routing through providers:
+ *   - AWS (authKind "aws"): createAmazonBedrock, env fallback to awsFromEnv().
+ *   - Azure (authKind "azure"): createAzure, env fallback to azureFromEnv().
+ *   - Vertex (authKind "vertex"): createVertex, env fallback to vertexFromEnv().
+ *   - Any provider with a baseURL (non-native openai-compat, gateways, local
+ *     servers): createOpenAI({ baseURL }). Adding a new provider in this
+ *     category is a catalog row, not code here.
+ *   - Native providers (anthropic/openai/google/deepseek): use the
+ *     provider-specific SDK; fall back to the env-default singleton instance
+ *     when no key is provided (backward-compat with ambient credentials).
+ *   - Unknown non-native provider with no baseUrl: fall back to the OpenAI wire.
+ */
 export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageModel {
   const apiKey = creds?.apiKey ?? (envVarFor(spec.provider) ? process.env[envVarFor(spec.provider)!] : undefined);
 
@@ -318,7 +514,7 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
   }
 
   // OpenAI-wire path: any non-native provider routes through createOpenAI with
-  // its catalog baseUrl (account-supplied or default). One path, ~25 providers.
+  // its catalog baseUrl (account-supplied or default). One path covers ~25 providers.
   const baseURL = creds?.baseURL ?? (NATIVE.has(spec.provider) ? undefined : catalogProvider(spec.provider)?.baseUrl);
   if (baseURL) {
     return createOpenAI({ baseURL, apiKey, headers: creds?.headers })(spec.sdkId);

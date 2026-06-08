@@ -1,44 +1,68 @@
-// MODEL CORPUS — the data foundation for intelligent routing and for accurate
-// context budgeting. Per model: context window, cost, tokenizer calibration,
-// latency, quality, and qualitative strengths/weaknesses. Every field is tagged
-// by provenance (measured here / researched / seeded) and dated — routing must
-// know a benchmark guess from a measured fact (DESIGN.md: confidence is first-class).
+// ── MODEL CORPUS ──────────────────────────────────────────────────────────────
+// The data foundation for intelligent routing and for accurate context budgeting.
+// Each ModelProfile captures everything the router needs to score a candidate:
+// context window, pricing (per-Mtok in/out), tokenizer calibration, latency
+// (TTFT and tokens/sec), and quality benchmarks (SWE-bench Verified, Artificial
+// Analysis intelligence index). Profiles are keyed by the same id used in
+// providers.ts, so the router can look up a profile for any registry entry.
+//
+// Every field carries a provenance tag (measured / researched / seeded) so
+// routing code can distinguish a measured benchmark from a best-effort guess.
+// This matters for quality gating: the router skips the bar for a seat whose
+// quality provenance is unknown rather than penalizing it on a 0.5 assumption.
 //
 // MEASURED (this machine, 2026-06, experiments/models/): tokenizer calibration
 // (vs Anthropic count_tokens + ollama prompt_eval_count) and latency (TTFT, tok/s).
 // RESEARCHED (2026-06): SWE-bench Verified, Artificial Analysis intelligence index,
-// pricing — see experiments/models/FINDINGS.md for sources. SEEDED: best-effort.
+// pricing, see experiments/models/FINDINGS.md for sources.
+// SEEDED: best-effort estimates; no primary source available at time of writing.
 import type { ProviderId } from "../providers.ts";
 
 export type Provenance = "measured" | "researched" | "seeded";
 export type TokenizerFamily = "tiktoken-o200k" | "claude" | "gemini" | "deepseek" | "local" | "llama";
 
+// A complete data record for one model. The router reads cost, latency, and
+// quality from here; context budgeting reads contextWindow and tokenizer.
+// `id` must match the registry id in providers.ts for the lookup to succeed.
 export interface ModelProfile {
   id: string; // matches providers.ts MODELS id where the app uses it
   provider: ProviderId;
   contextWindow: number;
   maxOutput: number;
-  // tiktoken(o200k) count × calibration ≈ this model's real token count.
-  // Calibration measured against Anthropic /v1/messages/count_tokens & ollama.
+  // tiktoken(o200k) count * calibration approximates this model's real token count.
+  // Claude's subword tokenizer runs 20-40% denser than tiktoken on code, so
+  // calibration > 1 gives a safe over-estimate (never overflow context).
   tokenizer: { family: TokenizerFamily; calibration: number; calibrationSrc: Provenance };
   cost: { inUSDPerMtok: number; outUSDPerMtok: number; src: Provenance };
   latency?: { ttftMs: number; tps: number; src: Provenance };
+  // Quality benchmarks. sweBenchVerified (0..1) is the primary routing signal
+  // because it measures real-world coding ability. intelligenceIndex (0..100) is
+  // the Artificial Analysis composite; the router normalises it to 0..1 as a
+  // fallback when sweBenchVerified is absent.
   quality: { sweBenchVerified?: number; intelligenceIndex?: number; src: Provenance };
   strengths: string[];
   weaknesses: string[];
-  asOf: string;
+  asOf: string; // YYYY-MM snapshot date for these figures
 }
 
-// Tokenizer calibration is MEASURED: code/structured content tokenizes far denser
-// than prose, and Claude runs ~20–40% above tiktoken — so we over-estimate slightly
-// (safe: never overflow). Anthropic exact counts are available free via count_tokens.
+// Tokenizer calibration shorthands. The router resolves the calibration once per
+// candidate, so these shared constants keep the PROFILES array readable.
+// CLAUDE_TOK is measured: code/structured content tokenizes far denser than prose
+// in Claude's tokenizer, so 1.35 provides a safe over-estimate.
 const CLAUDE_TOK = { family: "claude" as const, calibration: 1.35, calibrationSrc: "measured" as const };
 const TIKTOKEN = { family: "tiktoken-o200k" as const, calibration: 1.0, calibrationSrc: "measured" as const };
 const GEMINI_TOK = { family: "gemini" as const, calibration: 1.1, calibrationSrc: "seeded" as const };
 const DEEPSEEK_TOK = { family: "deepseek" as const, calibration: 1.05, calibrationSrc: "seeded" as const };
 const LLAMA_TOK = { family: "llama" as const, calibration: 1.1, calibrationSrc: "seeded" as const };
 
+// Profiles are listed roughly in cost-descending order within each provider tier
+// (most capable first). The router does NOT rely on array order; it looks up by
+// id. The ordering here is only for human readability.
 export const PROFILES: ModelProfile[] = [
+  // ── Anthropic ────────────────────────────────────────────────────────────────
+  // Three tiers: Opus (quality ceiling), Sonnet (balanced default), Haiku (speed/cost).
+  // The quality bar in router.ts maps code/plan tasks to 0.7, which naturally
+  // selects Sonnet or above and routes Haiku only to cheap bounded sub-tasks.
   {
     id: "claude-opus-4-8", provider: "anthropic", contextWindow: 1_000_000, maxOutput: 128_000,
     tokenizer: CLAUDE_TOK,
@@ -60,25 +84,34 @@ export const PROFILES: ModelProfile[] = [
     asOf: "2026-06",
   },
   {
+    // Haiku: high tps (180) and low cost make it the preferred pick for summarize,
+    // classify, and search sub-tasks. The quality bar (0.7 for code) keeps it out
+    // of hard tasks even though it is cheapest.
     id: "claude-haiku-4-5", provider: "anthropic", contextWindow: 200_000, maxOutput: 32_000,
     tokenizer: CLAUDE_TOK,
     cost: { inUSDPerMtok: 1, outUSDPerMtok: 5, src: "researched" },
     latency: { ttftMs: 1340, tps: 180, src: "measured" },
     quality: { intelligenceIndex: 38, src: "seeded" },
-    strengths: ["fast (≈2× sonnet throughput)", "cheap", "great for bounded sub-tasks: summarize, classify, search-digest"],
+    strengths: ["fast (approx 2x sonnet throughput)", "cheap", "great for bounded sub-tasks: summarize, classify, search-digest"],
     weaknesses: ["weaker on hard multi-step reasoning vs sonnet/opus"],
     asOf: "2026-06",
   },
+
+  // ── OpenAI ───────────────────────────────────────────────────────────────────
   {
     id: "gpt-5.5", provider: "openai", contextWindow: 400_000, maxOutput: 128_000,
     tokenizer: TIKTOKEN,
     cost: { inUSDPerMtok: 2.5, outUSDPerMtok: 10, src: "seeded" },
     latency: { ttftMs: 0, tps: 0, src: "seeded" },
     quality: { sweBenchVerified: 0.78, intelligenceIndex: 58, src: "seeded" },
-    strengths: ["strong reasoning (effort: none→xhigh)", "broad knowledge", "tool use"],
+    strengths: ["strong reasoning (effort: none to xhigh)", "broad knowledge", "tool use"],
     weaknesses: ["pricier output", "reasoning latency at high effort"],
     asOf: "2026-06",
   },
+
+  // ── Google ───────────────────────────────────────────────────────────────────
+  // Pro: quality-tier model with 1M context and configurable thinking budget.
+  // Flash: cheap/fast with the same 1M context window; good for bulk sub-tasks.
   {
     id: "gemini-3.1-pro-preview", provider: "google", contextWindow: 1_000_000, maxOutput: 64_000,
     tokenizer: GEMINI_TOK,
@@ -99,6 +132,10 @@ export const PROFILES: ModelProfile[] = [
     weaknesses: ["lower ceiling on hard tasks"],
     asOf: "2026-06",
   },
+
+  // ── DeepSeek ─────────────────────────────────────────────────────────────────
+  // Competitive coding quality at a fraction of frontier prices; smaller context
+  // and hosted latency are the trade-offs.
   {
     id: "deepseek-v4-pro", provider: "deepseek", contextWindow: 128_000, maxOutput: 8_000,
     tokenizer: DEEPSEEK_TOK,
@@ -111,7 +148,9 @@ export const PROFILES: ModelProfile[] = [
   },
 
   // ── Amazon Bedrock ───────────────────────────────────────────────────────────
-  // Claude models via Bedrock carry ~10% pricing premium over Anthropic direct.
+  // Claude models via Bedrock carry approximately 10% pricing premium over
+  // Anthropic direct (cross-region inference pricing). AWS-native deployment
+  // removes the need for API keys outside AWS and enables VPC endpoints.
   {
     id: "bedrock/anthropic.claude-sonnet-4-20250514-v1:0", provider: "bedrock", contextWindow: 200_000, maxOutput: 64_000,
     tokenizer: CLAUDE_TOK,
@@ -143,6 +182,8 @@ export const PROFILES: ModelProfile[] = [
     asOf: "2026-06",
   },
   {
+    // Nova Pro: Amazon's own multimodal model. Lower quality ceiling than Claude
+    // but native to AWS and cheaper for bulk work.
     id: "bedrock/amazon.nova-pro-v1:0", provider: "bedrock", contextWindow: 300_000, maxOutput: 5_000,
     tokenizer: TIKTOKEN,
     cost: { inUSDPerMtok: 0.8, outUSDPerMtok: 3.2, src: "seeded" },
@@ -194,7 +235,8 @@ export const PROFILES: ModelProfile[] = [
   },
 
   // ── Google Vertex AI ─────────────────────────────────────────────────────────
-  // Same Gemini models as google native; pricing may vary by project/committed use.
+  // The same Gemini model family as the google provider, deployed on GCP Vertex.
+  // Pricing may differ from the public API depending on committed-use discounts.
   {
     id: "vertex/gemini-3.1-pro-preview", provider: "vertex", contextWindow: 1_000_000, maxOutput: 64_000,
     tokenizer: GEMINI_TOK,
@@ -227,12 +269,16 @@ export const PROFILES: ModelProfile[] = [
   },
 ];
 
+// Fast O(1) lookup used by the router and context-budgeting code. Built once at
+// module load time; never mutated at runtime.
 const BY_ID = new Map(PROFILES.map((p) => [p.id, p]));
 export function profileFor(id: string): ModelProfile | undefined {
   return BY_ID.get(id);
 }
 
-// Tokenizer calibration by provider (fallback when a model id isn't profiled).
+// Per-provider calibration fallback: used when a model id is not in PROFILES
+// (e.g. a future model added to providers.ts before a profile is written).
+// Conservative over-estimates are safe; under-estimates risk context overflow.
 export const PROVIDER_CALIBRATION: Record<ProviderId, number> = {
   anthropic: 1.35,
   openai: 1.0,

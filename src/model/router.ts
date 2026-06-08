@@ -1,20 +1,24 @@
-// ── ROUTING ──────────────────────────────────────────────────────────────────
-// The ModelSelector seam's live implementation: pick the model AND the account
-// per task. The principle (DESIGN.md) is "cheapest model that clears the task's
-// quality bar" — never sacrifice quality on the main work, only delegate clearly
-// bounded cheap sub-tasks (summarize/classify/search) to a cheaper model.
+// ── ROUTING: LIVE IMPLEMENTATION OF THE MODEL SELECTOR SEAM ──────────────────
+// RoutingSelector is the production ModelSelector. For each turn it picks the
+// cheapest (model, account) pair that clears the task's quality bar. The
+// guiding principle (DESIGN.md): "cheapest model that clears the quality bar".
+// Never sacrifice quality on the main work; only delegate clearly bounded cheap
+// sub-tasks (summarize, classify, search) to a cheaper model.
 //
-// Beyond cost it is now ACCOUNT-AWARE: every (model, account) pair is a candidate,
-// including flat-rate subscription SEATS (Claude Max / ChatGPT). A seat you
-// already pay for is ≈free until its 5-hour/weekly limit, so it wins by default
-// and falls over to metered API as the limit fills — and metered credit that's
-// genuinely scarce (only where a provider exposes a balance) is preserved. The
-// math lives in the pure scorer (src/model/scoring.ts); account state comes from
-// a per-turn snapshot (src/model/routing-context.ts). Still call-free and
-// deterministic. Confidence-gating is now REACTIVE: `task.escalate` (set when a
-// cheap pick's checks fail) raises the quality bar so the router climbs to a
-// stronger model instead of re-running the too-weak one. (A proactive, shadow-eval
-// version that escalates BEFORE the first miss is the eventual follow-up.)
+// Account awareness: every (model, account) pair is a candidate, including
+// flat-rate subscription seats (Claude Max, ChatGPT). A seat you already pay
+// for is effectively free until its 5-hour or weekly limit, so it wins by
+// default and falls over to the metered API as the limit fills. Metered credit
+// that is genuinely scarce (only where a provider exposes a live balance) is
+// preserved. The scoring math lives in the pure scorer (src/model/scoring.ts);
+// account state comes from a per-turn snapshot (src/model/routing-context.ts).
+// Still call-free and deterministic per turn.
+//
+// Confidence-gated escalation: task.escalate (incremented when a cheap pick's
+// verification fails) raises the quality bar so the router climbs to a stronger
+// model instead of re-running the too-weak one. This is the reactive half of
+// "cheapest model that clears the bar". A proactive shadow-eval version that
+// escalates before the first miss is the intended follow-up.
 import { modelRegistry, providerAvailable, subscriptionSeats, type ModelSpec } from "../providers.ts";
 import { profileFor } from "./profiles.ts";
 import { pickDefaultModel } from "../config.ts";
@@ -28,14 +32,14 @@ import { coolingDown } from "./cooldown.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
-// Fallback working-set size when the caller doesn't supply estTokens. Cost ordering
-// depends only on per-Mtok rates (token count is shared across candidates), so the
-// exact value doesn't matter as long as it's positive.
+// Fallback working-set size when the caller does not supply estTokens. The cost
+// ordering only depends on per-Mtok rates (token count is shared across all
+// candidates), so the exact value does not matter as long as it is positive.
 const NOMINAL_INPUT_TOKENS = 16_000;
 
 // One (model, account) routing candidate, before scoring. `canonicalId` is the
-// registry model id used for profile lookup (cost/quality); it differs from
-// `spec.id` only for subscription seats, which mirror a canonical model.
+// registry model id used for profile lookup (cost and quality); it differs from
+// `spec.id` only for subscription seats, which mirror a canonical model's spec.
 interface Candidate {
   spec: ModelSpec;
   canonicalId?: string;
@@ -43,9 +47,10 @@ interface Candidate {
   state: AccountState;
 }
 
-// Quality bar per task kind (sweBench-Verified-ish, 0..1): how good a model must
-// be to qualify. Bounded sub-tasks have no bar (cheapest wins); real coding and
-// planning demand a strong model.
+// Quality bar per task kind (SWE-bench-Verified-ish, 0..1): minimum quality a
+// model must have to qualify for this task. Bounded sub-tasks (summarize,
+// classify, search) have no bar so the cheapest model wins. Real coding and
+// planning demand a strong model (0.7 clears Sonnet+ but not Haiku).
 const BAR: Record<Kind, number> = {
   summarize: 0,
   classify: 0,
@@ -55,43 +60,45 @@ const BAR: Record<Kind, number> = {
   code: 0.7,
 };
 
-// Each failed verification raises the quality bar by this much, climbing the model
-// ladder. BAR_MAX ensures something always clears; if no candidate clears the raised
-// bar, prepare() promotes to the strongest available tier rather than falling to cheapest.
+// Each failed verification raises the quality bar by ESCALATION_STEP, climbing
+// the model ladder toward stronger candidates. BAR_MAX ensures the bar never
+// excludes every model: if no candidate clears the raised bar, prepare() promotes
+// to the strongest available tier rather than dropping back to cheapest.
 const ESCALATION_STEP = 0.08;
 const BAR_MAX = 0.95;
 
-// Any unambiguous mutation/repair verb means real work → never downgrade, even
-// if the prompt also says "find" or "summarize" (e.g. "find and fix the bug",
-// "summarize and refactor"). Kept tight on purpose: NOT "test"/"build", which
-// would swallow legit bounded sub-tasks like "summarize the test output".
+// Unambiguous mutation or repair verbs: their presence means real work is
+// requested and the prompt should route to a strong model regardless of other
+// signals. Kept intentionally tight: "test" and "build" are NOT included because
+// they would swallow legitimate bounded sub-tasks such as "summarize the test
+// output".
 const MUTATION = /\b(fix|implement|refactor|edit|modif|debug|rewrite|replace|add|create|delete|remove|patch|migrat|rename)\b/;
 
-// Confident keyword classification: returns a kind ONLY when a rule clearly
-// fires (a mutation verb, or an explicit summarize/classify/search marker), and
-// null otherwise. The null case is the ambiguous one — a bare question or
-// explanation that would wrongly default to "code" — which is exactly where the
-// LLM classifier earns its keep. The agent uses this to SKIP the model call
-// (and its ~1-2s latency) whenever the signal is already clear.
+// Returns a task kind ONLY when a rule fires unambiguously: a mutation verb maps
+// to "code", and explicit summarize/classify/search markers map to their kinds.
+// Returns null for ambiguous prompts (a bare question, an explanation request)
+// so the LLM classifier can handle them properly. The agent uses this to SKIP
+// the model call (and its 1-2s latency) when the signal is already clear.
 export function confidentKeywordKind(prompt: string): Kind | null {
   const p = prompt.toLowerCase().trim();
   if (!p) return null;
-  if (MUTATION.test(p)) return "code"; // a real change is requested — strong model
+  if (MUTATION.test(p)) return "code"; // a real change is requested, use a strong model
   if (/\b(summari[sz]e|tl;?dr|recap|condense|digest|gist)\b/.test(p)) return "summarize";
   if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b/.test(p)) return "classify";
   if (/^(find|search|locate|grep)\b|\bwhere is\b|\bwhich file\b/.test(p)) return "search";
   return null;
 }
 
-// Conservative keyword classifier: default to "code" (high bar) unless the prompt
-// is clearly a cheap bounded sub-task. Used as the fallback when the LLM
-// classifier isn't available; never silently downgrades real work.
+// Conservative keyword classifier used as a fallback when the LLM classifier is
+// unavailable. Defaults to "code" (high bar) unless the prompt is clearly a
+// cheap bounded sub-task. Never silently downgrades real work.
 export function classify(prompt: string): Kind {
   return confidentKeywordKind(prompt) ?? "code";
 }
 
-// Profile metrics resolve against the CANONICAL model id (a subscription seat
-// mirrors a real model), falling back to the seat's own spec for cost.
+// Resolve quality from the canonical model profile. Uses sweBenchVerified if
+// available (primary signal), falls back to intelligenceIndex normalised to 0..1,
+// then to 0.5 as a neutral placeholder when neither is present.
 function qualityOf(c: Candidate): number {
   const pr = profileFor(c.canonicalId ?? c.spec.id);
   if (!pr) return 0.5;
@@ -100,21 +107,23 @@ function qualityOf(c: Candidate): number {
   return 0.5;
 }
 
-// Whether a model has a real quality prior. A seat with unknown quality clears the bar
-// unconditionally (we don't penalize it for a 0.5 guess); a seat with known quality is held to the bar.
+// Returns true when the profile contains at least one real quality benchmark.
+// Used by the bar-clearing predicate: a CLI seat with no benchmark is given the
+// benefit of the doubt (assumed to clear) rather than penalised for a 0.5 guess.
 function hasKnownQuality(c: Candidate): boolean {
   const pr = profileFor(c.canonicalId ?? c.spec.id);
   return !!pr && (pr.quality.sweBenchVerified != null || pr.quality.intelligenceIndex != null);
 }
 
-// Bar-clearing predicate, curried on the bar. API candidates must have quality >= bar.
-// Seats also clear when quality is unknown (don't drop them on a 0.5 guess).
+// Returns true when a candidate meets the quality bar for this task.
+// CLI seats (subscription) with unknown quality clear unconditionally.
+// All API candidates and CLI seats with known quality must meet quality >= bar.
 const clearsBar = (bar: number) => (c: Candidate): boolean =>
   c.backend?.kind === "cli" ? !hasKnownQuality(c) || qualityOf(c) >= bar : qualityOf(c) >= bar;
 
 function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {
   const cost = profileFor(c.canonicalId ?? c.spec.id)?.cost ?? c.spec.cost;
-  // Unknown cost sorts last; sentinel 1e6 matches prior POSITIVE_INFINITY behavior.
+  // Unknown cost sorts last. The sentinel 1e6 matches prior POSITIVE_INFINITY behaviour.
   return cost ?? { inUSDPerMtok: 1e6, outUSDPerMtok: 1e6 };
 }
 
@@ -122,7 +131,10 @@ function tpsOf(c: Candidate): number {
   return profileFor(c.canonicalId ?? c.spec.id)?.latency?.tps ?? 0;
 }
 
-// Adapter: strip (model, account) down to the minimal numeric view the pure scorer expects.
+// Adapt a (Candidate) into the minimal numeric shape ScoreCandidate expects.
+// Profile metrics resolve against the canonical model id (a subscription seat
+// mirrors its canonical model's pricing and quality), falling back to the seat's
+// own spec for cost when no profile exists.
 function toScoreCandidate(c: Candidate): ScoreCandidate {
   const cost = costPair(c);
   return { id: c.spec.id, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, quality: qualityOf(c), tps: tpsOf(c), account: c.state };
@@ -131,10 +143,11 @@ function toScoreCandidate(c: Candidate): ScoreCandidate {
 export class RoutingSelector implements ModelSelector {
   constructor(private fallbackId?: string) {}
 
-  // Every (model, account) pair the user can run right now: in-loop registry
-  // models paired with each enabled account that serves their provider (or a
-  // neutral env-default state when there's no stored account), PLUS subscription
-  // seats. Default users (one env key, no accounts) get exactly today's pool.
+  // Enumerate every (model, account) pair the user can run right now.
+  // Registry models are paired with each enabled non-CLI account for their
+  // provider, or with a neutral env-default state when no account is stored.
+  // Subscription seats are appended as separate candidates. The result is the
+  // complete pool; subsequent steps filter it by capability, context, and bar.
   private enumerate(ctx: RoutingContext): Candidate[] {
     const out: Candidate[] = [];
     const neutral = (id: string, provider: string): AccountState =>
@@ -143,6 +156,7 @@ export class RoutingSelector implements ModelSelector {
     for (const m of modelRegistry().filter((mm) => providerAvailable(mm.provider))) {
       const accts = accountsForProvider(m.provider).filter((a) => a.enabled && a.exec !== "cli");
       if (accts.length === 0) {
+        // No stored account for this provider: use the env-key default state.
         out.push({ spec: m, canonicalId: m.id, backend: { kind: "in-loop" }, state: neutral(`env:${m.provider}`, m.provider) });
       } else {
         for (const a of accts) out.push({ spec: m, canonicalId: m.id, backend: { kind: "in-loop", account: a }, state: neutral(a.id, m.provider) });
@@ -152,16 +166,18 @@ export class RoutingSelector implements ModelSelector {
       const state = ctx.byAccountId.get(seat.account.id) ?? { accountId: seat.account.id, provider: seat.account.provider, exec: "cli" as const, isSubscription: true };
       out.push({ spec: seat.spec, canonicalId: seat.canonicalId, backend: { kind: "cli", account: seat.account, binary: seat.binary, profile: seat.profile }, state });
     }
-    // Drop accounts on a failover cooldown (just hit a 429 / out of quota) so the
-    // router routes AROUND them — relaxed if that would leave nothing (a cooling
-    // account beats no model at all).
+    // Remove accounts on a failover cooldown (just hit a 429 or ran out of quota)
+    // so the router routes around them. If cooling would leave zero candidates,
+    // include them anyway: a cooling account beats no model at all.
     const live = out.filter((c) => !coolingDown(c.state.accountId, ctx.now));
     return live.length ? live : out;
   }
 
-  // Shared setup for select() and explain(): build the snapshot, enumerate candidates,
-  // gate by capability/context/global-preference, and identify the bar-clearing set.
-  // Throws when no capable model exists. Returns `fallback` when enumeration is empty.
+  // Shared setup for select() and explain(). Builds the account snapshot,
+  // enumerates all candidates, filters by capability and context window, applies
+  // the global preference, and determines the bar-clearing set.
+  // Throws when no model supports the required capabilities.
+  // Returns a `fallback` field when the enumeration is empty (no keys configured).
   private prepare(task: Task): {
     kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
     pool: Candidate[]; clears: Candidate[]; estInputTokens: number;
@@ -169,7 +185,7 @@ export class RoutingSelector implements ModelSelector {
   } {
     const kind = task.kind ?? classify(task.prompt);
     const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
-    // Each prior miss lifts the bar by ESCALATION_STEP so the router climbs to a stronger model.
+    // Each prior miss lifts the bar so the router climbs to a stronger model.
     const bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
     const required = task.requires ?? [];
     const ctx = buildRoutingContext(ctx_now());
@@ -177,24 +193,32 @@ export class RoutingSelector implements ModelSelector {
 
     const all = this.enumerate(ctx);
     if (all.length === 0) {
+      // No API keys or seats configured: fall back to the default model if available.
       const m = pickDefaultModel(this.fallbackId);
       return { kind, bar, escalate, required, ctx, pool: [], clears: [], estInputTokens, fallback: m ?? undefined };
     }
+    // Filter to models that satisfy every required capability.
     const capable = required.length ? all.filter((c) => supportsRequirements(c.spec, required)) : all;
     if (capable.length === 0) {
       const missing = all.slice(0, 4).map((c) => `${c.spec.label}: ${missingRequirements(c.spec, required).join(", ")}`).join("; ");
       throw new Error(`No configured model supports this turn (${required.join(", ")} required). ${missing}`);
     }
+    // Remove models whose context window is too small for the estimated working set.
+    // A 20% headroom is added so tool outputs don't overflow mid-turn.
     const need = (task.estTokens ?? 0) * 1.2;
     const fits = need > 0 ? capable.filter((c) => c.spec.contextWindow >= need) : capable;
+    // If nothing fits the context requirement, use the full capable set (prefer
+    // a likely-too-small model over no model at all).
     let pool = fits.length ? fits : capable;
     pool = applyGlobalPreference(pool);
-    // Seats with no quality profile (e.g. non-native sdkIds) clear the bar unconditionally;
-    // seats with a known-weak quality (e.g. haiku) are still held to the bar so they
-    // aren't chosen for hard tasks just because they're free and fast (R-3).
+    // Seats with no quality profile clear the bar unconditionally (do not
+    // penalise them on a 0.5 guess). Seats with a known-weak quality (e.g.
+    // Haiku) are still held to the bar so they are not chosen for hard tasks
+    // just because they are free and fast.
     let clears = pool.filter(clearsBar(bar));
-    // If the raised bar clears nobody, promote to the strongest available tier.
-    // Without this, select's fallback would drop to the cheapest — the opposite of escalating.
+    // If the raised bar (from escalation) leaves nothing, promote to the
+    // strongest available tier. Without this, the fallback below would drop
+    // to the cheapest candidate, which is the opposite of escalating.
     if (escalate > 0 && clears.length === 0) {
       const top = Math.max(...pool.map(qualityOf));
       clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= top - 1e-9);
@@ -202,7 +226,8 @@ export class RoutingSelector implements ModelSelector {
     return { kind, bar, escalate, required, ctx, pool, clears, estInputTokens };
   }
 
-  // The per-kind remembered preference, when it's present in the candidate set.
+  // Return the per-kind remembered preference if it is present in the given
+  // candidate set. A preference can be a specific model id or just a provider.
   private preferredIn(kind: Kind, candidates: Candidate[]): Candidate | undefined {
     const pref = preferenceFor(kind);
     return pref?.modelId
@@ -220,22 +245,25 @@ export class RoutingSelector implements ModelSelector {
       }
       return { model: p.fallback, reason: "only model with a key", backend: { kind: "in-loop" } };
     }
+    // Use the bar-clearing set when one exists; otherwise fall back to the full pool.
     const candidates = p.clears.length ? p.clears : p.pool;
-    // An EXPLICIT /prefer overrides the quality-bar default, so look it up in the
-    // whole pool — otherwise "prefer haiku for code" was silently ignored because
-    // haiku sits below the code bar and never entered `clears`.
+    // An explicit /prefer must be searched in the WHOLE pool, not only the
+    // bar-clearing set. Otherwise "prefer haiku for code" was silently ignored
+    // because Haiku sits below the code bar and never entered `clears`.
     const preferred = this.preferredIn(p.kind, p.pool);
     if (preferred) return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
 
+    // Score all bar-clearing candidates and pick the winner.
     const best = pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive });
     const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
     return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
   }
 
-  // The full ranked "why": every candidate scored, with the per-term breakdown,
-  // quality provenance, and balance/headroom — the data the ⌃tab scorecard shows.
-  // Pure read; no side effects. Mirrors select()'s winner exactly.
+  // Build the full ranked scorecard for the "/why" UI panel. Scores the entire
+  // pool (including below-bar candidates) so the UI can show why each model was
+  // excluded. Mirrors select()'s winner exactly so the scorecard always agrees
+  // with the actual routing decision. Pure read; no side effects.
   explain(task: Task): Scorecard {
     const p = this.prepare(task);
     const entries: ScorecardEntry[] = [];
@@ -243,10 +271,11 @@ export class RoutingSelector implements ModelSelector {
       return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: p.fallback ? `only ${p.fallback.label} has a key` : "no model available" };
     }
     const candidates = p.clears.length ? p.clears : p.pool;
-    const preferred = this.preferredIn(p.kind, p.pool); // explicit pref overrides the bar (match select())
+    // Explicit preference overrides the bar, matching the select() logic exactly.
+    const preferred = this.preferredIn(p.kind, p.pool);
 
-    // Score the WHOLE pool (incl. below-bar) for display; the winner is chosen
-    // only from the bar-clearing set, matching select().
+    // Score the entire pool (including below-bar) so the UI can display all
+    // candidates. The winner is still determined from the bar-clearing set only.
     const scored = new Map<string, ScoredCandidate>();
     for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c), { candidates: [], now: p.ctx.now, estInputTokens: p.estInputTokens }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
@@ -256,7 +285,10 @@ export class RoutingSelector implements ModelSelector {
     const clearsForBar = clearsBar(p.bar);
     for (const c of p.pool) {
       const s = scored.get(c.spec.id)!;
-      const clears = clearsForBar(c); // same rule select() uses (seats: unknown-quality clears, known-weak doesn't)
+      // Use the same clearsBar rule as select() so the scorecard verdict
+      // matches what the router actually did (seat with unknown quality clears,
+      // known-weak seat does not).
+      const clears = clearsForBar(c);
       const chosen = c.spec.id === winnerId;
       entries.push({
         label: c.spec.label,
@@ -271,7 +303,8 @@ export class RoutingSelector implements ModelSelector {
         verdict: chosen ? (preferred ? "preferred" : "chosen") : !clears ? "below bar" : verdictFor(c, s),
       });
     }
-    // Best first: chosen, then bar-clearing by score, then below-bar.
+    // Sort: chosen first, then bar-clearing candidates by score (ascending, so
+    // best candidates are listed first), then below-bar candidates.
     entries.sort((a, b) => Number(b.chosen) - Number(a.chosen) || Number(b.verdict !== "below bar") - Number(a.verdict !== "below bar") || a.score - b.score);
     return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries };
   }
@@ -279,19 +312,23 @@ export class RoutingSelector implements ModelSelector {
 
 function costPerMtok(c: Candidate): number {
   const { inUSDPerMtok, outUSDPerMtok } = costPair(c);
+  // Blended cost: input dominates agent turns (80% in, 20% out).
   return inUSDPerMtok + 0.2 * outUSDPerMtok;
 }
+
 function balanceText(s: AccountState): string | undefined {
   if (s.isSubscription || s.balanceRemainingUSD === undefined) return undefined;
   const v = s.balanceRemainingUSD;
   const amt = v >= 100 ? `$${Math.round(v)}` : `$${v.toFixed(2)}`;
   return s.balanceEstimated ? `${amt} est` : amt;
 }
+
 function headroomText(s: AccountState): string | undefined {
   if (s.isSubscription && s.rateHeadroom !== undefined) return `${Math.round(s.rateHeadroom * 100)}% left`;
   if (!s.isSubscription && s.apiThrottle !== undefined && s.apiThrottle < 0.15) return "throttling";
   return undefined;
 }
+
 function verdictFor(c: Candidate, s: ScoredCandidate): string {
   if (c.state.isSubscription) return "seat ~free";
   if (s.terms.scarcity > s.terms.costEst) return "scarce credit";
@@ -299,7 +336,9 @@ function verdictFor(c: Candidate, s: ScoredCandidate): string {
   return "ok";
 }
 
-// Global preference as a hard filter, relaxed if it would leave nothing.
+// Apply the global preference as a hard filter, relaxed if it would empty the pool.
+// Each preference criterion (subscription vs api, account id, provider) narrows
+// the pool only when the result is non-empty.
 function applyGlobalPreference(pool: Candidate[]): Candidate[] {
   const g = globalPreference();
   if (!g) return pool;
@@ -312,25 +351,27 @@ function applyGlobalPreference(pool: Candidate[]): Candidate[] {
   return p;
 }
 
+// Build the human-readable reason string shown in the UI and routing scorecard.
+// Shows in/out prices separately rather than a blended rate, because a blended
+// rate is neither the input price nor the output price and is therefore misleading.
 function reasonFor(c: Candidate, kind: Kind, required: string[]): string {
   const caps = required.length ? ` · ${required.join("+")} required` : "";
   if (c.backend.kind === "cli") return `${kind}${caps} · ${c.backend.binary} subscription · seat`;
   const { inUSDPerMtok, outUSDPerMtok } = costPair(c);
-  // Show the real in/out prices, not a single blended number presented as a rate
-  // (the old "$X/Mtok" was in + 0.2·out, which is neither price — misleading). R-7.
   return `${kind}${caps} · $${inUSDPerMtok.toFixed(2)}/$${outUSDPerMtok.toFixed(2)} per Mtok in/out`;
 }
 
-// Wall clock, isolated so the rest of select() reads as pure (everything else is
-// a function of the snapshot). Kept tiny for the deterministic-on-snapshot story.
+// Wall-clock time, isolated into its own function so the rest of the routing
+// code reads as a pure function of the snapshot. Keep this tiny: only this
+// function calls Date.now(); everything else receives `now` as an argument.
 function ctx_now(): number {
   return Date.now();
 }
 
-// A subscription seat the router picked but the user wants to OVERRIDE-pin: this
-// selector is installed when the user explicitly chooses an account (`/account
-// use`), so routing is bypassed and that seat always runs — the hard-pin half of
-// "pins beat auto". Mirrors FixedSelector for a model pin.
+// Installed when the user explicitly chooses an account with `/account use`.
+// Bypasses routing entirely and always runs the specified subscription seat.
+// This is the hard-pin half of "pins beat auto"; RoutingSelector handles the
+// auto-routing half. Mirrors FixedSelector for model pins.
 export class SubscriptionPinSelector implements ModelSelector {
   constructor(private accountId: string, private modelId?: string) {}
 

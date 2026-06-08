@@ -241,7 +241,7 @@ function DiffView({ lines, width }: { lines: { sign: "+" | "-"; text: string }[]
   );
 }
 
-const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 const toolColor = (item: Extract<Item, { kind: "tool" }>) =>
   item.name === "AskUserQuestion" ? color.accent :
   item.status === "err" ? color.err :
@@ -347,7 +347,7 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
       <Box>
-        <Text color={dotColor}>{glyph.tool}</Text>
+        <Text color={dotColor}>{item.status === "running" ? glyph.off : glyph.tool}</Text>
         <Text color={dotColor} bold>{"  " + verb}</Text>
         {item.arg ? <Text color={isShell ? color.text : color.path} bold>{" " + (isShell ? item.arg : relPath(item.arg))}</Text> : null}
         {item.status === "running" && item.startedAt && Date.now() - item.startedAt >= 2000 ? <Text color={color.faint}>{"  " + fmtElapsed(Math.floor((Date.now() - item.startedAt) / 1000))}</Text> : null}

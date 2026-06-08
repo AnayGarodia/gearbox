@@ -1,5 +1,47 @@
-// The harness's tools. Real file + shell access, scoped to the working dir.
-// v0.1 keeps them simple; permission prompts / sandboxing get richer later.
+/**
+ * tools.ts - All agent tools: real file and shell access, scoped to a workspace root.
+ *
+ * Module overview
+ * ---------------
+ * Every tool defined here is an AI SDK `tool()` call with a Zod input schema and
+ * an async execute function. They are assembled into a record by createTools(),
+ * which is the only place that binds a workspace root and an event emitter.
+ *
+ * Workspace scoping
+ * -----------------
+ * All file and shell operations are scoped to `root` (the working directory
+ * passed to createTools, defaulting to process.cwd()). The `makeSafe` helper
+ * resolves every path against root and throws if the resolved path escapes it.
+ * This matters for parallel fan-out: each sub-agent receives its own git
+ * worktree as root, so concurrent file writes land in isolated trees and never
+ * collide.
+ *
+ * Permission requirements
+ * -----------------------
+ * Mutating tools (write_file, edit_file, run_shell) call requestPermission()
+ * from permission.ts before touching the filesystem or spawning a process. If
+ * the user denies the request the tool throws with a human-readable DENIED
+ * message. Read-only tools (read_file, list_dir, search, glob, fetch_url,
+ * web_search) do NOT require a permission prompt.
+ *
+ * Output cap
+ * ----------
+ * All tool output is clipped at CAP (60 000 characters). This keeps any single
+ * tool result from flooding the model context window and riding in the
+ * conversation history across many turns.
+ *
+ * Read-only mode
+ * --------------
+ * createToolset() accepts a readOnly flag that restricts the returned set to
+ * read_file, list_dir, search, glob, fetch_url, and web_search. This is used
+ * for plan mode and for sub-agents that should not write.
+ *
+ * MCP and extra tools
+ * -------------------
+ * createToolset() merges in any configured MCP server tools and, at depth 0
+ * only, the delegate tools injected by run.ts. Sub-agents do not receive
+ * delegate tools, preventing recursive delegation.
+ */
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readFile, writeFile, readdir, stat } from "node:fs/promises";
@@ -16,16 +58,29 @@ import { fetchUrlText } from "./fetch.ts";
 import { webSearch, formatSearchResults } from "./websearch.ts";
 import { mcpTools } from "./mcp.ts";
 
-const CAP = 60_000; // cap tool output so the transcript stays sane
+/** Maximum characters a single tool call may return. Prevents context flooding. */
+const CAP = 60_000;
 
+/** Message thrown when the user declines a permission prompt. */
 const DENIED = "Permission denied by the user — they declined this action.";
 
-// Common dirs to skip in the no-ripgrep fallback (ripgrep already honors .gitignore).
+/**
+ * Directories skipped by the no-ripgrep fallback walker in the `search` tool.
+ * ripgrep already honors .gitignore natively, so this only applies when rg is
+ * absent from PATH.
+ */
 const IGNORE = /(^|\/)(node_modules|\.git|dist|build|\.next|coverage)(\/|$)/;
 
-/** Resolve a path against a workspace root, refusing to escape it. The root is
- *  per-toolset (a sub-agent in a parallel fan-out gets its own git worktree as
- *  root, so concurrent writes land in isolated trees). */
+/**
+ * Returns a path resolver that is bound to a specific workspace root.
+ *
+ * The resolver accepts relative or absolute input paths and always returns an
+ * absolute path inside root. If the resolved path escapes root (e.g. via `..`
+ * segments or a symlink chain) it throws, preventing directory traversal.
+ *
+ * Each call to createTools() creates its own makeSafe(root) closure, so a
+ * sub-agent running in an isolated worktree cannot reach files in another tree.
+ */
 function makeSafe(root: string) {
   return (path: string): string => {
     const abs = isAbsolute(path) ? path : resolve(root, path);
@@ -35,14 +90,28 @@ function makeSafe(root: string) {
   };
 }
 
+/** Clip a string to CAP characters, appending a notice when truncated. */
 const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
 
-// Default line cap for a full read so a huge file (App.tsx is 4k lines) doesn't
-// dump into context and ride in history for several turns. Matches the dominant
-// convention (Claude Code / OpenCode cap at ~2000). The model pages with
-// offset/limit when it needs more; small files are returned whole, unchanged.
+/**
+ * Default maximum lines returned by a bare read_file call.
+ *
+ * Large files (e.g. a 4 000-line App.tsx) would otherwise fill the context
+ * window on the first read and stay in history for many turns. Capping at 2 000
+ * matches the convention used by Claude Code and OpenCode. The model pages
+ * through large files with offset/limit as needed; small files are returned
+ * in full without any footer.
+ */
 const READ_LINE_CAP = 2000;
 
+/**
+ * Read a slice of a UTF-8 file and return it as a string.
+ *
+ * offset is 1-based. limit defaults to READ_LINE_CAP lines from offset.
+ * When the whole file fits in one page no footer is added; when paging is
+ * active a footer reminds the caller which lines were shown and how to fetch
+ * the next range.
+ */
 async function readRanged(abs: string, displayPath: string, offset?: number, limit?: number): Promise<string> {
   const raw = await readFile(abs, "utf8");
   const lines = raw.split("\n");
@@ -61,6 +130,14 @@ async function readRanged(abs: string, displayPath: string, offset?: number, lim
   return clip(body + footer);
 }
 
+/**
+ * Build a diagnostic hint for a failed edit_file `find` lookup.
+ *
+ * Extracts the first meaningful word from the find string, searches the file
+ * for a line containing that word, and returns a short surrounding snippet.
+ * This gives the model enough context to self-correct on the next attempt
+ * without requiring a full re-read of the file.
+ */
 function notFoundHint(path: string, before: string, find: string): string {
   const needle = find.trim().split(/\s+/).filter((w) => w.length >= 3)[0]?.toLowerCase();
   if (!needle) return `text not found in ${path}`;
@@ -73,9 +150,26 @@ function notFoundHint(path: string, before: string, find: string): string {
   return `text not found in ${path}. Nearby match for "${needle}":\n${snippet}`;
 }
 
+/**
+ * Create the full tool record for a given workspace root.
+ *
+ * All file paths and shell commands are scoped to `root`. Pass a custom root
+ * (e.g. a git worktree) to isolate a sub-agent from the main workspace.
+ * Pass onEvent to receive file-change and tool-output events for the UI and
+ * undo stack.
+ */
 export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
   const safe = makeSafe(root);
   return {
+  /**
+   * Read a file from the workspace.
+   *
+   * Permission: none (read-only).
+   * Output cap: 2 000 lines by default, 60 000 characters hard cap.
+   * Paging: pass offset (1-based line) and/or limit to read a specific range.
+   * Large files are returned in pages; a footer shows the visible range and
+   * instructs the model to pass offset/limit for subsequent pages.
+   */
   read_file: tool({
     description:
       "Read a UTF-8 file from the workspace. Returns the whole file by default (capped at 2000 lines); for a large file pass offset (1-based start line) and/or limit to read just the range you need instead of pulling it all into context.",
@@ -87,6 +181,15 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     execute: async ({ path, offset, limit }) => readRanged(safe(path), path, offset, limit),
   }),
 
+  /**
+   * Create or fully overwrite a file.
+   *
+   * Permission: "write" (prompts once unless a standing grant or yolo is active).
+   * Fires a file-change event before writing so the undo stack captures the
+   * previous content. Also refreshes the context-retrieval index after writing.
+   * Prefer edit_file for partial changes: it sends only the diff and is far
+   * cheaper on both tokens and context.
+   */
   write_file: tool({
     description:
       "Create a NEW file, or fully replace an existing file's contents. To change PART of an existing file, prefer edit_file — it sends only the diff and is far cheaper than a full rewrite.",
@@ -105,6 +208,24 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     },
   }),
 
+  /**
+   * Replace a specific text span inside an existing file.
+   *
+   * Permission: "edit" (prompts once unless a standing grant or yolo is active).
+   * The permission check happens after the match succeeds so a deny never
+   * corrupts the file. Fires a file-change event for undo and refreshes the
+   * retrieval index after writing.
+   *
+   * Matching strategy (tried in order):
+   *   1. Exact string match.
+   *   2. Whitespace-tolerant line match: each line is trimmed and internal
+   *      whitespace runs are collapsed before comparison. This recovers from
+   *      minor indentation drift in the model's output.
+   *
+   * Ambiguity: if the normalized block appears in more than one place and
+   * neither occurrence nor replaceAll is given, the tool errors rather than
+   * silently editing the wrong location.
+   */
   edit_file: tool({
     description:
       "Edit a file by replacing text. Tries an exact match first, then falls back to a whitespace-tolerant match (so minor indentation/spacing drift in `find` still applies). Use occurrence for a specific match, or replaceAll for every match.",
@@ -135,6 +256,13 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     },
   }),
 
+  /**
+   * Fetch the readable text content of a public URL.
+   *
+   * Permission: none (read-only, no local side-effects).
+   * Output cap: 60 000 characters. Useful for documentation pages, GitHub
+   * issues, release notes, or any link the user pastes into the conversation.
+   */
   fetch_url: tool({
     description: "Fetch a public http(s) URL and return readable text. Use this for docs, release notes, issue pages, or pasted links.",
     inputSchema: z.object({ url: z.string().url() }),
@@ -144,6 +272,14 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     },
   }),
 
+  /**
+   * Search the web and return titles, URLs, and snippets.
+   *
+   * Permission: none (read-only, no local side-effects).
+   * Output cap: 60 000 characters. Delegates to the configured search provider
+   * (see websearch.ts). count controls how many results to return (1-10,
+   * default 5).
+   */
   web_search: tool({
     description: "Search the web for current docs, APIs, errors, release notes, or examples. Returns titles, URLs, and snippets.",
     inputSchema: z.object({
@@ -153,6 +289,19 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     execute: async ({ query, count }) => formatSearchResults(query, await webSearch(query, count)),
   }),
 
+  /**
+   * Search file contents in the workspace by regular expression.
+   *
+   * Permission: none (read-only).
+   * Output cap: 60 000 characters, at most 100 matching lines.
+   * Cwd scoping: the `path` argument is resolved via makeSafe, so it cannot
+   * escape the workspace root.
+   *
+   * Implementation: uses ripgrep (rg) when available on PATH for speed and
+   * .gitignore awareness. Falls back to a pure JS walker when rg is absent.
+   * The fallback skips common noise directories (node_modules, .git, dist,
+   * build, .next, coverage) via IGNORE but does not honor .gitignore.
+   */
   search: tool({
     description: "Search file CONTENTS in the workspace by regex (ripgrep). Returns file:line:match. Use this to find code.",
     inputSchema: z.object({
@@ -196,6 +345,14 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     },
   }),
 
+  /**
+   * Find files in the workspace by glob pattern.
+   *
+   * Permission: none (read-only).
+   * Output cap: 300 matching paths, 60 000 characters.
+   * Cwd scoping: `path` is resolved via makeSafe. Skips IGNORE directories.
+   * Results are sorted alphabetically before being returned.
+   */
   glob: tool({
     description: "Find FILES by glob pattern (e.g. 'src/**/*.ts'). Returns matching paths. Use this to locate files.",
     inputSchema: z.object({
@@ -214,6 +371,13 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     },
   }),
 
+  /**
+   * List entries in a directory.
+   *
+   * Permission: none (read-only).
+   * Returns file names and directory names (directories have a trailing `/`).
+   * Results are sorted alphabetically.
+   */
   list_dir: tool({
     description: "List entries in a directory (defaults to the workspace root).",
     inputSchema: z.object({ path: z.string().default(".") }),
@@ -234,6 +398,26 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     },
   }),
 
+  /**
+   * Run an arbitrary shell command inside the workspace.
+   *
+   * Permission: "shell" (prompts once unless a standing grant or yolo is active).
+   * Cwd scoping: the command runs with cwd=root, so relative paths in the
+   * command resolve to the workspace root. Sub-agents running in an isolated
+   * git worktree therefore operate in their own tree by default.
+   *
+   * The command is intentionally passed through a shell (not execFile with an
+   * arg array). That is the point of this tool: tests, builds, git commands,
+   * pipes, and shell one-liners all need full shell syntax. The safety boundary
+   * is the permission gate, not restricted syntax.
+   *
+   * Output is streamed live via onEvent so the UI can display it in real time.
+   * The final output is also returned as a string (capped at 60 000 characters).
+   *
+   * Verification events: if the command matches common test or typecheck
+   * patterns (bun/npm/pnpm/yarn test, tsc, pytest, cargo test, go test) a
+   * "verification" event is emitted so the UI can display a pass/fail badge.
+   */
   run_shell: tool({
     // NOTE: this intentionally runs an arbitrary command through a shell — that
     // is the whole point of a coding agent's shell tool (tests, git, pipes,
@@ -259,11 +443,18 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
   };
 }
 
+/** Default tool set bound to process.cwd() with no event listener. */
 export const tools = createTools();
 
 export type Tools = typeof tools;
 
-// Read-only subset for plan mode (reads + search, no writes/edits/shell).
+/**
+ * The read-only subset of the tool set used in plan mode.
+ *
+ * Includes all tools that carry no write side-effects: read_file, list_dir,
+ * search, glob, fetch_url, and web_search. write_file, edit_file, and
+ * run_shell are excluded.
+ */
 function readOnlySubset(all: ReturnType<typeof createTools>) {
   return {
     read_file: all.read_file,
@@ -275,6 +466,18 @@ function readOnlySubset(all: ReturnType<typeof createTools>) {
   };
 }
 
+/**
+ * Build a complete, ready-to-use tool set for an agent turn.
+ *
+ * Combines the base tools (or read-only subset) with any configured MCP
+ * server tools. If opts.extraTools is provided it is merged in last, giving
+ * injected tools (e.g. the delegate tool from run.ts) priority over defaults.
+ *
+ * opts.root scopes all file and shell operations. Omit it to use process.cwd().
+ * opts.readOnly strips mutating tools (write_file, edit_file, run_shell).
+ * opts.extraTools is only populated at depth 0: sub-agents do not receive
+ * delegate tools, so delegation cannot recurse infinitely.
+ */
 export async function createToolset(
   onEvent?: OnEvent,
   opts: { readOnly?: boolean; extraTools?: Record<string, Tool<any, any>>; root?: string } = {},
@@ -283,7 +486,7 @@ export async function createToolset(
   const base = opts.readOnly ? readOnlySubset(all) : all;
   const set: Record<string, Tool<any, any>> = { ...base, ...(await mcpTools(onEvent, Boolean(opts.readOnly))) };
   // extraTools (the delegate tools) are injected by run.ts at depth 0 only — sub-
-  // agents don't get them, so delegation can't recurse. Absent ⇒ no delegation
+  // agents don't get them, so delegation can't recurse. Absent means no delegation
   // (plan mode, sub-agents).
   if (opts.extraTools) for (const [k, v] of Object.entries(opts.extraTools)) set[k] = v;
   return set;
