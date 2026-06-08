@@ -3,18 +3,19 @@ import { test, expect } from "bun:test";
 import { render } from "ink-testing-library";
 import { TabStrip, tabStripLayout, tabStripHit } from "../src/ui/components/TabStrip.tsx";
 
-test("tabStripLayout lays the four tabs out left-to-right after the 1-col pad", () => {
+test("tabStripLayout lays the four pills out left-to-right after the 1-col pad", () => {
   const z = tabStripLayout();
   expect(z.map((t) => t.tab)).toEqual(["session", "routing", "providers", "cost"]);
-  expect(z[0]).toEqual({ tab: "session", start: 1, end: 8 }); // "Session" (7) at col 1..7
-  expect(z[1]!.start).toBe(10); // 8 + 2-space gap
+  // " Session " is 9 cols (7 + 1 pad each side) at col 1..9 → end 10 (exclusive)
+  expect(z[0]).toEqual({ tab: "session", start: 1, end: 10 });
+  expect(z[1]!.start).toBe(11); // 10 + 1-space gap
 });
 
 test("tabStripHit maps a click to the tab on the strip row, null elsewhere", () => {
   const ROW = 4;
-  expect(tabStripHit(2, ROW, ROW)).toBe("session"); // col 1, inside Session
-  expect(tabStripHit(11, ROW, ROW)).toBe("routing"); // col 10, start of Routing
-  expect(tabStripHit(9, ROW, ROW)).toBeNull(); // col 8 = gap between tabs
+  expect(tabStripHit(2, ROW, ROW)).toBe("session"); // col 1, inside the Session pill
+  expect(tabStripHit(12, ROW, ROW)).toBe("routing"); // col 11, start of the Routing pill
+  expect(tabStripHit(11, ROW, ROW)).toBeNull(); // col 10 = gap between pills
   expect(tabStripHit(2, ROW + 1, ROW)).toBeNull(); // wrong row
 });
 
