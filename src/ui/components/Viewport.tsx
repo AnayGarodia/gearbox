@@ -72,7 +72,9 @@ export function Viewport({ lines, scrollTop, height, width, selection }: { lines
   const hasBar = total > height;
   const thumb = hasBar ? Math.max(1, Math.round((height / total) * height)) : 0;
   const maxTop = Math.max(1, total - height);
-  const thumbStart = hasBar ? Math.min(height - thumb, Math.round((scrollTop / maxTop) * (height - thumb))) : 0;
+  // Snap the thumb flush to the bottom when scrolled to the end, so rounding can't
+  // leave it one row short of the floor at the true bottom (T-F).
+  const thumbStart = !hasBar ? 0 : scrollTop >= maxTop ? height - thumb : Math.min(height - thumb, Math.round((scrollTop / maxTop) * (height - thumb)));
 
   return (
     <Box width={width}>

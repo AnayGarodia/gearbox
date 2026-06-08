@@ -16,7 +16,9 @@ export function Banner({ account, width }: { model?: string; account?: string | 
         <Text color={color.accent} bold>
           gearbox
         </Text>
-        {account ? <Text color={color.faint}>{account}</Text> : null}
+        {/* Cap + truncate the account so a long one can't wrap/overflow next to the
+            wordmark on a narrow terminal (T-G — same class as the status-bar fix). */}
+        {account ? <Text color={color.faint} wrap="truncate-end">{account.slice(0, Math.max(0, w - 12))}</Text> : null}
       </Box>
       <Box paddingX={1}>
         <Text color={color.faint}>{glyph.rule.repeat(Math.max(w - 2, 8))}</Text>

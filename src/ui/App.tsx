@@ -3313,9 +3313,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     (value: string) => {
       let text = value.trim();
       // Expand any collapsed-paste chips back to their real text before sending.
+      // Delete ONLY the chips used in THIS submit — clearing the whole store dropped
+      // chips still pending in a queued/edited prompt (I-H).
       if (pasteStoreRef.current.size) {
-        for (const [ph, full] of pasteStoreRef.current) if (text.includes(ph)) text = text.split(ph).join(full);
-        pasteStoreRef.current.clear();
+        for (const [ph, full] of pasteStoreRef.current) if (text.includes(ph)) { text = text.split(ph).join(full); pasteStoreRef.current.delete(ph); }
       }
       setEdit({ value: "", cursor: 0 });
       histIdxRef.current = null;

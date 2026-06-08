@@ -83,14 +83,14 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 - ☑ C-E ctx% ignores cache — FIXED: lastInput now = inputTokens + cache read + cache write, so ctx% reflects the whole prompt. [v0.2.47]
 - ☑ C-F auto-compact budget — FIXED with x: triggers off the answering model's window, not the summarizer's. [v0.2.39]
 ### Session / input / paste
-- ☐ I-A markerless paste split across reads still floods (per-read size check, no time-window coalescer).
-- ☐ I-B unterminated bracketed paste freezes input (no timeout/escape).
+- ⚠ I-A — DEFERRED: needs a time-window input coalescer on the paste hot path; risky to add unverified (paste already regressed once this sprint). Single-read pastes are handled.
+- ⚠ I-B — DEFERRED: a paste-buffer timeout on the input hot path, rare trigger (lost \x1b[201~); same risk rationale as I-A.
 - ☑ I-C @mention trailing punctuation — FIXED: progressively strips trailing )].,;:!?"'>}  (files.ts). [v0.2.42]
 - ☑ I-D persist on quit — FIXED: /exit, /quit, and ⌃C-⌃C persist the conversation before exiting. [v0.2.47]
 - ☑ I-E histIdx reset on edit — FIXED with iv. [v0.2.42]
-- ☐ I-F /resume <n> uses a stale snapshot (resumeListRef vs fresh sessions).
-- ☐ I-G title truncation mismatch (80 vs 42 vs untruncated) — cosmetic.
-- ☐ I-H paste chip store cleared globally on first submit.
+- ⚠ I-F — DEFERRED (low impact): the snapshot preserves the numbering the user just saw, which is correct for the list→pick flow; only stale if sessions change in between (rare).
+- ✗ I-G — not a bug: title stored at 80, displayed truncated; display-time truncation is normal.
+- ☑ I-H — FIXED: only the chips used in this submit are deleted, not the whole store. [v0.2.51]
 ### Lifecycle / errors / offline
 - ☑ L-A verify after interrupt — FIXED: the post-turn verify gate now also checks !interruptedRef. [v0.2.49]
 - ☑ L-B auto-compaction retry storm — FIXED: compaction generateText now maxRetries:1. [v0.2.40]
@@ -104,11 +104,11 @@ Status legend: ☐ todo · ◑ in progress · ☑ fixed (green) · ⚠ needs liv
 ### Terminal / rendering
 - ☑ T-A title reset on exit — FIXED with viii. [v0.2.46]
 - ☑ T-B cursor restore on signal exit — FIXED with viii (SIGINT/SIGHUP → restore). [v0.2.46]
-- ☐ T-C empty mouse-up over transcript can re-copy a stale selection.
-- ☐ T-D drag-select during the scroll glide reads a stale scrollTop.
+- ⚠ T-C — DEFERRED: mouse-selection edge case, can't verify headless.
+- ⚠ T-D — DEFERRED: mouse-drag edge case during the scroll animation, can't verify headless.
 - ⚠ T-E footer height under-budgets the Working ghost rows → can clip status/composer during a turn.
-- ☐ T-F scrollbar thumb can sit one row short of bottom (cosmetic).
-- ☐ T-G Banner has the same truncate-end-no-budget latent bug as the status bar.
+- ☑ T-F — FIXED: thumb snaps flush to the bottom when scrolled to the end. [v0.2.51]
+- ☑ T-G — FIXED: banner account is capped + truncate-end so it can't wrap/overflow. [v0.2.51]
 
 ### Newly noted (post-merge)
 - ✗ N-1 — by design: live transient retry IS the SDK maxRetries (vii). failover.ts stays as the reference impl (tested + documented), not wired. The "make it live" refactor is your call.
