@@ -23,6 +23,10 @@ afterEach(() => {
   }
 });
 
+// A rate window resets in the FUTURE (epoch seconds) — a genuinely-exhausted window
+// is not yet expired. (A past resetsAt is now correctly ignored as stale.)
+const futureSec = () => Math.floor(Date.now() / 1000) + 3600;
+
 function claudeSeat(): Account {
   return {
     id: "claude-max", label: "Claude Max", provider: "claude-cli", exec: "cli",
@@ -69,23 +73,31 @@ test("an exhausted seat fails over to the metered API model", () => {
   putAccount(claudeSeat());
   // Seed usage then record a nearly-spent weekly window for the seat.
   recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
-  recordRateLimits("claude-max", [{ utilization: 0.99, type: "seven_day", resetsAt: 9_999 }]);
+  recordRateLimits("claude-max", [{ utilization: 0.99, type: "seven_day", resetsAt: futureSec() }]);
   const choice = new RoutingSelector().select({ prompt: "refactor the parser" });
   expect(choice.backend?.kind).toBe("in-loop"); // back to the Anthropic key
   expect(choice.model.id).toBe("claude-sonnet-4-6");
 });
 
+test("an EXPIRED rate window is ignored — a seat whose limit already reset is fresh again", () => {
+  putAccount(claudeSeat());
+  recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  // A 99%-utilized window, but it reset an hour ago (past) → stale, must NOT penalize.
+  recordRateLimits("claude-max", [{ utilization: 0.99, type: "seven_day", resetsAt: Math.floor(Date.now() / 1000) - 3600 }]);
+  expect(new RoutingSelector().select({ prompt: "refactor the parser" }).backend?.kind).toBe("cli"); // seat preferred again
+});
+
 test("a fresh seat is still preferred (control for the exhaustion test)", () => {
   putAccount(claudeSeat());
   recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
-  recordRateLimits("claude-max", [{ utilization: 0.1, type: "seven_day", resetsAt: 9_999 }]);
+  recordRateLimits("claude-max", [{ utilization: 0.1, type: "seven_day", resetsAt: futureSec() }]);
   expect(new RoutingSelector().select({ prompt: "refactor the parser" }).backend?.kind).toBe("cli");
 });
 
 test("SubscriptionPinSelector hard-pins the seat regardless of routing", () => {
   putAccount(claudeSeat());
   recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
-  recordRateLimits("claude-max", [{ utilization: 0.99, type: "seven_day", resetsAt: 9_999 }]);
+  recordRateLimits("claude-max", [{ utilization: 0.99, type: "seven_day", resetsAt: futureSec() }]);
   // Even exhausted, an explicit pin still runs the seat (the user overrode the optimizer).
   const choice = new SubscriptionPinSelector("claude-max").select({ prompt: "refactor the parser" });
   expect(choice.backend?.kind).toBe("cli");

@@ -1664,7 +1664,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Images now flow to the CLI as file paths (see cliPrompt above), so we no
       // longer refuse them here (xiv).
       const pin = activeCliRef.current;
-      if (pin) {
+      // Re-check the pinned account is still enabled: a disabled CLI subscription
+      // must NOT keep executing turns (it bypasses routing/health/failover). If it
+      // was disabled mid-session, drop the pin and fall through to normal routing.
+      if (pin && getAccount(pin.id)?.enabled === false) activeCliRef.current = null;
+      if (pin && activeCliRef.current) {
         routedRef.current = null;
         cliMetaRef.current = null;
         const choices = cliModelChoices(pin.binary);
@@ -2196,8 +2200,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // The single canonical per-turn routing line: `routed → provider · model · cost`.
         // Every field is real — the model/provider that actually ran (routedRef tracks
         // failover), the same `cost` figure recorded just above ($0 ⇒ subscription seat),
-        // and the failover signal. Amber only on a real surprising signal (provider
-        // fallback today; escalation/cap-hit are gated until captured — see the report).
+        // the failover signal, AND confidence-gated escalation (the router appends
+        // "· escalated after N failed checks" to the reason when a failed check pushed
+        // the bar up to a stronger model — router.ts). Amber only on a real signal.
         if (modelId && modelId !== "unknown") {
           const ranSpec = routedRef.current?.model ?? findModel(modelId);
           // On an explicitly-pinned subscription, routedRef is null and modelId is the
@@ -2209,6 +2214,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             costUSD: cost,
             kind: isSub ? "subscription" : "metered",
             fellOverFrom: fellOverFromRef.current,
+            escalated: /escalated after/.test(routedRef.current?.reason ?? ""),
           });
           push({ kind: "model", id: idRef.current++, model: line.model, provider: line.provider, costText: line.costText, surprising: line.surprising, reason: line.reason ?? undefined });
         }
@@ -3185,6 +3191,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (!["add", "remove", "rm", "import", "off", "login", "refresh"].includes(subL)) {
             const ref = findAccountRef(arg, all);
             if (ref.account) {
+              // A disabled account must not be activated — activation bypasses
+              // routing/health/failover and would run every turn on it.
+              if (ref.account.enabled === false) {
+                notice(`${ref.account.slug ?? ref.account.id} is disabled. Remove and re-add it, or use /account refresh.`);
+                return;
+              }
               activate(ref.account);
               return;
             }

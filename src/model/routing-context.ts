@@ -47,12 +47,16 @@ export interface RoutingContext {
 
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-function headroomOf(u: AccountUsage | undefined): Pick<AccountState, "rateHeadroom" | "bindingWindow" | "rateAt" | "apiThrottle"> {
+function headroomOf(u: AccountUsage | undefined, now: number): Pick<AccountState, "rateHeadroom" | "bindingWindow" | "rateAt" | "apiThrottle"> {
   const snaps: RateSnapshot[] = u?.rates ?? (u?.rate ? [u.rate] : []);
   let rateHeadroom: number | undefined;
   let bindingWindow: AccountState["bindingWindow"];
   let apiThrottle: number | undefined;
   for (const r of snaps) {
+    // Skip a window that has already RESET (resetsAt is epoch seconds): a 5h/weekly
+    // window that expired hours ago is stale and must not keep penalizing a now-fresh
+    // seat as near-exhausted (that misrouted away from a seat whose limit had reset).
+    if (typeof r.resetsAt === "number" && r.resetsAt * 1000 < now) continue;
     // Utilization is a number when the provider reports one; otherwise infer
     // headroom from its status word (rejected = empty, allowed = full).
     const util = typeof r.utilization === "number" ? r.utilization : r.status === "rejected" ? 1 : r.status === "allowed_warning" || r.status === "warning" ? 0.9 : 0;
@@ -88,7 +92,7 @@ export function buildRoutingContext(
       exec: acct.exec,
       isSubscription: acct.exec === "cli",
       ...balanceOf(acct, u, budgets, now),
-      ...headroomOf(u),
+      ...headroomOf(u, now),
     });
   }
 
@@ -112,7 +116,7 @@ export function buildRoutingContext(
       balanceTotalUSD: budget.amountUSD,
       balanceAt: now,
       balanceEstimated: true,
-      ...headroomOf(u),
+      ...headroomOf(u, now),
     });
   }
   return { now, byAccountId };

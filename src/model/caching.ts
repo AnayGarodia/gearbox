@@ -70,7 +70,12 @@ export function withPromptCaching(
     out.push({ role: "system", content: system, providerOptions: mark } as ModelMessage);
   }
   const n = messages.length;
-  const breakAt = cacheBreakIndex === undefined ? n - 1 : cacheBreakIndex;
+  // Clamp to a valid index. A settled-history index lives in [0, n-1]; -1 (or any
+  // negative) means "no message marker, system only" (the first turn). An OUT-OF-RANGE
+  // high index would mark NOTHING and silently bust the whole prefix (cache hit-rate
+  // collapses with no signal) — clamp it down to the last message so caching degrades
+  // gracefully instead of disappearing unseen.
+  const breakAt = cacheBreakIndex === undefined ? n - 1 : Math.min(cacheBreakIndex, n - 1);
   for (let i = 0; i < n; i++) {
     const m = messages[i]!;
     // Mark the breakpoint message → everything up to it becomes one cached prefix.

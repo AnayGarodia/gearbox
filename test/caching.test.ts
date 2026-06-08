@@ -89,6 +89,12 @@ test("an explicit cacheBreakIndex marks that message, leaving the volatile tail 
   expect(anthropicMark(messages[messages.length - 1])).toBeUndefined(); // volatile tail NOT cached
 });
 
+test("an out-of-range cacheBreakIndex clamps to the last message (never a silent total miss)", () => {
+  // 999 is past the end → clamp to the last message so a prefix still caches.
+  const { messages } = withPromptCaching(spec("anthropic", "claude-sonnet-4-6"), "SYS", convo, 999);
+  expect(anthropicMark(messages[messages.length - 1])).toBe("ephemeral");
+});
+
 test("cacheBreakIndex of -1 marks only the system block (first turn, no settled history)", () => {
   const { messages } = withPromptCaching(spec("anthropic", "claude-sonnet-4-6"), "SYS", [{ role: "user", content: "first" }], -1);
   expect(messages[0]!.role).toBe("system");
