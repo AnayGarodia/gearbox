@@ -29,7 +29,7 @@ import { confirmRoutingPreference, setBudget, loadBudgets, type PreferenceKind }
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
-import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, type PanelState, type PanelModelRow } from "./panel.ts";
+import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, type PanelState, type PanelModelRow, type PanelSessionRow } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { classifyTask, type TaskKind } from "../agent/classify.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
@@ -444,6 +444,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
   const panelMaxScrollRef = useRef(0); // max scroll for a static panel (set in render)
   const panelAccountSlugsRef = useRef<string[]>([]); // row index → /account <slug>, set in render (names-only)
+  const panelSessionsRef = useRef<Session[]>([]); // row index → Session to loadInto, set in render (/resume panel)
   // Persistent usage strip (toggled by /cost) — stays above the composer until you
   // toggle it off; survives restarts. Doesn't capture input.
   const [statusPinned, setStatusPinnedState] = useState(() => Boolean(loadPrefs().statusPinned));
@@ -983,6 +984,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (p) {
           if (p.kind === "static") setPanel({ ...p, scroll: clampScroll(p.scroll + delta, panelMaxScrollRef.current) });
           else if (p.kind === "accounts") setPanel({ ...p, index: clampIndex(p.index + delta, panelAccountSlugsRef.current.length) });
+          else if (p.kind === "sessions") setPanel({ ...p, index: clampIndex(p.index + delta, panelSessionsRef.current.length) });
           else setPanel({ ...p, index: clampIndex(p.index + delta, filterModelRows(buildPanelModelRows(), p.filter).length) });
         } else scrollBy(delta);
       }
@@ -1010,6 +1012,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     });
   }, []);
 
+  // Saved sessions for this project, newest first, EXCLUDING the one you're in
+  // (resuming the current session is a no-op / loads the just-cleared one). Drives
+  // both the interactive /resume panel and the `/resume <n>` direct path.
+  const resumableSessions = (): Session[] => listSessions().filter((s) => s.id !== sessionRef.current.id);
+  const sessionWhen = (t: number): string => {
+    const m = Math.round((Date.now() - t) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
+  };
   const loadInto = (s: Session) => {
     idRef.current = s.items.reduce((m, i) => Math.max(m, i.id), 0) + 1;
     setItems(s.items);
@@ -1215,7 +1225,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (head === "/effort") {
       return take(effortRows());
     }
-    if (head === "/resume") return take(listSessions().slice(0, 7).map((s, i) => ({ value: `/resume ${i + 1}`, label: `${i + 1}. ${s.title || "(untitled)"}`.slice(0, 42), detail: new Date(s.updatedAt).toLocaleDateString() })));
+    // NOTE: /resume has NO argument autocomplete on purpose — submitting it opens the
+    // interactive sessions panel (↑↓ · ⏎), so a second session-list dropdown here
+    // would just duplicate it (that double-list was the confusing part).
     return [];
   };
   // Rows for the status-bar click pickers. Reuses the exact data the slash
@@ -2400,26 +2412,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           notice("started a fresh conversation");
           return;
         case "resume": {
-          echo(text);
-          // Exclude the session you're already in — it was listed as the newest
-          // entry, so after /clear+talk "/resume 1" kept loading the just-cleared
-          // conversation instead of the real one before it.
-          const sessions = listSessions().filter((s) => s.id !== sessionRef.current.id);
+          const sessions = resumableSessions();
+          resumeListRef.current = sessions;
           if (!arg) {
-            resumeListRef.current = sessions;
             if (!sessions.length) {
+              echo(text);
               notice("no other saved sessions for this project yet");
               return;
             }
-            const rel = (t: number) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`; };
-            const rows = sessions
-              .slice(0, 10)
-              .map((s, i) => `  ${i + 1}. ${rel(s.updatedAt)} · ${s.turns?.length ?? 0} turn${(s.turns?.length ?? 0) === 1 ? "" : "s"} · ${s.title || "(untitled)"}`)
-              .join("\n");
-            notice("resume a session · /resume <n>:\n" + rows);
+            // Open the interactive picker (↑↓ · ⏎ load) instead of dumping the list
+            // into the transcript — one clean UI, consistent with /model and /account.
+            // Inline (no panels) falls back to the listed notice.
+            if (!fullscreen) {
+              echo(text);
+              const rows = sessions.slice(0, 10).map((s, i) => `  ${i + 1}. ${sessionWhen(s.updatedAt)} · ${s.turns?.length ?? 0} turn${(s.turns?.length ?? 0) === 1 ? "" : "s"} · ${s.title || "(untitled)"}`).join("\n");
+              notice("resume a session · /resume <n>:\n" + rows);
+              return;
+            }
+            atBottomRef.current = true;
+            setPanel({ kind: "sessions", title: "resume a session · ⏎ to load", index: 0 });
             return;
           }
-          const pick = (resumeListRef.current.length ? resumeListRef.current : sessions)[parseInt(arg, 10) - 1];
+          echo(text);
+          const pick = sessions[parseInt(arg, 10) - 1];
           if (!pick) {
             notice(`no session ${arg} · /resume to list`);
             return;
@@ -3583,6 +3598,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         else if (key.return) { const slug = slugs[clampIndex(p.index, n)]; setPanel(null); if (slug) handleCommand(`/account ${slug}`); }
         return;
       }
+      if (p.kind === "sessions") {
+        const sess = panelSessionsRef.current;
+        const n = sess.length;
+        if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, n) });
+        else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, n) });
+        else if (key.return) { const s = sess[clampIndex(p.index, n)]; setPanel(null); if (s) loadInto(s); }
+        return;
+      }
       // models: type-to-filter, ↑↓ select, ⏎ pin
       const rows = filterModelRows(buildPanelModelRows(), p.filter);
       if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, rows.length) });
@@ -3919,6 +3942,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   let panelStaticLines: Line[] | undefined;
   let panelAccountView: AccountView | undefined;
   let panelModels: PanelModelRow[] | undefined;
+  let panelSessions: PanelSessionRow[] | undefined;
   if (panel?.kind === "static") {
     panelStaticLines = itemsToLines(panel.items, panelInnerW);
     panelMaxScrollRef.current = Math.max(0, panelStaticLines.length - panelBodyHeight(transcriptHeight));
@@ -3927,6 +3951,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     panelAccountSlugsRef.current = panelAccountView.rows.map((r) => r.alias);
   } else if (panel?.kind === "models") {
     panelModels = buildPanelModelRows(panelCurrentModel);
+  } else if (panel?.kind === "sessions") {
+    panelSessionsRef.current = resumableSessions();
+    panelSessions = panelSessionsRef.current.map((s) => ({ id: s.id, when: sessionWhen(s.updatedAt), turns: s.turns?.length ?? 0, title: s.title || "(untitled)" }));
   }
 
   // Keep scrollTop pinned to the bottom as new lines stream in (unless scrolled up).
@@ -4040,7 +4067,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}
         {panel ? (
           <Box paddingX={1} flexGrow={1}>
-            <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} currentModelId={panelCurrentModel} staticLines={panelStaticLines} />
+            <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} sessions={panelSessions} currentModelId={panelCurrentModel} staticLines={panelStaticLines} />
           </Box>
         ) : welcome ? (
           <Box flexGrow={1} flexDirection="column" justifyContent="center">

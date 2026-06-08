@@ -1,7 +1,7 @@
 import React from "react";
 import { test, expect, beforeEach } from "bun:test";
 import { render } from "ink-testing-library";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { App } from "../src/ui/App.tsx";
@@ -185,6 +185,29 @@ test("↑ still recalls history when a /ask or /prefer command (with args) sits 
   const f = lastFrame() ?? "";
   expect(f).toContain("older prompt");
   expect(f).not.toContain("/ask how does routing pick a model");
+});
+
+test("/resume opens ONE interactive sessions panel (not a transcript dump + autocomplete)", async () => {
+  // Seed a resumable session for this project so the panel has a row to show.
+  const slug = process.cwd().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root";
+  const sdir = join(process.env.GEARBOX_HOME!, "sessions", slug);
+  mkdirSync(sdir, { recursive: true });
+  writeFileSync(join(sdir, "s_old.json"), JSON.stringify({
+    id: "s_old", cwd: process.cwd(), createdAt: 1, updatedAt: 2,
+    title: "write bun tests for the model helpers", messages: [],
+    items: [{ kind: "user", id: 1, text: "hi" }], turns: [{ model: "x", inputTokens: 1, outputTokens: 1, at: 2 }],
+  }));
+  const { lastFrame, stdin } = render(<App selector={new FixedSelector("claude-haiku-4-5")} fullscreen runner={scripted(() => ok("ok"))} />);
+  await flush();
+  stdin.write("hi"); await flush(); stdin.write("\r"); await flush(); await flush(); // create the current session, clear welcome
+  stdin.write("/resume"); await flush(); stdin.write("\r"); await flush(); await flush();
+  const f = lastFrame() ?? "";
+  expect(f).toContain("resume a session"); // the panel header
+  expect(f).toContain("write bun tests for the model helpers"); // the seeded session row, IN the panel
+  expect(f).toContain("⏎ load"); // the panel hint — proves it's the interactive picker
+  expect(f).not.toContain("/resume <n>:"); // NOT the old transcript notice dump
+  stdin.write("\x1b"); await flush(); // esc closes the panel
+  expect(lastFrame() ?? "").not.toContain("resume a session");
 });
 
 test("`!` enters sticky bash mode (consumed), esc exits (iii)", async () => {

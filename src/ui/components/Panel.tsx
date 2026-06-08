@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { Viewport } from "./Viewport.tsx";
 import { itemsToLines, type Line } from "../lines.ts";
-import { panelBodyHeight, windowStart, filterModelRows, clampIndex, type PanelState, type PanelModelRow } from "../panel.ts";
+import { panelBodyHeight, windowStart, filterModelRows, clampIndex, type PanelState, type PanelModelRow, type PanelSessionRow } from "../panel.ts";
 import type { AccountView } from "../types.ts";
 
 function accountStateColor(status: string): string {
@@ -21,6 +21,7 @@ export function Panel({
   height,
   accounts,
   models,
+  sessions,
   currentModelId,
   staticLines,
 }: {
@@ -29,6 +30,7 @@ export function Panel({
   height: number;
   accounts?: AccountView;
   models?: PanelModelRow[];
+  sessions?: PanelSessionRow[];
   currentModelId?: string | null;
   staticLines?: Line[]; // precomputed by App so it and the key-handler agree on length
 }) {
@@ -79,6 +81,30 @@ export function Panel({
       </Box>
     );
     hint = "↑↓ move · ⏎ switch · esc close";
+  } else if (panel.kind === "sessions") {
+    const rows = sessions ?? [];
+    const idx = clampIndex(panel.index, rows.length);
+    const start = windowStart(idx, rows.length, bodyH);
+    const slice = rows.slice(start, start + bodyH);
+    body = (
+      <Box flexDirection="column" paddingX={1}>
+        {rows.length === 0 ? (
+          <Text color={color.faint}>no other saved sessions for this project yet</Text>
+        ) : (
+          slice.map((r, i) => {
+            const sel = start + i === idx;
+            return (
+              <Text key={r.id} backgroundColor={sel ? color.accentBg : undefined}>
+                <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+                <Text color={color.text} bold={sel}>{(r.title || "(untitled)").slice(0, 52)}</Text>
+                <Text color={color.faint}>  · {r.turns} turn{r.turns === 1 ? "" : "s"} · {r.when}</Text>
+              </Text>
+            );
+          })
+        )}
+      </Box>
+    );
+    hint = "↑↓ move · ⏎ load · esc close";
   } else {
     const rows = filterModelRows(models ?? [], panel.filter);
     const idx = clampIndex(panel.index, rows.length);

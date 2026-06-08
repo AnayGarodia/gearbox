@@ -13,13 +13,22 @@ export interface PanelModelRow {
   current: boolean;
 }
 
+export interface PanelSessionRow {
+  id: string;
+  when: string; // relative time, e.g. "19h ago"
+  turns: number;
+  title: string;
+}
+
 export type PanelState =
   // view-only: a prebuilt transcript Item rendered + scrolled in the panel
   | { kind: "static"; title: string; items: Item[]; scroll: number }
   // interactive list: switch the selected account
   | { kind: "accounts"; title: string; index: number }
   // interactive list: pin the selected model, with type-to-filter
-  | { kind: "models"; title: string; index: number; filter: string };
+  | { kind: "models"; title: string; index: number; filter: string }
+  // interactive list: load the selected saved session
+  | { kind: "sessions"; title: string; index: number };
 
 export const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(n, hi));
 
