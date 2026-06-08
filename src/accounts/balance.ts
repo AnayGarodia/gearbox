@@ -11,9 +11,8 @@ export interface Balance {
   totalUSD?: number;
 }
 
-// provider id → how to read its balance. Each parser gets the JSON body.
+// Provider id to balance-fetch config. Each parser receives the parsed JSON body.
 const PROVIDERS: Record<string, { url: string; parse: (j: any) => Balance | null }> = {
-  // GET /credits → { data: { total_credits, total_usage } }
   openrouter: {
     url: "https://openrouter.ai/api/v1/credits",
     parse: (j) => {
@@ -22,17 +21,16 @@ const PROVIDERS: Record<string, { url: string; parse: (j: any) => Balance | null
       return { remainingUSD: d.total_credits - (d.total_usage ?? 0), totalUSD: d.total_credits };
     },
   },
-  // Vercel AI Gateway → { balance } or { credits: { balance } } (best-effort).
+  // Vercel AI Gateway: response shape is { balance } or { credits: { balance } } (best-effort).
   "vercel-gateway": {
     url: "https://ai-gateway.vercel.sh/v1/credits",
     parse: (j) => {
-      const bal = num(j?.balance ?? j?.credits?.balance); // USD as a string, e.g. "95.50"
+      const bal = num(j?.balance ?? j?.credits?.balance); // field may be a numeric string, e.g. "95.50"
       return bal == null ? null : { remainingUSD: bal };
     },
   },
-  // DeepSeek → { is_available, balance_infos: [{ currency, total_balance, … }] }.
-  // Values are STRINGS; prefer the USD entry, else the first. The one mainstream
-  // metered API with a clean balance endpoint.
+  // DeepSeek: { is_available, balance_infos: [{ currency, total_balance, … }] }.
+  // Amounts are STRINGS; prefer the USD entry, else the first row.
   deepseek: {
     url: "https://api.deepseek.com/user/balance",
     parse: (j) => {

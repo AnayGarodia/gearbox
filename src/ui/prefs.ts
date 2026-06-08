@@ -8,14 +8,14 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 export interface Prefs {
   effort?: "fast" | "balanced" | "max";
   notify?: boolean; // desktop notification on long turns
-  fullscreen?: boolean; // false → inline mode (native scroll + select-to-copy)
-  ghost?: string; // mascot skin
-  onboarded?: boolean; // first-run screen shown
-  vim?: boolean; // composer vim keybindings
-  pinnedModel?: string; // /model <name> pin (absent/"auto" = routing); restored next launch
-  activeAccount?: string | null; // active CLI subscription account id; restored next launch
-  statusPinned?: boolean; // /cost toggles a persistent usage strip above the composer
-  verify?: "auto" | "off"; // auto = run checks after edits & auto-iterate to green; off = skip
+  fullscreen?: boolean; // false = inline mode (native scrollback + select-to-copy)
+  ghost?: string; // mascot skin name
+  onboarded?: boolean; // first-run screen has been shown
+  vim?: boolean; // vim keybindings in the composer
+  pinnedModel?: string; // /model pin; absent or "auto" means routing; restored on next launch
+  activeAccount?: string | null; // active subscription account id; restored on next launch
+  statusPinned?: boolean; // /cost pins a persistent usage strip above the composer
+  verify?: "auto" | "off"; // auto = run checks after edits and iterate to green; off = skip
   budgetCaps?: { session?: number; daily?: number; monthly?: number; total?: number }; // hard spend ceilings (/cap)
 }
 

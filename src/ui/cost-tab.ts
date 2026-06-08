@@ -12,11 +12,9 @@ export interface Rate {
   outUSDPerMtok: number;
 }
 
-// The "always-premium" baseline = the most expensive model in the registry. The
-// router's most-expensive ELIGIBLE model is this one for any turn, because the
-// priciest model clears every quality bar (eligibility only ever excludes models
-// for *lacking* capability, never for being too good). So this is an honest upper
-// baseline; we label the result an estimate ("~ … vs always-premium"). Pure.
+// The "always-premium" baseline uses the most expensive model in the registry.
+// The priciest model clears every quality bar, so it is always eligible, making
+// this an honest upper baseline. Results are labeled "~ … vs always-premium". Pure.
 export function premiumRate(registry: Array<{ cost?: Rate | null }>): Rate | null {
   let best: Rate | null = null;
   for (const m of registry) {
@@ -31,11 +29,10 @@ function premiumCost(turn: SavingsTurn, premium: Rate): number {
   return (turn.inputTokens / 1e6) * premium.inUSDPerMtok + (turn.outputTokens / 1e6) * premium.outUSDPerMtok;
 }
 
-// Savings vs always-premium: Σ(premium cost of each turn's tokens − the turn's
-// ACTUAL cost). actualCostOf is injected (= estimateCost([turn]); a subscription
-// seat ⇒ $0, so a seat turn's whole premium cost counts as saved — really did
-// avoid paying premium API for it). Clamped ≥ 0. Returns null only when there is
-// nothing real to compute from (no turns, or no priced model in the registry).
+// Savings vs always-premium: sum of (premium token cost − actual cost) per turn.
+// actualCostOf is injected; a subscription seat returns $0, so the full premium
+// cost counts as saved. Clamped to 0. Returns null when there is nothing to
+// compute (no turns, or no priced model in the registry).
 export function estimateSavings(
   turns: SavingsTurn[],
   premium: Rate | null,
@@ -59,9 +56,8 @@ export interface PolicyInput {
   caps?: { session?: number; daily?: number; monthly?: number; total?: number };
 }
 
-// The routing policy line — only ever states what the engine actually honours.
-// There is NO per-turn cost cap in the engine, so this never prints one; it shows
-// the real budget-guard caps (session/daily/monthly/total) only when they are set.
+// The routing policy line: states only what the engine honours. Budget-guard caps
+// (session/daily/monthly/total) are shown only when set.
 export function formatPolicyString(opts: PolicyInput): string {
   if (opts.mode === "fixed") {
     return `policy: pinned to ${opts.pinnedModel ?? "a model"} · /model auto to route`;
@@ -86,8 +82,8 @@ export function formatPolicyString(opts: PolicyInput): string {
   return s;
 }
 
-// The savings line text. Spend is always real; the savings clause is appended only
-// when a real estimate exists, and is always tagged "~ … vs always-premium".
+// Savings line text. Spend is always real; the savings clause is appended only
+// when a real estimate exists, always tagged "~ … vs always-premium".
 export function savingsLine(spendUSD: number, savingsUSD: number | null): string {
   const spend = `session $${spendUSD.toFixed(2)} spent`;
   if (savingsUSD == null || savingsUSD < 0.005) return spend;

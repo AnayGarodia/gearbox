@@ -12,8 +12,8 @@ export async function probeOnline(timeoutMs = 3500): Promise<boolean> {
     try {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
-      // `no-cors` style: even an opaque/!ok response proves the network is up;
-      // only a thrown error (DNS/connect failure) means offline.
+      // Even an opaque/non-OK response proves the network is up; only a thrown
+      // error (DNS/connect failure) means offline.
       await fetch(url, { method: "GET", signal: ctrl.signal });
       clearTimeout(t);
       return true;
@@ -48,10 +48,10 @@ export function useOnline(intervalMs = 20_000, enabled = true): boolean {
   return online;
 }
 
-/** Does an error look like a network/offline failure (vs. an API/auth error)? */
+/** Returns true when an error looks like a network/offline failure rather than an API/auth error. */
 export function isNetworkError(e: unknown): boolean {
   const msg = (e instanceof Error ? e.message : String(e ?? "")).toLowerCase();
-  // Includes the undici/AI-SDK shapes the old regex missed: "Connect Timeout Error",
-  // "attempted address …:443", and the SDK's "failed after N attempts" retry wrapper.
+  // Covers undici/AI-SDK shapes: "Connect Timeout Error", "attempted address …:443",
+  // and the SDK's "failed after N attempts" retry wrapper.
   return /enotfound|econnrefused|econnreset|etimedout|eai_again|network|fetch failed|failed to fetch|socket hang up|getaddrinfo|dns|connect timeout|timeouterror|undici|attempted address|und_err|failed after \d+ attempt|connection (?:reset|closed|refused|error|timed out)|timed? ?out/.test(msg);
 }

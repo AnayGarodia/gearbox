@@ -22,8 +22,8 @@ export interface ProviderRowData {
   fixCmd?: string; // present only when broken
 }
 
-// health → dot colour. Green ready · amber needs-attention (expired / limited) ·
-// red broken (invalid / no-credit / hard error) · faint unknown/unprobed.
+// Maps health state to dot color: green = ready, amber = needs attention
+// (expired/rate-limited), red = broken (invalid/no-credit/error), faint = unknown.
 export function healthDotColor(state: HealthState | undefined): string {
   switch (state) {
     case "ok":
@@ -40,8 +40,8 @@ export function healthDotColor(state: HealthState | undefined): string {
   }
 }
 
-// Filled dot when the state is KNOWN (good or bad); hollow when unprobed/unknown,
-// so an un-probed account never reads as confidently green or red.
+// Filled dot for a known state, hollow for unprobed/unknown, so an unprobed
+// account never appears confidently green or red.
 export function healthDotGlyph(state: HealthState | undefined): string {
   return state && state !== "unknown" ? glyph.on : glyph.off;
 }
@@ -56,22 +56,21 @@ function isBroken(state: HealthState | undefined): boolean {
   );
 }
 
-const BALANCE_STALE_MS = 60 * 60 * 1000; // 1h — older cached balances fall back to spend
+const BALANCE_STALE_MS = 60 * 60 * 1000; // 1 hour: older cached balances fall back to spend
 
-// Build the right-hand money field. The ONLY place a balance number can appear is
-// a provider that exposes one AND a fresh cached figure; otherwise spend or n/a.
+// Build the right-hand money field. A balance appears only for providers that
+// expose one and have a fresh cached figure; otherwise show spend or "n/a".
 function moneyRight(account: Account, usage: AccountUsage | undefined, now: number): string {
   const exposed = balanceExposed(account.provider);
   const bal = usage?.balance;
-  // `now === 0` is the default sentinel meaning "skip the freshness check" (tests
-  // only); production always passes Date.now(), so a stale cached balance there
-  // falls back to spend rather than being shown as current.
+  // now === 0 is a test sentinel meaning "skip the freshness check"; production
+  // always passes Date.now(), so stale cached balances fall back to spend.
   const fresh = bal?.remainingUSD != null && (now === 0 || bal.at == null || now - bal.at < BALANCE_STALE_MS);
   if (exposed && fresh && bal?.remainingUSD != null) return `$${bal.remainingUSD.toFixed(2)} left`;
   const spent = usage?.spentUSD ?? 0;
   if (spent > 0) return `$${spent.toFixed(2)} spent`;
-  // No spend and no real balance: only say "balance n/a" for providers that could
-  // never report one (so it reads as a capability fact, not a transient zero).
+  // "balance n/a" is shown only for providers that cannot expose a balance, so it
+  // reads as a capability fact rather than a transient zero.
   return exposed ? "" : "balance n/a";
 }
 
@@ -95,8 +94,8 @@ export function buildProvidersView(
   now: number = 0,
 ): ProviderRowData[] {
   const rows = accounts.map((a) => providerRow(a, getUsage(a.id), now));
-  // Healthy first, attention next, broken last; then by label. Broken accounts sink
-  // so the things needing a fix are grouped at the bottom where the hint reads.
+  // Healthy first, attention next, broken last, then alphabetical. Broken accounts
+  // sink to the bottom where the fix hint is visible.
   const rank = (r: ProviderRowData) =>
     r.dotColor === color.ok ? 0 : r.dotColor === color.warn ? 1 : r.dotColor === color.err ? 2 : 3;
   return rows.slice().sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label));

@@ -16,7 +16,7 @@ import { scorecardRows } from "../commands.ts";
 import { PROSE_RE, proseTokenStyle } from "./prose.ts";
 
 const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.accent : color.ok);
-// A limit window's value: a utilization bar when a % is known, else the status word.
+// Limit window value: a utilization bar when a percentage is known, else a status word.
 const limitValueSpans = (l: { pct?: number; status?: "ok" | "warn" | "limited" }): Span[] => {
   if (typeof l.pct === "number") {
     const lim = barCells(l.pct / 100, 10);
@@ -115,9 +115,9 @@ function codeBlockLines(code: string, lang: string, width: number): Line[] {
   return out;
 }
 
-// Prose highlighting: rich but precise. The token set + per-token style live in
-// the shared tokenizer (prose.ts) so this and the inline path (Markdown.tsx) can
-// never drift. Each match is anchored/bounded so ordinary English stays plain.
+// Prose highlighting: rich but precise. Tokens and styles live in prose.ts so this
+// and the inline path (Markdown.tsx) always agree. Each match is anchored so
+// ordinary English stays plain.
 function proseSpans(text: string, base: Style = { color: color.text }): Span[] {
   const out: Span[] = [];
   let last = 0;
@@ -229,9 +229,8 @@ function inlineSpans(tokens: any[], base: Style): Span[] {
         out.push(...inlineSpans(t.tokens, { ...base, italic: true }));
         break;
       case "codespan":
-        // Color only, no background box — a dense paragraph of `identifiers` (a
-        // coverage report, a gap list) turned into a wall of grey boxes. The
-        // accent/path color is enough to set inline code apart from prose.
+        // No background box: dense paragraphs of `identifiers` become a wall of
+        // grey boxes with it. Accent/path color alone sets inline code apart.
         out.push({ text: t.text, color: /[/\\.]/.test(String(t.text ?? "")) ? color.path : color.accent });
         break;
       case "del":
@@ -309,9 +308,8 @@ function blockLines(tok: any, width: number): Line[] {
       return out;
     }
     case "table": {
-      // Aligned columns (was: cells flattened to a "·"-joined run that wrapped into
-      // an unreadable blob). Size each column to its content, shrink to fit width,
-      // truncate overflow with "…", keep inline styling (code/bold) in cells.
+      // Aligned columns: size each to its content, shrink to fit width, truncate
+      // overflow with "…", preserve inline styling (code/bold) in cells.
       const header = (tok.header ?? []) as any[];
       const rows = (tok.rows ?? []) as any[][];
       const ncols = Math.max(header.length, ...rows.map((r) => r.length), 0);
@@ -322,7 +320,7 @@ function blockLines(tok: any, width: number): Line[] {
       const head = Array.from({ length: ncols }, (_, ci) => cellSpans(header[ci], { bold: true, color: color.text }));
       const body = rows.map((r) => Array.from({ length: ncols }, (_, ci) => cellSpans(r[ci], { color: color.text })));
 
-      const GAP = 2; // spaces between columns
+      const GAP = 2; // column separator width in spaces
       const natural = Array.from({ length: ncols }, (_, ci) => Math.max(spanW(head[ci]!), ...body.map((r) => spanW(r[ci]!)), 1));
       const avail = Math.max(ncols * 5, width - GAP * (ncols - 1));
       const totalNat = natural.reduce((a, b) => a + b, 0);
@@ -398,9 +396,9 @@ function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, exp
   return out;
 }
 
-// A file being written, streamed live: a scrolling TAIL window of the content so
-// the user watches it flow by instead of seeing it dumped (or truncated) at once.
-// `stream` is already a bounded tail (App caps it); `count` is the true total.
+// Streaming write display: show only a rolling tail so the user watches content
+// flow rather than seeing it all dumped at once. `stream` is already bounded
+// (App caps it); `count` is the true total line count.
 function streamLines(stream: string, count: number, width: number, expand = false): Line[] {
   const TAIL = expand ? 14 : 5;
   const all = stream.split("\n");
@@ -444,17 +442,13 @@ export const friendlyTool = (name: string) =>
   name === "search" ? "search" :
   name;
 
-// Strip the workspace prefix so a read shows `src/ui/App.tsx`, not the full
-// absolute path (which also got its filename clipped off at 64 chars upstream).
+// Strip the CWD prefix so tool args show as relative paths in the transcript.
 const CWD = (() => { try { return process.cwd(); } catch { return ""; } })();
 export const relPath = (p: string) => (CWD && p.startsWith(CWD + "/") ? p.slice(CWD.length + 1) : p);
 
 const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-// Coarse elapsed for a STILL-RUNNING step (ticks every second): "8s" / "1m 24s".
+// Coarse elapsed for a still-running step, ticking every second: "8s" or "1m 24s".
 export const fmtElapsed = (secs: number) => (secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`);
-const motionFrame = () => Math.floor(Date.now() / 360);
-const spinnerFrame = () => ["●", "◌", "○", "◌"][motionFrame() % 4]!;
-const activePhrase = (label: string) => `${label}${["", ".", "..", "..."][motionFrame() % 4]}`;
 const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
   it.name === "AskUserQuestion" ? color.accent :
   it.status === "err" ? color.err :
@@ -463,15 +457,12 @@ const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
   it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change" ? color.ok :
   color.accentDim;
 
-/** Flatten the transcript into styled lines wrapped to `width`. A leading blank
- *  line separates turns (so the windowed view keeps its rhythm). */
-// Per-item line cache for the two markdown-heavy, static kinds (assistant, user).
-// Streaming re-runs itemsToLines on every token; without this, every prior reply's
-// markdown is re-parsed each token (super-linear with transcript length — the
-// cause of jittery streaming). Items keep a stable object reference across renders
-// when unchanged (setItems maps unchanged items to the same object), so a WeakMap
-// keyed by item reference hits for history and misses only for the changing tail.
-// Tool/phase/etc. items are NOT cached — they can animate (spinner) and are cheap.
+// Per-item line cache for the markdown-heavy static kinds (assistant, user).
+// Without this, every prior reply is re-parsed on every streaming token, which is
+// super-linear with transcript length and caused jittery streaming. Items that are
+// unchanged across renders keep a stable object reference (setItems guarantees
+// this), so the WeakMap hits for history and misses only for the live tail.
+// Tool/phase/etc. items are not cached because they animate (spinner) and are cheap.
 const staticLineCache = new WeakMap<object, { width: number; lines: Line[] }>();
 
 export function staticItemLines(it: Item, width: number): Line[] {
@@ -497,8 +488,8 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
   const out: Line[] = [];
   let prevKind: string | null = null;
   for (const it of items) {
-    // One blank line separates items — EXCEPT between consecutive tool calls, so a
-    // run of reads/edits reads as one tight block instead of a sparse ladder.
+    // Blank line between items, except between consecutive tool calls so a run of
+    // reads/edits renders as a tight block rather than a sparse ladder.
     if (!(prevKind === "tool" && it.kind === "tool")) out.push(BLANK);
     prevKind = it.kind;
     if (it.kind === "user" || it.kind === "assistant") {
@@ -507,7 +498,9 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
     }
     switch (it.kind) {
       case "tool": {
-        const dot: Span = { text: it.status === "running" ? spinnerFrame() : glyph.tool, color: toolColor(it) };
+        // Static dot — colour carries status (run vs done); the ONE animated working
+        // indicator is the bottom strip, so per-tool lines stay calm.
+        const dot: Span = { text: glyph.tool, color: toolColor(it) };
         const name = friendlyTool(it.name);
         const isShell = it.name === "run_shell" || it.name === "command_execution" || it.name === "Bash";
         const isWrite = !isShell && (it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change");
@@ -518,9 +511,8 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
           head.push({ text: " " + shownArg.slice(0, Math.max(width - headUsed - 1, 0)), color: isShell ? color.text : color.path, bold: true });
         }
         if (it.status === "running") {
-          head.push({ text: "  " + activePhrase(isWrite ? "writing" : isShell ? "running" : "working"), color: color.run, bg: color.panelBg });
-          // A live, ticking elapsed once a step runs past ~2s — the clearest "it's
-          // alive, not hung" signal, right where the eye is (re-renders on the spinner tick).
+          // No "working" badge here (it shows once at the bottom) — just the ticking
+          // elapsed after ~2 s, the clearest "still running, not hung" per-tool signal.
           const secs = it.startedAt ? Math.floor((Date.now() - it.startedAt) / 1000) : 0;
           if (secs >= 2) head.push({ text: "  " + fmtElapsed(secs), color: color.faint });
         }
@@ -529,13 +521,12 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         if (it.diff?.length) head.push({ text: "  " + diffStats(it.diff), color: color.faint });
         out.push(head);
         if (it.status === "running" && it.activity) {
-          // A single REPLACING live status line (delegate progress), not a growing log.
+          // Single replacing status line for delegate progress, not a growing log.
           out.push(...indent([clipSpans([{ text: "└─ ", color: color.accentDim }, { text: it.activity, color: color.dim }], Math.max(width - 3, 8))], 3));
         } else if (it.status === "running" && !it.outputTail && !it.stream) {
           out.push(...indent([[
             { text: "└─ ", color: color.accentDim },
-            { text: activePhrase(isWrite ? "drafting file" : isShell ? "running" : "working"), color: color.ok, bg: color.panelBg },
-            { text: " " + (isWrite ? "provider has not streamed code yet" : isShell ? "waiting for output" : "no output streamed yet"), color: color.faint },
+            { text: isWrite ? "drafting file · no code streamed yet" : isShell ? "waiting for output" : "no output yet", color: color.faint },
           ]], 3));
         }
         if (it.preview) {
@@ -573,11 +564,9 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
             out.push(...streamLines(outTail, outCount, Math.max(width - 5, 1), expand));
           }
         }
-        // The summary line repeats the tool's headline result. For a shell that's
-        // the first output line, which we already render in the tail above — so
-        // skip it for shells (it read as `$ tsc --noEmit` printed twice).
-        // Skip the summary when it just repeats the tool name (the CLI backend sets
-        // tool-end summary to the tool name, e.g. a "read" with a "⎿ Read" echo).
+        // Skip the summary for shells that have output (it would duplicate the first
+        // output line already shown in the tail). Also skip when the summary just
+        // echoes the tool name (the CLI backend sets tool-end summary to the tool name).
         const redundantSummary = it.summary != null && (it.summary === it.name || it.summary.toLowerCase() === name);
         if (it.status !== "running" && it.summary && !redundantSummary && !(isShell && outTail)) {
           out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: it.summary.slice(0, Math.max(width - 5, 1)), color: it.status === "err" ? color.err : color.dim }]);
@@ -592,8 +581,8 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "model": {
-        // Post-turn provenance: routed → provider · model · cost. Dim when routine;
-        // the whole line brightens to warn (amber) + a reason for a surprising pick.
+        // Post-turn provenance line. Dim when routine; brightens to amber with a
+        // reason for the three "surprising" cases (escalation, fallback, cap hit).
         const head = it.surprising ? color.warn : color.faint;
         const body = it.surprising ? color.warn : color.dim;
         const spans = [
@@ -606,8 +595,8 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "verification": {
-        // Durable one-liner: the named action + final state, attempts folded in.
-        // The literal command + output live behind ⌃O (expand), not in the spine.
+        // Durable one-liner: named action, final state, attempts folded in.
+        // The literal command and output are hidden behind ⌃O (expand).
         const label = it.intent ?? "check";
         const state = it.ok ? "passed" : "failed";
         const head: Line = [
@@ -638,7 +627,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         if (it.changed.length) bits.push(`${it.changed.length} file${it.changed.length === 1 ? "" : "s"}`);
         if (it.checks.length) bits.push(`${it.checks.length} check${it.checks.length === 1 ? "" : "s"}`);
         if (it.failures.length) bits.push(`${it.failures.length} failed`);
-        // Honest "done with proof": state which tier the turn actually cleared.
+        // Which verification tier the turn cleared: tests > types > none.
         const proof =
           it.tier === "tests" ? { text: " · tests green", color: color.ok }
           : it.tier === "types" ? { text: " · types/build pass", color: color.ok }
@@ -655,7 +644,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "notice": {
-        // Preserve source newlines (e.g. `!cat file` output), wrapping long ones.
+        // Preserve source newlines (e.g. `!cat` output) and wrap long lines.
         let first = true;
         for (const para of it.text.split("\n")) {
           const wrapped = wrapSpans(noticeSpans(para), Math.max(width - 4, 1));
@@ -791,8 +780,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "error": {
-        // One error lane: a single red left bar (▎) down the whole message, shown
-        // once — matches the user spine but in red. No floating/boxed duplicate.
+        // Red left-bar spine (▎) mirroring the user spine, without a floating box.
         out.push(BLANK);
         for (const para of it.text.split("\n")) {
           const wrapped = wrapSpans([{ text: para, color: color.err }], Math.max(width - 2, 1));

@@ -36,7 +36,7 @@ const num = (v: string | undefined): number | undefined => {
 };
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
-// Resolve a reset value to epoch seconds: Anthropic sends an RFC3339 timestamp,
+// Resolve a reset value to epoch seconds. Anthropic sends an RFC3339 timestamp,
 // OpenAI a Go-duration from now, Azure sometimes plain seconds.
 function resetSeconds(raw: string | undefined, now: number): number | undefined {
   if (!raw) return undefined;
@@ -49,7 +49,7 @@ function resetSeconds(raw: string | undefined, now: number): number | undefined 
 }
 
 function window(limit: number | undefined, remaining: number | undefined, reset: string | undefined, type: string, now: number): RateLike | null {
-  if (limit == null || limit <= 0 || remaining == null) return null; // can't compute utilization
+  if (limit == null || limit <= 0 || remaining == null) return null; // missing data: can't compute utilization
   return { utilization: clamp01(1 - remaining / limit), resetsAt: resetSeconds(reset, now), type };
 }
 

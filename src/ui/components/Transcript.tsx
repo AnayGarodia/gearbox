@@ -242,10 +242,6 @@ function DiffView({ lines, width }: { lines: { sign: "+" | "-"; text: string }[]
 }
 
 const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
-const frame = () => Math.floor(Date.now() / 360);
-const TOOL_SPIN = ["◐","◓","◑","◒"];
-const spin = () => TOOL_SPIN[frame() % TOOL_SPIN.length]!;
-const activePhrase = (label: string) => `${label}${["", ".", "..", "..."][frame() % 4]}`;
 const toolColor = (item: Extract<Item, { kind: "tool" }>) =>
   item.name === "AskUserQuestion" ? color.accent :
   item.status === "err" ? color.err :
@@ -351,10 +347,9 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
       <Box>
-        <Text color={dotColor}>{item.status === "running" ? spin() : glyph.tool}</Text>
+        <Text color={dotColor}>{glyph.tool}</Text>
         <Text color={dotColor} bold>{"  " + verb}</Text>
         {item.arg ? <Text color={isShell ? color.text : color.path} bold>{" " + (isShell ? item.arg : relPath(item.arg))}</Text> : null}
-        {item.status === "running" ? <Text color={color.run}>{"  " + activePhrase(isWrite ? "writing" : isShell ? "running" : "working")}</Text> : null}
         {item.status === "running" && item.startedAt && Date.now() - item.startedAt >= 2000 ? <Text color={color.faint}>{"  " + fmtElapsed(Math.floor((Date.now() - item.startedAt) / 1000))}</Text> : null}
         {item.status !== "running" && item.durationMs != null ? <Text color={color.faint}>{"  " + fmtMs(item.durationMs)}</Text> : null}
         {item.exitCode != null ? <Text color={item.exitCode === 0 ? color.faint : color.err}>{"  exit " + item.exitCode}</Text> : null}
@@ -368,8 +363,7 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
       ) : item.status === "running" && !out && !item.stream ? (
         <Box marginLeft={3} marginTop={1}>
           <Text color={color.accentDim}>└─ </Text>
-          <Text color={color.ok}>{activePhrase(isWrite ? "drafting file" : isShell ? "running" : "working")}</Text>
-          <Text color={color.faint}> {isWrite ? "provider has not streamed code yet" : isShell ? "waiting for output" : "no output streamed yet"}</Text>
+          <Text color={color.faint}>{isWrite ? "drafting file · no code streamed yet" : isShell ? "waiting for output" : "no output yet"}</Text>
         </Box>
       ) : null}
       {item.preview ? (

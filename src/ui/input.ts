@@ -1,9 +1,9 @@
-// Pure key → action reducer for the composer. Kept pure so it's unit-tested
-// without a terminal. The Composer's useInput just dispatches what this returns.
+// Pure key-to-action reducer for the composer. Kept pure so it's unit-tested
+// without a terminal; the Composer's useInput just dispatches what this returns.
 // Supports multi-line values: ⌃J / shift+⏎ / alt+⏎ insert a newline, ⏎ submits,
-// ↑/↓ move between lines (falling through to history at the top/bottom line),
-// and pasted multi-line text is inserted literally (CR normalized, paste markers
-// stripped) instead of submitting on every embedded newline.
+// up/down moves between lines (falling through to history at the edges), and
+// pasted multi-line text is inserted literally (CR normalized, paste markers
+// stripped) rather than submitting on every embedded newline.
 import type { Key } from "ink";
 
 export interface Edit {
@@ -75,7 +75,7 @@ function deleteSelection(s: Edit): KeyAction | null {
   return { type: "edit", state: { value: s.value.slice(0, sel[0]) + s.value.slice(sel[1]), cursor: sel[0] } };
 }
 
-// Word boundaries (readline-style): a word is a run of non-whitespace.
+// Readline-style word boundaries: a word is a run of non-whitespace characters.
 function wordLeft(v: string, c: number): number {
   let i = c;
   while (i > 0 && /\s/.test(v[i - 1]!)) i--;
@@ -93,9 +93,9 @@ function lineEndOf(value: string, cursor: number): number {
   return nl === -1 ? value.length : nl;
 }
 
-// Vim NORMAL-mode reducer: movement + a handful of edit/insert commands. Returns
-// a normal `edit`/`submit`/`history` action, or a `vim` action to switch to
-// insert (optionally moving the cursor first). Pure + tested.
+// Vim NORMAL-mode reducer: movement plus a handful of edit/insert commands.
+// Returns a normal edit/submit/history action, or a vim action to switch to
+// insert mode (optionally repositioning the cursor first). Pure, tested.
 export function vimNormal(s: Edit, input: string, key: Key): KeyAction {
   const { lineStart } = caretPos(s.value, s.cursor);
   const end = lineEndOf(s.value, s.cursor);
@@ -140,7 +140,7 @@ function down(s: Edit): KeyAction {
 export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boolean }): KeyAction {
   if (vim) {
     if (vim.normal) return vimNormal(s, input, key);
-    if (key.escape) return { type: "vim", to: "normal" }; // insert → normal
+    if (key.escape) return { type: "vim", to: "normal" }; // Esc exits insert mode
   }
   // Newline: modifier+Enter or ⌃J. Checked before plain Enter (submit).
   if ((key.return && (key.shift || key.meta)) || (key.ctrl && input === "j")) return insert(s, NL);
@@ -158,14 +158,14 @@ export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boole
     if (lineIdx < lines.length - 1) return { type: "edit", state: { value: s.value, cursor: offsetAt(s.value, lineIdx + 1, col) } };
     return { type: "history", dir: "down" };
   }
-  // Word jumps: Option/Alt+← → (key.meta) or Ctrl+← →. Must precede plain arrows.
+  // Word jumps via Option/Alt or Ctrl. Must precede plain arrow handling.
   if ((key.meta || key.ctrl) && key.leftArrow) return move(s, wordLeft(s.value, s.cursor), key.shift);
   if ((key.meta || key.ctrl) && key.rightArrow) return move(s, wordRight(s.value, s.cursor), key.shift);
   if (key.leftArrow) return move(s, Math.max(0, s.cursor - 1), key.shift);
   if (key.rightArrow) return move(s, Math.min(s.value.length, s.cursor + 1), key.shift);
   if ((key.meta || key.ctrl) && input === "a") return at(s.value, s.value.length, 0); // select all
-  if (key.ctrl && input === "e") return move(s, lineEndOf(s.value, s.cursor), key.shift); // line end
-  // Kill bindings (readline): ⌃U to line start, ⌃K to line end, ⌃W / ⌥⌫ word back.
+  if (key.ctrl && input === "e") return move(s, lineEndOf(s.value, s.cursor), key.shift); // line end (readline)
+  // readline kill bindings: ⌃U to line start, ⌃K to line end, ⌃W / ⌥⌫ word back.
   if (key.ctrl && input === "u") return { type: "edit", state: { value: s.value.slice(0, lineStart) + s.value.slice(s.cursor), cursor: lineStart } };
   if (key.ctrl && input === "k") return { type: "edit", state: { value: s.value.slice(0, s.cursor) + s.value.slice(lineEndOf(s.value, s.cursor)), cursor: s.cursor } };
   if ((key.ctrl && input === "w") || (key.meta && (key.backspace || key.delete))) {
@@ -186,7 +186,7 @@ export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boole
     return { type: "edit", state: { value: s.value.slice(0, s.cursor - 1) + s.value.slice(s.cursor), cursor: s.cursor - 1 } };
   }
   if (input && !key.ctrl && !key.meta && !key.tab) {
-    // Text or a pasted chunk: drop bracketed-paste markers, normalize CR/CRLF → \n.
+    // Drop bracketed-paste markers and normalize CR/CRLF before inserting.
     const clean = sanitizeInputText(input);
     return clean ? insert(s, clean) : { type: "none" };
   }
@@ -262,11 +262,9 @@ export function applyMouse(s: Edit, click: MouseClick): KeyAction {
   const col = offsetInLine(line, click.col);
   const offset = offsetAt(s.value, lineIdx, col);
 
-  // Shift‑click: extend selection from the current cursor (or anchor) to the
-  // clicked position.
+  // Shift-click: extend the existing selection (or start one) to the clicked position.
   if (click.shift) {
     const anchor = s.selectionAnchor ?? s.cursor;
-    // If there is no existing selection, start one from the current cursor.
     return {
       type: "edit",
       state: {

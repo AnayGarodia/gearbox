@@ -41,10 +41,8 @@ export const clampScroll = (s: number, max: number): number => clamp(s, 0, Math.
 /** The body area of a panel of total `height` (minus the header + footer rows). */
 export const panelBodyHeight = (height: number): number => Math.max(1, height - 2);
 
-/**
- * First row to show so `index` stays visible within a `viewH`-row window — keeps
- * the selection on screen as you arrow through a list longer than the window.
- */
+/** First row to show so `index` stays visible in a `viewH`-row window. Keeps the
+ *  selection on screen when arrowing through a list longer than the panel. */
 export function windowStart(index: number, count: number, viewH: number): number {
   if (count <= viewH) return 0;
   const half = Math.floor(viewH / 2);

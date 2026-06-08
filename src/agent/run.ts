@@ -31,16 +31,15 @@ const argSummary = (name: string, input: any): string => {
     .slice(0, 60);
 };
 
-// Which JSON field of each tool's input is worth STREAMING as content (so the
-// user watches a file get written instead of seeing it dumped at once). The
-// "head" field is the short label shown next to the tool (path / command).
+// Stream the body of write_file/edit_file so the user watches the file arrive
+// instead of seeing it dumped at once. HEAD_FIELD overrides the default "path"
+// label shown in the tool head (run_shell shows its command instead).
 const CONTENT_FIELD: Record<string, string> = { write_file: "content", edit_file: "replace" };
-const HEAD_FIELD: Record<string, string> = { run_shell: "command" }; // default: "path"
+const HEAD_FIELD: Record<string, string> = { run_shell: "command" };
 
-// Tools that render their OWN rich progress via onEvent (the delegate sub-agent
-// lines, the merge summary). The generic tool lifecycle below would double-render
-// them — once with a garbage `[object Object]` head from their array input — so we
-// skip our UI for these and let the tool drive the display.
+// delegate/delegate_parallel emit their own structured events, so the generic
+// tool lifecycle would double-render them (with a useless "[object Object]" head
+// from the array input). Skip our UI and let the tool drive its own display.
 const SELF_RENDERING = new Set(["delegate", "delegate_parallel"]);
 
 // Incrementally decodes ONE JSON string field out of a partial JSON buffer as it
@@ -189,11 +188,10 @@ export async function runTask(opts: {
   let failureMessage: string | undefined;
   const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
 
-  // One clean, one-line error path. The AI SDK surfaces errors three ways
-  // (an `error` stream part, a thrown iterator error, and — if unhandled — a
-  // rejected internal promise that Bun would dump RAW to the screen). `onError`
-  // catches that third case; `emitErr` dedupes + trims so the UI shows a single
-  // readable line, never the giant APICallError object.
+  // The AI SDK surfaces errors three ways: an `error` stream part, a thrown
+  // iterator error, and an unhandled rejected promise (Bun dumps that raw).
+  // `onError` catches the third path; `emitErr` dedupes all three so the UI
+  // shows a single readable line, never the full APICallError object.
   let errored = false;
   let producedOutput = false;
   let failureRaw: unknown = undefined;
@@ -208,10 +206,9 @@ export async function runTask(opts: {
   };
 
   onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
-  // Delegation (top-level turns only, and not in plan mode): the `delegate` tool
-  // spawns a sub-agent on a freshly-routed model. The sub-agent IS another runTask
-  // at depth+1 (so it has no delegate tool — no recursion). We capture its prose as
-  // the tool result and forward only its sub-events upward (handled by the tool).
+  // Delegation is available at depth 0 only (plan mode excluded). The sub-agent
+  // is another runTask at depth+1, so it has no delegate tool and can't recurse.
+  // Its prose is captured as the tool result; sub-events forward upward directly.
   const subRunner: SubAgentRunner = async (p) => {
     let text = "";
     const wrapped: OnEvent = (e) => { if (e.type === "text") text += e.text; else p.onEvent(e); };
@@ -220,9 +217,9 @@ export async function runTask(opts: {
   };
   const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId }) : undefined;
   const activeTools = await createToolset(onEvent, { readOnly: Boolean(plan), extraTools, root: opts.root });
-  // Prompt caching: mark the stable prefix (tools+system+settled history) so a
-  // provider with explicit breakpoints reuses it cheaply next turn. No-op on
-  // providers that cache automatically (OpenAI/DeepSeek/Gemini).
+  // Mark the stable prefix for prompt caching. Providers with explicit breakpoints
+  // (Anthropic) reuse it at ~10% cost; auto-caching providers (OpenAI/DeepSeek/
+  // Gemini) ignore the markers harmlessly.
   const cached = withPromptCaching(model, opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM), messages, opts.cacheBreak);
   const result = opts._stream
     ? null
@@ -230,9 +227,9 @@ export async function runTask(opts: {
         model: resolveModel(model, opts.creds),
         system: cached.system,
         messages: cached.messages,
-        // We deliberately move the (trusted, our-own) system prompt into messages
-        // so a cache marker can ride on it; opt in so the SDK doesn't warn about
-        // system-in-messages (that guard is for UNTRUSTED injected system text).
+        // allowSystemInMessages: our own system prompt is moved into messages so
+        // a cache marker can ride on it. The SDK warning this suppresses targets
+        // untrusted injected content, not our own system block.
         allowSystemInMessages: true,
         tools: activeTools,
         stopWhen: stepCountIs(config.maxSteps),
@@ -249,7 +246,7 @@ export async function runTask(opts: {
   type ToolStream = { name: string; rawBuf: string; headField: string; lastHead: string; content: FieldStreamer | null; pending: string };
   const streams = new Map<string, ToolStream>();
   const started = new Set<string>();
-  const selfRender = new Set<string>(); // call ids of self-rendering tools (delegate*) — we skip our generic UI for them
+  const selfRender = new Set<string>(); // call ids of delegate/delegate_parallel — skip our generic UI for these
   const openStream = (id: string, name: string): ToolStream => {
     const st: ToolStream = {
       name,
@@ -273,12 +270,10 @@ export async function runTask(opts: {
     return true;
   };
 
-  // The model delivers text/tool-input in NETWORK BURSTS — dozens of deltas can
-  // land in a few milliseconds, processed back-to-back here on microtasks. Ink
-  // (the renderer) only repaints when the event loop gets a macrotask turn, so
-  // without yielding it paints once per burst and streaming looks like one dump.
-  // Yield at most ~60fps so the UI actually shows content arriving live. Skipped
-  // for the injected test stream (no terminal to paint).
+  // The model delivers text/tool-input in network bursts: dozens of deltas land
+  // back-to-back on microtasks, and Ink only repaints on a macrotask turn. Without
+  // yielding, the whole burst paints as one dump. Cap at ~60fps so content appears
+  // to stream live. Skip for the injected test stream (no terminal to paint).
   let lastPaint = 0;
   const maybePaint = async () => {
     if (opts._stream) return;
@@ -319,7 +314,7 @@ export async function runTask(opts: {
           if (head != null && head !== st.lastHead) { st.lastHead = head; onEvent({ type: "tool-stream", id, arg: head }); }
           if (st.content) {
             st.pending += st.content.push(chunk);
-            if (flush(id, st, false)) await maybePaint(); // emit completed lines, let the UI paint
+            if (flush(id, st, false)) await maybePaint();
           }
           break;
         }
@@ -327,7 +322,7 @@ export async function runTask(opts: {
           const id = part.toolCallId ?? part.id ?? String(names.size);
           const name = part.toolName ?? part.name ?? "tool";
           names.set(id, name);
-          if (SELF_RENDERING.has(name)) { selfRender.add(id); started.add(id); producedOutput = true; break; } // the tool drives its own UI
+          if (SELF_RENDERING.has(name)) { selfRender.add(id); started.add(id); producedOutput = true; break; }
           const arg = argSummary(name, part.input ?? part.args);
           // If the input streamed, the head is already set — just finalize it and
           // flush any trailing partial line. If it didn't (provider sent only the
@@ -346,14 +341,13 @@ export async function runTask(opts: {
         }
         case "tool-result": {
           const id = part.toolCallId ?? part.id ?? "";
-          if (selfRender.has(id)) break; // delegate tools already emitted their own end
+          if (selfRender.has(id)) break; // self-rendering tools emit their own end events
           const output = part.output ?? part.result;
           if (output && typeof output === "object" && Array.isArray(output.diff)) {
             onEvent({ type: "tool-end", id, ok: true, summary: String(output.summary ?? "done"), diff: output.diff });
           } else {
             onEvent({ type: "tool-end", id, ok: true, summary: resultSummary(output) });
           }
-          // No "tool finished" phase — the tool's own result line says it finished.
           break;
         }
         case "tool-error": {
@@ -445,7 +439,7 @@ export async function runCompletion(opts: {
         model: resolveModel(model, opts.creds),
         system: cached.system,
         messages: cached.messages,
-        allowSystemInMessages: true, // our own system prompt, moved into messages to carry the cache marker
+        allowSystemInMessages: true, // same reason as runTask: cache marker on our own system block
         abortSignal: signal,
         maxRetries: opts.maxRetries,
         onError: ({ error }) => emitErr(error),

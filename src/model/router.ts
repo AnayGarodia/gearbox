@@ -28,13 +28,13 @@ import { coolingDown } from "./cooldown.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
-// A representative working-set size for the cost estimate when the caller doesn't
-// pass one. Cost ordering only depends on the per-Mtok rates (the token count is
-// shared across candidates), so this just has to be positive.
+// Fallback working-set size when the caller doesn't supply estTokens. Cost ordering
+// depends only on per-Mtok rates (token count is shared across candidates), so the
+// exact value doesn't matter as long as it's positive.
 const NOMINAL_INPUT_TOKENS = 16_000;
 
 // One (model, account) routing candidate, before scoring. `canonicalId` is the
-// registry model id used for profile lookup (cost/quality) — it differs from
+// registry model id used for profile lookup (cost/quality); it differs from
 // `spec.id` only for subscription seats, which mirror a canonical model.
 interface Candidate {
   spec: ModelSpec;
@@ -55,10 +55,9 @@ const BAR: Record<Kind, number> = {
   code: 0.7,
 };
 
-// Each escalation step (one failed verification / auto-fix attempt) raises the
-// quality bar by this much, so the cheapest-that-clears winner climbs the model
-// ladder. Capped so something always clears; if the raised bar would clear nobody,
-// prepare() escalates to the single strongest tier instead of falling to cheapest.
+// Each failed verification raises the quality bar by this much, climbing the model
+// ladder. BAR_MAX ensures something always clears; if no candidate clears the raised
+// bar, prepare() promotes to the strongest available tier rather than falling to cheapest.
 const ESCALATION_STEP = 0.08;
 const BAR_MAX = 0.95;
 
@@ -101,22 +100,21 @@ function qualityOf(c: Candidate): number {
   return 0.5;
 }
 
-// Whether a model has a REAL quality prior (vs the neutral-0.5 fallback used when no
-// profile exists). A seat with an UNKNOWN quality clears the bar unconditionally (we
-// don't drop it on a 0.5 guess); a seat with a KNOWN quality is held to the bar.
+// Whether a model has a real quality prior. A seat with unknown quality clears the bar
+// unconditionally (we don't penalize it for a 0.5 guess); a seat with known quality is held to the bar.
 function hasKnownQuality(c: Candidate): boolean {
   const pr = profileFor(c.canonicalId ?? c.spec.id);
   return !!pr && (pr.quality.sweBenchVerified != null || pr.quality.intelligenceIndex != null);
 }
 
-// Bar-clearing predicate (curried on the bar). API candidates clear iff quality ≥
-// bar. Seats clear iff quality ≥ bar OR the model's quality is unknown.
+// Bar-clearing predicate, curried on the bar. API candidates must have quality >= bar.
+// Seats also clear when quality is unknown (don't drop them on a 0.5 guess).
 const clearsBar = (bar: number) => (c: Candidate): boolean =>
   c.backend?.kind === "cli" ? !hasKnownQuality(c) || qualityOf(c) >= bar : qualityOf(c) >= bar;
 
 function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {
   const cost = profileFor(c.canonicalId ?? c.spec.id)?.cost ?? c.spec.cost;
-  // Unknown cost sorts last (matches the old POSITIVE_INFINITY behavior).
+  // Unknown cost sorts last; sentinel 1e6 matches prior POSITIVE_INFINITY behavior.
   return cost ?? { inUSDPerMtok: 1e6, outUSDPerMtok: 1e6 };
 }
 
@@ -124,7 +122,7 @@ function tpsOf(c: Candidate): number {
   return profileFor(c.canonicalId ?? c.spec.id)?.latency?.tps ?? 0;
 }
 
-// Map a routing candidate to the pure scorer's minimal numeric view.
+// Adapter: strip (model, account) down to the minimal numeric view the pure scorer expects.
 function toScoreCandidate(c: Candidate): ScoreCandidate {
   const cost = costPair(c);
   return { id: c.spec.id, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, quality: qualityOf(c), tps: tpsOf(c), account: c.state };
@@ -161,10 +159,9 @@ export class RoutingSelector implements ModelSelector {
     return live.length ? live : out;
   }
 
-  // Everything select() and explain() share: build the snapshot, enumerate, gate
-  // by capability/context/global-preference, and identify the bar-clearing set.
-  // Throws the same errors select() used to (no capable model). Returns
-  // `fallback` when there are no enumerated candidates at all.
+  // Shared setup for select() and explain(): build the snapshot, enumerate candidates,
+  // gate by capability/context/global-preference, and identify the bar-clearing set.
+  // Throws when no capable model exists. Returns `fallback` when enumeration is empty.
   private prepare(task: Task): {
     kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
     pool: Candidate[]; clears: Candidate[]; estInputTokens: number;
@@ -172,7 +169,7 @@ export class RoutingSelector implements ModelSelector {
   } {
     const kind = task.kind ?? classify(task.prompt);
     const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
-    // Reactive confidence-gating: each prior miss lifts the bar a notch.
+    // Each prior miss lifts the bar by ESCALATION_STEP so the router climbs to a stronger model.
     const bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
     const required = task.requires ?? [];
     const ctx = buildRoutingContext(ctx_now());
@@ -192,17 +189,12 @@ export class RoutingSelector implements ModelSelector {
     const fits = need > 0 ? capable.filter((c) => c.spec.contextWindow >= need) : capable;
     let pool = fits.length ? fits : capable;
     pool = applyGlobalPreference(pool);
-    // A subscription seat clears the bar when its model's quality clears it, OR when
-    // the model has NO known quality profile (a seat for a non-native sdkId — e.g.
-    // some codex ids — falls to the neutral 0.5, and we shouldn't drop it on that
-    // guess; R-3). But a seat with a KNOWN-weak quality (e.g. a Claude haiku seat)
-    // is still held to the bar, so it isn't picked for a hard task just because it's
-    // free and fast — that was the regression when haiku became a routable seat.
+    // Seats with no quality profile (e.g. non-native sdkIds) clear the bar unconditionally;
+    // seats with a known-weak quality (e.g. haiku) are still held to the bar so they
+    // aren't chosen for hard tasks just because they're free and fast (R-3).
     let clears = pool.filter(clearsBar(bar));
-    // Under escalation the bar can rise above every available model's quality, which
-    // would empty `clears` and (via select's fallback) wrongly drop us back to the
-    // CHEAPEST model — the opposite of escalating. Instead, climb to the strongest
-    // tier available so escalation always moves UP the ladder, never down.
+    // If the raised bar clears nobody, promote to the strongest available tier.
+    // Without this, select's fallback would drop to the cheapest — the opposite of escalating.
     if (escalate > 0 && clears.length === 0) {
       const top = Math.max(...pool.map(qualityOf));
       clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= top - 1e-9);

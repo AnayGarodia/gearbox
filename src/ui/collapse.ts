@@ -38,10 +38,10 @@ export function collapseTurn(items: Item[], nextId: () => number): Item[] {
   const kept: ({ item: Item } | { checkKey: string })[] = [];
 
   for (const it of items) {
-    if (it.kind === "phase") continue; // live spinner — gone once settled
+    if (it.kind === "phase") continue; // live-only; irrelevant once settled
     if (it.kind === "tool") {
       const name = it.name;
-      if (EPHEMERAL_TOOLS.has(name)) continue; // context-gathering noise
+      if (EPHEMERAL_TOOLS.has(name)) continue; // context-gathering; noise once settled
       if (isShellName(name)) {
         const intent = checkIntent(it.arg);
         if (intent) {
@@ -55,7 +55,7 @@ export function collapseTurn(items: Item[], nextId: () => number): Item[] {
           continue;
         }
       }
-      kept.push({ item: it }); // read / write / edit / non-check shell stay verbatim
+      kept.push({ item: it }); // read / write / edit / non-check shell: keep verbatim
       continue;
     }
     if (it.kind === "verification") {
@@ -69,7 +69,7 @@ export function collapseTurn(items: Item[], nextId: () => number): Item[] {
       });
       continue;
     }
-    kept.push({ item: it }); // assistant / user / error / model / summary / preference …
+    kept.push({ item: it }); // user / assistant / error / model / summary / preference
   }
 
   const out: Item[] = [];
@@ -115,7 +115,7 @@ function fold(
     kept.push({ checkKey: intent }); // placeholder; filled in second pass
     return;
   }
-  // Subsequent attempt: final state + last summary/output win; durations sum.
+  // Subsequent attempt: later state and summary win; durations accumulate.
   existing.attempts += 1;
   existing.ok = attempt.ok;
   existing.durationMs += attempt.durationMs;
@@ -125,14 +125,14 @@ function fold(
 }
 
 // A short phrase describing how a check fared across its attempts:
-//   1 attempt           → ""           (the state line already says passed/failed)
-//   passed after fails  → "failed once, retried" / "failed 2 times, retried"
-//   still failing       → "after N attempts"
+//   1 attempt        → ""              (the state line already says passed/failed)
+//   passed on retry  → "retried once" / "retried 2 times"
+//   still failing    → "failed after N attempts"
+// "retried N" is used instead of "failed N times, retried" because the latter
+// reads as a failure at a glance even when the check is green.
 export function retryPhrase(ok: boolean, attempts: number): string {
   if (attempts <= 1) return "";
   const fails = ok ? attempts - 1 : attempts;
   const n = fails === 1 ? "once" : `${fails} times`;
-  // Passed-on-retry reads calmer as "retried N" than "failed N times, retried"
-  // (the latter looks like a failure at a glance even though the check is green).
   return ok ? `retried ${n}` : `failed after ${attempts} attempts`;
 }

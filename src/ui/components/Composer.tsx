@@ -60,17 +60,17 @@ function ComposerImpl({
     const hasSel = selected && selStart < selEnd;
     const cursorHere = line === curLine;
     if (!hasSel) {
-      if (!cursorHere) return <Text backgroundColor={color.panelBg}>{ln}</Text>;
+      if (!cursorHere) return <Text>{ln}</Text>;
       return (
-        <Text backgroundColor={color.panelBg}>
+        <Text>
           {ln.slice(0, curCol)}
-          <Text inverse backgroundColor={color.panelBg}>{ln[curCol] ?? " "}</Text>
+          <Text inverse>{ln[curCol] ?? " "}</Text>
           {ln.slice(curCol + 1)}
         </Text>
       );
     }
     return (
-      <Text backgroundColor={color.panelBg}>
+      <Text>
         {ln.slice(0, selStart)}
         <Text inverse>{ln.slice(selStart, selEnd)}</Text>
         {ln.slice(selEnd)}
@@ -123,11 +123,11 @@ function ComposerImpl({
       {value === "" ? (
         // Empty composer: idle placeholder. While busy, the cue is "type to queue".
         <Box paddingX={1}>
-          <Text color={busy ? color.faint : accent} bold backgroundColor={color.panelBg}>
+          <Text color={busy ? color.faint : accent} bold>
             {promptGlyph}{" "}
           </Text>
-          {!busy ? <Text inverse backgroundColor={color.panelBg}> </Text> : null}
-          <Text color={color.faint} backgroundColor={color.panelBg}>{busy ? "type to queue · esc interrupts" : bashMode ? "shell command · esc to exit bash mode" : suggestion ?? placeholder}</Text>
+          {!busy ? <Text inverse> </Text> : null}
+          <Text color={color.faint}>{busy ? "type to queue · esc interrupts" : bashMode ? "shell command · esc to exit bash mode" : suggestion ?? placeholder}</Text>
         </Box>
       ) : (
         // Non-empty: render the live editable input WITH the cursor, even while
@@ -135,7 +135,7 @@ function ComposerImpl({
         <Box flexDirection="column" paddingX={1}>
           {lines.map((ln, i) => (
             <Box key={i}>
-              <Text color={accent} bold backgroundColor={color.panelBg}>{prefix(i)}</Text>
+              <Text color={accent} bold>{prefix(i)}</Text>
               {renderLine(ln, i)}
             </Box>
           ))}

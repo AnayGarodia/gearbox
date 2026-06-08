@@ -2,18 +2,19 @@
 // GHOST MASCOT ENGINE (parametric)
 // ----------------------------------------------------------------------------
 // Ported from the Claude Design handoff (project/ghost.js). A 20x20 pixel ghost
-// built as composable layers — body (palette-driven) + face (eyes/mouth) +
-// accessory + persona + dynamic overlay (tears, dots, confetti, …). The browser
-// original painted to <canvas>; here we paint into a color grid and FOLD pairs
-// of vertical pixels into half-block terminal cells: `t` = top pixel (rendered
-// ▀ with color=t), `b` = bottom pixel (backgroundColor / ▄). `null` =
-// transparent. This is the same half-block representation gen-mascot.ts bakes,
-// so the existing render pipeline (Mascot.tsx SpriteRow) consumes it unchanged.
+// built as composable layers: body (palette-driven), face (eyes/mouth),
+// accessory, persona, and dynamic overlay (tears, dots, confetti, etc.). The
+// browser original painted to <canvas>; here we paint into a color grid and fold
+// pairs of vertical pixels into half-block terminal cells: `t` = top pixel
+// (rendered as ▀ with color=t), `b` = bottom pixel (backgroundColor / ▄).
+// `null` = transparent. This matches the half-block representation gen-mascot.ts
+// bakes, so the existing render pipeline (Mascot.tsx SpriteRow) consumes it
+// unchanged.
 //
-// The aspect rule matches gen-mascot.ts exactly: 2 pixel-rows per cell row, 1
-// pixel per column, so pixels stay square on screen.
+// Aspect rule matches gen-mascot.ts exactly: 2 pixel-rows per cell row, 1 pixel
+// per column, so pixels stay square on screen.
 //
-// Pure module — no Ink, no React. The blocks render path's source of truth.
+// Pure module — no Ink, no React. Source of truth for the blocks render path.
 // ============================================================================
 
 export type SpriteCell = { t: string | null; b: string | null };
@@ -78,7 +79,7 @@ export const PALETTES: Record<string, Palette> = {
 export const PALETTE_ORDER = ["default", "fire", "ice", "golden", "mint", "pink", "void", "slate", "ember"];
 
 // ---------- BODY SILHOUETTE ----------
-// map "c,r" -> role. Eyes & mouth are NOT here (faces overlay them).
+// Maps "c,r" to a palette role. Eyes and mouth are absent here; faces overlay them.
 function buildBody(): Map<string, Role> {
   const m = new Map<string, Role>();
   const set = (c: number, r: number, role: Role) => m.set(c + "," + r, role);
@@ -90,13 +91,13 @@ function buildBody(): Map<string, Role> {
     const [a, b] = fullRows[+r]!;
     for (let c = a; c <= b; c++) set(c, +r, "B");
   }
-  [4, 5, 9, 10, 14, 15].forEach((c) => set(c, 15, "B")); // feet (body color)
+  [4, 5, 9, 10, 14, 15].forEach((c) => set(c, 15, "B")); // foot tops in body color
   [4, 5, 9, 10, 14, 15].forEach((c) => set(c, 16, "S")); // sole band
   ([[4, "L"], [5, "R"], [9, "L"], [10, "R"], [14, "L"], [15, "R"]] as [number, Role][]).forEach(([c, role]) => {
     set(c, 17, role);
     set(c, 18, role);
   });
-  // highlight: top crown + upper-left edge
+  // Highlight: top crown and upper-left edge give the body a rounded 3D feel.
   ([[6, 4], [7, 4], [8, 4], [4, 6], [4, 7], [4, 8]] as [number, number][]).forEach(([c, r]) => set(c, r, "H"));
   return m;
 }
@@ -317,10 +318,9 @@ export const PERSONAS: Record<string, Persona> = {
 export const PERSONA_ORDER = ["wizard", "skater", "ninja", "chef", "pirate", "astronaut", "graduate", "superhero", "cowboy"];
 
 // ---------- OVERLAYS (dynamic bits, frame-driven) ----------
-// Smooth CSS motion from the gallery, quantized to 1-px integer steps. When a
-// crop is active (the compact inline ghost), dots that normally sit above the
-// head / below the feet are relocated into the visible band so the state still
-// reads.
+// CSS motion from the gallery, quantized to 1-px integer steps. When a crop is
+// active (the compact inline ghost), dots outside the head/feet area are
+// relocated into the visible band so the emotional state still reads.
 export type OverlayKind = "tears" | "dots" | "load" | "zzz" | "sparkle" | "confetti" | "hearts";
 
 const SPARK_SPOTS: [number, number][] = [[2, 3], [16, 4], [3, 11], [17, 11], [15, 1]];
@@ -330,22 +330,22 @@ const CONF_SPOTS: [number, number][] = [[2, 2], [17, 3], [3, 9], [17, 9], [16, 1
 export function overlayPixels(kind: OverlayKind, frame: number, cropActive = false): [number, number, Color][] {
   switch (kind) {
     case "tears": {
-      // a tear under each eye, falling rows 9..13, staggered
+      // One tear under each eye, rows 9..13, staggered so they fall at different rates.
       const a = 9 + (frame % 5);
       const b = 9 + ((frame + 2) % 5);
       return [[7, a, "#38bdf8"], [12, b, "#38bdf8"]];
     }
     case "dots": {
-      // thinking dots above the head (cols 8/10/12, row 2), one hops up per frame
+      // Thinking dots at cols 8/10/12, row 1 or 2; one hops up per frame.
       return [0, 1, 2].map((i) => [8 + 2 * i, (frame - i) % 3 === 0 ? 1 : 2, "#a5b4fc"] as [number, number, Color]);
     }
     case "load": {
-      // sequential fill. above the head when cropped (feet not visible), else below the feet
+      // Sequential fill: above the head when cropped, below the feet otherwise.
       const row = cropActive ? 2 : 19;
       return [0, 1, 2].filter((i) => frame % 4 > i).map((i) => [8 + 2 * i, row, "#38bdf8"] as [number, number, Color]);
     }
     case "zzz": {
-      // a rising Z, top-right, climbing and drifting right
+      // A single Z pixel climbing and drifting right in the top-right corner.
       const r = 4 - (frame % 5);
       const c = 16 + (frame % 3);
       return [[c, r, "#a5b4fc"]];
@@ -394,7 +394,7 @@ export interface GhostCfg {
   hideOver?: boolean;
 }
 
-/** Paint the layered sprite into an H×20 color grid (H = 22 for personas, else 20). */
+/** Paint the layered sprite into an H×20 color grid. H = 22 for personas (extra rows for tall costumes), else 20. */
 function compositeGrid(cfg: GhostCfg): (Color | null)[][] {
   const pal = PALETTES[cfg.palette] || PALETTES.default!;
   const face = FACES[cfg.face] || FACES.neutral!;
@@ -468,7 +468,7 @@ function foldToCells(grid: (Color | null)[][]): SpriteCell[][] {
   return cells;
 }
 
-/** Render a ghost cfg to half-block cells. Pure + memoized on the stringified cfg. */
+/** Render a ghost cfg to half-block cells. Pure, memoized by JSON-stringified cfg. */
 const cache = new Map<string, SpriteCell[][]>();
 export function renderGhost(cfg: GhostCfg): SpriteCell[][] {
   const memo = cache.get(JSON.stringify(cfg));

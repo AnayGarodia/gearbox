@@ -11,7 +11,7 @@ const OPENAI_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const ANTHROPIC_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GOOGLE_EFFORTS = ["minimal", "low", "medium", "high"];
 
-// Canonical ordering from weakest to strongest, used to clamp effort when switching models.
+// Canonical ordering weakest to strongest, used to find the nearest valid level when clamping.
 export const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /**
@@ -22,7 +22,7 @@ export function clampEffort(current: string, allowed: string[]): { level: string
   if (!allowed.length) return { level: "medium", clamped: current !== "medium" };
   if (allowed.includes(current)) return { level: current, clamped: false };
   const idx = EFFORT_ORDER.indexOf(current);
-  // Walk outward from current position to find closest allowed level.
+  // Walk outward from the current position, checking higher then lower, to find the closest allowed level.
   for (let d = 1; d <= EFFORT_ORDER.length; d++) {
     const hi = EFFORT_ORDER[idx + d];
     if (hi && allowed.includes(hi)) return { level: hi, clamped: true };
@@ -36,7 +36,7 @@ export function effortLevels(spec: ModelSpec): string[] {
   if (spec.efforts) return spec.efforts;
   if (!spec.reasoning) return [];
   if (spec.provider === "openai") return OPENAI_EFFORTS;
-  // Azure OpenAI uses the same reasoning API as OpenAI (effort maps to reasoningEffort).
+  // Azure OpenAI mirrors the OpenAI reasoning API (reasoningEffort param, same level names).
   if (spec.provider === "azure" || spec.provider === "azure-foundry") return OPENAI_EFFORTS;
   if (spec.provider === "anthropic") return ANTHROPIC_EFFORTS;
   if (spec.provider === "google" || spec.provider === "vertex") return GOOGLE_EFFORTS;
@@ -70,7 +70,6 @@ export function reasoningOptions(spec: ModelSpec, effort: Effort): Record<string
   if (p === "anthropic") {
     return { anthropic: { effort: level } };
   }
-  // Other providers (openai-compat, deepseek, bedrock, etc.) reason by their own defaults;
-  // we don't inject an unsupported param.
+  // Other providers reason by their own defaults; injecting an unknown param would cause an API error.
   return {};
 }

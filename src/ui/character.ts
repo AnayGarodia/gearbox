@@ -58,10 +58,9 @@ export function toolVerbFromName(name: string): string {
   return "Working";
 }
 
-// The low-context notice for the live status line. Shown ONLY when the context is
-// genuinely low (≤15% of the window left ⇒ ctxPct ≥ 85), in amber, with the fix
-// command. Returns null otherwise — including a null ctxPct (no turn has reported
-// usage yet) — so nothing appears unless the figure is real, never fabricated.
+// Low-context notice for the live status line. Shown only when context is
+// genuinely low (≤15% left, i.e. ctxPct ≥ 85). Returns null for a null ctxPct
+// (no turn has reported usage yet) so nothing appears before a real figure exists.
 export function lowContextNotice(ctxPct: number | null): string | null {
   if (ctxPct == null || ctxPct < 85) return null;
   const left = Math.max(0, 100 - ctxPct);

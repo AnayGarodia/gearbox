@@ -70,17 +70,16 @@ export function withPromptCaching(
     out.push({ role: "system", content: system, providerOptions: mark } as ModelMessage);
   }
   const n = messages.length;
-  // Clamp to a valid index. A settled-history index lives in [0, n-1]; -1 (or any
-  // negative) means "no message marker, system only" (the first turn). An OUT-OF-RANGE
-  // high index would mark NOTHING and silently bust the whole prefix (cache hit-rate
-  // collapses with no signal) — clamp it down to the last message so caching degrades
-  // gracefully instead of disappearing unseen.
+  // Clamp to a valid index. Negative means "no message marker, system only" (the first
+  // turn). An out-of-range high index would mark nothing and silently bust the whole
+  // prefix; clamp to the last message so caching degrades gracefully instead of
+  // disappearing unseen.
   const breakAt = cacheBreakIndex === undefined ? n - 1 : Math.min(cacheBreakIndex, n - 1);
   for (let i = 0; i < n; i++) {
     const m = messages[i]!;
-    // Mark the breakpoint message → everything up to it becomes one cached prefix.
-    // Deep-merge into any existing providerOptions so a pre-existing provider option
-    // is kept, not clobbered (the marker has exactly one provider key).
+    // Mark the breakpoint message so everything up to it becomes one cached prefix.
+    // Deep-merge into any existing providerOptions so pre-existing keys are kept
+    // (the marker has exactly one provider key, so conflicts are impossible in practice).
     if (i === breakAt) {
       const prev = ((m as { providerOptions?: Record<string, Record<string, unknown>> }).providerOptions ?? {});
       const merged: Record<string, Record<string, unknown>> = { ...prev };

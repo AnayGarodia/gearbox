@@ -1,11 +1,10 @@
-// src/model/family.ts
 // Cross-provider model equivalence. Two model ids share a FAMILY when they are
 // the same underlying model offered through different providers (Anthropic API,
 // Bedrock, Vertex, a subscription CLI). Failover ranks accounts whose servable
 // models share the requested model's family. Keep this DATA-driven and small.
 import { MODELS, type ModelSpec } from "../providers.ts";
 
-// Ordered regex → family. First match wins. Strip any "provider/" prefix first.
+// Ordered regex to family name. First match wins; strip any "provider/" prefix first.
 const FAMILY_RULES: [RegExp, string][] = [
   [/claude.*opus-4/, "claude-opus-4"],
   [/claude.*sonnet-4/, "claude-sonnet-4"],
@@ -20,7 +19,7 @@ const FAMILY_RULES: [RegExp, string][] = [
 
 /** Normalize a model id (any provider) to a shared family key. */
 export function modelFamily(id: string): string {
-  const bare = id.replace(/^[a-z0-9-]+\//, "").toLowerCase(); // drop "bedrock/" etc
+  const bare = id.replace(/^[a-z0-9-]+\//, "").toLowerCase(); // strip "bedrock/", "vertex/", etc.
   for (const [re, fam] of FAMILY_RULES) if (re.test(bare)) return fam;
   return id;
 }

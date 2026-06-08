@@ -54,7 +54,7 @@ export interface Candidate {
   model: ModelSpec; // the provider-specific spec to run on this account
 }
 
-// Lower = better. Healthy first, unknown next, unhealthy last.
+// Lower rank = preferred. Healthy first, unknown/real-error next, credential failures last.
 function healthRank(s: HealthState | undefined): number {
   if (s === "ok") return 0;
   if (s === undefined || s === "unknown" || s === "real-error") return 1;
@@ -68,7 +68,7 @@ export function rankCandidates(model: ModelSpec, accounts: Account[], defaults: 
   const family = candidateModelsFor(model); // all specs in the family
   const byProvider = new Map<string, ModelSpec>();
   for (const m of family) if (!byProvider.has(m.provider)) byProvider.set(m.provider, m);
-  // Prefer the exact requested spec for its own provider.
+  // The exact requested spec wins for its own provider over any family alias.
   byProvider.set(model.provider, model);
 
   const cands: Candidate[] = [];

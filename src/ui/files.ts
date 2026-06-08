@@ -12,15 +12,15 @@ let cache: string[] | null = null;
 
 export function listProjectFiles(cwd = process.cwd()): string[] {
   if (cache) return cache;
-  // Prefer git (fast, respects .gitignore).
+  // git ls-files is fast and automatically respects .gitignore.
   try {
     const out = execFileSync("git", ["ls-files"], { cwd, encoding: "utf8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] });
     const files = out.split("\n").map((s) => s.trim()).filter(Boolean);
     if (files.length) return (cache = files.slice(0, MAX_FILES));
   } catch {
-    /* not a git repo */
+    /* not a git repo — fall through */
   }
-  // Fallback: bounded recursive walk.
+  // Fallback: bounded recursive walk capped at MAX_FILES.
   const files: string[] = [];
   const walk = (dir: string, depth: number) => {
     if (depth > 6 || files.length > MAX_FILES) return;
@@ -53,9 +53,8 @@ export function expandMentions(prompt: string, cwd = process.cwd()): { text: str
   const attached: string[] = [];
   let extra = "";
   for (const raw of tokens) {
-    // A hand-typed mention often carries trailing punctuation ("@foo.ts," or
-    // "(@foo.ts)") — try the literal, then progressively strip trailing )].,;:!?"'>}
-    // so the file still attaches instead of silently dropping.
+    // Hand-typed mentions often carry trailing punctuation ("@foo.ts," or "(@foo.ts)").
+    // Strip trailing )].,;:!?"'>} progressively so the file still attaches.
     let trimmed = raw;
     const candidates = [raw];
     while (/[)\].,;:!?'"}>]$/.test(trimmed)) { trimmed = trimmed.slice(0, -1); if (trimmed) candidates.push(trimmed); }

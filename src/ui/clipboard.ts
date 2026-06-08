@@ -14,8 +14,8 @@ export function osc52(text: string): string {
 function platformClipboardCmd(): string[] | null {
   if (process.platform === "darwin") return ["pbcopy"];
   if (process.platform === "win32") return ["clip"];
-  // Linux/BSD: prefer wayland, fall back to X. Either may be absent (that's fine).
-  return null; // handled below by trying both
+  // Linux/BSD: try both wl-copy and xclip below; either may be absent.
+  return null;
 }
 
 /** Copy `text` to the clipboard. Writes OSC 52 to the tty AND tries a native tool. */

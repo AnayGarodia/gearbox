@@ -1,4 +1,3 @@
-// src/accounts/sniff.ts
 // Identify a pasted credential — API key, AWS access key or credentials block,
 // service-account JSON, Azure endpoint, gateway key — so /account add can route
 // it and ask only for what's missing. Pure + tested. Detection only; no I/O.

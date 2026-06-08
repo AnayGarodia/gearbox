@@ -22,8 +22,8 @@ export function policyLabel(args: {
         ? `pinned ${pinnedModelLabel}`
         : "pinned"
       : "auto-route";
-  // A non-normal mode changes what the turn DOES (plan = read-only, auto-accept =
-  // applies writes), so it leads the policy line.
+  // Mode prefix leads the label because it changes what the turn does (plan =
+  // read-only, auto-accept = applies writes without confirmation).
   const prefix = mode === "plan" ? "plan · " : mode === "auto-accept" ? "auto-accept · " : "";
   return `${prefix}${base}`;
 }

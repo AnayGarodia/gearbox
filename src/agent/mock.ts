@@ -12,8 +12,8 @@ async function stream(text: string, onEvent: OnEvent, chunk = 3, delay = 8) {
   }
 }
 
-// Stream a file write the way the real loop does (tool-start → streamed content →
-// tool-end with the diff), matching how the real loop streams tool input.
+// Stream a file write the way the real loop does: tool-start → streamed content →
+// tool-end with diff, so the mock exercise the same UI path as live tool calls.
 async function streamWrite(id: string, path: string, content: string, onEvent: OnEvent, stop: () => boolean) {
   onEvent({ type: "tool-start", id, name: "write_file", arg: "" });
   onEvent({ type: "tool-stream", id, arg: path });

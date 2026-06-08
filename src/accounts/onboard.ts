@@ -165,9 +165,6 @@ export async function addBedrockAccount(accessKeyId: string, secretAccessKey: st
   return { ok: true, account, message: `added ${account.label} (${id})` };
 }
 
-/** Register a CLI-backed subscription account (claude-cli / codex-cli). No secret
- *  is stored — the token lives in the vendor binary, which we drive as a
- *  subprocess (ToS-clean). Requires the binary on PATH + the user logged in. */
 // Per-account config dir for a named CLI account, so multiple claude (or codex)
 // logins coexist. The unnamed account reuses the system default login.
 function cliProfileDir(id: string): string {
@@ -206,11 +203,11 @@ export function addCliAccount(provider: string, name?: string): AddResult {
 // Check whether the vendor CLI is signed in — fast, free, no model call.
 // claude: `claude auth status` (JSON). codex: `codex login status` (text).
 export async function cliAuthStatus(binary: string, profile?: string): Promise<CliAuthStatus> {
-  // Strip the API key from the env so we report the SUBSCRIPTION login, not an
-  // env API key (which would otherwise shadow it — see cli-backend.subscriptionEnv).
-  // `profile` scopes the check to a specific account's config dir (multi-account).
+  // Strip the API key so we probe the SUBSCRIPTION login, not an env key that would
+  // otherwise shadow it (see cli-backend.subscriptionEnv). `profile` scopes the
+  // check to a specific account's config dir for multi-account setups.
   const env = subscriptionEnv(binary, profile);
-  // Read BOTH streams: codex prints its status to stderr, claude to stdout.
+  // codex prints its auth status to stderr; claude prints to stdout — read both.
   const readBoth = async (cmd: string[], timeoutMs = 5_000): Promise<{ out: string; timedOut: boolean }> => {
     const p = spawnProc(cmd, { stdin: "ignore", stdout: "pipe", stderr: "pipe", env });
     let timedOut = false;
@@ -241,7 +238,7 @@ export async function cliAuthStatus(binary: string, profile?: string): Promise<C
     }
     const { out, timedOut } = await readBoth(["claude", "auth", "status"]);
     if (timedOut) return { loggedIn: false, detail: "`claude auth status` timed out" };
-    // Extract the flat JSON object that carries loggedIn (robust to any noise).
+    // Match the first JSON object containing "loggedIn" (robust to surrounding CLI noise).
     const m = out.match(/\{[^{}]*"loggedIn"[\s\S]*?\}/);
     try {
       const j = JSON.parse(m ? m[0] : out);
@@ -277,7 +274,6 @@ export async function addByPastedKey(key: string): Promise<AddResult> {
   return { ok: false, message: guidedMessageFor(g) };
 }
 
-// One-line instruction telling the user exactly what else to provide.
 function guidedMessageFor(g: CredentialGuess): string {
   if (g.kind === "aws") return `looks like AWS/Bedrock — provide all three: /account add bedrock <access-key-id> <secret> <region>`;
   if (g.kind === "azure") return `looks like Azure (${g.fields.resourceName ?? "resource"}) — add the key: /account add azure ${g.fields.endpoint ?? "<endpoint>"} <api-key>`;
@@ -353,8 +349,7 @@ export function addableProviders(): { id: string; label: string; group: string }
   return CATALOG.filter((p) => p.authKind === "api-key" || p.authKind === "openai-compat").map((p) => ({ id: p.id, label: p.label, group: p.group }));
 }
 
-// Pull the provider's own error text out of a failed response (e.g. "credit
-// balance too low", "invalid api key") so the user sees the real reason.
+// Extract the provider's own error message from a failed response body (e.g. "invalid api key").
 async function errMessage(r: Response): Promise<string> {
   try {
     const j: any = await r.json();
@@ -366,8 +361,7 @@ async function errMessage(r: Response): Promise<string> {
   return `HTTP ${r.status}`;
 }
 
-// Short, dependency-free unique-ish suffix (Date.now()+random is fine at runtime;
-// not used in workflow scripts).
+// Short unique suffix: collision-resistant at runtime but not used in scripts or tests.
 function shortId(): string {
   return Date.now().toString(36).slice(-4) + Math.floor(Math.random() * 1296).toString(36).padStart(2, "0");
 }

@@ -1,4 +1,3 @@
-// src/accounts/health.ts
 // Account health: classify a provider error into a known state (pure, tested),
 // and probe/cache an account's current health. Drives the /account badges and
 // the failover decision (src/agent/failover.ts). No background polling.
@@ -24,7 +23,7 @@ export function classifyError(_provider: string, err: unknown): HealthState {
   const status = statusOf(err);
   const t = textOf(err);
 
-  // no-credit before rate-limit/invalid: billing messages sometimes ride a 429/403.
+  // Check no-credit before rate-limit/invalid: billing messages sometimes arrive on 429/403.
   if (/credit balance|insufficient_quota|insufficient funds|billing|payment|quota exceeded/.test(t)) return "no-credit";
   if (/not logged in|not signed in|re-?authenticate|token (?:has )?expired|expired|session expired|login required|refresh token/.test(t)) return "expired";
   if (status === 429 || /rate.?limit|too many requests|overloaded|capacity/.test(t)) return "rate-limited";

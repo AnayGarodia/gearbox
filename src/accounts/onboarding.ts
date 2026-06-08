@@ -1,3 +1,6 @@
+// Onboarding helpers: alias normalization, provider lists, and the first-run
+// summary text. Kept separate from onboard.ts (which does I/O) so these pure
+// functions are testable without side effects.
 import { CATALOG, catalogProvider, type CatalogProvider } from "./catalog.ts";
 import type { Account } from "./types.ts";
 

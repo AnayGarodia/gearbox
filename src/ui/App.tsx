@@ -267,9 +267,9 @@ function ActivityRail({ items, width }: { items: Item[]; width: number }) {
   const head = cur ? `${friendlyTool(cur.name)}${target ? " " + target : ""}` : phase ? phase.label : "working";
   const timer = running?.startedAt ? fmtElapsed(Math.floor((Date.now() - running.startedAt) / 1000)) : "";
 
-  // Line 2 — the recent trail (last few steps) + checks, dim.
-  const spin = ["◐", "◓", "◑", "◒"][Math.floor(Date.now() / 160) % 4]!;
-  const trail = tools.slice(-3).map((t) => `${t.status === "running" ? spin : t.status === "err" ? "✗" : "✓"} ${friendlyTool(t.name)}`).join("  ");
+  // Line 2 — the recent trail (last few steps) + checks, dim. Static glyphs (no
+  // spin) — the only animation is the bottom working shimmer.
+  const trail = tools.slice(-3).map((t) => `${t.status === "running" ? "◇" : t.status === "err" ? "✗" : "✓"} ${friendlyTool(t.name)}`).join("  ");
   const checkText = checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.command}`).join("  ");
   const sub = [trail || null, checkText || null].filter(Boolean).join("   ");
 
@@ -361,15 +361,13 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const { stdin, isRawModeSupported, setRawMode } = useStdin();
   const { columns, rows } = useTerminalSize();
   const online = useOnline(20_000, true); // background reachability → "⚠ offline"
-  const onlineRef = useRef(online); // fresh mirror for use inside run callbacks (avoids a stale closure)
+  const onlineRef = useRef(online); // fresh mirror for run callbacks, avoids a stale closure
   onlineRef.current = online;
   // Chrome (title bar, rules, composer, status) spans the full terminal width;
   // long prose wraps at a readable cap inside it (see Transcript).
   const width = columns;
-  // Splash art scales to the window so small/short terminals never overflow:
-  // full ghost when roomy, the mini when short, wordmark-only when tiny.
-  // The 2× splash ghost is 40 cols × 20 rows; the 1× mini is 20 × 10. Gate so
-  // neither overflows a short/narrow window (wordmark-only when tiny).
+  // 2× ghost is 40 cols × 20 rows; 1× mini is 20 × 10. Gate so neither overflows
+  // a short/narrow terminal (wordmark-only when tiny).
   const splashSize =
     rows >= 24 && columns >= 42 ? "big" : rows >= 13 && columns >= 22 ? "mini" : "none";
 
@@ -385,17 +383,17 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
   const [ghostSkin, setGhostSkinState] = useState<GhostSkin>("base");
-  // The in-flow ghost's face follows the agent's state. `linger` keeps the
-  // working line up briefly after a turn for the celebrate/error beat.
+  // `linger` keeps the working line visible briefly after a turn for the celebrate/error beat.
   const [mascotState, setMascotState] = useState<MascotState>("thinking");
   const [linger, setLinger] = useState(false);
   const lingerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastTurnFailedRef = useRef(false); // pause the type-ahead drain after an error/interrupt so it doesn't auto-fire the queue into a broken state (L-C)
+  // Pause the type-ahead drain after an error/interrupt so it doesn't auto-fire the queue into a broken state.
+  const lastTurnFailedRef = useRef(false);
   // Type-ahead: prompts submitted while busy are queued and sent when the turn ends.
   const queueRef = useRef<string[]>([]);
   const [queued, setQueued] = useState<string[]>([]);
-  const ctrlCRef = useRef(0); // timestamp of the last bare ⌃C (for "press again to quit")
-  const escRef = useRef(0); // timestamp of the last bare esc (for double-esc rewind)
+  const ctrlCRef = useRef(0); // timestamp of the last ⌃C, for "press again to quit"
+  const escRef = useRef(0); // timestamp of the last esc, for double-esc rewind
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
   const verifyRef = useRef<VerifyMode>(loadPrefs().verify === "off" ? "off" : "auto"); // post-edit checks + auto-iterate-to-green
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
@@ -407,20 +405,17 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const pasteBufRef = useRef<string | null>(null); // accumulates a bracketed paste (\x1b[200~ … \x1b[201~) across reads
   const pasteIdRef = useRef(0);
   // Markerless-paste coalescer: terminals without bracketed paste (tmux/ssh/some
-  // emulators) deliver a paste as several rapid reads. We accumulate them within a
-  // short quiet window so ONE paste becomes ONE chip + one render — not N chips and
-  // N re-renders (the "splits up badly" + 3s-lag bug).
+  // emulators) deliver a paste as several rapid reads. Accumulate within a short
+  // quiet window so one paste becomes one chip + one render, not N chips and N re-renders.
   const pasteCoalesceRef = useRef<string | null>(null);
   const pasteCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedSelectionRef = useRef("");
   const mouseAnchorRef = useRef<number | null>(null);
   const transcriptMouseAnchorRef = useRef<{ line: number; col: number } | null>(null);
   const transcriptRangeAnchorRef = useRef<{ line: number; col: number } | null>(null);
-  // An in-progress transcript drag and its granularity. `char` extends by the
-  // raw point (single-click drag); `word`/`line` extend by the hull of the
-  // anchor range and the word/line under the cursor (double/triple-click drag),
-  // so dragging keeps whole-word / whole-line selection instead of collapsing to
-  // a single word.
+  // In-progress transcript drag granularity: `char` tracks the raw point; `word`/`line`
+  // extend by the hull of the anchor range and the word/line under the cursor (double/
+  // triple-click), so dragging keeps whole-word/whole-line selection.
   const transcriptDragRef = useRef<{ mode: "char" | "word" | "line"; anchor: ViewSelection } | null>(null);
   const lastComposerClickRef = useRef<{ time: number; x: number; y: number; count: number } | null>(null);
   const lastTranscriptClickRef = useRef<{ time: number; x: number; y: number; count: number } | null>(null);
@@ -431,8 +426,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const transcriptSelectionRef = useRef<ViewSelection | null>(null);
   const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const outCharsRef = useRef(0); // streamed output chars this turn (for a live tok/s estimate)
-  const firstOutputAtRef = useRef(0); // when the FIRST output token arrived · tok/s is measured from here, not turn start (so thinking time doesn't drag the rate to ~1/s)
+  const outCharsRef = useRef(0); // streamed output chars this turn, for a live tok/s estimate
+  // Measured from the first output token, not turn start, so thinking time doesn't drag the rate to ~1/s.
+  const firstOutputAtRef = useRef(0);
   const [, bumpMotion] = useReducer((x: number) => x + 1, 0);
   const [yolo, setYoloState] = useState(isYolo());
   const [perm, setPermState] = useState<PermRequest | null>(null);
@@ -442,9 +438,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [paletteIndex, setPaletteIndexState] = useState(0);
 const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const paletteIndexRef = useRef(0);
-  // Status-bar click pickers: clicking the model/effort label opens a floating
-  // picker above the status bar (fullscreen only · mouse reporting is grabbed
-  // there). The /model and /effort slash commands remain the keyboard path.
+  // Floating pickers (fullscreen only): clicking the model/effort label in the status bar
+  // opens a picker above it. Slash commands remain the keyboard path.
   const [quickPicker, setQuickPickerState] = useState<null | "model" | "effort">(null);
   const [quickPickerIndex, setQuickPickerIndexState] = useState(0);
   const quickPickerRef = useRef<null | "model" | "effort">(null);
@@ -459,30 +454,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     quickPickerIndexRef.current = n;
     setQuickPickerIndexState(n);
   };
-  // Top tab strip (fullscreen only): Session · Routing · Providers · Cost. The
-  // active tab switches the main region between the transcript and the read-only
-  // Routing/Providers/Cost views. tabRef mirrors it for the raw mouse handler.
+  // Top tab strip (fullscreen only): active tab switches between the transcript and the
+  // read-only Routing/Providers/Cost views. tabRef mirrors state for the raw mouse handler.
   const [tab, setTabState] = useState<AppTab>("session");
   const tabRef = useRef<AppTab>("session");
   const setTab = (t: AppTab) => { tabRef.current = t; setTabState(t); };
   const setupRequiredRef = useRef(false); // mirrors setupRequired for the raw mouse handler
   const cycleTab = () => setTab(TABS[(TABS.indexOf(tabRef.current) + 1) % TABS.length]!);
-  // Dismissable command panel (fullscreen only): big info dumps + interactive
-  // account/model lists render here instead of in the transcript; esc closes.
+  // Dismissable command panel (fullscreen only): big info dumps and interactive
+  // account/model lists render here instead of in the transcript. Esc closes.
   const [panel, setPanelState] = useState<PanelState | null>(null);
   const panelRef = useRef<PanelState | null>(null);
   const setPanel = (p: PanelState | null) => {
     panelRef.current = p;
     setPanelState(p);
   };
-  const panelMaxScrollRef = useRef(0); // max scroll for a static panel (set in render)
-  const panelAccountSlugsRef = useRef<string[]>([]); // row index → /account <slug>, set in render (names-only)
-  const panelSessionsRef = useRef<Session[]>([]); // row index → Session to loadInto, set in render (/resume panel)
-  // Persistent usage strip (toggled by /cost) — stays above the composer until you
-  // toggle it off; survives restarts. Doesn't capture input.
+  const panelMaxScrollRef = useRef(0); // max scroll for a static panel, set in render
+  const panelAccountSlugsRef = useRef<string[]>([]); // row index → /account <slug>, set in render
+  const panelSessionsRef = useRef<Session[]>([]); // row index → Session to load, set in render
+  // Persistent usage strip (toggled by /usage) — stays above the composer until toggled
+  // off, survives restarts, does not capture input.
   const [statusPinned, setStatusPinnedState] = useState(() => Boolean(loadPrefs().statusPinned));
-  const [usageTick, bumpUsage] = useReducer((x: number) => x + 1, 0); // bump → strip re-reads usage.json (else it's memoized, off the render hot path)
-  const [probing, setProbing] = useState<Set<string>>(new Set()); // account ids with a usage probe in flight (→ "checking…")
+  const [usageTick, bumpUsage] = useReducer((x: number) => x + 1, 0); // bump forces the strip to re-read usage.json; otherwise it's memoized off the hot path
+  const [probing, setProbing] = useState<Set<string>>(new Set()); // account ids with a usage probe in flight, shown as "checking…"
   const setStatusPinned = (v: boolean) => {
     setStatusPinnedState(v);
     updatePrefs({ statusPinned: v });
@@ -504,13 +498,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     };
     return buildUsageView(estimateCost(sessionRef.current.turns), resolve, Date.now(), accounts.map((a) => a.id));
   };
-  // Usable (API) models for the /model panel · same source + order as the live
+  // Usable (API) models for the /model panel, same source and order as the live
   // registry so the panel's selection index maps to the right model id.
   const buildPanelModelRows = (cur?: string | null): PanelModelRow[] =>
     modelRegistry().filter((m) => providerAvailable(m.provider)).map((m) => ({ id: m.id, label: m.label, provider: m.provider, current: m.id === cur }));
-  // Open a scrollable static info panel (fullscreen only). Returns false inline,
-  // so callers fall back to printing the item in the transcript. No echo in panel
-  // mode · the point is to keep the transcript uncluttered.
+  // Open a scrollable static info panel (fullscreen only). Returns false inline so callers
+  // fall back to printing in the transcript, keeping it uncluttered.
   const openInfoPanel = (title: string, item: Item): boolean => {
     if (!fullscreen) return false;
     atBottomRef.current = true;
@@ -531,7 +524,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const id = setInterval(() => bumpMotion(), 120);
     return () => clearInterval(id);
   }, [busy, linger]);
-  const [vim, setVimState] = useState<"off" | "insert" | "normal">(loadPrefs().vim ? "insert" : "off"); // composer vim mode
+  const [vim, setVimState] = useState<"off" | "insert" | "normal">(loadPrefs().vim ? "insert" : "off");
   const vimRef = useRef(vim);
   const setVim = (v: "off" | "insert" | "normal") => {
     vimRef.current = v;

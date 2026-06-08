@@ -35,18 +35,17 @@ const DIACRITICS = [
 ].map((c) => String.fromCodePoint(c));
 
 export function detectImageMode(): ImageMode {
-  // Default to half-blocks — they render correctly on every truecolor terminal.
-  // The PNG paths (kitty placeholders / iTerm OSC 1337) are opt-in via
-  // GEARBOX_GHOST=kitty|iterm: the kitty placeholder protocol is young and
-  // mis-renders in some terminals (Ghostty squished the image), so it's not the
-  // safe default. blocks = always-right; kitty/iterm = crisper where they work.
+  // Half-blocks are the safe default: every truecolor terminal renders them
+  // correctly. The PNG paths (kitty placeholders / iTerm OSC 1337) are opt-in
+  // via GEARBOX_GHOST=kitty|iterm because the kitty placeholder protocol is
+  // still young and some terminals (Ghostty squished the image) mis-render it.
   const force = process.env.GEARBOX_GHOST;
   if (force === "kitty" || force === "iterm") return force;
   return "blocks";
 }
 
-// Resolved once at startup (cli.tsx) so the UI and the launcher agree. Falls back
-// to env detection when unset (e.g. in tests that render components directly).
+// Resolved once at startup (cli.tsx) so the UI and launcher agree. Falls back to
+// env detection when unset, e.g. in tests that render components directly.
 let resolved: ImageMode | null = null;
 export function setImageMode(m: ImageMode): void {
   resolved = m;
@@ -113,9 +112,9 @@ export function itermSplash(columns: number): string {
 }
 
 /** Placeholder text rows for one cols×rows image; wrap each in <Text color={idColor(id)}>.
- *  Every cell carries BOTH its row and column diacritic explicitly — kitty's
- *  "omit to auto-increment" shortcut is unreliable in young implementations
- *  (Ghostty), which collapsed the image into too few columns. Explicit is safe. */
+ *  Both row and column diacritics are explicit on every cell because kitty's
+ *  "omit to auto-increment" shortcut is unreliable in some implementations
+ *  (Ghostty collapsed the image into too few columns with it). */
 export function placeholderRows(cols: number, rows: number): string[] {
   const lines: string[] = [];
   for (let r = 0; r < rows; r++) {

@@ -20,8 +20,8 @@ export function currentMention(value: string, cursor: number): Mention | null {
 export function matchFiles(files: string[], token: string, limit = 8): string[] {
   const q = token.toLowerCase();
   if (!q) return files.slice(0, limit);
-  // Exact substring matches first (ranked by position then length), then fall
-  // back to fuzzy subsequence (e.g. "uistatus" → src/ui/components/StatusBar.tsx).
+  // Exact substring matches first (ranked by position, then length). Fall back to
+  // fuzzy subsequence (e.g. "uistatus" matches src/ui/components/StatusBar.tsx).
   const sub = files
     .filter((f) => f.toLowerCase().includes(q))
     .sort((a, b) => {

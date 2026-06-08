@@ -17,11 +17,11 @@ export function fuzzyScore(query: string, target: string): number | null {
   let run = 0;
   for (let ti = 0; ti < t.length && qi < q.length; ti++) {
     if (t[ti] !== q[qi]) continue;
-    if (last >= 0) score += ti - last - 1; // gap penalty
+    if (last >= 0) score += ti - last - 1; // penalize gap between matched chars
     const prev = ti > 0 ? t[ti - 1]! : "/";
-    if (ti === 0 || BOUNDARY.test(prev)) score -= 2; // boundary bonus
+    if (ti === 0 || BOUNDARY.test(prev)) score -= 2; // bonus for word/path boundary
     run = last === ti - 1 ? run + 1 : 0;
-    score -= run; // contiguity bonus
+    score -= run; // bonus for contiguous run
     last = ti;
     qi++;
   }

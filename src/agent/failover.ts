@@ -1,4 +1,3 @@
-// src/agent/failover.ts
 // Wraps a single model turn in an ordered account pool. On a credential-class
 // failure that happened BEFORE any output, advance to the next candidate; on a
 // real error (or once output streamed), stop. Records health for each attempt
