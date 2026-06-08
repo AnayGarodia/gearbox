@@ -2,17 +2,18 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 
-function fmtTokens(n: number): string {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
+const SEP = `  ${glyph.bullet}  `; // separator (5 cols)
+
+// Session cost for the footer-right. Shown only once it rounds to a visible cent;
+// a subscription seat estimates to $0, so the field simply disappears (the model
+// label stands alone on the right). Never prints a fabricated number.
+export function formatStatusCost(cost: number): string {
+  return cost >= 0.005 ? `$${cost.toFixed(2)}` : "";
 }
 
-const SEP = `  ${glyph.bullet}  `; // separator between left-segment fields (5 cols)
-
-// Drop the lowest-priority left fields until the joined line fits `budget` cols.
-// fields[0] (the model) is never dropped; survivors keep display order. This is
-// what stops the bar truncating a word mid-character ("auto" → "a…") on a narrow
-// terminal — we shed whole fields (cost, tokens, branch…) instead. Pure + tested.
+// Drop the lowest-priority fields until a joined line fits `budget` cols. Kept as a
+// named export (and unit-tested) for reuse; the StatusBar itself now budgets the
+// left legend directly. fields[0] is never dropped; survivors keep order. Pure.
 export function fitStatusFields<T extends { text: string; priority: number }>(fields: T[], budget: number): T[] {
   const w = (fs: T[]) => fs.reduce((n, f) => n + f.text.length, 0) + Math.max(0, fs.length - 1) * SEP.length;
   const kept = fields.slice();
@@ -28,34 +29,32 @@ export function fitStatusFields<T extends { text: string; priority: number }>(fi
 
 export type StatusZone = [start: number, end: number]; // 0-based, half-open cols
 
-// Pure layout helper: where the clickable model/effort labels sit in the status
-// bar's left segment, in 0-based terminal columns. Single source of truth · the
-// StatusBar render and the mouse hit-test both derive from this so the rendered
-// position and the clickable position cannot drift. Mirrors the render:
-// paddingX(1) + optional "{mode}{SEP}" + model + optional "{SEP}effort {effort}".
+// Where the clickable MODEL label sits, in 0-based terminal columns. The footer is
+// now KEYS LEFT, MODEL + COST RIGHT, so the model lives in the right segment which
+// is right-aligned to the 1-col right padding: the right text is
+// `<model>` (+ `  ·  $cost`), so it starts at width − 1 − rightLen and the model is
+// its leading run. Single source of truth · the render and the mouse hit-test both
+// derive from this so they cannot drift.
 export function statusBarLayout({
   model,
-  effort,
-  mode = "normal",
+  costText,
+  width,
 }: {
   model: string;
-  effort?: string;
-  mode?: "normal" | "auto-accept" | "plan";
-}): { modelZone: StatusZone; effortZone: StatusZone | null } {
-  const modeLabel = mode === "auto-accept" ? "auto-accept" : mode;
-  const modelStart = 1 + (mode !== "normal" ? modeLabel.length + SEP.length : 0);
-  const modelZone: StatusZone = [modelStart, modelStart + model.length];
-  if (!effort) return { modelZone, effortZone: null };
-  const effortText = `effort ${effort}`;
-  const effortStart = modelZone[1] + SEP.length;
-  return { modelZone, effortZone: [effortStart, effortStart + effortText.length] };
+  costText?: string;
+  width: number;
+}): { modelZone: StatusZone } {
+  const rightLen = model.length + (costText ? SEP.length + costText.length : 0);
+  const start = Math.max(0, width - 1 - rightLen); // 1 = right paddingX
+  return { modelZone: [start, start + model.length] };
 }
 
-// Resolve a fullscreen SGR mouse click (1-based x/y) to the model/effort label,
-// or null. The status-bar row is measured up from the composer, which is pinned
-// to the bottom of the screen: composer = marginTop(1) + rule(1) + input(N), the
-// input's bottom line is the last terminal row, and the palette box sits between
-// the status bar and the composer. Pure so the fragile row math is testable.
+// Resolve a fullscreen SGR mouse click (1-based x/y) to the model label, or null.
+// The status-bar row is measured up from the composer pinned to the bottom:
+// composer = marginTop(1) + rule(1) + policy(1) + input(N) → 3 chrome rows above
+// the input; the palette box sits between the status bar and the composer. Pure so
+// the fragile row math is testable. (Effort is no longer a clickable label — it is
+// set via /effort and shift+tab; the footer redesign dropped that hit zone.)
 export function statusBarHit(args: {
   x: number;
   y: number;
@@ -63,98 +62,71 @@ export function statusBarHit(args: {
   composerLines: number;
   paletteRows: number;
   model: string;
-  effort?: string;
-  mode?: "normal" | "auto-accept" | "plan";
-}): "model" | "effort" | null {
-  // The `- 2` is the composer chrome above its input (rule + marginTop). It is
-  // coupled to App.tsx's footer estimate (`footer += perm ? 9 : 3`, the 3 being
-  // input + those same 2 chrome rows) and to Composer.tsx's layout · keep in sync.
-  const statusRow = args.termRows - args.composerLines - args.paletteRows - 2;
+  costText?: string;
+  width: number;
+}): "model" | null {
+  // The `- 3` is the composer chrome above its input (marginTop + rule + policy
+  // line). It is coupled to App.tsx's footer estimate (`footer += perm ? 9 : 4`)
+  // and to Composer.tsx's layout · keep in sync.
+  const statusRow = args.termRows - args.composerLines - args.paletteRows - 3;
   if (args.y !== statusRow || !args.model) return null;
-  const { modelZone, effortZone } = statusBarLayout(args);
+  const { modelZone } = statusBarLayout(args);
   const col = args.x - 1; // SGR x is 1-based; zones are 0-based
   if (col >= modelZone[0] && col < modelZone[1]) return "model";
-  if (effortZone && col >= effortZone[0] && col < effortZone[1]) return "effort";
   return null;
 }
 
-// Bottom status line, full width. Left: model, branch, ctx, tokens (no "gearbox"
-// brand · the title bar already says it). Right: the routing pick · the product's
-// USP, where no other agent shows anything. A blank row above it keeps the
-// composer from crowding the status.
+// Bottom status line, full width. Left: a quiet key legend + rare attention chips
+// (offline / yolo / low-context). Right: the live model + the session cost. The
+// per-turn routing provenance line in the transcript carries the routing reason, so
+// the footer stays calm. A blank row above keeps the composer from crowding it.
 export function StatusBar({
   model,
-  branch,
-  routing,
-  yolo,
-  ctxPct,
-  tokens,
   cost = 0,
+  ctxPct,
+  yolo,
   width,
-  mode = "normal",
-  effort,
-  subscription = null,
   online = true,
 }: {
   model: string;
-  cwd?: string;
-  branch: string | null;
-  routing?: string | null;
-  yolo?: boolean;
-  ctxPct: number | null;
-  tokens: number;
   cost?: number;
+  ctxPct: number | null;
+  yolo?: boolean;
   width: number;
-  mode?: "normal" | "auto-accept" | "plan";
-  effort?: string;
-  subscription?: string | null; // active CLI-backed subscription account label
   online?: boolean;
 }) {
-  const sep = SEP;
-  const modeLabel = mode === "auto-accept" ? "auto-accept" : mode; // "plan" / "auto-accept"
-  const ctxColor = ctxPct == null || ctxPct < 70 ? color.faint : ctxPct < 90 ? color.accent : color.err;
+  const costText = formatStatusCost(cost);
+  const right = costText ? `${model}${SEP}${costText}` : model;
 
-  // Left fields in display order. fields[0] (model) is never dropped; the rest shed
-  // by priority when the terminal is narrow, so the right side (the routing USP)
-  // stays whole instead of being cut to "a…".
-  const fields = [
-    { text: model, color: color.dim, priority: 100 },
-    effort ? { text: `effort ${effort}`, color: color.faint, priority: 50 } : null,
-    branch ? { text: `${glyph.branch} ${branch}`, color: color.faint, priority: 40 } : null,
-    tokens > 0 ? { text: `${fmtTokens(tokens)} tok`, color: color.accentDim, priority: 30 } : null,
-    cost >= 0.005 ? { text: `$${cost.toFixed(2)}`, color: color.faint, priority: 20 } : null,
-    ctxPct != null && ctxPct > 0 ? { text: `${ctxPct}% ctx`, color: ctxColor, priority: 60 } : null,
-    !online ? { text: "⚠ offline", color: color.err, bold: true, priority: 95 } : null,
-  ].filter(Boolean) as { text: string; color: string; bold?: boolean; priority: number }[];
+  // Attention chips: scarce, meaningful, spent only where they change what you do.
+  // Context shows ONLY when remaining is low (≤15% left ⇒ ctxPct ≥ 85), in amber.
+  const lowCtx = ctxPct != null && ctxPct >= 85;
+  const chips: { text: string; c: string; bold?: boolean }[] = [];
+  if (!online) chips.push({ text: "⚠ offline", c: color.err, bold: true });
+  if (yolo) chips.push({ text: "yolo", c: color.err, bold: true });
+  if (lowCtx) chips.push({ text: `${ctxPct}% ctx`, c: color.warn });
+  const chipLen = chips.reduce((n, c) => n + c.text.length, 0) + Math.max(0, chips.length - 1) * 2 + (chips.length ? 2 : 0);
 
-  // Reserve the right side and the mode badge, then fit the left fields to what's left.
-  const rightPlain = [
-    yolo ? "yolo" : "",
-    subscription ? "subscription · own tools/perms" : routing ? `auto · ${routing.split(" · ")[0]}` : "",
-  ].filter(Boolean).join("  ·  ");
-  const modeW = mode !== "normal" ? modeLabel.length + sep.length : 0;
-  const budget = Math.max(0, width - 2 /*paddingX*/ - modeW - (rightPlain ? rightPlain.length + sep.length : 0));
-  const kept = fitStatusFields(fields, budget);
+  // Budget the left so the right (model + cost) stays whole and right-aligned — the
+  // click hit-test depends on that exact alignment. Truncate the legend to fit.
+  const legend = `/ commands${SEP}@ files${SEP}↵ send${SEP}esc`;
+  const leftBudget = Math.max(0, width - 2 /*paddingX*/ - right.length - 2 /*gap*/);
+  const legendRoom = Math.max(0, leftBudget - chipLen);
+  const legendShown =
+    legend.length <= legendRoom ? legend : legendRoom > 1 ? legend.slice(0, legendRoom - 1) + "…" : "";
 
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
-      <Text color={color.dim} wrap="truncate-end">
-        {mode !== "normal" ? <Text color={color.accent}>{modeLabel}{sep}</Text> : null}
-        {kept.map((f, i) => (
-          <Text key={f.text} color={f.color} bold={f.bold}>{i > 0 ? sep : ""}{f.text}</Text>
+      <Text wrap="truncate-end">
+        {chips.map((c, i) => (
+          <Text key={c.text} color={c.c} bold={c.bold}>{i > 0 ? "  " : ""}{c.text}</Text>
         ))}
+        {chips.length && legendShown ? <Text color={color.faint}>{"  "}</Text> : null}
+        <Text color={color.faint}>{legendShown}</Text>
       </Text>
-      <Text color={color.faint} wrap="truncate-end">
-        {yolo ? <Text color={color.err} bold>yolo</Text> : null}
-        {yolo && (subscription || routing) ? `  ${glyph.bullet}  ` : null}
-        {/* Active subscription account takes over the right side (no in-loop routing).
-            The model name is already on the left, so the right reminds you of the
-            one thing that's different: it runs its own tools/permissions. */}
-        {subscription ? <Text><Text color={color.ok}>subscription</Text><Text color={color.faint}> {glyph.bullet} </Text><Text color={color.text}>own tools/perms</Text></Text> : null}
-        {/* Compact "auto · <kind>"; the full reason lives in the per-turn provenance
-            line. The left fields shed by width (above) so this never gets truncated. */}
-        {!subscription && routing ? <Text color={color.accentDim}>auto</Text> : null}
-        {!subscription && routing ? ` ${glyph.bullet} ${routing.split(" · ")[0]}` : null}
+      <Text wrap="truncate-end">
+        <Text color={color.dim}>{model}</Text>
+        {costText ? <Text color={color.faint}>{SEP + costText}</Text> : null}
       </Text>
     </Box>
   );

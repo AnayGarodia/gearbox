@@ -96,7 +96,23 @@ later work is sequential in the main loop to avoid shared-cwd git churn.
 
 ## Step log
 
-(appended after each implementation step)
+### Step 1a — `warn` theme token (commit 31f9b8a)
+Added the one semantic amber token (`color.warn` `#E0B057`), distinct from `err` (red). Spent only
+on a surprising routing decision / low balance / key attention.
+
+### Step 1b — pure `routing-line.ts` module (commit 31f9b8a)
+`formatTurnCost`, `classifySurprise`, `buildRoutingLine`, `routingLineText`. Subscription seats →
+"subscription seat" (honest ~$0 marginal); sub-cent metered → "<$0.01"; NaN/neg guarded. Surprise
+precedence cap > fallback > escalation. 8 unit tests.
+
+### Step 1c — wire the post-turn routing line (commit 579e33e)
+The single canonical per-turn line `routed → provider · model · $cost`, printed after each turn.
+Replaced the pre-turn "using …" item (which had no cost) with a post-turn item carrying the **real**
+recorded cost. Model/provider come from the spec that actually ran (`routedRef` follows failover);
+`$0` renders as "subscription seat". Amber + reason only on a real surprising signal — provider
+**fallback** is wired now (`fellOverFromRef`, set in the failover loop). Escalation and cap-hit are
+structurally supported by the classifier but **gated** (their signals aren't captured yet — see
+Step 4 / TODOs). 704 pass / 0 fail.
 
 ## Data provenance — anything on screen NOT backed by real data
 

@@ -3,9 +3,11 @@ import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { caretPos, selectionRange, type Edit } from "../input.ts";
 
-// Borderless composer: a hairline rule, then a `❯` prompt with the input and a
-// terminal-native block cursor (`inverse`). Multi-line aware · continuation lines
-// align under the prompt and the cursor lands on the right row/column. No box.
+// Input box: a single accent-coloured LEFT BAR (the one "now" accent) running the
+// height of the box, a hairline rule, a policy/branch info line, then a `❯` prompt
+// with the input and a terminal-native block cursor (`inverse`). Multi-line aware ·
+// continuation lines align under the prompt and the cursor lands on the right
+// row/column. The left bar takes 1 column (innerWidth = width − 1).
 export function Composer({
   value,
   cursor,
@@ -16,6 +18,8 @@ export function Composer({
   width,
   vim = "off",
   bashMode = false,
+  policy,
+  branch,
   onEdit,
 }: {
   value: string;
@@ -27,6 +31,8 @@ export function Composer({
   width: number;
   vim?: "off" | "insert" | "normal";
   bashMode?: boolean; // sticky bash mode (entered with `!`); pink `!` prompt, esc exits
+  policy?: string; // routing policy shown in the box (e.g. "auto-route"); never a bare model name
+  branch?: string | null; // current git branch, shown after the policy
   onEdit?: (edit: Edit) => void;
 }) {
   const lines = value.split("\n");
@@ -78,18 +84,39 @@ export function Composer({
     ? { text: " INSERT ", c: color.dim }
     : null;
 
+  // The box owns a single left border in the live accent (pink in bash mode). Only
+  // the left edge is drawn, so it reads as one calm vertical bar; the border eats 1
+  // column, so the inner rule spans width − 3 (1 border + 2 paddingX).
   return (
-    <Box flexDirection="column" width={width} marginTop={1}>
+    <Box
+      flexDirection="column"
+      width={width}
+      marginTop={1}
+      borderStyle="single"
+      borderTop={false}
+      borderRight={false}
+      borderBottom={false}
+      borderLeft={true}
+      borderLeftColor={accent}
+    >
       <Box paddingX={1}>
         {badge ? (
           <>
             <Text color={badge.c} bold>{badge.text}</Text>
-            <Text color={shellMode ? color.shell : color.faint}>{glyph.rule.repeat(Math.max(width - 2 - badge.text.length, 4))}</Text>
+            <Text color={shellMode ? color.shell : color.faint}>{glyph.rule.repeat(Math.max(width - 3 - badge.text.length, 4))}</Text>
           </>
         ) : (
-          <Text color={color.faint}>{glyph.rule.repeat(Math.max(width - 2, 8))}</Text>
+          <Text color={color.faint}>{glyph.rule.repeat(Math.max(width - 3, 8))}</Text>
         )}
       </Box>
+      {/* Policy + branch: intent for this turn, not a model name. Dim by design —
+          the work is the focus, this is quiet chrome. */}
+      {policy ? (
+        <Box paddingX={1}>
+          <Text color={color.dim}>{policy}</Text>
+          {branch ? <Text color={color.faint}>{`  ${glyph.bullet}  ${glyph.branch} ${branch}`}</Text> : null}
+        </Box>
+      ) : null}
       {value === "" ? (
         // Empty composer: idle placeholder. While busy, the cue is "type to queue".
         <Box paddingX={1}>

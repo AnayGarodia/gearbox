@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput, useStdin } from "ink";
 import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
 import { Transcript } from "./components/Transcript.tsx";
-import { StatusBar, statusBarHit } from "./components/StatusBar.tsx";
+import { StatusBar, statusBarHit, formatStatusCost } from "./components/StatusBar.tsx";
 import { StatusStrip } from "./components/StatusStrip.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
@@ -15,6 +15,7 @@ import { Viewport, hullSelection, type ViewSelection } from "./components/Viewpo
 import { itemsToLines, type Line } from "./lines.ts";
 import { collapseTurn } from "./collapse.ts";
 import { buildRoutingLine } from "./routing-line.ts";
+import { policyLabel, type SelectorKind } from "./policy.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb } from "./character.ts";
@@ -581,7 +582,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const viewportHeightRef = useRef(1);
   const maxScrollRef = useRef(0);
   const paletteRowsLiveRef = useRef(0); // PALETTE_ROWS, for status-bar click hit-testing
-  const statusBarRenderRef = useRef<{ model: string; effort?: string; mode: "normal" | "auto-accept" | "plan" }>({ model: "", mode: "normal" });
+  const statusBarRenderRef = useRef<{ model: string; costText: string; width: number }>({ model: "", costText: "", width: 0 });
 
   const setPerm = (p: PermRequest | null) => {
     permRef.current = p;
@@ -811,15 +812,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const firstInputRow = rows - lineCount + 1;
       if (y < firstInputRow || y > rows) return null;
       const lineIdx = y - firstInputRow;
-      const col = Math.max(0, x - 4); // 1 pad + prompt + space, SGR coords are 1-based
+      const col = Math.max(0, x - 5); // 1 border + 1 pad + prompt + space, SGR coords are 1-based
       return offsetAt(value, lineIdx, col);
     };
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
-    const statusBarZoneAt = (x: number, y: number): "model" | "effort" | null => {
+    const statusBarZoneAt = (x: number, y: number): "model" | null => {
       const lineCount = Math.max(1, editRef.current.value.split("\n").length);
-      const { model, effort, mode } = statusBarRenderRef.current;
-      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, effort, mode });
+      const { model, costText, width: w } = statusBarRenderRef.current;
+      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, width: w });
     };
     const viewportTop = 4; // Banner is 3 rows; viewport begins on row 4.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
@@ -1335,6 +1336,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // On a subscription, the status reflects the CLI account, not the in-loop model/routing.
   const modelLabel = setupRequired ? "setup required" : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}` : (model?.label ?? "none");
   const subscription = activeCli ? activeCli.label : null;
+  // Routing POLICY for the input box (intent, not a model name). Derived from the
+  // live selector: a subscription pins the seat, a FixedSelector is an explicit
+  // model pin, otherwise the RoutingSelector auto-routes per task.
+  const selectorKind: SelectorKind = activeCli ? "subscription" : selector instanceof FixedSelector ? "fixed" : "routing";
+  // Omit the policy line during onboarding — the setup splash already conveys the
+  // state, and the extra row isn't worth crowding the first-run screen.
+  const composerPolicy: string | undefined = setupRequired
+    ? undefined
+    : policyLabel({ selectorKind, pinnedModelLabel: model?.label, subscriptionLabel: activeCli?.label, mode });
   // Compact identity for the top-right corner: "claude · Max · you@host" for a
   // subscription (id stays the slug under the hood), else nothing.
   const bannerAccount = (() => {
@@ -1367,7 +1377,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   })();
   const displayEffort = activeModelEfforts.length > 0 ? effort : undefined;
   // Mirror exactly what the status bar renders, so the click hit-test matches.
-  statusBarRenderRef.current = { model: modelLabel, effort: displayEffort, mode };
+  // Mirror exactly what the status bar renders (model + session cost + width), so
+  // the click hit-test's right-aligned model zone matches the rendered position.
+  statusBarRenderRef.current = { model: modelLabel, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), width };
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const pushPhase = (label: string, detail?: string) => {
@@ -3914,7 +3926,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const quickRows = quickPicker ? quickPickerRows(quickPicker) : [];
   const quickPickerLimit = Math.min(7, Math.max(1, quickRows.length));
   let footer = 2; // status line + its top margin
-  footer += perm ? 9 : 3; // permission card vs composer (rule + input + marginTop)
+  footer += perm ? 9 : 4; // permission card vs composer (rule + policy line + input + marginTop)
   // Composer hint row: "↵ queues…" while busy, or "↵ runs in your shell" in ! mode.
   if (!perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
   footer += PALETTE_ROWS;
@@ -4038,7 +4050,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} />
   );
 
   const footerJsx = (
@@ -4072,7 +4084,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       ) : null}
       {quickPickerJsx}
       {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} width={width} /> : null}
-      <StatusBar model={modelLabel} branch={branch} routing={routing} subscription={subscription} yolo={yolo} ctxPct={ctxPct} tokens={tokens} cost={estimateCost(sessionRef.current.turns)} width={width} mode={mode} effort={displayEffort} online={online} />
+      <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}
     </>

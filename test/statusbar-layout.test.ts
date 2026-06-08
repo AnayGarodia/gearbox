@@ -1,79 +1,59 @@
 import { test, expect } from "bun:test";
-import { statusBarLayout, statusBarHit } from "../src/ui/components/StatusBar.tsx";
+import { statusBarLayout, statusBarHit, fitStatusFields } from "../src/ui/components/StatusBar.tsx";
 
-// The status bar left segment is: paddingX(1) + optional "{mode}  ·  " + model
-// + optional "  ·  effort {effort}". sep is "  ·  " (5 cols). Zones are 0-based,
-// half-open [start, end) terminal columns.
+// The footer is KEYS LEFT, MODEL + COST RIGHT. The right segment is `<model>` (+
+// `  ·  $cost`), right-aligned to the 1-col right padding. So the model zone starts
+// at width − 1 − rightLen. Zones are 0-based, half-open [start, end) terminal cols.
 
-test("model zone follows the 1-col left pad when no mode prefix", () => {
-  const { modelZone } = statusBarLayout({ model: "haiku", effort: undefined, mode: "normal" });
-  expect(modelZone).toEqual([1, 6]); // cols 1..5 hold "haiku"
+test("model zone is right-aligned (no cost)", () => {
+  // width 100, "haiku" (5) → start = 100 - 1 - 5 = 94
+  const { modelZone } = statusBarLayout({ model: "haiku", width: 100 });
+  expect(modelZone).toEqual([94, 99]);
 });
 
-test("mode prefix shifts the model zone right by '{mode}  ·  '", () => {
-  // "plan" (4) + "  ·  " (5) = 9, after the 1-col pad → model starts at col 10
-  const { modelZone } = statusBarLayout({ model: "haiku", effort: undefined, mode: "plan" });
-  expect(modelZone).toEqual([10, 15]);
+test("a cost suffix pushes the model zone further left", () => {
+  // "sonnet"(6) + "  ·  "(5) + "$0.44"(5) = 16 → start = 100 - 1 - 16 = 83
+  const { modelZone } = statusBarLayout({ model: "sonnet", costText: "$0.44", width: 100 });
+  expect(modelZone).toEqual([83, 89]);
 });
 
-test("effort zone sits after the model + separator", () => {
-  // pad(1) + "sonnet"(6) → model [1,7); sep "  ·  "(5) → effort label "effort max"(10)
-  const { modelZone, effortZone } = statusBarLayout({ model: "sonnet", effort: "max", mode: "normal" });
-  expect(modelZone).toEqual([1, 7]);
-  expect(effortZone).toEqual([12, 22]);
-});
-
-test("no effort label means no effort zone", () => {
-  const { effortZone } = statusBarLayout({ model: "haiku", effort: undefined, mode: "normal" });
-  expect(effortZone).toBeNull();
-});
-
-// statusBarHit resolves an SGR click (1-based x/y) to the model/effort label.
-// The status-bar row sits above the composer: composer = marginTop(1) + rule(1)
-// + input(composerLines), the input's bottom line is the last terminal row, and
-// the palette box (paletteRows) sits between the status bar and the composer.
-// So statusRow (1-based) = termRows - composerLines - paletteRows - 2.
-const base = { termRows: 40, composerLines: 1, paletteRows: 0, model: "sonnet", effort: "max", mode: "normal" as const };
+// statusBarHit resolves an SGR click (1-based x/y) to the model label. The status
+// row sits above the composer: composer = marginTop(1) + rule(1) + policy(1) +
+// input(composerLines), so statusRow = termRows - composerLines - paletteRows - 3.
+const base = { termRows: 40, composerLines: 1, paletteRows: 0, model: "sonnet", costText: "$0.44", width: 100 };
 
 test("click on the model label hits 'model' on the computed status row", () => {
-  // statusRow = 40 - 1 - 0 - 2 = 37; model zone is col [1,7), so x = col+1 = 2..7
-  expect(statusBarHit({ ...base, x: 2, y: 37 })).toBe("model");
-  expect(statusBarHit({ ...base, x: 7, y: 37 })).toBe("model"); // col 6, last model col
+  // statusRow = 40 - 1 - 0 - 3 = 36; model zone [83,89) → x = col+1 = 84..89
+  expect(statusBarHit({ ...base, x: 84, y: 36 })).toBe("model");
+  expect(statusBarHit({ ...base, x: 89, y: 36 })).toBe("model"); // col 88, last model col
 });
 
-test("click on the effort label hits 'effort'", () => {
-  // effort zone col [12,22) → x = 13..22
-  expect(statusBarHit({ ...base, x: 13, y: 37 })).toBe("effort");
+test("click just past the model label (the separator) misses", () => {
+  expect(statusBarHit({ ...base, x: 90, y: 36 })).toBeNull(); // col 89 = end (exclusive)
+  expect(statusBarHit({ ...base, x: 83, y: 36 })).toBeNull(); // col 82 = before start
 });
 
 test("click off the status row misses", () => {
-  expect(statusBarHit({ ...base, x: 2, y: 36 })).toBeNull();
-  expect(statusBarHit({ ...base, x: 2, y: 38 })).toBeNull();
-});
-
-test("click between the labels misses", () => {
-  // col 8..11 is the separator between model and effort → x = 9..12
-  expect(statusBarHit({ ...base, x: 9, y: 37 })).toBeNull();
+  expect(statusBarHit({ ...base, x: 84, y: 35 })).toBeNull();
+  expect(statusBarHit({ ...base, x: 84, y: 37 })).toBeNull();
 });
 
 test("a multi-line composer raises the status row", () => {
-  // composerLines = 3 → statusRow = 40 - 3 - 0 - 2 = 35
-  expect(statusBarHit({ ...base, composerLines: 3, x: 2, y: 35 })).toBe("model");
-  expect(statusBarHit({ ...base, composerLines: 3, x: 2, y: 37 })).toBeNull();
+  // composerLines = 3 → statusRow = 40 - 3 - 0 - 3 = 34
+  expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 34 })).toBe("model");
+  expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 36 })).toBeNull();
 });
 
 test("an open palette raises the status row by paletteRows", () => {
-  // paletteRows = 5 → statusRow = 40 - 1 - 5 - 2 = 32
-  expect(statusBarHit({ ...base, paletteRows: 5, x: 2, y: 32 })).toBe("model");
+  // paletteRows = 5 → statusRow = 40 - 1 - 5 - 3 = 31
+  expect(statusBarHit({ ...base, paletteRows: 5, x: 84, y: 31 })).toBe("model");
 });
 
-test("no effort label means effort clicks miss", () => {
-  expect(statusBarHit({ ...base, effort: undefined, x: 13, y: 37 })).toBeNull();
+test("no model label means no hit", () => {
+  expect(statusBarHit({ ...base, model: "", x: 84, y: 36 })).toBeNull();
 });
 
-import { fitStatusFields } from "../src/ui/components/StatusBar.tsx";
-
-test("fitStatusFields keeps the model and sheds lowest-priority fields to fit width", () => {
+test("fitStatusFields keeps the first field and sheds lowest-priority ones to fit width", () => {
   const fields = [
     { text: "sonnet-4.6", priority: 100 },
     { text: "effort medium", priority: 50 },
@@ -82,13 +62,10 @@ test("fitStatusFields keeps the model and sheds lowest-priority fields to fit wi
     { text: "$0.44", priority: 20 },
     { text: "1% ctx", priority: 60 },
   ];
-  // Huge budget: everything kept, order preserved.
   expect(fitStatusFields(fields, 1000).map((f) => f.text)).toEqual(fields.map((f) => f.text));
-  // Tight budget: model always survives; cost (P20) and tokens (P30) drop before ctx (P60).
   const tight = fitStatusFields(fields, 30).map((f) => f.text);
   expect(tight[0]).toBe("sonnet-4.6");
   expect(tight).not.toContain("$0.44");
   expect(tight).not.toContain("80.0k tok");
-  // Brutally narrow: only the model remains, never an empty list.
   expect(fitStatusFields(fields, 3).map((f) => f.text)).toEqual(["sonnet-4.6"]);
 });
