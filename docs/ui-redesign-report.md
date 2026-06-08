@@ -130,6 +130,119 @@ click dropped — still set via `/effort` + shift+tab); chrome constants reconci
 Used a parallel architect fan-out (6 read-only agents) to produce apply-ready blueprints for the
 remaining surfaces before implementing each.
 
+### Step 2 — live status verb + low-context notice (commit 52cbc8d)
+The live status verb now names the running tool (`toolVerbFromName`: Reading/Editing/Running/…) on
+tool-start, restoring the turn's workshop phrase between tools. A `lowContextNotice` amber row
+(`<N>% context left · /compact`) shows under the working strip only when genuinely low (≥85% used),
+never during the linger beat. The one-line tool-call collapse, real line counts, diff deltas
+(`+N -M`), and "esc to interrupt" already existed and were left as-is. Pure helpers in `character.ts`,
+unit + render tested.
+
+### Step 3 — providers cold-open (commit 7116740)
+`providers-view.ts` (pure) + `ProvidersView` component. One row per account: a health dot (green
+ready / amber attention / red broken / faint unknown), label, and an **honest money field** — a real
+remaining balance ONLY for the three providers whose API exposes it (`balanceExposed`: openrouter,
+vercel-gateway, deepseek) and only when fresh; everyone else shows session spend or an explicit
+`balance n/a`. **A balance is never fabricated.** Broken accounts carry the exact `fixHint()` command.
+Shown in the welcome hero when accounts exist. 9 + 3 tests.
+
+### Step 5 — error lane + LSP + palette (commit e136692)
+Error lane redesigned to one red left bar (`▎`) down the whole message, shown once, in both
+renderers; confirmed no second floating/boxed error to remove. **LSP**: there is no LSP UI anywhere
+to remove (the only mention is an aspirational roadmap line in `DESIGN.md`, framed as future work —
+not a false UI claim); the brief's "remove borrowed LSP furniture" is satisfied by absence, and the
+roadmap doc was left untouched (out-of-scope file). Palette now colours the command primary and the
+description secondary, with the one accent-highlighted selected row; lists only real commands.
+
+### Step 4 — tab strip + Cost tab + savings + policy (commit 119ae60)
+A fullscreen tab strip (Session · Routing · Providers · Cost), active tab in accent, under the
+Banner; switch by clicking (tested `tabStripHit`), `⌃T` to cycle, or submitting a prompt. `cost-tab.ts`
+(pure): the savings estimate and the honest policy string.
+- **Savings is always real, with no routing-hot-path hook.** Baseline = each turn's tokens × the
+  priciest registry model's price; the most-expensive *eligible* model is the premium one for any
+  turn (it clears every quality bar — eligibility only excludes models for lacking capability). Minus
+  actual cost, clamped ≥ 0, labelled `~ … vs always-premium`. Subscription seats (actual $0) count
+  their full premium cost as saved. This is simpler and lower-risk than the blueprint's `TurnMeta` +
+  `explain()` capture, and equally honest.
+- **Policy line states only what the engine honours**: `cheapest model passing the quality bar` +
+  real global `prefer` + real budget-guard caps (session/daily/monthly/total). It NEVER prints a
+  per-turn cap, because the engine has none.
+Cost/Routing tabs show only real data (spend, per-account spend, last routed pick, remembered
+preferences); Providers tab reuses Step 3's view. 8 + 4 tests.
+
+---
+
+## Data provenance — anything on screen NOT backed by real data
+
+**This list is empty.** Every value rendered by the redesign is traced to real state below; where a
+value is not available, the UI shows an explicit `n/a`, omits the field, or labels an estimate.
+
+| Surface element | Source (real) |
+| --- | --- |
+| per-turn `routed → provider · model · $cost` | `routedRef.model` (follows failover), the recorded turn `cost` (`$0` ⇒ "subscription seat"), App.tsx:2141 |
+| per-turn line amber + reason | only the real `fellOverFromRef` (provider fallback) fires; escalation/cap are gated off until a real signal exists |
+| input-box policy (`auto-route` / `pinned X` / sub) | `selector instanceof RoutingSelector/FixedSelector` + `activeCli` + `mode` (`policyLabel`) |
+| input-box branch | `gitBranch()` (App.tsx) |
+| footer model + session cost | `modelLabel`; `estimateCost(session.turns)` (omitted < $0.005) |
+| footer chips (offline / yolo / low-ctx) | `online`, `yolo`, `ctxPct≥85` — all real state |
+| live verb | `toolVerbFromName(e.name)` from the real tool-start event |
+| low-context notice | real `ctxPct` (from token counts vs window); shown only ≥85% used |
+| provider health dot | `Account.health.state` |
+| provider balance | real `AccountUsage.balance.remainingUSD` for the 3 balance-exposing providers (fresh only); else real spend or explicit `balance n/a` |
+| provider fix command | `fixHint(account, state)` |
+| Cost spend / per-account spend | `estimateCost` / `loadUsage().spentUSD` |
+| Cost savings (`~ … vs always-premium`) | computed from real turn tokens × real registry prices − real actual cost; labelled an estimate (method below) |
+| routing policy line | real selector/global-pref/budget-cap state (`formatPolicyString`) |
+| routing last pick / kind prefs | `lastPick`; `loadRoutingPreferences().byKind` |
+| error lane text | the real error message |
+| slash palette rows | `matchCommands()` — real registered commands only |
+
+## TODOs left and why
+
+- **Surprising-routing cases (a) escalation and (c) per-turn cap are gated, not wired.** The
+  classifier supports all three brief cases, but only **(b) provider fallback** has a real signal
+  today (`fellOverFromRef`). (a) escalation needs the routing scorecard captured per turn (the
+  `explain()` set is ephemeral); deliberately deferred to avoid adding latency to the sacred routing
+  hot path. (c) per-turn cap is **permanently n/a** — the engine has session/daily/monthly/total
+  caps only, no per-turn cap. The line never shows false amber.
+- **Savings baseline approximates "most-expensive *eligible*" as "most-expensive *capable*".** The
+  per-turn task kind / quality bar isn't persisted, so the baseline uses the priciest registry model
+  (which clears every bar). Labelled an estimate (`~`). To make it exact per the brief's letter would
+  require persisting the eligible set per turn (a `TurnMeta` change + a hot-path capture) — out of
+  scope for "touch core logic as little as possible".
+- **Tab strip is fullscreen-only.** Inline mode has no persistent chrome (native scrollback owns the
+  screen), so the tabs aren't shown there — by design, matching how `Panel`/`StatusStrip` are also
+  fullscreen-only. The Cost/Providers data is still reachable inline via existing commands.
+
+## Assumptions
+
+- "Always-premium" baseline = the single priciest model in the registry, even if the user lacks that
+  provider — it's a hypothetical upper bound, which is why the savings is labelled an estimate.
+- Low-context threshold = `ctxPct ≥ 85` (≤15% remaining), used consistently by the footer chip and
+  the working-strip notice.
+- The three untracked test files present at session start (`preferences`/`profiles`/`tokens`) were
+  committed as a baseline so the redesign diff stays isolated; they are not my work.
+
+## Deviations from the brief (with reasons)
+
+- **LSP**: left `DESIGN.md`'s roadmap LSP mention in place. It is not a false UI claim (no LSP UI
+  exists or ever did), and editing an unrelated roadmap doc is explicitly out of scope. The brief's
+  intent (no borrowed LSP furniture in the UI) is met by absence.
+- **Composer policy line placed at the top of the box** (under the rule), not the bottom, so the
+  input stays bottom-anchored and the cursor/click math barely changes (lower risk).
+- **Savings computed without the `explain()` hot-path hook** the blueprint proposed — same honesty,
+  less core-logic intrusion and no added routing latency.
+- **Effort click-picker removed** from the status bar (effort is no longer shown in the footer per the
+  redesign's "keys left, model+cost right"); effort is still set via `/effort` and shift+tab.
+
+## Verification
+
+- `bun run typecheck` clean; `bun test` **745 pass / 0 fail** across 93 files; app launches clean.
+- New pure logic is unit-tested: `routing-line`, `policy`, `providers-view`, `working-verb`
+  (verb + low-context), `cost-tab` (savings + policy classifier + savings-line), `tabstrip`
+  (`tabStripHit` + layout), plus render tests for the new components and the rewritten
+  StatusBar/Composer/error-lane/palette.
+
 ## Data provenance — anything on screen NOT backed by real data
 
 This list MUST be empty at the end.
