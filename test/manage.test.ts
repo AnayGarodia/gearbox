@@ -155,6 +155,39 @@ test("deleteDeployment: Foundry account with /openai/v1 baseUrl does not double 
   expect(capturedUrl).toContain("/openai/deployments/my-dep");
 });
 
+test("createDeployment: Foundry inference endpoint returns helpful portal error", async () => {
+  const inferenceAcc: import("../src/accounts/types.ts").Account = {
+    id: "foundry-inference-test",
+    label: "Foundry Inference",
+    provider: "azure-foundry",
+    exec: "in-loop",
+    auth: { kind: "openai-compat", ref: "foundry-inference-test:api-key" },
+    baseUrl: "https://my-project.eastus.inference.ai.azure.com/openai/v1",
+    enabled: true,
+    addedAt: Date.now(),
+  };
+  const r = await createDeployment(inferenceAcc, "my-dep", "gpt-4o", "Standard");
+  expect(r.ok).toBe(false);
+  expect(r.note).toContain("Azure AI Foundry portal");
+  expect(r.note).toContain("ai.azure.com");
+});
+
+test("deleteDeployment: Foundry inference endpoint returns helpful portal error", async () => {
+  const inferenceAcc: import("../src/accounts/types.ts").Account = {
+    id: "foundry-inference-del-test",
+    label: "Foundry Inference",
+    provider: "azure-foundry",
+    exec: "in-loop",
+    auth: { kind: "openai-compat", ref: "foundry-inference-del-test:api-key" },
+    baseUrl: "https://my-project.eastus.inference.ai.azure.com/openai/v1",
+    enabled: true,
+    addedAt: Date.now(),
+  };
+  const r = await deleteDeployment(inferenceAcc, "my-dep");
+  expect(r.ok).toBe(false);
+  expect(r.note).toContain("Azure AI Foundry portal");
+});
+
 test("terminalLink: wraps url in OSC 8 sequence", () => {
   const url = "https://portal.azure.com";
   const link = terminalLink(url);

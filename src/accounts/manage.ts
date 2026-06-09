@@ -39,6 +39,13 @@ function foundryManagementBase(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "").replace(/\/openai(?:\/v1)?$/i, "");
 }
 
+/** Returns true for Azure AI Foundry project inference endpoints (*.inference.ai.azure.com).
+ *  These endpoints are read-only for deployments — PUT/DELETE require ARM API with AAD auth,
+ *  not the data-plane API key that in-loop accounts carry. */
+function isFoundryInferenceEndpoint(baseUrl: string): boolean {
+  return /\.inference\.ai\.azure\.com/i.test(baseUrl);
+}
+
 /** Pick the write api-version for an account (stored or default). */
 function writeApiVersion(account: Account): string {
   if (account.auth.kind === "azure") return account.auth.apiVersion ?? AZURE_WRITE_API_VERSION_DEFAULT;
@@ -234,7 +241,11 @@ export async function createDeployment(
         url = `${azureBase(resourceName)}/openai/deployments/${encodeURIComponent(deploymentName)}?api-version=${apiVersion}`;
         headers = { "api-key": apiKey, "Content-Type": "application/json" };
       } else {
-        const base = foundryManagementBase(creds.baseURL ?? account.baseUrl ?? "");
+        const rawBase = creds.baseURL ?? account.baseUrl ?? "";
+        if (isFoundryInferenceEndpoint(rawBase)) {
+          return { ok: false, note: "deployment creation requires the Azure AI Foundry portal — inference endpoint API keys don't have management permissions\n  open: https://ai.azure.com" };
+        }
+        const base = foundryManagementBase(rawBase);
         if (!base) return { ok: false, note: "no endpoint configured" };
         url = `${base}/openai/deployments/${encodeURIComponent(deploymentName)}?api-version=${apiVersion}`;
         headers = { "api-key": creds.apiKey ?? "", "Content-Type": "application/json", ...(creds.headers ?? {}) };
@@ -286,7 +297,11 @@ export async function deleteDeployment(
         url = `${azureBase(resourceName)}/openai/deployments/${encodeURIComponent(deploymentId)}?api-version=${apiVersion}`;
         headers = { "api-key": apiKey };
       } else {
-        const base = foundryManagementBase(creds.baseURL ?? account.baseUrl ?? "");
+        const rawBase = creds.baseURL ?? account.baseUrl ?? "";
+        if (isFoundryInferenceEndpoint(rawBase)) {
+          return { ok: false, note: "deployment deletion requires the Azure AI Foundry portal — inference endpoint API keys don't have management permissions\n  open: https://ai.azure.com" };
+        }
+        const base = foundryManagementBase(rawBase);
         if (!base) return { ok: false, note: "no endpoint configured" };
         url = `${base}/openai/deployments/${encodeURIComponent(deploymentId)}?api-version=${apiVersion}`;
         headers = { "api-key": creds.apiKey ?? "", ...(creds.headers ?? {}) };
