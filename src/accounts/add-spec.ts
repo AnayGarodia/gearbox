@@ -22,6 +22,7 @@ export interface FieldSpec {
   key: string; // build() reads fields[key]
   label: string; // step header in the wizard
   placeholder: string; // shown faint under the input ("e.g. …")
+  hint?: string; // always-visible line below input: where to find this value
   required: boolean;
   secret?: boolean; // API keys: shown as typed (local terminal); summarised masked
   validate(v: string): string | null; // null = ok, string = inline error
@@ -41,20 +42,48 @@ export interface AddSpec {
 const required = (v: string): string | null => (v.trim() ? null : "required");
 const urlOk = (v: string): string | null => (/^https?:\/\//i.test(v.trim()) ? null : "must start with http(s)://");
 
+// Where to find the API key for each simple (paste-a-key) provider.
+const API_KEY_HINTS: Record<string, string> = {
+  anthropic: "console.anthropic.com → Settings → API Keys → Create API key",
+  openai: "platform.openai.com → API keys → Create new secret key",
+  google: "aistudio.google.com → Get API key → Create API key in a project",
+  openrouter: "openrouter.ai/keys → Create key  (credits added separately in the dashboard)",
+  deepseek: "platform.deepseek.com/api_keys → Create API key",
+  groq: "console.groq.com/keys → Create API key  (free tier available)",
+  xai: "console.x.ai → API Keys → Create API key",
+  mistral: "console.mistral.ai/api-keys → Create new key",
+  together: "api.together.ai/settings/api-keys → Create API key",
+  fireworks: "fireworks.ai/account/api-keys → Create API key",
+  deepinfra: "deepinfra.com/dash/api_keys → Create new token",
+  perplexity: "perplexity.ai/settings/api → API Keys → Generate",
+  cerebras: "cloud.cerebras.ai → API Keys → Create API key",
+  sambanova: "cloud.sambanova.ai/apis → Create API key",
+  moonshot: "platform.moonshot.ai/console/api-keys → Create API key",
+  novita: "novita.ai/settings/key-management → Create API key",
+  minimax: "platform.minimaxi.com/user-center/basic-information/interface-key",
+  hyperbolic: "app.hyperbolic.xyz/settings → API Keys",
+  nebius: "studio.nebius.com → Settings → API Keys",
+  zai: "z.ai/manage-apikey/apikey-list → Create API key",
+  baseten: "app.baseten.co/settings/api_keys → Create API key",
+  portkey: "app.portkey.ai → Settings → API Keys → Create new key",
+  requesty: "app.requesty.ai → API Keys → Create key",
+};
+
 // A "paste an API key" spec for any catalog provider that addApiKeyAccount can
 // take with just a key (native api-key providers, or openai-compat with a built-in baseUrl).
 function apiKeySpec(providerId: string): AddSpec {
   const cat = catalogProvider(providerId);
   const label = cat?.label ?? providerId;
   const example = cat?.keyPrefix?.length ? `${cat.keyPrefix[0]}…` : "your API key";
+  const hint = API_KEY_HINTS[providerId];
   return {
     id: providerId,
     label,
-    summary: "paste an API key",
+    summary: hint ? hint.split("→")[0]!.trim() : "paste an API key",
     group: "api-key",
     signupUrl: cat?.signupUrl,
     paletteCommand: `/account add ${providerId}`,
-    fields: [{ key: "apiKey", label: `${label} API key`, placeholder: example, required: true, secret: true, validate: required }],
+    fields: [{ key: "apiKey", label: `${label} API key`, placeholder: example, hint, required: true, secret: true, validate: required }],
     build: (f) => addApiKeyAccount(providerId, f.apiKey ?? ""),
   };
 }
@@ -82,8 +111,8 @@ export const ADD_SPECS: AddSpec[] = [
   apiKeySpec("anthropic"),
   apiKeySpec("openai"),
   apiKeySpec("google"),
-  subscriptionSpec("claude-subscription", "Claude Pro / Max", "sign in via the claude CLI"),
-  subscriptionSpec("codex-subscription", "ChatGPT Plus / Pro", "sign in via the codex CLI"),
+  subscriptionSpec("claude-subscription", "Claude Pro / Max", "Claude Pro/Max seat · signs in via the claude CLI"),
+  subscriptionSpec("codex-subscription", "ChatGPT Plus / Pro", "ChatGPT Plus/Pro seat · signs in via the codex CLI"),
   apiKeySpec("openrouter"),
   apiKeySpec("deepseek"),
   apiKeySpec("groq"),
@@ -91,58 +120,132 @@ export const ADD_SPECS: AddSpec[] = [
   {
     id: "azure",
     label: "Azure OpenAI",
-    summary: "resource name + API key",
+    summary: "classic Azure OpenAI resource + API key",
     group: "cloud",
     signupUrl: catalogProvider("azure")?.signupUrl,
     paletteCommand: "/account add azure",
     fields: [
-      { key: "resource", label: "Resource name or endpoint", placeholder: "my-resource  (or https://my-resource.openai.azure.com)", required: true, validate: required },
-      { key: "apiKey", label: "API key", placeholder: "your Azure OpenAI key", required: true, secret: true, validate: (v) => (v.trim().length >= 8 ? null : "key looks too short") },
-      { key: "apiVersion", label: "API version (optional)", placeholder: "2024-08-01-preview  —  blank for default", required: false, validate: () => null },
+      {
+        key: "resource",
+        label: "Resource name or full endpoint URL",
+        placeholder: "my-resource  or  https://my-resource.openai.azure.com",
+        hint: "portal.azure.com → Azure OpenAI → your resource → Overview → copy the resource name (the part before .openai.azure.com)",
+        required: true,
+        validate: required,
+      },
+      {
+        key: "apiKey",
+        label: "API key",
+        placeholder: "32-character hex key from the portal",
+        hint: "portal.azure.com → your Azure OpenAI resource → Keys and Endpoint → copy KEY 1",
+        required: true,
+        secret: true,
+        validate: (v) => (v.trim().length >= 8 ? null : "key looks too short"),
+      },
+      {
+        key: "apiVersion",
+        label: "API version (optional)",
+        placeholder: "2024-08-01-preview  —  blank for default",
+        hint: "Leave blank unless your deployment requires a specific preview version",
+        required: false,
+        validate: () => null,
+      },
     ],
     build: (f) => addAzureAccount(f.resource ?? "", f.apiKey ?? "", { apiVersion: f.apiVersion || undefined }),
   },
   {
     id: "azure-foundry",
     label: "Azure AI Foundry",
-    summary: "full https:// endpoint + key",
+    summary: "Foundry project endpoint + API key",
     group: "cloud",
     signupUrl: catalogProvider("azure-foundry")?.signupUrl,
     paletteCommand: "/account add azure",
     fields: [
-      { key: "endpoint", label: "Foundry endpoint", placeholder: "https://my-hub.services.ai.azure.com", required: true, validate: urlOk },
-      { key: "apiKey", label: "API key", placeholder: "your Foundry key", required: true, secret: true, validate: required },
+      {
+        key: "endpoint",
+        label: "Foundry project endpoint",
+        placeholder: "https://my-project.services.ai.azure.com",
+        hint: "ai.azure.com → your project → Overview → Target URI  (copy the full https://… URL — ends in .services.ai.azure.com or .openai.azure.com)",
+        required: true,
+        validate: urlOk,
+      },
+      {
+        key: "apiKey",
+        label: "API key",
+        placeholder: "your Foundry project key",
+        hint: "ai.azure.com → your project → Overview → Key  (copy Key 1 shown below the endpoint URL)",
+        required: true,
+        secret: true,
+        validate: required,
+      },
     ],
     build: (f) => addAzureFoundryAccount(f.endpoint ?? "", f.apiKey ?? ""),
   },
   {
     id: "bedrock",
     label: "Amazon Bedrock",
-    summary: "AWS key + secret + region",
+    summary: "AWS IAM credentials + region",
     group: "cloud",
     signupUrl: catalogProvider("bedrock")?.signupUrl,
     paletteCommand: "/account add bedrock",
     fields: [
-      { key: "accessKeyId", label: "AWS Access Key ID", placeholder: "AKIAIOSFODNN7EXAMPLE", required: true, validate: (v) => (/^(AKIA|ASIA)[A-Z0-9]{16}$/.test(v.trim()) ? null : "should start with AKIA or ASIA") },
-      { key: "secretAccessKey", label: "AWS Secret Access Key", placeholder: "wJalrXUtnFEMI/K7MDENG/…EXAMPLEKEY", required: true, secret: true, validate: (v) => (v.trim().length >= 16 ? null : "too short") },
-      { key: "region", label: "AWS Region", placeholder: "us-east-1", required: true, validate: (v) => (/^[a-z]{2}-[a-z]+-\d$/.test(v.trim()) ? null : "e.g. us-east-1") },
+      {
+        key: "accessKeyId",
+        label: "AWS Access Key ID",
+        placeholder: "AKIAIOSFODNN7EXAMPLE",
+        hint: "console.aws.amazon.com → IAM → Users → your user → Security credentials → Access keys → Create access key",
+        required: true,
+        validate: (v) => (/^(AKIA|ASIA)[A-Z0-9]{16}$/.test(v.trim()) ? null : "should start with AKIA or ASIA, followed by 16 uppercase alphanumeric chars"),
+      },
+      {
+        key: "secretAccessKey",
+        label: "AWS Secret Access Key",
+        placeholder: "wJalrXUtnFEMI/K7MDENG/…EXAMPLEKEY",
+        hint: "Shown once when you create the access key — copy it immediately before closing that page",
+        required: true,
+        secret: true,
+        validate: (v) => (v.trim().length >= 16 ? null : "too short"),
+      },
+      {
+        key: "region",
+        label: "AWS Region",
+        placeholder: "us-east-1",
+        hint: "The region where you've enabled Bedrock model access  (check: console.aws.amazon.com → Bedrock → Model access)",
+        required: true,
+        validate: (v) => (/^[a-z]{2}-[a-z]+-\d$/.test(v.trim()) ? null : "e.g. us-east-1, us-west-2, eu-west-1"),
+      },
     ],
     build: (f) => addBedrockAccount(f.accessKeyId ?? "", f.secretAccessKey ?? "", f.region ?? ""),
   },
   {
     id: "vertex",
     label: "Google Vertex AI",
-    summary: "GCP project + location + ADC or SA JSON",
+    summary: "GCP project + region + ADC or service account",
     group: "cloud",
     signupUrl: catalogProvider("vertex")?.signupUrl,
     paletteCommand: "/account add vertex",
     fields: [
-      { key: "project", label: "GCP Project ID", placeholder: "my-gcp-project-123", required: true, validate: required },
-      { key: "location", label: "Location (region)", placeholder: "us-central1", required: true, validate: required },
+      {
+        key: "project",
+        label: "GCP Project ID",
+        placeholder: "my-gcp-project-123",
+        hint: "Google Cloud Console → click the project dropdown (top bar) → copy the Project ID shown below the name",
+        required: true,
+        validate: required,
+      },
+      {
+        key: "location",
+        label: "Region (location)",
+        placeholder: "us-central1",
+        hint: "The GCP region where you've enabled the Vertex AI API  (console.cloud.google.com → Vertex AI → Dashboard)",
+        required: true,
+        validate: required,
+      },
       {
         key: "serviceAccountJson",
         label: "Service account JSON (optional — blank uses gcloud ADC)",
-        placeholder: "paste the JSON key file contents, or press ⏎ to use ADC",
+        placeholder: "paste the full contents of the JSON key file, or press ⏎ to use ADC",
+        hint: "Skip to use Application Default Credentials  (run: gcloud auth application-default login)\nTo use a service account: Cloud Console → IAM → Service accounts → your SA → Keys → Add key → Create new key → JSON",
         required: false,
         secret: true,
         validate: (v) => {
@@ -161,15 +264,44 @@ export const ADD_SPECS: AddSpec[] = [
   {
     id: "openai-compat",
     label: "OpenAI-compatible endpoint",
-    summary: "LiteLLM · proxy · self-hosted",
+    summary: "LiteLLM proxy · self-hosted · any OpenAI-wire server",
     group: "compat",
     signupUrl: catalogProvider("litellm")?.signupUrl,
     paletteCommand: "/account add openai-compat",
     fields: [
-      { key: "name", label: "Name", placeholder: "my-proxy", required: true, validate: required },
-      { key: "baseUrl", label: "Base URL", placeholder: "https://my-proxy.example.com/v1", required: true, validate: urlOk },
-      { key: "apiKey", label: "API key (blank if none)", placeholder: "your key, or ⏎ to skip", required: false, secret: true, validate: () => null },
-      { key: "models", label: "Model ids (space-separated)", placeholder: "gpt-4o  llama-3.3-70b", required: true, validate: (v) => (v.trim() ? null : "at least one model id") },
+      {
+        key: "name",
+        label: "Name",
+        placeholder: "my-proxy",
+        hint: "A short slug to identify this endpoint in /account and routing  (e.g. litellm-work, local-ollama)",
+        required: true,
+        validate: required,
+      },
+      {
+        key: "baseUrl",
+        label: "Base URL",
+        placeholder: "https://my-proxy.example.com/v1",
+        hint: "Full URL of your endpoint including the /v1 path if the server needs it",
+        required: true,
+        validate: urlOk,
+      },
+      {
+        key: "apiKey",
+        label: "API key (blank if none)",
+        placeholder: "your key, or ⏎ to skip",
+        hint: "The key your proxy expects — leave blank for open or local endpoints",
+        required: false,
+        secret: true,
+        validate: () => null,
+      },
+      {
+        key: "models",
+        label: "Model IDs (space-separated)",
+        placeholder: "gpt-4o  llama-3.3-70b",
+        hint: "The model IDs this proxy accepts — use the same IDs you'd put in the \"model\" field of an API request",
+        required: true,
+        validate: (v) => (v.trim() ? null : "at least one model id"),
+      },
     ],
     build: (f) => addOpenAICompatAccount(f.name ?? "", f.baseUrl ?? "", f.apiKey ?? "", (f.models ?? "").trim().split(/\s+/).filter(Boolean)),
   },
@@ -233,9 +365,9 @@ export function buildPaletteAddRows(): PaletteAddRow[] {
 }
 
 /** A rich, multi-line guidance block for a wrong/incomplete `/account add …`.
- *  Shows the raw failure, the fields the provider needs (with examples), a signup
- *  link, the Azure Foundry/classic disambiguation, and the wizard escape hatch.
- *  For an unknown provider, lists the available providers instead. */
+ *  Shows the raw failure, the fields the provider needs (with examples + where
+ *  to find them), a signup link, the Azure Foundry/classic disambiguation, and
+ *  the wizard escape hatch. For an unknown provider, lists available providers. */
 export function buildAddGuidance(providerOrSpecId: string, rawMessage: string): string {
   const spec = specFor(providerOrSpecId);
   if (!spec) {
@@ -245,14 +377,21 @@ export function buildAddGuidance(providerOrSpecId: string, rawMessage: string): 
   const lines: string[] = [rawMessage, "", `${spec.label} needs:`];
   for (const f of spec.fields) {
     const tag = f.required ? "" : " (optional)";
-    lines.push(`  ${(f.label.replace(/ \(optional.*\)$/, "") + tag).padEnd(30)}e.g. ${f.placeholder}`);
+    const shortLabel = f.label.replace(/ \(optional.*\)$/, "") + tag;
+    lines.push(`  ${shortLabel.padEnd(36)}e.g. ${f.placeholder}`);
+    if (f.hint) {
+      // Each line of the hint indented to align under the example
+      for (const hline of f.hint.split("\n")) {
+        lines.push(`  ${" ".repeat(38)}${hline}`);
+      }
+    }
   }
   if (spec.id === "azure") {
     lines.push(
       "",
       "Azure OpenAI vs Foundry:",
-      "  Classic:  /account add azure my-resource <key>",
-      "  Foundry:  /account add azure https://my-hub.services.ai.azure.com <key>",
+      "  Classic Azure OpenAI:  /account add azure my-resource <key>",
+      "  Azure AI Foundry:      /account add azure https://my-project.services.ai.azure.com <key>",
     );
   }
   if (spec.signupUrl) lines.push("", `Get a key → ${spec.signupUrl}`);

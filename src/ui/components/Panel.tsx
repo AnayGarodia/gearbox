@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { Viewport } from "./Viewport.tsx";
 import { itemsToLines, type Line } from "../lines.ts";
-import { panelBodyHeight, windowStart, filterModelRows, clampIndex, type PanelState, type PanelModelRow, type PanelSessionRow } from "../panel.ts";
+import { panelBodyHeight, windowStart, filterModelRows, clampIndex, type PanelState, type PanelModelRow, type PanelSessionRow, type AccountDetailViewData } from "../panel.ts";
 import { filterAddSpecs, type AddSpec } from "../../accounts/add-spec.ts";
 import type { AccountView } from "../types.ts";
 
@@ -26,6 +26,7 @@ export function Panel({
   currentModelId,
   staticLines,
   wizardSpec,
+  accountDetail,
 }: {
   panel: PanelState;
   width: number;
@@ -36,6 +37,7 @@ export function Panel({
   currentModelId?: string | null;
   staticLines?: Line[]; // precomputed by App so it and the key-handler agree on length
   wizardSpec?: AddSpec; // resolved by App for the wizard's field phase
+  accountDetail?: AccountDetailViewData; // resolved by App for the account-detail panel
 }) {
   const bodyH = panelBodyHeight(height);
   const innerW = Math.max(4, width - 2);
@@ -94,7 +96,7 @@ export function Panel({
         })}
       </Box>
     );
-    hint = "↑↓ move · ⏎ select · esc close";
+    hint = "↑↓ move · ⏎ select · → detail · esc close";
   } else if (panel.kind === "sessions") {
     const rows = sessions ?? [];
     const idx = clampIndex(panel.index, rows.length);
@@ -179,6 +181,13 @@ export function Panel({
           </Box>
           {!ph.fieldEdit.value && field ? <Text color={color.faint}>  e.g. {field.placeholder}</Text> : null}
           {ph.fieldError ? <Text color={color.err}>  {glyph.err} {ph.fieldError}</Text> : null}
+          {field?.hint ? (
+            <Box flexDirection="column" marginTop={1}>
+              {field.hint.split("\n").map((line, i) => (
+                <Text key={i} color={color.faint}>  {line}</Text>
+              ))}
+            </Box>
+          ) : null}
         </Box>
       </Box>
     );
@@ -209,6 +218,133 @@ export function Panel({
       </Box>
     );
     hint = `filter: ${panel.filter || "(type to filter)"}  ·  ↑↓ · ⏎ pin · esc close`;
+  } else if (panel.kind === "account-detail") {
+    const ph = panel.detailPhase;
+    if (ph.phase === "browse") {
+      const deps = panel.deployments ?? [];
+      const listH = Math.max(1, bodyH - 1); // reserve 1 row for meta header
+      const idx = clampIndex(panel.index, deps.length);
+      const start = windowStart(idx, deps.length, listH);
+      const slice = deps.slice(start, start + listH);
+      body = (
+        <Box flexDirection="column" paddingX={1}>
+          <Text color={color.faint}>
+            {panel.loadError
+              ? <Text color={color.err}>{glyph.err} {panel.loadError}</Text>
+              : panel.deployments === null
+              ? <Text>loading deployments…</Text>
+              : <Text>{deps.length} deployment{deps.length !== 1 ? "s" : ""}</Text>}
+            {accountDetail?.endpoint ? <Text>  · {accountDetail.endpoint}</Text> : null}
+            {panel.submitting ? <Text>  · working…</Text> : null}
+          </Text>
+          {deps.length === 0 && !panel.loadError && panel.deployments !== null ? (
+            <Text color={color.faint}>  no deployments yet · press d to deploy a model</Text>
+          ) : (
+            slice.map((d, i) => {
+              const sel = start + i === idx;
+              const failed = d.status === "failed";
+              const running = d.status === "running" || d.status === "notstarted" || d.status === "canceled";
+              return (
+                <Text key={d.id} backgroundColor={sel ? color.accentBg : undefined}>
+                  <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+                  <Text color={failed ? color.err : color.text} bold={sel}>{(d.id.length > 28 ? d.id.slice(0, 27) + "…" : d.id).padEnd(28)}</Text>
+                  <Text color={color.faint}>  {d.model.length > 22 ? d.model.slice(0, 21) + "…" : d.model}</Text>
+                  <Text color={failed ? color.err : d.status === "succeeded" ? color.ok : color.warn}>  {d.status}</Text>
+                  {d.capacityUnits !== undefined ? <Text color={color.faint}>  {d.capacityUnits}PTU</Text> : null}
+                </Text>
+              );
+            })
+          )}
+        </Box>
+      );
+      hint = `↑↓ move · d deploy · ⌫ delete · r refresh · esc close`;
+    } else if (ph.phase === "deploy-pick") {
+      const models = panel.availableModels ?? [];
+      const q = ph.filter.trim().toLowerCase();
+      const filtered = q ? models.filter((m) => m.toLowerCase().includes(q)) : models;
+      const idx = clampIndex(ph.index, filtered.length);
+      const start = windowStart(idx, filtered.length, bodyH);
+      const slice = filtered.slice(start, start + bodyH);
+      body = (
+        <Box flexDirection="column" paddingX={1}>
+          {filtered.length === 0 ? (
+            panel.availableModels === null
+              ? <Text color={color.faint}>loading available models…</Text>
+              : <Text color={color.faint}>no models match "{ph.filter}"</Text>
+          ) : (
+            slice.map((m, i) => {
+              const sel = start + i === idx;
+              return (
+                <Text key={m} backgroundColor={sel ? color.accentBg : undefined}>
+                  <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+                  <Text color={color.text} bold={sel}>{m}</Text>
+                </Text>
+              );
+            })
+          )}
+        </Box>
+      );
+      hint = `${ph.filter ? `filter: ${ph.filter}  ·  ` : ""}↑↓ · ⏎ select · esc back`;
+    } else if (ph.phase === "capacity-type") {
+      const capacityTypes = [
+        { id: "Standard", note: "pay-per-token · shared" },
+        { id: "GlobalStandard", note: "lower latency · global routing" },
+        { id: "ProvisionedManaged", note: "dedicated PTU · reserved capacity" },
+      ];
+      const idx = clampIndex(ph.index, capacityTypes.length);
+      body = (
+        <Box flexDirection="column" paddingX={1}>
+          <Text color={color.faint}>deploy: <Text color={color.text}>{ph.selectedModel}</Text></Text>
+          <Box marginTop={1} flexDirection="column">
+            {capacityTypes.map((t, i) => {
+              const sel = i === idx;
+              return (
+                <Text key={t.id} backgroundColor={sel ? color.accentBg : undefined}>
+                  <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+                  <Text color={color.text} bold={sel}>{t.id.padEnd(22)}</Text>
+                  <Text color={color.faint}>{t.note}</Text>
+                </Text>
+              );
+            })}
+          </Box>
+        </Box>
+      );
+      hint = "↑↓ · ⏎ select · esc back";
+    } else if (ph.phase === "deploy-name") {
+      body = (
+        <Box flexDirection="column" paddingX={1}>
+          <Text color={color.faint}>
+            model: <Text color={color.text}>{ph.selectedModel}</Text>
+            {"  ·  "}
+            capacity: <Text color={color.text}>{ph.capacityType}</Text>
+          </Text>
+          <Box marginTop={1} flexDirection="column">
+            <Text color={color.accent} bold>Deployment name</Text>
+            <Box>
+              <Text color={color.faint}>{glyph.prompt} </Text>
+              <Text color={color.text}>{ph.fieldEdit.value}</Text>
+              <Text color={color.accent} inverse> </Text>
+            </Box>
+            {!ph.fieldEdit.value ? <Text color={color.faint}>  e.g. gpt-4o-deployment</Text> : null}
+            {ph.fieldError ? <Text color={color.err}>  {glyph.err} {ph.fieldError}</Text> : null}
+          </Box>
+          {panel.submitting ? <Box marginTop={1}><Text color={color.faint}>deploying…</Text></Box> : null}
+        </Box>
+      );
+      hint = "⏎ deploy · esc back";
+    } else if (ph.phase === "confirm-delete") {
+      body = (
+        <Box flexDirection="column" paddingX={1}>
+          <Text>Delete <Text color={color.err} bold>{ph.deploymentId}</Text>?</Text>
+          <Box marginTop={1}><Text color={color.faint}>This cannot be undone.</Text></Box>
+          <Box marginTop={1}>
+            <Text color={color.err} bold>⏎ confirm</Text>
+            <Text color={color.faint}>  · esc cancel</Text>
+          </Box>
+        </Box>
+      );
+      hint = "⏎ confirm delete · esc cancel";
+    }
   }
 
   return (
