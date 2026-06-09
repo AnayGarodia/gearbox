@@ -365,21 +365,28 @@ export function resolveModelSwitch(query: string): SwitchResult {
 
   const MODELS = modelRegistry();
   const matches = MODELS.filter((m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
-  if (matches.length === 0) return { ok: false, message: `no model matching “${query}” · /model to list` };
+  if (matches.length === 0) return { ok: false, message: `no model matching "${query}" · /model to list` };
 
-  const exact = matches.find((m) => m.label.toLowerCase() === q || m.id.toLowerCase() === q);
+  const exacts = matches.filter((m) => m.label.toLowerCase() === q || m.id.toLowerCase() === q);
   const available = matches.filter((m) => providerAvailable(m.provider));
+  const exactAvailable = exacts.filter((m) => providerAvailable(m.provider));
 
-  if (exact) {
-    if (!providerAvailable(exact.provider)) return { ok: false, message: `${exact.label}: no ${exact.provider} account yet · /account add ${exact.provider} <key> or set ${envHint(exact.provider)}` };
-    return { ok: true, modelId: exact.id, message: `model → ${exact.label}` };
+  // Prefer an exact match on an available provider over one that has no account yet.
+  // This lets "DeepSeek-V4-Pro" resolve to an azure-foundry deployment even when
+  // the native deepseek provider also has a same-named curated entry but no key.
+  if (exactAvailable.length === 1) return { ok: true, modelId: exactAvailable[0]!.id, message: `model → ${exactAvailable[0]!.label}` };
+  if (exactAvailable.length > 1) return { ok: false, message: `"${query}" matches ${exactAvailable.map((m) => m.label).join(", ")} · be more specific` };
+  if (exacts.length > 0) {
+    const m = exacts[0]!;
+    return { ok: false, message: `${m.label}: no ${m.provider} account yet · /account add ${m.provider} <key> or set ${envHint(m.provider)}` };
   }
+
   if (available.length === 0) {
     const m = matches[0]!;
-    return { ok: false, message: `“${query}” matches ${m.label} but no account for ${m.provider} · /accounts add ${m.provider} <key> or set ${envHint(m.provider)}` };
+    return { ok: false, message: `"${query}" matches ${m.label} but no account for ${m.provider} · /accounts add ${m.provider} <key> or set ${envHint(m.provider)}` };
   }
   if (available.length > 1) {
-    return { ok: false, message: `“${query}” matches ${available.map((m) => m.label).join(", ")} · be more specific` };
+    return { ok: false, message: `"${query}" matches ${available.map((m) => m.label).join(", ")} · be more specific` };
   }
   const m = available[0]!;
   return { ok: true, modelId: m.id, message: `model → ${m.label}` };
