@@ -1,0 +1,98 @@
+// The single spend writer (roadmap "canonical ledger", step 1). Every dollar a
+// turn or a delegated sub-task spends flows through recordSpend(), which
+// (a) updates the per-account aggregates in usage.json (recordUsage — unchanged
+// on-disk shape, no migration), (b) appends one event line to ledger.jsonl
+// (append-only: inherently crash-safe, and the at-the-time record a future
+// /why or per-repo-priors engine reads — re-running estimateCost re-prices
+// history when price tables change; the log preserves what was actually
+// recorded), and (c) notifies an optional subscriber so the UI and the
+// session's TurnMeta record derive from the SAME event instead of being
+// assembled in parallel (TRIAGE R2: "no single source of truth").
+import { appendFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { recordUsage } from "./usage.ts";
+import { estimateCost } from "../providers.ts";
+import type { TurnMeta } from "../session.ts";
+
+export interface SpendEvent {
+  accountId: string;
+  model: string;
+  source: "turn" | "delegate";
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens?: number;
+  cacheCreationInputTokens?: number;
+  costUSD: number;
+  estimated: boolean;
+  at: number;
+}
+
+/** The one cost policy, lifted out of App.tsx so the main turn and delegation
+ *  can't derive cost differently: a flat-rate subscription seat is $0 marginal
+ *  (the CLI's reported dollars are metered-equivalent fiction — S-F); a
+ *  provider-reported real figure wins next; else estimate from tokens × list
+ *  price, cache-aware. Pure. */
+export function resolveTurnCost(opts: {
+  modelId: string;
+  isSub: boolean;
+  cliCostUSD?: number;
+  usage: { inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheCreationInputTokens?: number };
+}): { costUSD: number; estimated: boolean } {
+  if (opts.isSub) return { costUSD: 0, estimated: false };
+  if (opts.cliCostUSD != null) return { costUSD: opts.cliCostUSD, estimated: false };
+  return {
+    costUSD: estimateCost([{ model: opts.modelId, ...opts.usage }]),
+    estimated: true,
+  };
+}
+
+/** Project a spend event onto the session's per-turn shape, so the session
+ *  record is a derivation of the event, never a second hand-built copy. */
+export function turnMetaOf(ev: SpendEvent): TurnMeta {
+  return {
+    model: ev.model,
+    inputTokens: ev.inputTokens,
+    outputTokens: ev.outputTokens,
+    cachedInputTokens: ev.cachedInputTokens,
+    cacheCreationInputTokens: ev.cacheCreationInputTokens,
+    at: ev.at,
+  };
+}
+
+function home(): string {
+  return process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
+}
+
+let listener: ((ev: SpendEvent) => void) | null = null;
+
+/** App installs this (mirrors permission.ts setPermissionHandler) so delegate
+ *  spend reaches the live session/strip without delegate.ts importing UI. */
+export function setSpendListener(fn: ((ev: SpendEvent) => void) | null): void {
+  listener = fn;
+}
+
+/** THE spend writer. Everything that costs money calls this — nothing else
+ *  calls recordUsage directly (tests excepted). Returns the event so callers
+ *  can reuse the exact recorded figures (e.g. the routing line's cost). */
+export function recordSpend(ev: SpendEvent): SpendEvent {
+  recordUsage({
+    accountId: ev.accountId,
+    inputTokens: ev.inputTokens,
+    outputTokens: ev.outputTokens,
+    costUSD: ev.costUSD,
+    estimated: ev.estimated,
+  });
+  try {
+    mkdirSync(home(), { recursive: true });
+    appendFileSync(join(home(), "ledger.jsonl"), JSON.stringify(ev) + "\n", { mode: 0o600 });
+  } catch {
+    /* the event log is best-effort; aggregates already landed */
+  }
+  try {
+    listener?.(ev);
+  } catch {
+    /* a UI subscriber must never break spend recording */
+  }
+  return ev;
+}

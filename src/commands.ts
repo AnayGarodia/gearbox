@@ -64,7 +64,7 @@ export const COMMANDS: CommandMeta[] = [
   // modes
   { name: "/plan", usage: "/plan", desc: "plan mode: read-only, no edits (also shift+tab)", group: "modes" },
   { name: "/yolo", usage: "/yolo", desc: "run edits and commands without asking", group: "modes" },
-  { name: "/verify", usage: "/verify [off|auto]", desc: "checks after edits + auto-fix to green · /verify off disables", group: "modes" },
+  { name: "/verify", usage: "/verify [off|auto|test]", desc: "checks after edits + auto-fix to green · /verify test writes a characterization test when none exist", group: "modes" },
   // settings
   { name: "/config", usage: "/config", desc: "view or change saved settings", group: "settings" },
   { name: "/theme", usage: "/theme [light|dark]", desc: "switch the color palette · light for light terminals", group: "settings" },

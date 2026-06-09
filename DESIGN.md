@@ -4,7 +4,7 @@ A terminal coding agent whose one job, done better than anything else, is to **r
 
 Target user: a startup founder / power user who pays for several models (Claude, OpenAI/Codex, Gemini, DeepSeek, Azure) via API keys and/or flat-rate seats, codes heavily, hits limits, and has no intelligent way to use it all.
 
-Status: architecture validated by 6 experiments (`experiments/FINDINGS.md`); routing, event-log ledger, task-boundary switching, ground-truth gate all prototyped; Anthropic payload accepted live.
+Status: architecture validated by 6 experiments (`experiments/FINDINGS.md`); routing, accounts, failover, and the verification gate ship in v0.2.x and run live across providers (Anthropic / OpenAI / Google / DeepSeek / Azure / Bedrock / Vertex / gateways). Shadow-eval and per-repo measured priors are the open pieces.
 
 ---
 
@@ -119,7 +119,7 @@ if none clears bar+budget → stop, surface to user (never silently downgrade qu
 - `provider_balance`, `rate_limit_headroom`, `seat_status`: from the cost/credit engine (cached; refreshed async + from response headers). Never a blocking network call on the hot path.
 - `currently_warm`: which model this session last used (switch cost from E1).
 
-**Transparency contract:** every decision writes a one-line reason + the full per-candidate score table to the ledger, viewable live (`tab`) and after the fact (`gearbox why <task>`).
+**Transparency contract:** every decision writes a one-line reason + the full per-candidate score table to the ledger, viewable any time with the `/why` scorecard command.
 
 **Calibration is part of M1, not deferred — it is what makes routing actually good, not just internally consistent.** Seeded benchmark priors are honest *guesses*; they say nothing about this user's React/TS code. So from day one:
 - **Confidence is first-class.** Every prior is tagged `seeded` or `measured(n)`, and the scorecard shows it. Routing is conservative when confidence is low: it will not send a hard task to a cheap model on a seeded guess alone, it shadow-evals first. Presenting a benchmark guess as a confident number is a trust bug, not cosmetics.
@@ -133,7 +133,7 @@ if none clears bar+budget → stop, surface to user (never silently downgrade qu
 - Tracks spend per provider locally (authoritative, since balance APIs are inconsistent); reconciles with provider usage headers when present.
 - **Plan-first:** model a flat-rate seat (Claude Max, ChatGPT Pro) as ~0 marginal cost until its rate limit, then fall back to metered API.
 - **Limit-aware:** read `x-ratelimit-*` headers; as headroom drops, deprioritize; on 429/5xx, failover to the next candidate and continue the same task.
-- **Hard caps:** per-task / per-session / daily. Pre-flight estimate before each call; if it would breach the cap, halt and ask. Never blow the cap by more than one pre-estimated in-flight call.
+- **Hard caps:** session / daily / monthly / total, set via `/cap`. Pre-flight estimate before each call; if it would breach the cap, halt and ask. Never blow the cap by more than one pre-estimated in-flight call.
 
 ---
 
@@ -147,9 +147,9 @@ if none clears bar+budget → stop, surface to user (never silently downgrade qu
 - Credit-scarcity awareness (prefer the flush account; preserve the scarce one).
 - Plan/subscription-first (use seats you already pay for before metered API).
 - Rate-limit awareness + seamless failover (don't dead-end on a limit).
-- Hard budget caps (task/session/daily) with pre-flight enforcement.
-- Live, per-decision transparency (one-line reason + full scorecard on demand).
-- One-keystroke override; override logged as a preference.
+- Hard budget caps (session/daily/monthly/total via `/cap`) with pre-flight enforcement.
+- Live, per-decision transparency (one-line reason + the full `/why` scorecard on demand).
+- One-command override (`/prefer`); override logged as a preference.
 - Latency-class routing (fast model when you're waiting, best when it's background).
 - Free-tier / local-model (Ollama) tier as the cheapest rung.
 
@@ -241,13 +241,13 @@ if none clears bar+budget → stop, surface to user (never silently downgrade qu
 │ ▸ ran tests → 2 failing (expiry)                                        │
 │ ● editing auth.ts … exp compared in seconds vs ms                       │
 │                                                                         │
-│ ┄ routed debug → sonnet-4.6 · cleared bar, haiku too weak · ~$0.012 ⌃tab│
+│ ┄ routed debug → sonnet-4.6 · cleared bar, haiku too weak · ~$0.012 /why│
 ├─────────────────────────────────────────────────────────────────────────┤
-│ session $0.03 · anthropic ✓ · openai ⚠ low · ⌃o override  ⌃w why        │
+│ session $0.03 · anthropic ✓ · openai ⚠ low · /prefer override · /why    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Routing scorecard** (`⌃tab`) — the full math, including *confidence*, which is the real trust-builder (never show a benchmark guess as a confident number):
+**Routing scorecard** (`/why`) — the full math, including *confidence*, which is the real trust-builder (never show a benchmark guess as a confident number):
 ```
 ╭ why: "fix the failing auth tests"  (debug, ~3.1k tok) ───────────────────────────╮
 │ model         quality  source         est$     balance  score  verdict            │
@@ -256,7 +256,7 @@ if none clears bar+budget → stop, surface to user (never silently downgrade qu
 │ gpt-5.4       0.91 ✓   your 12 tasks  $0.010   $10 ⚠    0.78   scarce credit       │
 │ haiku-4.5     0.78 ✗   your 31 tasks  $0.001   $9,991    —     below bar (0.86)     │
 │ rule: cheapest clearing 0.86 on a non-scarce account. deepseek's 0.90 is a benchmark│
-│ guess, so it's being shadow-evaled on your code before it's trusted to win. [o]verride│
+│ guess, so it's being shadow-evaled on your code before it's trusted to win. /prefer   │
 ╰────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -273,7 +273,7 @@ if none clears bar+budget → stop, surface to user (never silently downgrade qu
 - The hot path is silent: routing shows as one dim line, never a modal, never a spinner of its own.
 - Cost meter always visible, never alarming; amber approaching a cap, red only on a real failure.
 - Failover is narrated plainly: `openai rate-limited → moved to gemini, continuing`. Not hidden, not scary.
-- Override is one keystroke and feels respected (logged as preference, feeds the flywheel).
+- Override is one command (`/prefer`) and feels respected (logged as preference, feeds the flywheel).
 - Color discipline: one accent for routing, amber for cost, red only for failures; high-contrast monospace; motion only to show live streaming.
 - Keyboard-first; every action reachable without the mouse.
 
@@ -294,10 +294,10 @@ Re-evaluate against daily use before any "Later" item or productization.
 
 ## Risks / open
 
-- **AI SDK fit:** confirm its message type round-trips our canonical state + tool-calls across all 5 providers (M0 spike; only Anthropic live-verified so far).
+- **AI SDK fit:** resolved — its message type round-trips our canonical state + tool-calls across providers (Anthropic / OpenAI / Google / DeepSeek / Azure / Bedrock / Vertex / gateways), live-verified through the v0.2.x releases.
 - **Balance APIs are inconsistent:** some providers don't expose balance. Mitigation: local spend tracking is authoritative; reconcile with headers where available.
 - **Plan/seat modeling is the hardest input:** flat-rate seat limits aren't cleanly exposed. Start with usage-header inference + user-declared limits; refine.
 - **Quality priors are seeds, not truth (the core risk):** addressed by moving calibration into M1 (shadow-eval + measured per-repo priors + confidence display) rather than deferring it. Residual risk: shadow-eval costs extra on sampled tasks and takes real usage to converge; until it does, routing leans conservative and labels guesses as guesses. Routing is only as good as this loop, so it gets the most rigor.
 - **"Task" granularity & savings ceiling:** resolved by the two-level model (warm main thread + cheap sub-task delegation). Residual: deciding *what* to delegate vs keep on the main thread is a real heuristic to tune.
 - **Verification on untested code:** resolved by tiered done-with-proof (tests → build+types+smoke → offered characterization test); residual is how aggressively to auto-generate tests.
-- **Cross-vendor live acceptance** (OpenAI/Gemini) still unverified — close in M0 with real keys, alongside the M1 headline cost-vs-quality measurement.
+- **Cross-vendor live acceptance:** closed — routing, accounts, and failover run live across providers in v0.2.x. The M1 headline cost-vs-quality measurement remains open.

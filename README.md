@@ -43,6 +43,8 @@ gearbox auth add codex work               # second ChatGPT account, isolated COD
 gearbox auth add claude work              # second Claude account, isolated config
 gearbox auth import                       # import credentials from env/cloud config
 gearbox auth providers                    # list supported providers
+gearbox auth test <id>                    # live-test a saved account
+gearbox auth rm <id>                      # remove an account
 ```
 
 After setup:
@@ -50,6 +52,18 @@ After setup:
 ```bash
 cd ~/your-project
 gearbox
+```
+
+Launch flags: `--model <name>` pins a model, `--continue` / `-c` resumes the
+latest session, `--yolo` auto-approves tool use, `--inline` keeps output in
+normal terminal scrollback, `--fullscreen` forces the alt-screen UI. On a
+light-background terminal, run `/theme light` inside the app.
+
+Other useful commands:
+
+```bash
+gearbox doctor models                     # provider/model capability matrix
+gearbox upgrade                           # update Gearbox to the latest version
 ```
 
 No account configured means no fake/demo model: Gearbox runs onboarding first.
@@ -100,10 +114,14 @@ Paste or drag an image path into the composer to attach screenshots or UI
 captures. Local image attachments work with API-backed multimodal models.
 
 Gearbox loads MCP servers from `~/.gearbox/mcp.json`, `.mcp.json`, or
-`.gearbox/mcp.json`. Check what loaded with:
+`.gearbox/mcp.json`. Manage them from the command line:
 
 ```bash
-gearbox mcp list
+gearbox mcp list                          # show configured MCP servers
+gearbox mcp add <name> <cmd> [args...]    # add a server (--global for ~/.gearbox)
+gearbox mcp tools                         # list the tools each server exposes
+gearbox mcp paths                         # show which config files are read
+gearbox mcp remove <name>                 # remove a server
 ```
 
 Example MCP config:

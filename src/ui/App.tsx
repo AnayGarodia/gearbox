@@ -51,7 +51,8 @@ import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDep
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
-import { recordUsage, recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
+import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
+import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener } from "../accounts/ledger.ts";
 import { checkCaps, type BudgetCaps } from "../model/budget-guard.ts";
 import { recordChange, planUndo, type FileChange } from "../undo.ts";
 import { probeUsage } from "../accounts/usage-probe.ts";
@@ -64,7 +65,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
@@ -408,6 +409,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const escRef = useRef(0); // timestamp of the last esc, for double-esc rewind
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
   const verifyRef = useRef<VerifyMode>(loadPrefs().verify === "off" ? "off" : "auto"); // post-edit checks + auto-iterate-to-green
+  const charTestOfferedRef = useRef(false); // characterization-test offer: once per session
+  const lastChangedFilesRef = useRef<string[]>([]); // most recent edited-turn file list (/verify test targets these)
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
   const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
@@ -746,6 +749,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }),
     );
     return () => setPermissionHandler(null);
+  }, []);
+
+  // Delegate sub-task spend flows into the session record (it previously hit
+  // only the cross-session usage.json, so the status-bar $, /cap session, and
+  // the cost tab under-counted fan-out turns). Main turns push their own
+  // TurnMeta at settle, so only "delegate" events are mirrored here.
+  useEffect(() => {
+    setSpendListener((ev) => {
+      if (ev.source === "delegate") sessionRef.current.turns.push(turnMetaOf(ev));
+      bumpUsage(); // spend changed → the memoized strip re-reads usage.json
+    });
+    return () => setSpendListener(null);
   }, []);
 
   // Smooth scrolling: a wheel notch (or a fast swipe's burst of events) sets a
@@ -2267,7 +2282,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             modelId = "unknown";
           }
         }
-        sessionRef.current.turns.push({ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens, at: Date.now() });
         // Per-account spend ledger (ACCOUNT pillar): real cost when the provider
         // reports it (claude CLI), else an estimate from token usage × list price.
         // No stored account (env key) → ledger under `env:<provider>` so a
@@ -2277,8 +2291,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // Flat-rate subscription seats cost $0 marginal — the CLI's reported dollars
         // are the metered-equivalent (fictional here) and were inflating spend (S-F).
         const isSub = getAccount(acctId)?.exec === "cli";
-        const cost = isSub ? 0 : (cm?.costUSD ?? estimateCost([{ model: modelId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens }]));
-        recordUsage({ accountId: acctId, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: cost, estimated: !isSub && cm?.costUSD == null });
+        // ONE spend writer (ledger.ts): usage.json aggregates + the append-only
+        // event log + the session TurnMeta all derive from this single event.
+        const spendEv = recordSpend({
+          accountId: acctId, model: modelId, source: "turn",
+          inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
+          cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens,
+          ...resolveTurnCost({ modelId, isSub, cliCostUSD: cm?.costUSD, usage: { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens } }),
+          at: Date.now(),
+        });
+        sessionRef.current.turns.push(turnMetaOf(spendEv));
+        const cost = spendEv.costUSD;
         // The single canonical per-turn routing line: `routed → provider · model · cost`.
         // Every field is real — the model/provider that actually ran (routedRef tracks
         // failover), the same `cost` figure recorded just above ($0 ⇒ subscription seat),
@@ -2388,12 +2411,32 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // cleared (tests green > types/build > nothing verified) so the agent never
           // implies "done" when nothing was actually checked.
           const tier = changed.length && !failed.length ? provenTier(checkItems.filter((c) => c.ok).map((c) => c.intent ?? c.command)) : undefined;
+          if (changed.length) lastChangedFilesRef.current = changed;
+          // Once per session, after a clean code-changing turn in a project whose
+          // checks can't prove behavior (no test command at all, or only
+          // build/typecheck): offer to capture current behavior with a
+          // characterization test. Accepting (/verify test) is what makes the
+          // offer self-extinguishing — the model adds a real test script.
+          const offerCharTest = !interrupted && shouldOfferCharTest({
+            mode: verifyRef.current,
+            hadError,
+            changedFiles: changed,
+            commands: (() => { try { return detectVerificationCommands(process.cwd(), changed); } catch { return []; } })(),
+            alreadyOffered: charTestOfferedRef.current,
+            optedOut: loadPrefs().offerTests === false,
+          });
           // Green with edits → forward move (commit), never a retry of something
           // that already passed. Retry only when a check actually ended red.
-          const next = failed.length ? nextStepFor(failed, changed) : changed.length && !doneChecks.length ? "run tests" : changed.length ? "commit changes" : "/context";
+          // When the offer fires, the honest next step is the offer itself —
+          // the old "run tests" ghost was unactionable with no test runner.
+          const next = failed.length ? nextStepFor(failed, changed) : offerCharTest ? "/verify test" : changed.length && !doneChecks.length ? "run tests" : changed.length ? "commit changes" : "/context";
           // A no-op turn (no edits, no checks) gets no summary at all.
           const summaryItem: Item | null = (changed.length || doneChecks.length) ? { kind: "summary", id: idRef.current++, changed, checks: doneChecks, failures: failed, next, tier } : null;
-          setItems(summaryItem ? [...collapsed, summaryItem] : collapsed);
+          const offerItem: Item | null = offerCharTest
+            ? { kind: "preference", id: idRef.current++, text: "no test command in this project — capture the changed code's current behavior with a characterization test?", acceptCommand: "/verify test" }
+            : null;
+          if (offerCharTest) charTestOfferedRef.current = true;
+          setItems([...collapsed, ...(summaryItem ? [summaryItem] : []), ...(offerItem ? [offerItem] : [])]);
           // Time awareness after every prompt: how long the turn took, plus the
           // prompt-cache hit when the provider served part of the input from cache.
           const elapsed = formatDuration(Date.now() - turnStart);
@@ -2585,6 +2628,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // would continue the conversation the user just cleared.
           cliSessionRef.current = undefined;
           sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
+          charTestOfferedRef.current = false; // a fresh session may offer the test once again
           notice("started a fresh conversation");
           return;
         case "resume": {
@@ -2640,8 +2684,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return;
         }
         case "verify": {
-          echo(text);
           const a = arg.trim().toLowerCase();
+          if (a === "test off") {
+            echo(text);
+            updatePrefs({ offerTests: false });
+            notice("characterization-test offers off · /verify test still works on demand");
+            return;
+          }
+          if (a === "test") {
+            // Generate a characterization test for the last edited turn's files.
+            // Runs as a NORMAL turn (the auto-fix re-entry pattern): the routing
+            // seam, permission gate, verification, and cost ledger all apply.
+            if (busyRef.current) { notice("busy — wait for the current turn to finish"); return; }
+            const files = lastChangedFilesRef.current;
+            if (!files.length) { echo(text); notice("nothing changed recently — edit something first, then /verify test"); return; }
+            echo(text);
+            setTimeout(() => void runTurnRef.current?.(buildCharTestPrompt(files), 0), 0);
+            return;
+          }
+          echo(text);
           if (a === "off") {
             verifyRef.current = "off";
             updatePrefs({ verify: "off" });
@@ -2655,7 +2716,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             notice(
               `verification: ${verifyRef.current}` +
                 (cmds.length ? ` · detected: ${cmds.join(", ")}` : " · no test/build/typecheck command detected") +
-                `\n  /verify off  ·  /verify auto`,
+                `\n  /verify off  ·  /verify auto  ·  /verify test (write a characterization test)`,
             );
           }
           return;

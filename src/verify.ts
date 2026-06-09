@@ -125,6 +125,59 @@ export function buildFixPrompt(failures: string[]): string {
   ].join("\n");
 }
 
+// ── Characterization-test offer ──────────────────────────────────────────────
+// When a project has NO test command (or only build/typecheck), "done with
+// proof" tops out at the types tier forever. After a clean turn that changed
+// code, Gearbox offers ONCE to capture the changed code's current behavior in
+// a characterization test (/verify test). Accepting it makes the model add a
+// real test (and a package.json test script where applicable), after which
+// detection finds it and the offer never recurs structurally.
+
+/** Does any detected check actually run tests? Covers both "no commands" and
+ *  "only build/typecheck" with one predicate. */
+export function hasTestCheck(cmds: VerificationCommand[]): boolean {
+  return cmds.some((c) => checkIntent(c.command) === "test");
+}
+
+const CODE_FILE_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs)$/;
+
+export function shouldOfferCharTest(input: {
+  mode: VerifyMode;
+  hadError: boolean;
+  changedFiles: string[];
+  commands: VerificationCommand[];
+  alreadyOffered: boolean;
+  optedOut: boolean;
+}): boolean {
+  if (input.mode !== "auto") return false;
+  if (input.hadError) return false;
+  if (input.alreadyOffered || input.optedOut) return false;
+  if (hasTestCheck(input.commands)) return false;
+  return input.changedFiles.some((f) => CODE_FILE_RE.test(f)); // doc-only turns never trigger it
+}
+
+export function buildCharTestPrompt(changedFiles: string[]): string {
+  const list = changedFiles.map((f) => `  - ${f}`).join("\n");
+  return [
+    "This project has no test command. Write a CHARACTERIZATION test that captures",
+    "the CURRENT behavior of the code changed this turn:",
+    "",
+    list,
+    "",
+    "Rules:",
+    "- Assert what the code does NOW. Do not fix or judge behavior — if something",
+    "  looks suspicious, flag it in a comment, never in an assertion.",
+    "- Never assert on timestamps, randomness, or other non-deterministic output.",
+    "- Follow the project's existing test layout and framework if any test files",
+    "  exist; otherwise use the runtime's built-in runner (bun:test / node:test /",
+    "  pytest / go test) and the conventional location (a test/ directory, or",
+    "  <name>.test.<ext> beside the file).",
+    "- If package.json exists without a test script, add one so future",
+    "  verification picks it up.",
+    "- RUN the test and confirm it passes before finishing.",
+  ].join("\n");
+}
+
 // What to suggest after a turn whose verification FAILED. /retry only makes sense
 // when the model could plausibly fix it by regenerating — not for a conflict
 // marker, and not for an error in a file the turn never touched (pre-existing).

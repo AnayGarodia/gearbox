@@ -4,7 +4,7 @@
 // Cost is the provider's REAL number when reported (claude CLI total_cost_usd),
 // else an estimate the caller computes from token usage × list price. This is
 // also the ledger a future credit-aware router will read.
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { budgetFor } from "../model/preferences.ts";
@@ -55,7 +55,11 @@ function load(): UsageFile {
     const f = JSON.parse(readFileSync(file(), "utf8"));
     if (f && f.accounts) return { version: 1, ...f };
   } catch {
-    /* none yet */
+    // A torn/corrupt ledger is preserved (not silently discarded) so the spend
+    // history can be recovered by hand; the app continues on a fresh file.
+    try {
+      if (existsSync(file())) renameSync(file(), `${file()}.corrupt`);
+    } catch { /* best-effort */ }
   }
   return { version: 1, accounts: {} };
 }
@@ -63,7 +67,11 @@ function load(): UsageFile {
 function save(f: UsageFile): void {
   try {
     mkdirSync(home(), { recursive: true });
-    writeFileSync(file(), JSON.stringify(f, null, 2), { mode: 0o600 });
+    // Temp-write + rename: the rename is atomic (same directory), so a crash
+    // mid-write can never tear usage.json and reset the whole spend history.
+    const tmp = `${file()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(f, null, 2), { mode: 0o600 });
+    renameSync(tmp, file());
   } catch {
     /* best-effort, like session save */
   }

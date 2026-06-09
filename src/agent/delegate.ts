@@ -38,8 +38,8 @@ import { tmpdir } from "node:os";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { FixedSelector } from "../model/selector.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
-import { recordUsage } from "../accounts/usage.ts";
-import { estimateCost, type ModelSpec } from "../providers.ts";
+import { recordSpend, resolveTurnCost } from "../accounts/ledger.ts";
+import type { ModelSpec } from "../providers.ts";
 import { spawnSyncProc } from "../proc.ts";
 import { runCliTask } from "./cli-backend.ts";
 import type { Account } from "../accounts/types.ts";
@@ -253,7 +253,12 @@ async function runOne(
       reloginCommand: `/account login ${acct.slug ?? acct.id}`,
       deferTerminal: true,
     });
-    recordUsage({ accountId: acct.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: 0, estimated: true });
+    recordSpend({
+      accountId: acct.id, model: routed.model.id, source: "delegate",
+      inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
+      ...resolveTurnCost({ modelId: routed.model.id, isSub: true, usage: r.usage }),
+      at: Date.now(),
+    });
     if (r.failure) return { ok: false, text: `failed: ${r.failure.message}` };
     const text = r.messages
       .filter((m) => m.role === "assistant")
@@ -265,9 +270,16 @@ async function runOne(
 
   const creds = routed.account ? await resolveCreds(routed.account) : undefined;
   const r = await run({ model: routed.model, creds, system: SUBAGENT_SYSTEM, prompt: task, onEvent: subOnEvent, signal: opts.signal, root: opts.root });
-  // Record spend even on failure so budget tracking stays accurate.
-  const costUSD = estimateCost([{ model: routed.model.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
-  if (routed.account) recordUsage({ accountId: routed.account.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD, estimated: true });
+  // Record spend even on failure so budget tracking stays accurate. Env-key
+  // sub-agents ledger under `env:<provider>` (they were silently dropped before).
+  recordSpend({
+    accountId: routed.account?.id ?? `env:${routed.model.provider}`,
+    model: routed.model.id, source: "delegate",
+    inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
+    cachedInputTokens: r.usage.cachedInputTokens, cacheCreationInputTokens: r.usage.cacheCreationInputTokens,
+    ...resolveTurnCost({ modelId: routed.model.id, isSub: false, usage: r.usage }),
+    at: Date.now(),
+  });
   if (r.failure) return { ok: false, text: `failed: ${r.failure.message}` };
   return { ok: true, text: r.text || "(no report)" };
 }

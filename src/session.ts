@@ -30,7 +30,7 @@
  * disk or permission error never crashes the app. Reads that fail return null
  * or an empty collection.
  */
-import { mkdirSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ModelMessage } from "ai";
@@ -116,7 +116,10 @@ export function newSessionId(): string {
 export function saveSession(s: Session): void {
   try {
     ensure();
-    writeFileSync(join(dir(), `${s.id}.json`), JSON.stringify(s));
+    // Temp-write + rename so a crash mid-write can't tear the session file.
+    const path = join(dir(), `${s.id}.json`);
+    writeFileSync(`${path}.tmp`, JSON.stringify(s));
+    renameSync(`${path}.tmp`, path);
   } catch {
     /* persistence is best-effort; never crash the app over it */
   }

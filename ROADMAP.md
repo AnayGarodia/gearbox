@@ -3,11 +3,13 @@
 Near-term build order. The north star is `VISION.md` (ROUTE · VERIFY · ACCOUNT);
 the full milestone vision is `DESIGN.md`. This file tracks what's done and what's next.
 
-## Where we are
+## Where we are — harness, accounts, VERIFY, and most of ROUTE v2 are shipped
 
 ### Done — M0 harness
 - Multi-provider agent loop through the `ModelSelector` seam.
-- Tools: read / write / edit / list / **search (ripgrep)** / **glob** / run_shell.
+- Tools: read / write / edit / list / **search (ripgrep)** / **glob** / run_shell /
+  **fetch_url** / **web_search**, plus **delegate / delegate_parallel** sub-agents
+  and **MCP tools** (`mcp_<server>_<tool>`).
 - **Permission gate** with once / always / **YOLO** (`/yolo`, `--yolo`).
 - Plan mode, streaming, `@file` mentions, `!shell`, slash commands.
 - Fullscreen UI (default): virtualized scroll region (line buffer + Viewport), full-width chrome,
@@ -22,7 +24,8 @@ the full milestone vision is `DESIGN.md`. This file tracks what's done and what'
 - Live `$` cost estimate in the status bar; per-account spend ledger (`src/accounts/usage.ts`).
 - Rate-limit snapshot + balance tracking per account.
 - Multi-account system: API key, AWS, Azure, Vertex, CLI subprocess, OpenAI-compat.
-- `gearbox auth` headless subcommand (list / import / add / test / rm).
+- Headless subcommands: `gearbox auth` (list / import / add / test / rm / providers),
+  plus `gearbox onboard`, `gearbox mcp`, `gearbox doctor`, `gearbox upgrade`.
 
 ### Done — Context engine
 - BM25 lexical retrieval — top-K relevant files per prompt, no model call (`src/context/retrieve.ts`).
@@ -37,29 +40,37 @@ the full milestone vision is `DESIGN.md`. This file tracks what's done and what'
 - `/prefer kind model` remembers confirmed routing preferences (`src/model/preferences.ts`).
 - One-line reason shown in the status bar.
 
+### Done — ROUTE v2 engine
+- Credit/scarcity scoring — preserve the low-balance account (`src/model/scoring.ts`).
+- Plan-first: flat-rate subscription seats scored as ~$0 marginal cost until their
+  rate limit, then failover to metered API (`src/model/router.ts`).
+- Rate-limit awareness: `x-ratelimit-*` response headers feed the scorer
+  (`src/model/rate-headers.ts`).
+- Hard spend caps — session / daily / monthly / total via `/cap`, pre-flight enforced
+  (`src/model/budget-guard.ts`).
+- Transparency scorecard: `/why` shows every candidate's score, with provenance.
+
+### Done — VERIFY
+- Ground-truth gate: detect configured checks (test / build / typecheck commands) and
+  run them after edits (`src/verify.ts`).
+- Tiered "done with proof" (`provenTier`): tests > types > none — the gate states which
+  tier it cleared.
+- Auto-iterate to green (≤ 3 attempts via `buildFixPrompt`); honest "blocked" if it can't.
+- Characterization-test offer when nothing covers the change — `/verify test` writes one;
+  `/verify off|auto` controls the gate.
+
+### Done — Ledger core
+- Canonical single-writer spend ledger (`src/accounts/ledger.ts`): every turn goes through
+  the `recordSpend` choke point → usage.json aggregates + append-only `~/.gearbox/ledger.jsonl`
+  + session TurnMeta; crash-safe temp-rename writes.
+- Sessions are durable and resumable (`/resume`, `--continue`).
+
 ## Build order (next)
 
-### 1 · VERIFY — ground-truth gate + auto-iterate-to-green  ← recommended next
-- Detect configured checks (test / build / typecheck commands); run them as the gate.
-- Tiered "done with proof": tests pass → done; else build + types + smoke; offer to
-  generate a characterization test. The gate states which tier it cleared.
-- Auto-iterate to green (bounded attempts/budget); honest "blocked" if it can't.
-- *Why:* biggest standalone "better than other harnesses" moment; attacks the #1
-  pain (plausible-but-wrong code); makes "walk away" credible. No routing priors needed.
+### 1 · ROUTE v2 — what's left
+- Shadow-eval on a sampled, budget-capped fraction of tasks.
+- Per-repo measured priors from real outcomes (seeded guesses → measured confidence).
 
-### 2 · ROUTE v2 — the full USP
-- Credit/scarcity scoring (preserve the low-balance account).
-- Plan-first: model flat-rate seats as ~0 marginal cost until rate limit.
-- Rate-limit awareness (read `x-ratelimit-*` headers; failover on 429/5xx).
-- Hard budget caps (task/session/daily) with pre-flight enforcement.
-- Shadow-eval on a sampled fraction to start measuring real per-repo priors.
-- Transparency scorecard with confidence (seeded vs measured).
-
-### 3 · Ledger + flywheel
-- Canonical model-agnostic event-log ledger (single-writer, crash-safe).
+### 2 · Flywheel
+- Per-repo priors auto-tuned from accept/edit/revert (git signal).
 - Curation → bounded working context → cheap task-boundary switching + poisoning recovery.
-- Per-repo priors auto-tuned from accept/edit/revert (git signal). Durable resumable sessions.
-
-## Quick wins (slot in opportunistically)
-- More robust `edit_file` (current single-occurrence string replace is fragile).
-- `/init` to generate a GEARBOX.md project guide.

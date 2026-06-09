@@ -21,8 +21,11 @@ import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
 import { wordmarkGradient, setTheme } from "./ui/theme.ts";
+import pkg from "../package.json";
 
-const VERSION = "0.2.81";
+// Inlined by the bundler at build time, so --version can never drift from
+// package.json again (it sat at a stale hardcoded 0.2.81 for six releases).
+const VERSION = pkg.version;
 const args = process.argv.slice(2);
 
 const supportsAnsi = process.env.FORCE_COLOR === "1" || (process.env.TERM !== "dumb" && process.env.NO_COLOR !== "1" && process.stdout.isTTY);
@@ -434,7 +437,7 @@ Set up at least one provider first:
   gearbox auth import
 
 Models: ${modelRegistry().map((m) => m.label).join(", ")}
-In-app: / for commands, @ for files, !cmd for shell, shift+tab for plan mode.`);
+In-app: / for commands, @ for files, !cmd for shell, shift+tab cycles normal · auto-accept · plan.`);
   process.exit(0);
 }
 
