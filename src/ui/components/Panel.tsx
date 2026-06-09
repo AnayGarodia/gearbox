@@ -226,7 +226,10 @@ export function Panel({
     hint = `filter: ${panel.filter || "(type to filter)"}  ·  ↑↓ · ⏎ pin · esc close`;
   } else if (panel.kind === "git-confirm") {
     const fw = fieldWindow(panel.subject.value, panel.subject.cursor, Math.max(8, innerW - 4));
-    const bodyLines = panel.body ? panel.body.split("\n").slice(0, Math.max(1, bodyH - panel.files.length - 7)) : [];
+    // Budget with the RENDERED file rows (≤6 + "+N more"), not the raw staged
+    // count — 30 staged files must not squeeze the generated body to one line.
+    const fileRows = Math.min(6, panel.files.length) + (panel.files.length > 6 ? 1 : 0);
+    const bodyLines = panel.body ? panel.body.split("\n").slice(0, Math.max(1, bodyH - fileRows - 7)) : [];
     body = (
       <Box flexDirection="column" paddingX={1}>
         <Text color={color.accent} bold>{panel.mode === "commit" ? "commit message" : "PR title"}</Text>
@@ -254,7 +257,7 @@ export function Panel({
         {panel.submitting ? <Box marginTop={1}><Text color={color.faint}>{panel.mode === "commit" ? "committing…" : "creating the PR…"}</Text></Box> : null}
       </Box>
     );
-    hint = panel.mode === "commit" ? "⏎ commit · r regenerate · esc cancel" : "⏎ create PR · r regenerate · esc cancel";
+    hint = panel.mode === "commit" ? "⏎ commit · ⌃R regenerate · esc cancel" : "⏎ create PR · ⌃R regenerate · esc cancel";
   } else if (panel.kind === "account-detail") {
     const ph = panel.detailPhase;
     if (ph.phase === "browse") {
@@ -268,7 +271,7 @@ export function Panel({
       const idW = Math.min(40, Math.max(20, innerW - 38));
       body = (
         <Box flexDirection="column" paddingX={1}>
-          <Text color={color.faint}>
+          <Text color={color.faint} wrap="truncate-end">
             {panel.loadError
               ? <Text color={color.err}>{glyph.err} {truncate(panel.loadError, Math.max(8, innerW - 4))}</Text>
               : panel.deployments === null
@@ -276,7 +279,7 @@ export function Panel({
               : panel.refreshing
               ? <Text>{deps.length} deployment{deps.length !== 1 ? "s" : ""} · refreshing…</Text>
               : <Text>{deps.length} deployment{deps.length !== 1 ? "s" : ""}</Text>}
-            {accountDetail?.endpoint && !panel.loadError ? <Text>  · {accountDetail.endpoint}</Text> : null}
+            {accountDetail?.endpoint && !panel.loadError ? <Text>  · {truncate(accountDetail.endpoint, Math.max(8, innerW - 24))}</Text> : null}
             {panel.submitting ? <Text>  · working…</Text> : null}
           </Text>
           {deps.length === 0 && !panel.loadError && panel.deployments !== null ? (

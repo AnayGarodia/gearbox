@@ -3,7 +3,7 @@
 // text (commit messages, PR titles/bodies) must never ride a shell string, so
 // there is no injection surface. Pure-ish (no UI imports); App wires thin.
 import { spawnSyncProc, spawnProc, which } from "../proc.ts";
-import { rmSync } from "node:fs";
+import { rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
 export interface GitResult {
@@ -96,6 +96,29 @@ export function lastCommits(n: number, cwd = process.cwd()): string[] {
 export function unpushedCommits(cwd = process.cwd()): string[] {
   const r = git(["log", "@{u}..HEAD", "--oneline", "--no-decorate"], cwd);
   return r.ok && r.out ? r.out.split("\n") : [];
+}
+
+/** The PR base ("origin/main" etc.): origin's HEAD symref, else a common guess. */
+export function defaultBase(cwd = process.cwd()): string | null {
+  const r = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], cwd);
+  if (r.ok && r.out) return r.out;
+  for (const cand of ["origin/main", "origin/master"]) {
+    if (git(["rev-parse", "--verify", cand], cwd).ok) return cand;
+  }
+  return null;
+}
+
+/** What this branch contributes to a PR: commits + diffstat vs the merge-base
+ *  with the default base branch. Upstream-relative queries are wrong here —
+ *  after a push, @{u}..HEAD is empty even though the PR has plenty to say. */
+export function branchContribution(cwd = process.cwd()): { commits: string[]; diffstat: string } | null {
+  const base = defaultBase(cwd);
+  if (!base) return null;
+  const mb = git(["merge-base", base, "HEAD"], cwd);
+  if (!mb.ok || !mb.out) return null;
+  const log = git(["log", `${mb.out}..HEAD`, "--oneline", "--no-decorate"], cwd);
+  const stat = git(["diff", `${mb.out}...HEAD`, "--stat"], cwd);
+  return { commits: log.ok && log.out ? log.out.split("\n") : [], diffstat: stat.ok ? stat.out : "" };
 }
 
 export function remoteUrl(cwd = process.cwd(), remote = "origin"): string | null {
@@ -220,7 +243,12 @@ export function checkpointSave(name: string, cwd = process.cwd()): GitResult {
   const root = repoRoot(cwd);
   if (!root) return { ok: false, out: "", err: "not a git repo" };
   const safe = name.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "checkpoint";
-  const tmpIndex = `${root}/.git/gearbox-checkpoint-index`;
+  // The temp index must live in the REAL git dir: in a linked worktree (the
+  // state /worktree use puts you in) `<root>/.git` is a pointer FILE, and git
+  // can't create an index under it.
+  const gitDir = git(["rev-parse", "--absolute-git-dir"], root);
+  if (!gitDir.ok || !gitDir.out) return { ok: false, out: "", err: gitDir.err || "couldn't locate the git dir" };
+  const tmpIndex = join(gitDir.out, "gearbox-checkpoint-index");
   const env = { ...process.env, GIT_INDEX_FILE: tmpIndex };
   const run = (args: string[]) => {
     const r = spawnSyncProc(["git", ...args], { cwd: root, stdout: "pipe", stderr: "pipe", env });
@@ -260,19 +288,34 @@ export function checkpointRestore(name: string, cwd = process.cwd()): GitResult 
   const root = repoRoot(cwd);
   if (!root) return { ok: false, out: "", err: "not a git repo" };
   const ref = `${CHECKPOINT_PREFIX}${name}`;
-  if (!git(["rev-parse", "--verify", ref], root).ok) return { ok: false, out: "", err: `no checkpoint named "${name}"` };
+  // Resolve the target to a SHA BEFORE saving the safety net: restoring
+  // "__pre-restore__" itself would otherwise overwrite the very ref it is
+  // restoring (the save below), silently no-op, and orphan the saved state.
+  const target = git(["rev-parse", "--verify", ref], root);
+  if (!target.ok || !target.out) return { ok: false, out: "", err: `no checkpoint named "${name}"` };
+  const targetSha = target.out;
   // Files present now but absent in the snapshot would survive a bare
   // `checkout <sha> -- .`; diff the trees and delete them explicitly. The
   // delete is a plain fs unlink — an untracked newcomer isn't in the real
   // index, so `git rm` would silently no-op on it.
   const current = checkpointSave("__pre-restore__", root); // safety net + comparable tree
   if (!current.ok) return current;
-  const gone = git(["diff", "--name-only", "--diff-filter=A", ref, `${CHECKPOINT_PREFIX}__pre-restore__`], root);
-  const co = git(["checkout", ref, "--", "."], root);
+  // -z + --no-renames: NUL-delimited plain paths (C-quoting and rename pairs
+  // would otherwise produce names that don't exist on disk).
+  const gone = git(["diff", "--name-only", "--no-renames", "-z", "--diff-filter=A", targetSha, `${CHECKPOINT_PREFIX}__pre-restore__`], root);
+  const co = git(["checkout", targetSha, "--", "."], root);
   if (!co.ok) return co;
   if (gone.ok && gone.out) {
-    for (const f of gone.out.split("\n").filter(Boolean)) {
-      try { rmSync(join(root, f), { force: true }); } catch { /* best-effort */ }
+    const rootReal = (() => { try { return realpathSync(root); } catch { return root; } })();
+    for (const f of gone.out.split("\0").filter(Boolean)) {
+      // Containment guard: never delete outside the repo root (a hostile tree
+      // could otherwise smuggle an escaping path into the snapshot diff).
+      const abs = join(root, f);
+      try {
+        const parentReal = realpathSync(join(abs, ".."));
+        if (parentReal !== rootReal && !parentReal.startsWith(rootReal + "/")) continue;
+        rmSync(abs, { force: true });
+      } catch { /* best-effort */ }
     }
   }
   git(["reset", "--mixed"], root); // leave changes unstaged, index matching HEAD

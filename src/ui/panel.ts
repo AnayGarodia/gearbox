@@ -240,7 +240,9 @@ export function gitConfirmEdit(p: GitConfirmPanel, edit: Edit): GitConfirmPanel 
 }
 
 export function gitConfirmSetSubmitting(p: GitConfirmPanel, submitting: boolean): GitConfirmPanel {
-  return { ...p, submitting };
+  // A retry clears the stale error — otherwise the error row and the
+  // submitting row render together and overflow the body's row budget.
+  return { ...p, submitting, error: undefined };
 }
 
 export function gitConfirmError(p: GitConfirmPanel, message: string): GitConfirmPanel {
@@ -372,7 +374,9 @@ export function detailNameEdit(p: AccountDetailPanel, edit: Edit): AccountDetail
 }
 
 // Azure deployment name: 2–64 chars, alphanumeric + hyphens, no leading/trailing hyphens.
-const AZURE_DEPLOYMENT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]{1,2}$/;
+// 2-64 chars (the first alternative requires ≥2; no 1-char escape hatch —
+// the inline error message promises the same bounds).
+const AZURE_DEPLOYMENT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}[a-zA-Z0-9]$/;
 
 /** Validate and advance the deploy-name field. Sets fieldError on failure.
  *  When valid, the fieldEdit.value is the deployment name — App checks detailIsNameComplete. */

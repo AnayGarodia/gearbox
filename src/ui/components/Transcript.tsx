@@ -304,8 +304,11 @@ function UserLine({ text, width }: { text: string; width: number }) {
   const bodyW = Math.max(1, width - 4); // prefix (2) + right margin (2)
   const lines = text.split("\n").flatMap((line) => {
     if (line.length <= bodyW) return [line];
+    // Chunk over CODE POINTS — slicing UTF-16 units would split an emoji's
+    // surrogate pair across rows and render garbage.
+    const chars = [...line];
     const out: string[] = [];
-    for (let i = 0; i < line.length; i += bodyW) out.push(line.slice(i, i + bodyW));
+    for (let i = 0; i < chars.length; i += bodyW) out.push(chars.slice(i, i + bodyW).join(""));
     return out;
   });
   return (

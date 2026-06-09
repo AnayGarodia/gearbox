@@ -404,7 +404,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [ghostSkin, setGhostSkinState] = useState<GhostSkin>("base");
   // Counter bumped on /theme so the whole tree repaints in the new palette
   // (components read `color.*` lazily; this just forces the render pass).
-  const [, setThemeEpochState] = useState(0);
+  // Threaded into memoized components (Banner) so their memo invalidates too.
+  const [themeEpochState, setThemeEpochState] = useState(0);
   // `linger` keeps the working line visible briefly after a turn for the celebrate/error beat.
   const [mascotState, setMascotState] = useState<MascotState>("thinking");
   const [linger, setLinger] = useState(false);
@@ -1353,7 +1354,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return matchCommands(q).some((c) => c.name === q);
   };
 
-  const branch = useMemo(() => gitBranch(), []);
+  // Read per render, NOT memoized at mount: gitBranch carries a 5s TTL cache
+  // (plus invalidateGitBranch after /commit and /worktree use), so the status
+  // bar follows branch switches instead of lying until restart.
+  const branch = gitBranch();
   const choice = useMemo(() => {
     try {
       return selector.select({ prompt: "" });
@@ -1873,7 +1877,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // already saw a partial answer, and a silent re-run would duplicate it.
         const failKind = classifyFailure(a.failure.message);
         const canHop = failKind !== "other" && !a.failure.producedOutput;
+        // R-5: scope the park to what actually failed. Billing/credit drains the
+        // whole account, expired/invalid creds kill it entirely, and a CLI seat's
+        // limit window is account-wide by construction (one plan spans every model
+        // the binary serves — model-scoping it would burn all hops on dead sibling
+        // seats before reaching a ready metered key). Only an in-loop API
+        // rate/quota blip is scoped to the one model.
+        const scope = failKind === "auth" || choice.backend?.kind === "cli" ? "account" : cooldownScope(a.failure.message);
+        const parkedKey = scope === "account" ? a.cooldownKey : modelScopedKey(a.cooldownKey, choice.model.id);
         if (!canHop || hop >= MAX_FAILOVERS) {
+          // Even when this turn can't hop (output already streamed / hop cap),
+          // park the failed account so the NEXT turn routes around it instead
+          // of marching straight back into the same wall.
+          if (failKind !== "other") markExhausted(parkedKey, DEFAULT_COOLDOWN_MS, a.failure.message);
           // "Deployment doesn't exist" on Azure/Foundry: prune that model id from
           // the account so it never shows up again. User can redeploy + /account refresh to restore.
           if (isNotDeployedError(a.failure.message) && !a.cooldownKey.startsWith("env:")) {
@@ -1885,11 +1901,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }
           emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior };
         }
-        // R-5: scope the park to what actually failed. Billing/credit drains the
-        // whole account and expired/invalid creds kill it entirely; a rate/quota
-        // blip on one model leaves its siblings fine.
-        const scope = failKind === "auth" ? "account" : cooldownScope(a.failure.message);
-        const parkedKey = scope === "account" ? a.cooldownKey : modelScopedKey(a.cooldownKey, choice.model.id);
         markExhausted(parkedKey, DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
         try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
@@ -2674,6 +2685,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           cliSessionRef.current = undefined;
           sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
           charTestOfferedRef.current = false; // a fresh session may offer the test once again
+          gitDraftRef.current = null; // a stale /commit go after /clear would surprise
+          gitRegenRef.current = null;
           notice("started a fresh conversation");
           return;
         case "resume": {
@@ -2859,11 +2872,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         case "commit": {
           echo(text);
           if (!gitOps.isRepo()) { notice("not a git repository"); return; }
+          if (busyRef.current) { notice("busy — wait for the current turn to finish before committing"); return; }
           const a = arg.trim();
-          // `/commit go` commits the inline-mode draft; `/commit <message>` is
-          // the direct path (your own message, no generation).
-          if (a === "go" && gitDraftRef.current?.mode === "commit") {
+          // `/commit go` commits the inline-mode draft and NOTHING else — with
+          // no pending draft it must not fall through to the literal-message
+          // path (it would create a commit titled "go").
+          if (a === "go") {
             const d = gitDraftRef.current;
+            if (d?.mode !== "commit") { notice("no pending draft — run /commit first"); return; }
             gitDraftRef.current = null;
             const r = gitOps.commit(d.body ? `${d.subject}\n\n${d.body}` : d.subject);
             invalidateGitBranch();
@@ -2878,19 +2894,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           if (a === "-a") gitOps.stageAll();
-          const staged = gitOps.status().filter((e) => e.staged);
+          // Capture the repo root NOW: generation is async, and /worktree use
+          // can chdir the whole session mid-flight — the confirm must commit in
+          // the tree the message was written for.
+          const commitRoot = gitOps.repoRoot() ?? process.cwd();
+          const staged = gitOps.status(commitRoot).filter((e) => e.staged);
           if (!staged.length) { notice("nothing staged · /commit -a stages everything first"); return; }
-          const stat = gitOps.stagedDiff(undefined, { stat: true });
+          const stat = gitOps.stagedDiff(commitRoot, { stat: true });
           const statLine = stat.split("\n").filter(Boolean).pop() ?? "";
           const files = staged.map((e) => e.path);
-          const genPrompt = clipForPrompt(`${stat}\n\n${gitOps.stagedDiff()}`);
+          const genPrompt = clipForPrompt(`${stat}\n\n${gitOps.stagedDiff(commitRoot)}`);
           notice("writing a commit message…");
           void (async () => {
             const gen = await generateGitText(COMMIT_MSG_SYSTEM, genPrompt);
             const fallback = `update ${files.slice(0, 3).map((f) => f.split("/").pop()).join(", ")}${files.length > 3 ? ` +${files.length - 3} more` : ""}`;
             const { subject, body: msgBody } = splitSubject(gen ?? fallback);
+            if (gitOps.repoRoot() !== commitRoot) { notice("the workspace moved while the message was being written — run /commit again"); return; }
             gitRegenRef.current = { mode: "commit", system: COMMIT_MSG_SYSTEM, prompt: genPrompt, files, stat: statLine };
-            if (fullscreen) {
+            // Don't clobber a panel the user opened while generation ran —
+            // fall back to the inline draft flow instead.
+            if (fullscreen && !panelRef.current) {
               atBottomRef.current = true;
               setPanel(gitConfirmOpen({ mode: "commit", subject, body: msgBody, files, stat: statLine }));
             } else {
@@ -2949,8 +2972,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             push(it);
             return;
           }
-          if (action === "go" && gitDraftRef.current?.mode === "pr") {
+          if (action === "go") {
             const d = gitDraftRef.current;
+            if (d?.mode !== "pr") { notice("no pending PR draft — run /pr create first"); return; }
             gitDraftRef.current = null;
             notice("creating the PR…");
             void gitOps.prCreate({ title: d.subject, body: d.body }).then((r) =>
@@ -2959,18 +2983,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }
           if (action === "create") {
             if (!gitOps.hasGh()) { ghMissing(); return; }
-            const dirty = gitOps.status();
+            // Only TRACKED modifications block a PR — untracked scratch files
+            // (notes.txt, .env.local) aren't part of it and shouldn't be.
+            const dirty = gitOps.status().filter((e) => !e.untracked);
             if (dirty.length) { notice(`uncommitted changes (${dirty.length} file${dirty.length === 1 ? "" : "s"}) · /commit first so the PR contains them`); return; }
             const branch = gitOps.currentBranch();
             const ab = gitOps.aheadBehind();
-            const commits = ab ? gitOps.unpushedCommits() : gitOps.lastCommits(20);
+            // The PR's content is branch-vs-BASE (merge-base with origin's
+            // default branch) — upstream-relative queries are empty the moment
+            // the branch is pushed, which is the most common /pr create state.
+            const contrib = gitOps.branchContribution();
+            const commits = contrib?.commits.length ? contrib.commits : ab ? gitOps.unpushedCommits() : gitOps.lastCommits(20);
+            if (!commits.length) { notice("nothing on this branch vs the base — commit something first"); return; }
+            const diffstat = contrib?.diffstat ?? "";
+            const genPrompt = clipForPrompt(`Commits:\n${commits.join("\n")}\n\nDiffstat:\n${diffstat}`);
             const finishCreate = async () => {
-              const genPrompt = clipForPrompt(`Commits:\n${commits.join("\n")}\n\nDiffstat:\n${ab ? gitOps.git(["diff", "@{u}...HEAD", "--stat"]).out : gitOps.stagedDiff(undefined, { stat: true })}`);
               notice("writing the PR title & body…");
               const gen = await generateGitText(PR_SYSTEM, genPrompt);
               const { subject, body: prBody } = splitSubject(gen ?? `${branch}: ${commits[commits.length - 1]?.replace(/^\w+ /, "") ?? "changes"}`);
               gitRegenRef.current = { mode: "pr", system: PR_SYSTEM, prompt: genPrompt, files: commits.slice(0, 8), stat: `${commits.length} commit${commits.length === 1 ? "" : "s"} on ${branch}` };
-              if (fullscreen) {
+              if (fullscreen && !panelRef.current) {
                 atBottomRef.current = true;
                 setPanel(gitConfirmOpen({ mode: "pr", subject, body: prBody, files: commits.slice(0, 8), stat: `${commits.length} commit${commits.length === 1 ? "" : "s"} on ${branch}` }));
               } else {
@@ -3022,6 +3054,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             resetRetrievalIndex();
             undoStackRef.current = [];
             cliSessionRef.current = undefined;
+            // Tree-rooted drafts must not survive the move: a /commit draft
+            // written for the old tree's diff would commit the NEW tree's
+            // staged files verbatim, and /verify test would target old paths.
+            gitDraftRef.current = null;
+            gitRegenRef.current = null;
+            lastChangedFilesRef.current = [];
             sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
             notice(`switched to worktree · ${found.branch ?? found.dir}\n  ${found.dir}\n  the conversation continues here; file ops, shell, and /resume now live in this tree`);
             return;
@@ -3048,6 +3086,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           if (sub === "restore") {
+            // Restoring rewrites the whole working tree — never under a running
+            // agent whose tools are mid-edit in it.
+            if (busyRef.current) { notice("busy — wait for the current turn to finish before restoring"); return; }
             const cpName = restA.join(" ");
             if (!cpName) { notice("usage: /checkpoint restore <name>"); return; }
             const r = gitOps.checkpointRestore(cpName);
@@ -4191,7 +4232,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           if (input === "r" && !key.ctrl && !key.meta) {
-            if (p.deployments === null || p.refreshing) return; // initial load / refresh already in flight
+            // Block only a genuinely in-flight load. A FAILED initial load
+            // leaves deployments null WITH loadError set — that's exactly when
+            // r must work, or the error state is a dead end.
+            if ((p.deployments === null && !p.loadError) || p.refreshing) return;
             const acc = listAccounts().find((a) => a.id === p.accountId);
             if (acc) {
               // Keep the stale list visible under a "refreshing…" note instead of
@@ -4276,7 +4320,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                   void listDeploymentDetails(acc).then((lr) =>
                     setPanel((p2) =>
                       p2?.kind === "account-detail" && p2.accountId === acc.id && seq === detailLoadSeqRef.current
-                        ? (lr.ok ? detailSetDeployments(p2 as AccountDetailPanel, lr.deployments) : p2)
+                        ? (lr.ok
+                            ? detailSetDeployments(p2 as AccountDetailPanel, lr.deployments)
+                            : detailSetError(p2 as AccountDetailPanel, lr.note ?? "reload failed — press r to refresh"))
                         : p2,
                     ),
                   );
@@ -4717,7 +4763,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const quickPickerLimit = Math.min(7, Math.max(1, quickRows.length));
   let footer = 2; // status line + its top margin
   // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
-  if (!panel) footer += perm ? 9 : 5; // permission card vs composer (rule + policy + input + marginTop + marginBottom)
+  // Permission card renders even while a panel is open (it owns the keys), so
+  // its rows are budgeted regardless of the panel.
+  if (perm) footer += 9;
+  else if (!panel) footer += 5; // composer (rule + policy + input + marginTop + marginBottom)
   // Composer hint row: "⏎ queues…" while busy, or "⏎ runs in your shell" in ! mode.
   if (!panel && !perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
   footer += PALETTE_ROWS;
@@ -4868,9 +4917,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     </Box>
   ) : null;
 
-  const composerJsx = panel ? null : perm ? (
+  // The permission prompt OUTRANKS an open panel: its key capture runs first
+  // in useInput, so hiding the card while a panel is open would freeze the
+  // panel and let esc (the panel-close key) silently DENY the unseen request.
+  const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
-  ) : (
+  ) : panel ? null : (
     <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} lift={fullscreen} />
   );
 
@@ -4953,7 +5005,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
-        <Banner model={modelLabel} account={bannerAccount} width={width} />
+        <Banner model={modelLabel} account={bannerAccount} width={width} epoch={themeEpochState} />
         {setupRequired ? null : <TabStrip active={tab} width={width} />}
         {/* flexGrow pins the footer (and the composer with it) to the bottom row,
             so however the footer height is estimated, the input bar is always at
@@ -4981,7 +5033,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Inline (the DEFAULT): the terminal owns the screen · native selection,
   // scrollback, and wheel scroll. Finished items commit to scrollback via
   // <Static> (in Transcript); only the live tail + footer re-render.
-  const banner = <Banner model={modelLabel} account={bannerAccount} width={width} />;
+  const banner = <Banner model={modelLabel} account={bannerAccount} width={width} epoch={themeEpochState} />;
   return (
     <Box flexDirection="column" width={width}>
       {welcome ? (

@@ -121,3 +121,31 @@ test("checkpoint names are sanitized for refs", () => {
   expect(r.ok).toBe(true);
   expect(r.out).toBe("my-checkpoint-with-spaces");
 });
+
+test("restoring __pre-restore__ itself works (the advertised undo of a restore)", () => {
+  writeFileSync(join(repo, "v1.txt"), "version one\n");
+  checkpointSave("before", repo);
+  writeFileSync(join(repo, "v1.txt"), "version two\n");
+  // First restore: back to "before" — v1 content; current state saved as __pre-restore__.
+  expect(checkpointRestore("before", repo).ok).toBe(true);
+  expect(readFileSync(join(repo, "v1.txt"), "utf8")).toBe("version one\n");
+  // Change of heart: restore __pre-restore__ — must bring BACK version two
+  // (this used to overwrite the ref with the current tree and silently no-op).
+  expect(checkpointRestore("__pre-restore__", repo).ok).toBe(true);
+  expect(readFileSync(join(repo, "v1.txt"), "utf8")).toBe("version two\n");
+});
+
+test("checkpoints work inside a linked worktree (where .git is a file)", () => {
+  const dir = join(repo, "..", `gearbox-wt-cp-${Date.now()}`);
+  expect(worktreeAdd(dir, "cp-branch", repo).ok).toBe(true);
+  try {
+    writeFileSync(join(dir, "wt.txt"), "in the worktree\n");
+    const saved = checkpointSave("wt-check", dir);
+    expect(saved.ok).toBe(true);
+    writeFileSync(join(dir, "wt.txt"), "mutated\n");
+    expect(checkpointRestore("wt-check", dir).ok).toBe(true);
+    expect(readFileSync(join(dir, "wt.txt"), "utf8")).toBe("in the worktree\n");
+  } finally {
+    worktreeRemove(dir, repo);
+  }
+});

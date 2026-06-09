@@ -9,7 +9,9 @@ import { color, glyph } from "../theme.ts";
 // "gearbox", which read as the wordmark twice).
 // Memoized: props (account, width) are stable while scrolling/streaming, so the
 // title bar skips those re-renders (it only changes on account switch or resize).
-function BannerImpl({ account, width }: { model?: string; account?: string | null; width?: number }) {
+// `epoch` exists solely so /theme invalidates the memo — without it the banner
+// kept the old palette until a resize (setTheme mutates `color` in place).
+function BannerImpl({ account, width }: { model?: string; account?: string | null; width?: number; epoch?: number }) {
   const { stdout } = useStdout();
   const w = width ?? Math.min(stdout?.columns ?? 80, 100);
   return (
