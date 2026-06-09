@@ -86,13 +86,16 @@ export async function discoverModels(account: Account, fetchImpl: typeof fetch =
     // OpenAI-wire path (Foundry, gateways, openai-compat, local servers).
     const base = creds.baseURL ?? catalogProvider(account.provider)?.baseUrl;
     if (base) {
+      // Strip inference path suffix (/openai/v1 or /openai) that Foundry baseUrls
+      // carry, so management routes don't double up the path segment.
+      const mgmtBase = base.replace(/\/+$/, "").replace(/\/openai(?:\/v1)?$/i, "");
       const cleanBase = base.replace(/\/$/, "");
       // Azure AI Foundry supports the same /openai/deployments listing route as
       // classic Azure. It returns *actual* deployments (not the whole catalog),
       // so prefer it over /models when we detect a Foundry-style endpoint.
       if (account.provider === "azure-foundry" && creds.apiKey) {
         try {
-          const depUrl = `${cleanBase}/openai/deployments?api-version=${AZURE_LIST_API_VERSION}`;
+          const depUrl = `${mgmtBase}/openai/deployments?api-version=${AZURE_LIST_API_VERSION}`;
           const dr = await fetchImpl(depUrl, { headers: { "api-key": creds.apiKey } });
           if (dr.ok) {
             const models = parseAzureDeployments(await dr.json());
