@@ -293,9 +293,74 @@ test("deleteDeployment: returns ok on 200", async () => {
   expect(r.ok).toBe(true);
 });
 
-test("deleteDeployment: treats 404 as success (already gone)", async () => {
+test("deleteDeployment: 404 naming the deployment = already gone (success)", async () => {
   const addResult = await addAzureAccount("my-resource7", "sk-test-key-ffeeddcc");
   const acc = addResult.account!;
-  const r = await deleteDeployment(acc, "my-dep", makeFetch(404, {}));
+  const r = await deleteDeployment(acc, "my-dep", makeFetch(404, { error: { code: "DeploymentNotFound", message: "The API deployment for this resource does not exist." } }));
   expect(r.ok).toBe(true);
+});
+
+test("deleteDeployment: generic route-404 on every api-version is an honest failure, not success", async () => {
+  // The old behavior treated ANY 404 as "already deleted" — including the
+  // route-doesn't-exist-on-this-api-version 404, which made deletes look
+  // successful while the deployment lived on.
+  const addResult = await addAzureAccount("my-resource8", "sk-test-key-11aa22bb");
+  const acc = addResult.account!;
+  const r = await deleteDeployment(acc, "my-dep", makeFetch(404, { error: { code: "404", message: "Resource not found" } }));
+  expect(r.ok).toBe(false);
+  expect(r.note).toContain("doesn't expose deployment management");
+});
+
+// ── The v0.2.93 deploy 404: management routes live on the AUTHORING api-version ──
+
+test("createDeployment: PUTs the authoring api-version first (the stored inference version 404s)", async () => {
+  const addResult = await addAzureAccount("my-resource9", "sk-test-key-33cc44dd");
+  const acc = addResult.account!;
+  const urls: string[] = [];
+  const mockFetch: typeof fetch = (async (url: string | URL | Request) => {
+    urls.push(url.toString());
+    return new Response(JSON.stringify({}), { status: 201 });
+  }) as typeof fetch;
+  const r = await createDeployment(acc, "my-dep", "gpt-4o", "Standard", mockFetch);
+  expect(r.ok).toBe(true);
+  expect(urls).toHaveLength(1);
+  expect(urls[0]).toContain("api-version=2023-03-15-preview");
+});
+
+test("createDeployment: falls back to the stored api-version when the authoring route 404s", async () => {
+  const addResult = await addAzureAccount("my-resource10", "sk-test-key-55ee66ff");
+  const acc = addResult.account!;
+  const urls: string[] = [];
+  const mockFetch: typeof fetch = (async (url: string | URL | Request) => {
+    urls.push(url.toString());
+    const is404 = url.toString().includes("2023-03-15-preview");
+    return new Response(JSON.stringify(is404 ? { error: { code: "404", message: "Resource not found" } } : {}), { status: is404 ? 404 : 201 });
+  }) as typeof fetch;
+  const r = await createDeployment(acc, "my-dep", "gpt-4o", "Standard", mockFetch);
+  expect(r.ok).toBe(true);
+  expect(urls).toHaveLength(2);
+  expect(urls[1]).not.toContain("2023-03-15-preview");
+});
+
+test("createDeployment: 404 on every version reports the portal path, not a raw error dump", async () => {
+  const addResult = await addAzureAccount("my-resource11", "sk-test-key-77gg88hh");
+  const acc = addResult.account!;
+  const r = await createDeployment(acc, "my-dep", "gpt-4o", "Standard", makeFetch(404, { error: { code: "404", message: "Resource not found" } }));
+  expect(r.ok).toBe(false);
+  expect(r.note).toContain("doesn't expose deployment management");
+});
+
+test("createDeployment: a Standard deploy sends the legacy authoring body (lowercase scale_type)", async () => {
+  const addResult = await addAzureAccount("my-resource12", "sk-test-key-99ii00jj");
+  const acc = addResult.account!;
+  let body = "";
+  const mockFetch: typeof fetch = (async (_url: string | URL | Request, opts: any) => {
+    body = String(opts?.body ?? "");
+    return new Response(JSON.stringify({}), { status: 201 });
+  }) as typeof fetch;
+  await createDeployment(acc, "my-dep", "gpt-4o", "Standard", mockFetch);
+  const parsed = JSON.parse(body);
+  expect(parsed.model).toBe("gpt-4o");
+  expect(parsed.scale_settings).toEqual({ scale_type: "standard" });
+  expect(parsed.sku).toBeUndefined();
 });

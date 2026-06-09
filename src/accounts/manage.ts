@@ -1,10 +1,15 @@
 // Azure deployment management — list, create, delete deployments on an Azure OpenAI
 // or Azure AI Foundry account. Uses the same credential resolution as discover.ts.
 //
-// API version notes (learned the hard way, see discover.ts):
-//   List routes use AZURE_LIST_API_VERSION ("2023-03-15-preview") — newer versions 404.
-//   Create/delete use the account's stored apiVersion (default 2024-08-01-preview),
-//   NOT the listing version. Write operations get the modern API surface.
+// API version notes (learned the hard way, TWICE — see discover.ts and v0.2.94):
+//   ALL data-plane deployment-management routes (list AND create/delete) exist only
+//   on the legacy "authoring" api-versions ("2023-03-15-preview"). The modern way to
+//   manage deployments is the ARM control plane (management.azure.com, AAD auth) —
+//   on newer data-plane api-versions like 2024-08-01-preview the /openai/deployments
+//   write routes simply DON'T EXIST and return 404 {"error":{"code":"404","message":
+//   "Resource not found"}}. The account's stored apiVersion is its INFERENCE version
+//   and must never be used as the primary for management routes; it survives only as
+//   a fallback attempt for gateway-fronted endpoints that re-expose the routes there.
 //
 // OSC 8 clickable portal links: wrapped with terminalLink() so terminals that support
 // them (iTerm2, Ghostty, WezTerm, kitty) make the URL clickable. Degrades gracefully.
@@ -12,8 +17,9 @@ import { resolveCreds } from "./resolve.ts";
 import { withTimeout } from "./health.ts";
 import type { Account } from "./types.ts";
 
-const AZURE_LIST_API_VERSION = "2023-03-15-preview";
-const AZURE_WRITE_API_VERSION_DEFAULT = "2024-08-01-preview";
+const AZURE_AUTHORING_API_VERSION = "2023-03-15-preview"; // list + create + delete (legacy authoring surface)
+const AZURE_LIST_API_VERSION = AZURE_AUTHORING_API_VERSION;
+const AZURE_WRITE_API_VERSION_DEFAULT = "2024-08-01-preview"; // fallback attempt only
 const MANAGE_TIMEOUT_MS = 15_000;
 
 const AZURE_PROVIDERS = new Set(["azure", "azure-foundry"]);
@@ -225,20 +231,14 @@ export async function createDeployment(
   const inner = async (): Promise<AzureManageResult> => {
     try {
       const creds = await resolveCreds(account);
-      const apiVersion = writeApiVersion(account);
-      const body = JSON.stringify({
-        model: modelId,
-        scale_settings: { scale_type: capacityType },
-        sku: { name: capacityType, capacity: capacityType === "ProvisionedManaged" ? 1 : undefined },
-      });
 
-      let url: string;
+      let urlFor: (apiVersion: string) => string;
       let headers: Record<string, string>;
 
       if (creds.azure) {
         const { resourceName, apiKey } = creds.azure;
         if (!resourceName || !apiKey) return { ok: false, note: "missing resource name or key" };
-        url = `${azureBase(resourceName)}/openai/deployments/${encodeURIComponent(deploymentName)}?api-version=${apiVersion}`;
+        urlFor = (v) => `${azureBase(resourceName)}/openai/deployments/${encodeURIComponent(deploymentName)}?api-version=${v}`;
         headers = { "api-key": apiKey, "Content-Type": "application/json" };
       } else {
         const rawBase = creds.baseURL ?? account.baseUrl ?? "";
@@ -247,22 +247,54 @@ export async function createDeployment(
         }
         const base = foundryManagementBase(rawBase);
         if (!base) return { ok: false, note: "no endpoint configured" };
-        url = `${base}/openai/deployments/${encodeURIComponent(deploymentName)}?api-version=${apiVersion}`;
+        urlFor = (v) => `${base}/openai/deployments/${encodeURIComponent(deploymentName)}?api-version=${v}`;
         headers = { "api-key": creds.apiKey ?? "", "Content-Type": "application/json", ...(creds.headers ?? {}) };
       }
 
-      const r = await fetchImpl(url, { method: "PUT", headers, body });
-      if (!r.ok) {
+      // The authoring surface wants the LEGACY body (scale_settings, lowercase
+      // scale_type); sku is the modern shape for GlobalStandard/PTU. Send the
+      // shape that matches each attempt's api-version.
+      const legacyBody = JSON.stringify(
+        capacityType === "Standard"
+          ? { model: modelId, scale_settings: { scale_type: "standard" } }
+          : { model: modelId, sku: { name: capacityType, capacity: capacityType === "ProvisionedManaged" ? 1 : undefined } },
+      );
+      const modernBody = JSON.stringify({
+        model: modelId,
+        scale_settings: { scale_type: capacityType },
+        sku: { name: capacityType, capacity: capacityType === "ProvisionedManaged" ? 1 : undefined },
+      });
+
+      // Attempt ladder: the authoring version is where the route actually lives
+      // (the stored INFERENCE version 404s — that was the v0.2.93 deploy bug).
+      // The stored version survives as a fallback for gateways that re-expose
+      // management routes on their inference surface.
+      const storedVersion = writeApiVersion(account);
+      const attempts: { v: string; body: string }[] = [{ v: AZURE_AUTHORING_API_VERSION, body: legacyBody }];
+      if (storedVersion !== AZURE_AUTHORING_API_VERSION) attempts.push({ v: storedVersion, body: modernBody });
+
+      let last: { status: number; text: string } = { status: 0, text: "" };
+      for (const attempt of attempts) {
+        const r = await fetchImpl(urlFor(attempt.v), { method: "PUT", headers, body: attempt.body });
+        if (r.ok) return { ok: true };
         const text = await r.text().catch(() => "");
+        last = { status: r.status, text };
         const portalBase = creds.azure
           ? terminalLink(`https://portal.azure.com/#resource/${creds.azure.resourceName}`)
           : "";
         if (r.status === 401) {
           return { ok: false, note: `read-only key cannot deploy — Cognitive Services Contributor role required in Azure IAM${portalBase ? "\n  manage at: " + portalBase : ""}` };
         }
-        return { ok: false, note: `deploy failed (HTTP ${r.status}): ${text.slice(0, 200)}${portalBase ? "\n  manage at: " + portalBase : ""}` };
+        // 404 = the route doesn't exist on this api-version → try the next.
+        if (r.status !== 404) {
+          return { ok: false, note: `deploy failed (HTTP ${r.status}): ${text.slice(0, 200)}${portalBase ? "\n  manage at: " + portalBase : ""}` };
+        }
       }
-      return { ok: true };
+      const portalBase = creds.azure ? terminalLink(`https://portal.azure.com/#resource/${creds.azure.resourceName}`) : "";
+      return {
+        ok: false,
+        note: `deploy failed (HTTP ${last.status}): ${last.text.slice(0, 200)}\n  this key's endpoint doesn't expose deployment management — create it in the portal instead${portalBase ? "\n  manage at: " + portalBase : "\n  open: https://ai.azure.com"}`,
+      };
     } catch (e: any) {
       return { ok: false, note: e?.message ?? "deploy failed" };
     }
@@ -286,15 +318,14 @@ export async function deleteDeployment(
   const inner = async (): Promise<AzureManageResult> => {
     try {
       const creds = await resolveCreds(account);
-      const apiVersion = writeApiVersion(account);
 
-      let url: string;
+      let urlFor: (apiVersion: string) => string;
       let headers: Record<string, string>;
 
       if (creds.azure) {
         const { resourceName, apiKey } = creds.azure;
         if (!resourceName || !apiKey) return { ok: false, note: "missing resource name or key" };
-        url = `${azureBase(resourceName)}/openai/deployments/${encodeURIComponent(deploymentId)}?api-version=${apiVersion}`;
+        urlFor = (v) => `${azureBase(resourceName)}/openai/deployments/${encodeURIComponent(deploymentId)}?api-version=${v}`;
         headers = { "api-key": apiKey };
       } else {
         const rawBase = creds.baseURL ?? account.baseUrl ?? "";
@@ -303,23 +334,41 @@ export async function deleteDeployment(
         }
         const base = foundryManagementBase(rawBase);
         if (!base) return { ok: false, note: "no endpoint configured" };
-        url = `${base}/openai/deployments/${encodeURIComponent(deploymentId)}?api-version=${apiVersion}`;
+        urlFor = (v) => `${base}/openai/deployments/${encodeURIComponent(deploymentId)}?api-version=${v}`;
         headers = { "api-key": creds.apiKey ?? "", ...(creds.headers ?? {}) };
       }
 
-      const r = await fetchImpl(url, { method: "DELETE", headers });
-      if (r.status === 404) return { ok: true }; // already gone — treat as success
-      if (!r.ok) {
+      // Same ladder as create: the authoring version is where the route lives.
+      // A 404 is ambiguous — "deployment already gone" (success) vs "this route
+      // doesn't exist on this api-version" (the old false-success bug). The
+      // generic route miss says "Resource not found"; a real deployment miss
+      // names the deployment (DeploymentNotFound). Only the latter is success.
+      const storedVersion = writeApiVersion(account);
+      const versions = [AZURE_AUTHORING_API_VERSION, ...(storedVersion !== AZURE_AUTHORING_API_VERSION ? [storedVersion] : [])];
+
+      let last: { status: number; text: string } = { status: 0, text: "" };
+      for (const v of versions) {
+        const r = await fetchImpl(urlFor(v), { method: "DELETE", headers });
+        if (r.ok) return { ok: true };
         const text = await r.text().catch(() => "");
+        last = { status: r.status, text };
         const portalBase = creds.azure
           ? terminalLink(`https://portal.azure.com/#resource/${creds.azure.resourceName}`)
           : "";
+        if (r.status === 404) {
+          if (/deploymentnotfound|deployment .*not found/i.test(text)) return { ok: true }; // genuinely already gone
+          continue; // route missing on this api-version → try the next
+        }
         if (r.status === 401) {
           return { ok: false, note: `read-only key cannot delete — Cognitive Services Contributor role required in Azure IAM${portalBase ? "\n  manage at: " + portalBase : ""}` };
         }
         return { ok: false, note: `delete failed (HTTP ${r.status}): ${text.slice(0, 200)}${portalBase ? "\n  manage at: " + portalBase : ""}` };
       }
-      return { ok: true };
+      const portalBase = creds.azure ? terminalLink(`https://portal.azure.com/#resource/${creds.azure.resourceName}`) : "";
+      return {
+        ok: false,
+        note: `delete failed (HTTP ${last.status}): ${last.text.slice(0, 200)}\n  this key's endpoint doesn't expose deployment management — delete it in the portal instead${portalBase ? "\n  manage at: " + portalBase : "\n  open: https://ai.azure.com"}`,
+      };
     } catch (e: any) {
       return { ok: false, note: e?.message ?? "delete failed" };
     }
