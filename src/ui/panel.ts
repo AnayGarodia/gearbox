@@ -7,6 +7,7 @@
 import type { Item } from "./types.ts";
 import type { Edit } from "./input.ts";
 import type { AddSpec } from "../accounts/add-spec.ts";
+import type { AzureDeploymentInfo } from "../accounts/manage.ts";
 
 export interface PanelModelRow {
   id: string;
@@ -38,6 +39,24 @@ export type PanelState =
       wizardPhase:
         | { phase: "pick"; index: number; filter: string }
         | { phase: "field"; specId: string; fieldIndex: number; fieldEdit: Edit; fieldError: string | null; filled: Record<string, string> };
+    }
+  // account detail + Azure management: browse deployments, deploy, delete
+  | {
+      kind: "account-detail";
+      title: string;
+      accountId: string;
+      // null = loading, [] or populated = loaded
+      deployments: AzureDeploymentInfo[] | null;
+      availableModels: string[] | null;
+      loadError?: string;
+      submitting: boolean;
+      index: number; // selection in browse list
+      detailPhase:
+        | { phase: "browse" }
+        | { phase: "deploy-pick"; filter: string; index: number }
+        | { phase: "capacity-type"; selectedModel: string; index: number }
+        | { phase: "deploy-name"; selectedModel: string; capacityType: string; fieldEdit: Edit; fieldError: string | null }
+        | { phase: "confirm-delete"; deploymentId: string };
     };
 
 /** The wizard panel narrowed from the union (for the pure reducers below). */
@@ -86,7 +105,7 @@ export function backspaceFilter(panel: Extract<PanelState, { kind: "models" }>):
 // fieldIndex reaches spec.fields.length, that is the COMPLETE sentinel — App reads
 // `filled` and calls spec.build().
 
-const emptyEdit = (): Edit => ({ value: "", cursor: 0 });
+const emptyEdit = (): Edit => ({ value: "", cursor: 0 }); // shared by wizard + detail reducers
 
 /** Open the wizard at the provider-pick phase. */
 export function wizardOpen(title: string): WizardPanel {
@@ -157,4 +176,158 @@ export function wizardBack(p: WizardPanel, spec?: AddSpec): WizardPanel {
   const prevKey = spec?.fields[prevIndex]?.key;
   const prevVal = prevKey ? ph.filled[prevKey] ?? "" : "";
   return { ...p, wizardPhase: { ...ph, fieldIndex: prevIndex, fieldEdit: { value: prevVal, cursor: prevVal.length }, fieldError: null } };
+}
+
+// ── Account detail + Azure management reducers (pure; tested in test/account-detail-panel.test.ts) ──
+// State machine: browse ↔ deploy-pick → capacity-type → deploy-name → complete sentinel
+//                browse ↔ confirm-delete → complete sentinel
+// Complete sentinels are checked by App after detailNameAdvance / detailConfirmDelete.
+
+export type AccountDetailPanel = Extract<PanelState, { kind: "account-detail" }>;
+
+/** Pre-resolved view data for the account detail panel — keeps raw Account out of the render layer. */
+export interface AccountDetailViewData {
+  id: string;
+  label: string;
+  provider: string;
+  isAzure: boolean;
+  endpoint: string;
+  healthState?: string;
+  healthCheckedAt?: number;
+  lastUsedAt?: number;
+}
+
+/** Open an account detail panel at the browse phase (loading state). */
+export function detailOpen(accountId: string, title: string): AccountDetailPanel {
+  return {
+    kind: "account-detail",
+    title,
+    accountId,
+    deployments: null,
+    availableModels: null,
+    submitting: false,
+    index: 0,
+    detailPhase: { phase: "browse" },
+  };
+}
+
+/** Store fetched deployments (clears loading state for the list). */
+export function detailSetDeployments(p: AccountDetailPanel, deployments: AzureDeploymentInfo[]): AccountDetailPanel {
+  return { ...p, deployments, loadError: undefined };
+}
+
+/** Store fetched available models. */
+export function detailSetAvailableModels(p: AccountDetailPanel, models: string[]): AccountDetailPanel {
+  return { ...p, availableModels: models };
+}
+
+/** Store a load error. */
+export function detailSetError(p: AccountDetailPanel, note: string): AccountDetailPanel {
+  return { ...p, deployments: null, loadError: note };
+}
+
+/** Move the browse-phase selection (clamped). */
+export function detailMoveIndex(p: AccountDetailPanel, delta: number, count: number): AccountDetailPanel {
+  return { ...p, index: clampIndex(p.index + delta, count) };
+}
+
+/** Start the deploy flow. No-op if availableModels is not yet loaded. */
+export function detailStartDeploy(p: AccountDetailPanel): AccountDetailPanel {
+  if (p.availableModels === null) return p; // invariant: disabled while loading
+  return { ...p, detailPhase: { phase: "deploy-pick", filter: "", index: 0 } };
+}
+
+/** Append a char to the deploy-pick filter. */
+export function detailDeployFilter(p: AccountDetailPanel, ch: string): AccountDetailPanel {
+  if (p.detailPhase.phase !== "deploy-pick") return p;
+  return { ...p, detailPhase: { ...p.detailPhase, filter: p.detailPhase.filter + ch, index: 0 } };
+}
+
+/** Backspace the deploy-pick filter. */
+export function detailDeployBackspace(p: AccountDetailPanel): AccountDetailPanel {
+  if (p.detailPhase.phase !== "deploy-pick") return p;
+  return { ...p, detailPhase: { ...p.detailPhase, filter: p.detailPhase.filter.slice(0, -1), index: 0 } };
+}
+
+/** Move the deploy-pick selection (clamped to filtered list). */
+export function detailDeployMove(p: AccountDetailPanel, delta: number, count: number): AccountDetailPanel {
+  if (p.detailPhase.phase !== "deploy-pick") return p;
+  return { ...p, detailPhase: { ...p.detailPhase, index: clampIndex(p.detailPhase.index + delta, count) } };
+}
+
+/** Confirm model selection → enter capacity-type phase. App passes the model id (already dereferenced). */
+export function detailPickCapacity(p: AccountDetailPanel, modelId: string): AccountDetailPanel {
+  return { ...p, detailPhase: { phase: "capacity-type", selectedModel: modelId, index: 0 } };
+}
+
+/** Move the capacity-type selection. */
+export function detailCapacityMove(p: AccountDetailPanel, delta: number): AccountDetailPanel {
+  if (p.detailPhase.phase !== "capacity-type") return p;
+  return { ...p, detailPhase: { ...p.detailPhase, index: clampIndex(p.detailPhase.index + delta, 3) } };
+}
+
+/** Confirm capacity type → enter deploy-name phase. App passes the capacity type string. */
+export function detailConfirmCapacity(p: AccountDetailPanel, capacityType: string): AccountDetailPanel {
+  if (p.detailPhase.phase !== "capacity-type") return p;
+  return { ...p, detailPhase: { phase: "deploy-name", selectedModel: p.detailPhase.selectedModel, capacityType, fieldEdit: emptyEdit(), fieldError: null } };
+}
+
+/** Update the deployment name field. */
+export function detailNameEdit(p: AccountDetailPanel, edit: Edit): AccountDetailPanel {
+  if (p.detailPhase.phase !== "deploy-name") return p;
+  return { ...p, detailPhase: { ...p.detailPhase, fieldEdit: edit, fieldError: null } };
+}
+
+// Azure deployment name: 2–64 chars, alphanumeric + hyphens, no leading/trailing hyphens.
+const AZURE_DEPLOYMENT_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,62}[a-zA-Z0-9]$|^[a-zA-Z0-9]{1,2}$/;
+
+/** Validate and advance the deploy-name field. Sets fieldError on failure.
+ *  When valid, the fieldEdit.value is the deployment name — App checks detailIsNameComplete. */
+export function detailNameAdvance(p: AccountDetailPanel): AccountDetailPanel {
+  if (p.detailPhase.phase !== "deploy-name") return p;
+  const name = p.detailPhase.fieldEdit.value.trim();
+  if (!name) return { ...p, detailPhase: { ...p.detailPhase, fieldError: "required" } };
+  if (!AZURE_DEPLOYMENT_NAME_RE.test(name)) {
+    return { ...p, detailPhase: { ...p.detailPhase, fieldError: "2–64 chars, letters/numbers/hyphens, no leading/trailing hyphens" } };
+  }
+  // No phase transition here — App reads detailIsNameComplete and calls createDeployment.
+  return p;
+}
+
+/** True when the deploy-name is valid and ready to submit. */
+export function detailIsNameComplete(p: AccountDetailPanel): boolean {
+  if (p.detailPhase.phase !== "deploy-name") return false;
+  return AZURE_DEPLOYMENT_NAME_RE.test(p.detailPhase.fieldEdit.value.trim());
+}
+
+/** Set submitting flag (in-flight API call). */
+export function detailSetSubmitting(p: AccountDetailPanel, submitting: boolean): AccountDetailPanel {
+  return { ...p, submitting };
+}
+
+/** Start the delete confirmation flow for a deployment. */
+export function detailStartDelete(p: AccountDetailPanel, deploymentId: string): AccountDetailPanel {
+  return { ...p, detailPhase: { phase: "confirm-delete", deploymentId } };
+}
+
+/** True when confirm-delete has been confirmed by the user (App triggers deleteDeployment). */
+export function detailIsDeleteComplete(p: AccountDetailPanel): boolean {
+  return p.detailPhase.phase === "confirm-delete";
+}
+
+/** Optimistically remove a deployment from the list (before reload). */
+export function detailOptimisticRemove(p: AccountDetailPanel, deploymentId: string): AccountDetailPanel {
+  return { ...p, deployments: p.deployments?.filter((d) => d.id !== deploymentId) ?? null };
+}
+
+/** Navigate back one step in the detail flow.
+ *  confirm-delete → browse; deploy-name → capacity-type; capacity-type → deploy-pick;
+ *  deploy-pick → browse; browse → no-op (App closes the panel). */
+export function detailBack(p: AccountDetailPanel): AccountDetailPanel {
+  const ph = p.detailPhase;
+  if (ph.phase === "confirm-delete") return { ...p, detailPhase: { phase: "browse" } };
+  if (ph.phase === "deploy-name") return { ...p, detailPhase: { phase: "capacity-type", selectedModel: ph.selectedModel, index: 0 } };
+  if (ph.phase === "capacity-type") return { ...p, detailPhase: { phase: "deploy-pick", filter: "", index: 0 } };
+  if (ph.phase === "deploy-pick") return { ...p, detailPhase: { phase: "browse" } };
+  return p; // browse → App closes panel
 }

@@ -36,7 +36,7 @@ import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loa
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
-import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel } from "./panel.ts";
+import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { classifyTask, type TaskKind } from "../agent/classify.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
@@ -47,6 +47,7 @@ import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCre
 import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, addVertexAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs, type AddResult } from "../accounts/onboard.ts";
 import { ADD_SPECS, specFor, filterAddSpecs, buildPaletteAddRows, buildAddGuidance, type AddSpec } from "../accounts/add-spec.ts";
 import { discoverModels } from "../accounts/discover.ts";
+import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDeployment, terminalLink, type AzureDeploymentInfo } from "../accounts/manage.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
@@ -471,9 +472,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // account/model lists render here instead of in the transcript. Esc closes.
   const [panel, setPanelState] = useState<PanelState | null>(null);
   const panelRef = useRef<PanelState | null>(null);
-  const setPanel = (p: PanelState | null) => {
-    panelRef.current = p;
-    setPanelState(p);
+  type PanelUpdater = PanelState | null | ((p: PanelState | null) => PanelState | null);
+  const setPanel = (up: PanelUpdater) => {
+    const next = typeof up === "function" ? up(panelRef.current) : up;
+    panelRef.current = next;
+    setPanelState(next);
   };
   const panelMaxScrollRef = useRef(0); // max scroll for a static panel, set in render
   const panelAccountSlugsRef = useRef<string[]>([]); // row index → /account <slug>, set in render
@@ -1056,6 +1059,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           else if (p.kind === "sessions") setPanel({ ...p, index: clampIndex(p.index + delta, panelSessionsRef.current.length) });
           else if (p.kind === "wizard" && p.wizardPhase.phase === "pick") setPanel({ ...p, wizardPhase: { ...p.wizardPhase, index: clampIndex(p.wizardPhase.index + delta, filterAddSpecs(p.wizardPhase.filter).length) } });
           else if (p.kind === "models") setPanel({ ...p, index: clampIndex(p.index + delta, filterModelRows(buildPanelModelRows(), p.filter).length) });
+          else if (p.kind === "account-detail" && p.detailPhase.phase === "browse") setPanel(detailMoveIndex(p, delta, p.deployments?.length ?? 0));
+          else if (p.kind === "account-detail" && p.detailPhase.phase === "deploy-pick") {
+            const q = p.detailPhase.filter.trim().toLowerCase();
+            const filt = q ? (p.availableModels ?? []).filter((m) => m.toLowerCase().includes(q)) : (p.availableModels ?? []);
+            setPanel(detailDeployMove(p, delta, filt.length));
+          }
         } else queueScroll(delta); // frame-throttled (≤~60fps) so fast scrolls don't flood renders
       }
     };
@@ -3720,6 +3729,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           setPanel(wizardBack(p, wSpec));
           return;
         }
+        // Account-detail: esc steps back through sub-phases; browse → close.
+        if (p.kind === "account-detail") {
+          if (p.submitting) return; // block esc during in-flight operations
+          if (p.detailPhase.phase !== "browse") { setPanel(detailBack(p)); return; }
+        }
         setPanel(null); return;
       }
       if (p.kind === "static") {
@@ -3745,6 +3759,31 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             setPanel(null);
             if (slug) handleCommand(`/account ${slug}`);
           }
+        } else if (key.rightArrow) {
+          const slug = slugs[clampIndex(p.index, n)];
+          if (slug && slug !== "__add__") {
+            const acc = listAccounts().find((a) => (a.slug ?? a.id) === slug);
+            if (acc && (acc.provider === "azure" || acc.provider === "azure-foundry")) {
+              setPanel(detailOpen(acc.id, accountName(acc)));
+              const capturedAcc = acc;
+              void listDeploymentDetails(capturedAcc).then((r) =>
+                setPanel((prev) =>
+                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id
+                    ? (r.ok ? detailSetDeployments(prev as AccountDetailPanel, r.deployments) : detailSetError(prev as AccountDetailPanel, r.note ?? "load failed"))
+                    : prev,
+                ),
+              );
+              void listAvailableModels(capturedAcc).then((r) =>
+                setPanel((prev) =>
+                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id
+                    ? (r.ok ? detailSetAvailableModels(prev as AccountDetailPanel, r.models) : prev)
+                    : prev,
+                ),
+              );
+            } else if (acc) {
+              notice(`account details not available for ${acc.provider} yet`);
+            }
+          }
         }
         return;
       }
@@ -3754,6 +3793,144 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, n) });
         else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, n) });
         else if (key.return) { const s = sess[clampIndex(p.index, n)]; setPanel(null); if (s) loadInto(s); }
+        return;
+      }
+      if (p.kind === "account-detail") {
+        if (p.submitting) return; // all keys blocked while in-flight
+        if (key.leftArrow) {
+          if (p.detailPhase.phase !== "browse") { setPanel(detailBack(p)); return; }
+          // browse → back to accounts list
+          setPanel({ kind: "accounts", title: "accounts · ⏎ to switch", index: 0 });
+          return;
+        }
+        const ph = p.detailPhase;
+        if (ph.phase === "browse") {
+          if (key.upArrow) { setPanel(detailMoveIndex(p, -1, p.deployments?.length ?? 0)); return; }
+          if (key.downArrow) { setPanel(detailMoveIndex(p, 1, p.deployments?.length ?? 0)); return; }
+          if (input === "d" && !key.ctrl && !key.meta) {
+            if (p.availableModels !== null) { setPanel(detailStartDeploy(p)); } else { notice("models still loading — wait a moment"); }
+            return;
+          }
+          if ((key.backspace || key.delete) && p.deployments && p.deployments.length > 0) {
+            const dep = p.deployments[clampIndex(p.index, p.deployments.length)];
+            if (dep) { setPanel(detailStartDelete(p, dep.id)); }
+            return;
+          }
+          if (input === "r" && !key.ctrl && !key.meta) {
+            const acc = listAccounts().find((a) => a.id === p.accountId);
+            if (acc) {
+              setPanel({ ...p, deployments: null, loadError: undefined });
+              const capturedAcc = acc;
+              void listDeploymentDetails(capturedAcc).then((r) =>
+                setPanel((prev) =>
+                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id
+                    ? (r.ok ? detailSetDeployments(prev as AccountDetailPanel, r.deployments) : detailSetError(prev as AccountDetailPanel, r.note ?? "load failed"))
+                    : prev,
+                ),
+              );
+            }
+            return;
+          }
+        } else if (ph.phase === "deploy-pick") {
+          const q = ph.filter.trim().toLowerCase();
+          const filteredModels = q ? (p.availableModels ?? []).filter((m) => m.toLowerCase().includes(q)) : (p.availableModels ?? []);
+          if (key.upArrow) { setPanel(detailDeployMove(p, -1, filteredModels.length)); return; }
+          if (key.downArrow) { setPanel(detailDeployMove(p, 1, filteredModels.length)); return; }
+          if (key.return) {
+            const m = filteredModels[clampIndex(ph.index, filteredModels.length)];
+            if (m) setPanel(detailPickCapacity(p, m));
+            return;
+          }
+          if (key.backspace || key.delete) { setPanel(detailDeployBackspace(p)); return; }
+          if (input && !key.ctrl && !key.meta && !key.tab && input.length === 1 && input >= " ") { setPanel(detailDeployFilter(p, input)); return; }
+          return;
+        } else if (ph.phase === "capacity-type") {
+          if (key.upArrow) { setPanel(detailCapacityMove(p, -1)); return; }
+          if (key.downArrow) { setPanel(detailCapacityMove(p, 1)); return; }
+          if (key.return) {
+            const types = ["Standard", "GlobalStandard", "ProvisionedManaged"];
+            const t = types[clampIndex(ph.index, types.length)];
+            if (t) setPanel(detailConfirmCapacity(p, t));
+            return;
+          }
+          return;
+        } else if (ph.phase === "deploy-name") {
+          const action = applyKey(ph.fieldEdit, input, key);
+          if (action.type === "edit") { setPanel(detailNameEdit(p, action.state)); return; }
+          if (action.type === "submit") {
+            const next = detailNameAdvance(p);
+            if (detailIsNameComplete(next)) {
+              const acc = listAccounts().find((a) => a.id === p.accountId);
+              if (acc) {
+                const deployName = ph.fieldEdit.value.trim();
+                const selectedModel = ph.selectedModel;
+                const capacityType = ph.capacityType;
+                setPanel(detailSetSubmitting(next, true));
+                void createDeployment(acc, deployName, selectedModel, capacityType).then((r) => {
+                  if (!r.ok) {
+                    notice(`deploy failed: ${r.note ?? "unknown error"}`);
+                    setPanel((prev) =>
+                      prev?.kind === "account-detail" && prev.accountId === acc.id
+                        ? detailSetSubmitting(prev as AccountDetailPanel, false)
+                        : prev,
+                    );
+                    return;
+                  }
+                  setPanel((prev) =>
+                    prev?.kind === "account-detail" && prev.accountId === acc.id
+                      ? { ...detailSetSubmitting(prev as AccountDetailPanel, false), detailPhase: { phase: "browse" as const } }
+                      : prev,
+                  );
+                  void listDeploymentDetails(acc).then((lr) =>
+                    setPanel((p2) =>
+                      p2?.kind === "account-detail" && p2.accountId === acc.id
+                        ? (lr.ok ? detailSetDeployments(p2 as AccountDetailPanel, lr.deployments) : p2)
+                        : p2,
+                    ),
+                  );
+                });
+              } else {
+                setPanel(next);
+              }
+            } else {
+              setPanel(next); // validation error; stays on field
+            }
+            return;
+          }
+          return;
+        } else if (ph.phase === "confirm-delete") {
+          if (key.return) {
+            const acc = listAccounts().find((a) => a.id === p.accountId);
+            const deploymentId = ph.deploymentId;
+            if (acc) {
+              const browsePanel = detailOptimisticRemove(
+                detailSetSubmitting({ ...p, detailPhase: { phase: "browse" } }, true),
+                deploymentId,
+              );
+              setPanel(browsePanel);
+              void deleteDeployment(acc, deploymentId).then((r) => {
+                if (!r.ok) {
+                  notice(`delete failed: ${r.note ?? "unknown error"}`);
+                  void listDeploymentDetails(acc).then((lr) =>
+                    setPanel((p2) =>
+                      p2?.kind === "account-detail" && p2.accountId === acc.id
+                        ? (lr.ok ? detailSetDeployments(p2 as AccountDetailPanel, lr.deployments) : p2)
+                        : p2,
+                    ),
+                  );
+                }
+                setPanel((prev) =>
+                  prev?.kind === "account-detail" && prev.accountId === acc.id
+                    ? detailSetSubmitting(prev as AccountDetailPanel, false)
+                    : prev,
+                );
+              });
+            }
+            return;
+          }
+          if (input === "n" && !key.ctrl && !key.meta) { setPanel(detailBack(p)); return; }
+          return;
+        }
         return;
       }
       // wizard: pick (provider list + type-to-filter) → field (one field at a time via applyKey)
@@ -3810,13 +3987,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return;
       }
       // models: type-to-filter, ↑↓ select, ⏎ pin
-      const rows = filterModelRows(buildPanelModelRows(), p.filter);
-      if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, rows.length) });
-      else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, rows.length) });
-      else if (key.return) { const r = rows[clampIndex(p.index, rows.length)]; setPanel(null); if (r) handleCommand(`/model ${r.id}`); }
-      else if (key.backspace || key.delete) setPanel(backspaceFilter(p));
-      else if (input && !key.ctrl && !key.meta && !key.tab && input.length === 1 && input >= " ") setPanel(appendFilter(p, input));
-      return;
+      if (p.kind === "models") {
+        const rows = filterModelRows(buildPanelModelRows(), p.filter);
+        if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, rows.length) });
+        else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, rows.length) });
+        else if (key.return) { const r = rows[clampIndex(p.index, rows.length)]; setPanel(null); if (r) handleCommand(`/model ${r.id}`); }
+        else if (key.backspace || key.delete) setPanel(backspaceFilter(p));
+        else if (input && !key.ctrl && !key.meta && !key.tab && input.length === 1 && input >= " ") setPanel(appendFilter(p, input));
+        return;
+      }
     }
     // Reverse-i-search (⌃R): ⌃R opens / steps to the next older match; type to
     // filter; ⏎ accepts into the composer; esc cancels.
@@ -4103,9 +4282,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const quickRows = quickPicker ? quickPickerRows(quickPicker) : [];
   const quickPickerLimit = Math.min(7, Math.max(1, quickRows.length));
   let footer = 2; // status line + its top margin
-  footer += perm ? 9 : 5; // permission card vs composer (rule + policy + input + marginTop + marginBottom)
+  // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
+  if (!panel) footer += perm ? 9 : 5; // permission card vs composer (rule + policy + input + marginTop + marginBottom)
   // Composer hint row: "↵ queues…" while busy, or "↵ runs in your shell" in ! mode.
-  if (!perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
+  if (!panel && !perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
   footer += PALETTE_ROWS;
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
   if (busy && lowContextNotice(ctxPct)) footer += 1; // optional low-context notice row under it
@@ -4161,6 +4341,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   let panelModels: PanelModelRow[] | undefined;
   let panelSessions: PanelSessionRow[] | undefined;
   let panelWizardSpec: AddSpec | undefined;
+  let panelAccountDetail: AccountDetailViewData | undefined;
   if (panel?.kind === "static") {
     panelStaticLines = itemsToLines(panel.items, panelInnerW);
     panelMaxScrollRef.current = Math.max(0, panelStaticLines.length - panelBodyHeight(transcriptHeight));
@@ -4175,6 +4356,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     panelSessions = panelSessionsRef.current.map((s) => ({ id: s.id, when: sessionWhen(s.updatedAt), turns: s.turns?.length ?? 0, title: s.title || "(untitled)" }));
   } else if (panel?.kind === "wizard" && panel.wizardPhase.phase === "field") {
     panelWizardSpec = specFor(panel.wizardPhase.specId);
+  } else if (panel?.kind === "account-detail") {
+    const acc = listAccounts().find((a) => a.id === panel.accountId);
+    if (acc) {
+      panelAccountDetail = {
+        id: acc.id,
+        label: accountName(acc),
+        provider: acc.provider,
+        isAzure: acc.provider === "azure" || acc.provider === "azure-foundry",
+        endpoint: acc.auth.kind === "azure" ? acc.auth.resourceName : (acc.baseUrl ?? ""),
+        healthState: acc.health?.state,
+        healthCheckedAt: acc.health?.checkedAt,
+        lastUsedAt: acc.lastUsedAt,
+      };
+    }
   }
 
   // Keep scrollTop pinned to the bottom as new lines stream in (unless scrolled up).
@@ -4239,7 +4434,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     </Box>
   ) : null;
 
-  const composerJsx = perm ? (
+  const composerJsx = panel ? null : perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : (
     <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} lift={fullscreen} />
@@ -4331,7 +4526,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}
         {panel ? (
           <Box paddingX={1} flexGrow={1}>
-            <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} sessions={panelSessions} currentModelId={panelCurrentModel} staticLines={panelStaticLines} wizardSpec={panelWizardSpec} />
+            <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} sessions={panelSessions} currentModelId={panelCurrentModel} staticLines={panelStaticLines} wizardSpec={panelWizardSpec} accountDetail={panelAccountDetail} />
           </Box>
         ) : tab !== "session" && !setupRequired ? (
           <Box flexGrow={1}>{tabView}</Box>
