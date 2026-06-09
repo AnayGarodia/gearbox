@@ -40,6 +40,18 @@ export type PanelState =
         | { phase: "pick"; index: number; filter: string }
         | { phase: "field"; specId: string; fieldIndex: number; fieldEdit: Edit; fieldError: string | null; filled: Record<string, string> };
     }
+  // git confirm: review/edit a generated commit message or PR title before it runs
+  | {
+      kind: "git-confirm";
+      title: string;
+      mode: "commit" | "pr";
+      subject: Edit; // editable first line (commit subject / PR title)
+      body: string; // generated body shown read-only (r regenerates both)
+      files: string[]; // what's staged / what the PR contains
+      stat: string; // diffstat summary line(s)
+      submitting: boolean;
+      error?: string;
+    }
   // account detail + Azure management: browse deployments, deploy, delete
   | {
       kind: "account-detail";
@@ -201,6 +213,50 @@ export function wizardBack(p: WizardPanel, spec?: AddSpec): WizardPanel {
   const prevKey = spec?.fields[prevIndex]?.key;
   const prevVal = prevKey ? ph.filled[prevKey] ?? "" : "";
   return { ...p, wizardPhase: { ...ph, fieldIndex: prevIndex, fieldEdit: { value: prevVal, cursor: prevVal.length }, fieldError: null } };
+}
+
+// ── Git confirm reducers (pure; tested in test/git-confirm-panel.test.ts) ────
+// One review step between "the model wrote this" and "git ran it": the subject
+// is editable in place (applyKey-driven, like the deploy-name field), the body
+// is read-only (r regenerates both), ⏎ executes, esc cancels.
+
+export type GitConfirmPanel = Extract<PanelState, { kind: "git-confirm" }>;
+
+export function gitConfirmOpen(opts: { mode: "commit" | "pr"; subject: string; body: string; files: string[]; stat: string }): GitConfirmPanel {
+  return {
+    kind: "git-confirm",
+    title: opts.mode === "commit" ? "commit · review the message" : "pull request · review title & body",
+    mode: opts.mode,
+    subject: { value: opts.subject, cursor: opts.subject.length },
+    body: opts.body,
+    files: opts.files,
+    stat: opts.stat,
+    submitting: false,
+  };
+}
+
+export function gitConfirmEdit(p: GitConfirmPanel, edit: Edit): GitConfirmPanel {
+  return { ...p, subject: edit, error: undefined };
+}
+
+export function gitConfirmSetSubmitting(p: GitConfirmPanel, submitting: boolean): GitConfirmPanel {
+  return { ...p, submitting };
+}
+
+export function gitConfirmError(p: GitConfirmPanel, message: string): GitConfirmPanel {
+  return { ...p, submitting: false, error: message };
+}
+
+/** A subject fit to execute: non-empty after trimming. */
+export function gitConfirmReady(p: GitConfirmPanel): boolean {
+  return p.subject.value.trim().length > 0;
+}
+
+/** The full message git/gh receives: subject + blank line + body (when any). */
+export function gitConfirmMessage(p: GitConfirmPanel): string {
+  const subject = p.subject.value.trim();
+  const body = p.body.trim();
+  return body ? `${subject}\n\n${body}` : subject;
 }
 
 // ── Account detail + Azure management reducers (pure; tested in test/account-detail-panel.test.ts) ──

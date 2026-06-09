@@ -26,7 +26,7 @@ export function badgeFor(s: HealthState | undefined): string {
 // Commands are grouped so /help reads as a few short lists instead of one
 // 26-row wall. `usage` stays short (≤ ~14 chars) so the live palette and help
 // columns always line up; the detail lives in `desc`, in plain language.
-type Group = "models" | "chat" | "accounts" | "output" | "modes" | "settings" | "other";
+type Group = "models" | "chat" | "git" | "accounts" | "output" | "modes" | "settings" | "other";
 
 export interface CommandMeta {
   name: string;
@@ -51,6 +51,12 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/context", usage: "/context", desc: "see what's loaded and how many tokens it uses", group: "chat" },
   { name: "/ask", usage: "/ask <q>", desc: "ask about Gearbox itself · answered from its own docs", group: "chat" },
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },
+  // git
+  { name: "/commit", usage: "/commit [-a|msg]", desc: "commit staged changes with a generated message (confirm before it runs) · -a stages everything first", group: "git" },
+  { name: "/push", usage: "/push", desc: "push the current branch (sets upstream on first push) · output streams live", group: "git" },
+  { name: "/pr", usage: "/pr [create|list|view|diff]", desc: "GitHub PRs via gh: create with a generated title/body, list, view, or read a diff", group: "git" },
+  { name: "/worktree", usage: "/worktree [add|list|use|rm]", desc: "work on a branch in an isolated worktree · use switches the session into it", group: "git" },
+  { name: "/checkpoint", usage: "/checkpoint [name|list|restore|rm]", desc: "snapshot the whole working tree (untracked too) · restore rolls back to it", group: "git" },
   // accounts & cost
   { name: "/account", usage: "/account", desc: "list accounts; /account <name> switches, /account login <name> re-auths, /account add adds one", group: "accounts" },
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
@@ -109,6 +115,7 @@ export function commandNameMatches(draft: string): CommandMeta[] {
 const GROUP_TITLES: { id: Group; title: string }[] = [
   { id: "models", title: "models & routing" },
   { id: "chat", title: "conversation" },
+  { id: "git", title: "git" },
   { id: "accounts", title: "accounts & cost" },
   { id: "output", title: "save & copy" },
   { id: "modes", title: "modes" },

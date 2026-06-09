@@ -224,6 +224,37 @@ export function Panel({
       </Box>
     );
     hint = `filter: ${panel.filter || "(type to filter)"}  ·  ↑↓ · ⏎ pin · esc close`;
+  } else if (panel.kind === "git-confirm") {
+    const fw = fieldWindow(panel.subject.value, panel.subject.cursor, Math.max(8, innerW - 4));
+    const bodyLines = panel.body ? panel.body.split("\n").slice(0, Math.max(1, bodyH - panel.files.length - 7)) : [];
+    body = (
+      <Box flexDirection="column" paddingX={1}>
+        <Text color={color.accent} bold>{panel.mode === "commit" ? "Commit message" : "PR title"}</Text>
+        <Box>
+          <Text color={color.faint}>{glyph.prompt} </Text>
+          <Text color={color.text}>{fw.pre}</Text>
+          <Text color={color.accent} inverse>{fw.at}</Text>
+          <Text color={color.text}>{fw.post}</Text>
+        </Box>
+        {bodyLines.length ? (
+          <Box flexDirection="column" marginTop={1}>
+            {bodyLines.map((l, i) => (
+              <Text key={i} color={color.dim}>{truncate(l, Math.max(8, innerW - 2))}</Text>
+            ))}
+          </Box>
+        ) : null}
+        <Box flexDirection="column" marginTop={1}>
+          {panel.stat ? <Text color={color.faint}>{truncate(panel.stat, Math.max(8, innerW - 2))}</Text> : null}
+          {panel.files.slice(0, Math.max(1, Math.min(6, panel.files.length))).map((f) => (
+            <Text key={f} color={color.path}>  {truncate(f, Math.max(8, innerW - 4))}</Text>
+          ))}
+          {panel.files.length > 6 ? <Text color={color.faint}>  +{panel.files.length - 6} more</Text> : null}
+        </Box>
+        {panel.error ? <Box marginTop={1}><Text color={color.err}>{glyph.err} {truncate(panel.error, Math.max(8, innerW - 4))}</Text></Box> : null}
+        {panel.submitting ? <Box marginTop={1}><Text color={color.faint}>{panel.mode === "commit" ? "committing…" : "creating the PR…"}</Text></Box> : null}
+      </Box>
+    );
+    hint = panel.mode === "commit" ? "⏎ commit · r regenerate · esc cancel" : "⏎ create PR · r regenerate · esc cancel";
   } else if (panel.kind === "account-detail") {
     const ph = panel.detailPhase;
     if (ph.phase === "browse") {

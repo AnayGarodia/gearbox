@@ -141,6 +141,16 @@ Example MCP config:
 The built-in `web_search` tool works out of the box with DuckDuckGo, and uses
 Brave or SearXNG when `BRAVE_SEARCH_API_KEY` or `SEARXNG_URL` is set.
 
+Git is first-class. `/commit` writes a commit message from your staged diff
+(review and edit it before anything runs; `/commit -a` stages everything
+first). `/push` streams the push and sets the upstream on a first push.
+`/pr create` generates a title and body, pushes if needed, and opens the PR
+through the `gh` CLI (`/pr list`, `/pr view <n>`, `/pr diff <n>` to review).
+`/worktree add <branch>` + `/worktree use <branch>` move the whole session
+into an isolated worktree, and `/checkpoint` snapshots the entire working
+tree — untracked files included — with `/checkpoint restore <name>` to roll
+back.
+
 ## Develop
 
 Requires [Bun](https://bun.sh).

@@ -53,6 +53,9 @@ import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type Onboa
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
 import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener } from "../accounts/ledger.ts";
+import * as gitOps from "../git/ops.ts";
+import { invalidateGitBranch } from "./git.ts";
+import { gitConfirmOpen, gitConfirmEdit, gitConfirmSetSubmitting, gitConfirmError, gitConfirmReady, gitConfirmMessage, type GitConfirmPanel } from "./panel.ts";
 import { checkCaps, type BudgetCaps } from "../model/budget-guard.ts";
 import { recordChange, planUndo, type FileChange } from "../undo.ts";
 import { probeUsage } from "../accounts/usage-probe.ts";
@@ -84,7 +87,7 @@ import { basename, extname, resolve } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { computeDiff, diffStat } from "../diff.ts";
-import { updateRetrievalFile } from "../context/retrieve.ts";
+import { updateRetrievalFile, resetRetrievalIndex } from "../context/retrieve.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -193,6 +196,15 @@ function shortFailure(message: string): string {
   if (/\b401\b|invalid|unauthorized|authentication/.test(m)) return "auth failed";
   return "rate-limited";
 }
+
+// System prompts for the /commit and /pr generators (runCompletion, no tools).
+const COMMIT_MSG_SYSTEM =
+  "You write git commit messages. Given a staged diff, reply with ONLY the commit message: an imperative subject line of at most 72 characters; add a short body (wrapped at 72) after a blank line only when the change genuinely needs explanation. No markdown fences, no surrounding quotes, no trailing period on the subject.";
+const PR_SYSTEM =
+  "You write GitHub pull-request titles and bodies. Given the branch's commits and a diffstat, reply with the PR title on the first line (at most 80 characters, imperative), then a blank line, then a concise markdown body: what changed and why, with a short bullet list when there are several changes. No placeholders, no fences around the whole reply.";
+
+// Clip generator input so a huge staged diff can't blow the prompt.
+const clipForPrompt = (s: string, max = 8000): string => (s.length > max ? s.slice(0, max) + "\n…(clipped)" : s);
 
 let codexModelCache: CliModelChoice[] | null = null;
 
@@ -411,6 +423,10 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const verifyRef = useRef<VerifyMode>(loadPrefs().verify === "off" ? "off" : "auto"); // post-edit checks + auto-iterate-to-green
   const charTestOfferedRef = useRef(false); // characterization-test offer: once per session
   const lastChangedFilesRef = useRef<string[]>([]); // most recent edited-turn file list (/verify test targets these)
+  // /commit + /pr: regeneration inputs for the confirm panel's ⌃R, and the
+  // inline-mode draft awaiting `/commit go` · `/pr go`.
+  const gitRegenRef = useRef<{ mode: "commit" | "pr"; system: string; prompt: string; files: string[]; stat: string } | null>(null);
+  const gitDraftRef = useRef<{ mode: "commit" | "pr"; subject: string; body: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
   const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
@@ -2475,6 +2491,38 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // the app is gone (L-H).
   useEffect(() => () => { if (lingerRef.current) clearTimeout(lingerRef.current); }, []);
 
+  // Generate short git text (commit message / PR title+body) via the routing
+  // seam — cheap "summarize" pick, no tools, silent (nothing streams into the
+  // transcript). Returns null when no in-loop model can serve (subscription-only
+  // setups) so callers fall back to a heuristic the user can edit.
+  const generateGitText = useCallback(async (system: string, prompt: string): Promise<string | null> => {
+    try {
+      const choice = new RoutingSelector().select({ prompt, kind: "summarize" });
+      if (choice.backend?.kind === "cli") return null;
+      const acct = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
+      const creds = acct ? await resolveCreds(acct) : undefined;
+      const r = await runCompletion({ model: choice.model, system, prompt, onEvent: () => {}, creds, maxRetries: onlineRef.current ? 2 : 0 });
+      // Spend truth: this runs outside a turn, so it records its own event.
+      recordSpend({
+        accountId: acct?.id ?? `env:${choice.model.provider}`,
+        model: choice.model.id, source: "turn",
+        inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
+        ...resolveTurnCost({ modelId: choice.model.id, isSub: false, usage: r.usage }),
+        at: Date.now(),
+      });
+      const out = (r.text ?? "").trim().replace(/^```[\w-]*\n?|\n?```$/g, "").trim();
+      return out || null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // Split generated git text into subject (first line) + body (the rest).
+  const splitSubject = (msg: string): { subject: string; body: string } => {
+    const [first, ...rest] = msg.split("\n");
+    return { subject: (first ?? "").trim(), body: rest.join("\n").trim() };
+  };
+
   const handleCommand = useCallback(
     (text: string) => {
       const body = text.slice(1);
@@ -2809,6 +2857,221 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             }
             notice(`undid last turn's file changes:\n  ${done.join("\n  ")}\n  (files only — the conversation is unchanged)`);
           })();
+          return;
+        }
+        case "commit": {
+          echo(text);
+          if (!gitOps.isRepo()) { notice("not a git repository"); return; }
+          const a = arg.trim();
+          // `/commit go` commits the inline-mode draft; `/commit <message>` is
+          // the direct path (your own message, no generation).
+          if (a === "go" && gitDraftRef.current?.mode === "commit") {
+            const d = gitDraftRef.current;
+            gitDraftRef.current = null;
+            const r = gitOps.commit(d.body ? `${d.subject}\n\n${d.body}` : d.subject);
+            invalidateGitBranch();
+            notice(r.ok ? `✓ committed · ${gitOps.lastCommits(1)[0] ?? ""}` : `commit failed: ${r.err || r.out}`);
+            return;
+          }
+          if (a && a !== "-a") {
+            if (!gitOps.status().some((e) => e.staged)) { notice("nothing staged · stage files first, or /commit -a"); return; }
+            const r = gitOps.commit(a);
+            invalidateGitBranch();
+            notice(r.ok ? `✓ committed · ${gitOps.lastCommits(1)[0] ?? ""}` : `commit failed: ${r.err || r.out}`);
+            return;
+          }
+          if (a === "-a") gitOps.stageAll();
+          const staged = gitOps.status().filter((e) => e.staged);
+          if (!staged.length) { notice("nothing staged · /commit -a stages everything first"); return; }
+          const stat = gitOps.stagedDiff(undefined, { stat: true });
+          const statLine = stat.split("\n").filter(Boolean).pop() ?? "";
+          const files = staged.map((e) => e.path);
+          const genPrompt = clipForPrompt(`${stat}\n\n${gitOps.stagedDiff()}`);
+          notice("writing a commit message…");
+          void (async () => {
+            const gen = await generateGitText(COMMIT_MSG_SYSTEM, genPrompt);
+            const fallback = `update ${files.slice(0, 3).map((f) => f.split("/").pop()).join(", ")}${files.length > 3 ? ` +${files.length - 3} more` : ""}`;
+            const { subject, body: msgBody } = splitSubject(gen ?? fallback);
+            gitRegenRef.current = { mode: "commit", system: COMMIT_MSG_SYSTEM, prompt: genPrompt, files, stat: statLine };
+            if (fullscreen) {
+              atBottomRef.current = true;
+              setPanel(gitConfirmOpen({ mode: "commit", subject, body: msgBody, files, stat: statLine }));
+            } else {
+              gitDraftRef.current = { mode: "commit", subject, body: msgBody };
+              notice(`commit message:\n  ${subject}${msgBody ? `\n\n${msgBody.split("\n").map((l) => "  " + l).join("\n")}` : ""}\n\n${statLine}\n  /commit go — commit with this · /commit <your message> — use your own`);
+            }
+          })();
+          return;
+        }
+        case "push": {
+          echo(text);
+          if (!gitOps.isRepo()) { notice("not a git repository"); return; }
+          const branch = gitOps.currentBranch();
+          const ab = gitOps.aheadBehind();
+          if (ab && ab.ahead === 0) { notice(ab.behind ? `nothing to push · ${ab.behind} behind upstream (pull first)` : "nothing to push — up to date with upstream"); return; }
+          const needsUpstream = ab === null;
+          const cmdLabel = needsUpstream ? `git push -u origin ${branch ?? "HEAD"}` : "git push";
+          const id = idRef.current++;
+          const startedAt = Date.now();
+          push({ kind: "tool", id, callId: `git:${id}`, name: "run_shell", arg: cmdLabel, status: "running", summary: "", startedAt });
+          void (async () => {
+            const r = await gitOps.push({
+              setUpstream: needsUpstream, branch,
+              onChunk: (c) => setItems((prev) => prev.map((i) => (i.id === id && i.kind === "tool" ? { ...i, outputTail: ((i.outputTail ?? "") + c).slice(-3000) } : i))),
+            });
+            setItems((prev) => prev.map((i) => (i.id === id && i.kind === "tool" ? { ...i, status: r.ok ? "ok" : "err", summary: r.ok ? `pushed ${branch ?? "HEAD"}` : (r.output.split("\n").find((l) => l.trim()) ?? "push failed"), endedAt: Date.now(), durationMs: Date.now() - startedAt, exitCode: r.exitCode } : i)));
+          })();
+          return;
+        }
+        case "pr": {
+          echo(text);
+          if (!gitOps.isRepo()) { notice("not a git repository"); return; }
+          const [sub = "list", nArg] = arg.trim().split(/\s+/);
+          const action = sub.toLowerCase();
+          const ghMissing = () => {
+            const url = gitOps.compareUrl();
+            notice(`the gh CLI isn't available or signed in — install: brew install gh · then: gh auth login${url ? `\nor open a PR manually: ${url}` : ""}`);
+          };
+          if (action === "list") {
+            if (!gitOps.hasGh()) { ghMissing(); return; }
+            const rows = gitOps.prList();
+            if (!rows.length) { notice("no open PRs"); return; }
+            const listText = rows.map((p) => `#${String(p.number).padEnd(5)} ${p.title}\n       ${p.branch} · ${p.author} · ${p.state.toLowerCase()}`).join("\n");
+            const it: Item = { kind: "notice", id: idRef.current++, text: listText };
+            if (openInfoPanel("pull requests", it)) return;
+            push(it);
+            return;
+          }
+          if (action === "view" || action === "diff") {
+            if (!gitOps.hasGh()) { ghMissing(); return; }
+            const n = nArg ? parseInt(nArg, 10) : undefined;
+            const out = action === "view" ? gitOps.prView(n) : gitOps.prDiff(n);
+            if (!out) { notice(`gh returned nothing — is there ${n ? `a PR #${n}` : "a PR for this branch"}?`); return; }
+            const it: Item = { kind: "notice", id: idRef.current++, text: out.slice(0, 20_000) };
+            if (openInfoPanel(n ? `PR #${n} ${action}` : `PR ${action}`, it)) return;
+            push(it);
+            return;
+          }
+          if (action === "go" && gitDraftRef.current?.mode === "pr") {
+            const d = gitDraftRef.current;
+            gitDraftRef.current = null;
+            notice("creating the PR…");
+            void gitOps.prCreate({ title: d.subject, body: d.body }).then((r) =>
+              notice(r.ok ? `✓ PR created · ${r.output.split("\n").findLast((l) => /https?:\/\//.test(l)) ?? r.output}` : `PR failed: ${r.output}`));
+            return;
+          }
+          if (action === "create") {
+            if (!gitOps.hasGh()) { ghMissing(); return; }
+            const dirty = gitOps.status();
+            if (dirty.length) { notice(`uncommitted changes (${dirty.length} file${dirty.length === 1 ? "" : "s"}) · /commit first so the PR contains them`); return; }
+            const branch = gitOps.currentBranch();
+            const ab = gitOps.aheadBehind();
+            const commits = ab ? gitOps.unpushedCommits() : gitOps.lastCommits(20);
+            const finishCreate = async () => {
+              const genPrompt = clipForPrompt(`Commits:\n${commits.join("\n")}\n\nDiffstat:\n${ab ? gitOps.git(["diff", "@{u}...HEAD", "--stat"]).out : gitOps.stagedDiff(undefined, { stat: true })}`);
+              notice("writing the PR title & body…");
+              const gen = await generateGitText(PR_SYSTEM, genPrompt);
+              const { subject, body: prBody } = splitSubject(gen ?? `${branch}: ${commits[commits.length - 1]?.replace(/^\w+ /, "") ?? "changes"}`);
+              gitRegenRef.current = { mode: "pr", system: PR_SYSTEM, prompt: genPrompt, files: commits.slice(0, 8), stat: `${commits.length} commit${commits.length === 1 ? "" : "s"} on ${branch}` };
+              if (fullscreen) {
+                atBottomRef.current = true;
+                setPanel(gitConfirmOpen({ mode: "pr", subject, body: prBody, files: commits.slice(0, 8), stat: `${commits.length} commit${commits.length === 1 ? "" : "s"} on ${branch}` }));
+              } else {
+                gitDraftRef.current = { mode: "pr", subject, body: prBody };
+                notice(`PR draft:\n  ${subject}\n\n${prBody.split("\n").map((l) => "  " + l).join("\n")}\n\n  /pr go — create it · /pr create — regenerate`);
+              }
+            };
+            // Unpushed (or upstream-less) work pushes first so the PR sees it.
+            if (ab === null || ab.ahead > 0) {
+              notice(`pushing ${branch ?? "HEAD"} first…`);
+              void gitOps.push({ setUpstream: ab === null, branch }).then((r) => {
+                if (!r.ok) { notice(`push failed: ${r.output.split("\n").find((l) => l.trim()) ?? "unknown error"}`); return; }
+                void finishCreate();
+              });
+            } else void finishCreate();
+            return;
+          }
+          notice("usage: /pr [list | create | view [n] | diff [n]]");
+          return;
+        }
+        case "worktree": {
+          echo(text);
+          if (!gitOps.isRepo()) { notice("not a git repository"); return; }
+          const [sub = "list", target] = arg.trim().split(/\s+/);
+          const root = gitOps.repoRoot()!;
+          const list = gitOps.worktreeList();
+          if (sub === "list") {
+            notice(list.map((w) => `${w.current ? "● " : "  "}${w.branch ?? `(detached ${w.head})`}  ${w.dir}`).join("\n") + "\n  /worktree add <branch> · use <branch> · rm <branch>");
+            return;
+          }
+          if (sub === "add") {
+            if (!target) { notice("usage: /worktree add <branch>"); return; }
+            const dir = resolve(root, "..", `${root.split("/").pop()}-wt-${target.replace(/[^\w.-]+/g, "-")}`);
+            const r = gitOps.worktreeAdd(dir, target);
+            notice(r.ok ? `✓ worktree ready · ${target} at ${dir}\n  /worktree use ${target} — switch this session into it` : `worktree add failed: ${r.err || r.out}`);
+            return;
+          }
+          const found = target ? list.find((w) => w.branch === target || w.dir === target || w.dir.endsWith(`-wt-${target}`)) : undefined;
+          if (sub === "use") {
+            if (busyRef.current) { notice("busy — wait for the current turn to finish"); return; }
+            if (!found) { notice(`no worktree for "${target ?? ""}" · /worktree list`); return; }
+            if (found.current) { notice("already in that worktree"); return; }
+            // Re-home the whole session: persist the outgoing conversation, move
+            // cwd (tools/shell/repo-map/status bar all read it), drop state that
+            // is rooted in the old tree, and start a fresh session + index.
+            persist();
+            try { process.chdir(found.dir); } catch (e: any) { notice(`couldn't enter ${found.dir}: ${e?.message ?? e}`); return; }
+            invalidateGitBranch();
+            resetRetrievalIndex();
+            undoStackRef.current = [];
+            cliSessionRef.current = undefined;
+            sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
+            notice(`switched to worktree · ${found.branch ?? found.dir}\n  ${found.dir}\n  the conversation continues here; file ops, shell, and /resume now live in this tree`);
+            return;
+          }
+          if (sub === "rm") {
+            if (!found) { notice(`no worktree for "${target ?? ""}" · /worktree list`); return; }
+            if (found.current) { notice("can't remove the worktree you're in · /worktree use another first"); return; }
+            const r = gitOps.worktreeRemove(found.dir);
+            notice(r.ok ? `✓ removed worktree ${found.branch ?? found.dir}` : `remove failed: ${r.err || r.out}`);
+            return;
+          }
+          notice("usage: /worktree [list | add <branch> | use <branch> | rm <branch>]");
+          return;
+        }
+        case "checkpoint": {
+          echo(text);
+          if (!gitOps.isRepo()) { notice("not a git repository (checkpoints snapshot via git refs)"); return; }
+          const [sub, ...restA] = arg.trim().split(/\s+/).filter(Boolean);
+          if (sub === "list") {
+            const rows = gitOps.checkpointList().filter((c) => c.name !== "__pre-restore__");
+            notice(rows.length
+              ? rows.map((c) => `  ${c.name.padEnd(24)} ${c.sha} · ${sessionWhen(c.at)}`).join("\n") + "\n  /checkpoint restore <name> · rm <name>"
+              : "no checkpoints yet · /checkpoint [name] saves one");
+            return;
+          }
+          if (sub === "restore") {
+            const cpName = restA.join(" ");
+            if (!cpName) { notice("usage: /checkpoint restore <name>"); return; }
+            const r = gitOps.checkpointRestore(cpName);
+            if (r.ok) { invalidateGitBranch(); resetRetrievalIndex(); undoStackRef.current = []; }
+            notice(r.ok
+              ? `✓ restored "${cpName}" · the pre-restore state is saved as checkpoint "__pre-restore__" if you change your mind`
+              : `restore failed: ${r.err || r.out}`);
+            return;
+          }
+          if (sub === "rm") {
+            const cpName = restA.join(" ");
+            if (!cpName) { notice("usage: /checkpoint rm <name>"); return; }
+            const r = gitOps.checkpointDelete(cpName);
+            notice(r.ok ? `✓ deleted checkpoint "${cpName}"` : `delete failed: ${r.err || r.out}`);
+            return;
+          }
+          const cpName = [sub, ...restA].filter(Boolean).join(" ") || `cp-${new Date().toISOString().slice(5, 16).replace(/[T:]/g, "-")}`;
+          const r = gitOps.checkpointSave(cpName);
+          notice(r.ok
+            ? `✓ checkpoint "${r.out}" saved (whole tree, untracked files included) · /checkpoint restore ${r.out}`
+            : `checkpoint failed: ${r.err || r.out}`);
           return;
         }
         case "copy": {
@@ -3842,6 +4105,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (p.submitting) return; // block esc during in-flight operations
           if (p.detailPhase.phase !== "browse") { setPanel(detailBack(p)); return; }
         }
+        if (p.kind === "git-confirm" && p.submitting) return; // a commit/PR is mid-flight
         setPanel(null); return;
       }
       if (p.kind === "static") {
@@ -4061,6 +4325,47 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           if (input === "n" && !key.ctrl && !key.meta) { setPanel(detailBack(p)); return; }
+          return;
+        }
+        return;
+      }
+      // git-confirm: review/edit the generated subject, ⏎ executes, ⌃R regenerates.
+      if (p.kind === "git-confirm") {
+        if (p.submitting) return;
+        if (key.ctrl && input === "r") {
+          const regen = gitRegenRef.current;
+          if (!regen) return;
+          setPanel(gitConfirmSetSubmitting(p, true));
+          void generateGitText(regen.system, regen.prompt).then((gen) => {
+            setPanel((prev) => {
+              if (prev?.kind !== "git-confirm") return prev;
+              if (!gen) return gitConfirmError(prev as GitConfirmPanel, "couldn't regenerate — edit the text instead");
+              const { subject, body: genBody } = splitSubject(gen);
+              return gitConfirmOpen({ mode: regen.mode, subject, body: genBody, files: regen.files, stat: regen.stat });
+            });
+          });
+          return;
+        }
+        const action = applyKey(p.subject, input, key);
+        if (action.type === "edit") { setPanel(gitConfirmEdit(p, action.state)); return; }
+        if (action.type === "submit") {
+          if (!gitConfirmReady(p)) { setPanel(gitConfirmError(p, "the subject can't be empty")); return; }
+          setPanel(gitConfirmSetSubmitting(p, true));
+          if (p.mode === "commit") {
+            setTimeout(() => {
+              const r = gitOps.commit(gitConfirmMessage(p));
+              if (!r.ok) { setPanel((prev) => (prev?.kind === "git-confirm" ? gitConfirmError(prev as GitConfirmPanel, r.err || r.out) : prev)); return; }
+              setPanel(null);
+              invalidateGitBranch();
+              notice(`✓ committed · ${gitOps.lastCommits(1)[0] ?? ""}`);
+            }, 0);
+          } else {
+            void gitOps.prCreate({ title: p.subject.value.trim(), body: p.body }).then((r) => {
+              if (!r.ok) { setPanel((prev) => (prev?.kind === "git-confirm" ? gitConfirmError(prev as GitConfirmPanel, r.output.split("\n").find((l) => l.trim()) ?? "gh pr create failed") : prev)); return; }
+              setPanel(null);
+              notice(`✓ PR created · ${r.output.split("\n").findLast((l) => /https?:\/\//.test(l)) ?? r.output}`);
+            });
+          }
           return;
         }
         return;
