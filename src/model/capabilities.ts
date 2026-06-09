@@ -39,7 +39,8 @@ function exactUsage(spec: ModelSpec): UsageSupport {
 }
 
 function toolSupport(spec: ModelSpec): CapabilityValue {
-  if (spec.capabilities?.tools != null) return spec.capabilities.tools;
+  const override = spec.capabilities?.tools;
+  if (override != null && override !== "unknown") return override;
   const group = catalogProvider(spec.provider)?.group;
   if (spec.provider === "anthropic" || spec.provider === "openai" || spec.provider === "google" || spec.provider === "deepseek") return true;
   if (spec.provider === "bedrock") return !spec.sdkId.includes("nova-micro");
@@ -49,7 +50,8 @@ function toolSupport(spec: ModelSpec): CapabilityValue {
 }
 
 function imageSupport(spec: ModelSpec): CapabilityValue {
-  if (spec.capabilities?.images != null) return spec.capabilities.images;
+  const override = spec.capabilities?.images;
+  if (override != null && override !== "unknown") return override;
   if (spec.provider === "anthropic" || spec.provider === "openai" || spec.provider === "google" || spec.provider === "vertex") return true;
   if (spec.provider === "deepseek") return false;
   if (spec.provider === "bedrock") return !spec.sdkId.includes("nova-micro");
@@ -58,7 +60,8 @@ function imageSupport(spec: ModelSpec): CapabilityValue {
 }
 
 function schemaSupport(spec: ModelSpec): CapabilityValue {
-  if (spec.capabilities?.jsonSchema != null) return spec.capabilities.jsonSchema;
+  const override = spec.capabilities?.jsonSchema;
+  if (override != null && override !== "unknown") return override;
   if (spec.provider === "openai" || spec.provider === "google" || spec.provider === "anthropic") return true;
   if (spec.provider === "bedrock") return spec.sdkId.startsWith("anthropic.") ? true : "unknown";
   if (spec.provider === "vertex" || spec.provider === "azure" || spec.provider === "azure-foundry") return true;

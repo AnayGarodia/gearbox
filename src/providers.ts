@@ -213,7 +213,7 @@ function accountModelSpecs(): ModelSpec[] {
         id,
         provider: account.provider,
         sdkId,
-        label: sdkId.length > 24 ? sdkId.slice(0, 24) : sdkId,
+        label: sdkId,
         contextWindow: 128_000,
         capabilities: { source: "api-discovered", tools: "unknown", images: "unknown", jsonSchema: "unknown", usage: "partial" },
       });

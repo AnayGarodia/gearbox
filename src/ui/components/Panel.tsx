@@ -199,7 +199,7 @@ export function Panel({
             return (
               <Text key={r.id} backgroundColor={sel ? color.accentBg : undefined}>
                 <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
-                <Text color={pinned ? color.ok : color.text} bold={pinned}>{r.label.padEnd(22)}</Text>
+                <Text color={pinned ? color.ok : color.text} bold={pinned}>{(r.label.length > 28 ? r.label.slice(0, 27) + "…" : r.label).padEnd(28)}</Text>
                 <Text color={color.faint}>{r.provider}</Text>
                 {pinned ? <Text color={color.ok}>  {glyph.on} pinned</Text> : null}
               </Text>
