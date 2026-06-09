@@ -126,6 +126,7 @@ export const ACCOUNT_ADD_HELP =
   "  /account add azure <foundry-endpoint> <api-key>            Azure AI Foundry (pass the full https:// endpoint)\n" +
   "  /account add azure <resource-name> <api-key> [api-version] Azure OpenAI (pass the bare resource name)\n" +
   "  /account add bedrock <access-key-id> <secret> <region>     Amazon Bedrock\n" +
+  "  /account add vertex <project> <location>                   Google Vertex AI (gcloud ADC; paste a service-account JSON via the wizard)\n" +
   "  /account add openai-compat <name> <base-url> <api-key> <model> [model...]\n" +
   "  /account add <paste>         paste any key / AWS block / service-account JSON / endpoint (auto-detected)\n" +
   "  /account add <provider> <api-key>   e.g. anthropic, openai, openrouter\n" +

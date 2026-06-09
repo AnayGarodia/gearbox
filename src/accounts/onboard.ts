@@ -165,6 +165,39 @@ export async function addBedrockAccount(accessKeyId: string, secretAccessKey: st
   return { ok: true, account, message: `added ${account.label} (${id})` };
 }
 
+/** Store a Google Vertex AI account. Auth is gcloud ADC (application-default
+ *  login) by default, or a pasted service-account JSON stored by ref. Live
+ *  connectivity is verified on first use (see testAccount). */
+export async function addVertexAccount(project: string, location: string, serviceAccountJson?: string, opts: { id?: string; label?: string } = {}): Promise<AddResult> {
+  if (!project.trim() || !location.trim()) {
+    return { ok: false, message: "usage: /account add vertex <project> <location> [service-account-json]" };
+  }
+  const sa = serviceAccountJson?.trim();
+  if (sa) {
+    try {
+      const j = JSON.parse(sa);
+      if (j?.type !== "service_account") return { ok: false, message: 'vertex: that JSON is not a service-account key (expected "type": "service_account")' };
+    } catch {
+      return { ok: false, message: "vertex: the service-account JSON didn't parse" };
+    }
+  }
+  const id = opts.id ?? `vertex-${slugify(project)}`;
+  if (sa) await setSecret(`${id}:service-account`, sa);
+  const account: Account = {
+    id,
+    label: opts.label ?? `Vertex AI (${project.trim()})`,
+    provider: "vertex",
+    exec: "in-loop",
+    auth: sa
+      ? { kind: "vertex", project: project.trim(), location: location.trim(), serviceAccountRef: `${id}:service-account` }
+      : { kind: "vertex", project: project.trim(), location: location.trim(), adc: true },
+    enabled: true,
+    addedAt: Date.now(),
+  };
+  putAccount(account);
+  return { ok: true, account, message: `added ${account.label}${sa ? " (service account)" : " (ADC)"}` };
+}
+
 // Per-account config dir for a named CLI account, so multiple claude (or codex)
 // logins coexist. The unnamed account reuses the system default login.
 function cliProfileDir(id: string): string {
@@ -277,7 +310,7 @@ export async function addByPastedKey(key: string): Promise<AddResult> {
 function guidedMessageFor(g: CredentialGuess): string {
   if (g.kind === "aws") return `looks like AWS/Bedrock — provide all three: /account add bedrock <access-key-id> <secret> <region>`;
   if (g.kind === "azure") return `looks like Azure (${g.fields.resourceName ?? "resource"}) — add the key: /account add azure ${g.fields.endpoint ?? "<endpoint>"} <api-key>`;
-  if (g.kind === "vertex") return `looks like a Vertex service account — use: /account add vertex (guided), project ${g.fields.project || "<project>"}`;
+  if (g.kind === "vertex") return `looks like a Vertex service-account key. Paste it via the wizard: /account → "+ Add an account" → Google Vertex AI, or use gcloud ADC: /account add vertex ${g.fields.project || "<project>"} <location>`;
   return `couldn't identify that credential — use /account add <provider> <key>, or /onboard for options`;
 }
 

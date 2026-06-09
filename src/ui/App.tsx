@@ -36,7 +36,7 @@ import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loa
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
-import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, type PanelState, type PanelModelRow, type PanelSessionRow } from "./panel.ts";
+import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { classifyTask, type TaskKind } from "../agent/classify.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
@@ -44,7 +44,8 @@ import { resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount, defaultAccount } from "../accounts/store.ts";
 import type { Account } from "../accounts/types.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
-import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, addVertexAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs, type AddResult } from "../accounts/onboard.ts";
+import { ADD_SPECS, specFor, filterAddSpecs, buildPaletteAddRows, buildAddGuidance, type AddSpec } from "../accounts/add-spec.ts";
 import { discoverModels } from "../accounts/discover.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
@@ -316,8 +317,13 @@ function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingStat
           </>
         ) : (
           <>
-            <Text color={color.dim}>paste or type a key to get started</Text>
+            <Text color={color.dim}>get started in seconds:</Text>
             <Box marginTop={1}>
+              <Text color={color.accent}>/account</Text>
+              <Text color={color.faint}>  guided setup · any provider</Text>
+            </Box>
+            <Box marginTop={1}>
+              <Text color={color.faint}>or paste directly: </Text>
               <Text color={color.accent}>/account add &lt;api-key&gt;</Text>
             </Box>
           </>
@@ -1048,7 +1054,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (p.kind === "static") setPanel({ ...p, scroll: clampScroll(p.scroll + delta, panelMaxScrollRef.current) });
           else if (p.kind === "accounts") setPanel({ ...p, index: clampIndex(p.index + delta, panelAccountSlugsRef.current.length) });
           else if (p.kind === "sessions") setPanel({ ...p, index: clampIndex(p.index + delta, panelSessionsRef.current.length) });
-          else setPanel({ ...p, index: clampIndex(p.index + delta, filterModelRows(buildPanelModelRows(), p.filter).length) });
+          else if (p.kind === "wizard" && p.wizardPhase.phase === "pick") setPanel({ ...p, wizardPhase: { ...p.wizardPhase, index: clampIndex(p.wizardPhase.index + delta, filterAddSpecs(p.wizardPhase.filter).length) } });
+          else if (p.kind === "models") setPanel({ ...p, index: clampIndex(p.index + delta, filterModelRows(buildPanelModelRows(), p.filter).length) });
         } else queueScroll(delta); // frame-throttled (≤~60fps) so fast scrolls don't flood renders
       }
     };
@@ -1278,11 +1285,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       return take([
         { value: "/account off", label: "off", detail: "use API routing" },
         ...rows,
-        { value: "/account add codex", label: "add codex", detail: "ChatGPT subscription" },
-        { value: "/account add codex work", label: "add codex work", detail: "second ChatGPT account" },
-        { value: "/account add claude", label: "add claude", detail: "Claude subscription" },
-        { value: "/account add claude work", label: "add claude work", detail: "second Claude account" },
-        { value: "/account add", label: "add key", detail: "paste an API key" },
+        ...buildPaletteAddRows().map((r) => ({ value: r.command, label: r.label, detail: r.detail })),
       ]);
     }
     if (head === "/effort") {
@@ -1437,6 +1440,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
   const echo = (text: string) => push({ kind: "user", id: idRef.current++, text });
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
+
+  const handleAddResult = async (account: Account, initialMessage: string) => {
+    notice(`${initialMessage} · testing…`);
+    const t = await testAccount(account);
+    notice(t.ok ? `✓ added · ${t.message}` : `added, but the key test failed: ${t.message}`);
+    const d = await discoverModels(account);
+    if (d.models.length) {
+      putAccount({ ...account, models: d.models });
+      notice(`found ${d.models.length} model${d.models.length === 1 ? "" : "s"} on this account · /model to pick one`);
+    } else if (d.note) {
+      notice(d.note);
+    }
+    const mspec = d.models.map((id) => findModel(id)).find(Boolean) ?? modelRegistry().find((m) => m.provider === account.provider);
+    if (mspec) notice(`this account can: ${capabilitySummary(mspec)}`);
+  };
+
   const pushUsage = (view: UsageView) => push({ kind: "usage", id: idRef.current++, view });
   const pushAccounts = (view: AccountView) => push({ kind: "accounts", id: idRef.current++, view });
 
@@ -3258,29 +3277,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 res = await addOpenAICompatAccount(first, parts[2] ?? "", parts[3] ?? "", parts.slice(4));
               } else if (["bedrock", "aws"].includes(first)) {
                 res = await addBedrockAccount(parts[2] ?? "", parts[3] ?? "", parts[4] ?? "");
+              } else if (["vertex", "gcp"].includes(first)) {
+                res = await addVertexAccount(parts[2] ?? "", parts[3] ?? "", parts[4]);
               } else if (provGiven) res = await addApiKeyAccount(provGiven, keyVal);
               else res = await addByPastedKey(key); // sniffer identifies it or returns a guided message
               if (!res.ok || !res.account) {
-                notice(res.message);
+                notice(buildAddGuidance(first, res.message));
                 return;
               }
-              notice(`${res.message} · testing…`);
-              const t = await testAccount(res.account);
-              notice(t.ok ? `✓ added · ${t.message}` : `added, but the key test failed: ${t.message}`);
-              // Discover the models this account can actually serve (Azure
-              // deployments / Foundry catalog / gateway list) and persist them,
-              // so the model list reflects reality instead of catalog seeds.
-              const d = await discoverModels(res.account);
-              if (d.models.length) {
-                putAccount({ ...res.account, models: d.models });
-                notice(`found ${d.models.length} model${d.models.length === 1 ? "" : "s"} on this account · /model to pick one`);
-              } else if (d.note) {
-                notice(d.note);
-              }
-              // Capability readout: show what a representative model on this account
-              // can actually do (tools/images/json/effort), so the user knows up front.
-              const spec = d.models.map((id) => findModel(id)).find(Boolean) ?? modelRegistry().find((m) => m.provider === res.account!.provider);
-              if (spec) notice(`this account can: ${capabilitySummary(spec)}`);
+              void handleAddResult(res.account, res.message);
             })();
             return;
           }
@@ -3697,7 +3702,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // static dump or moves the selection in an interactive list; ⏎ acts.
     if (panelRef.current) {
       const p = panelRef.current;
-      if (key.escape) { setPanel(null); return; }
+      if (key.escape) {
+        // Wizard field phase: Esc steps back one field (or to pick) rather than closing.
+        if (p.kind === "wizard" && p.wizardPhase.phase === "field") {
+          const wSpec = p.wizardPhase.fieldIndex > 0 ? specFor(p.wizardPhase.specId) : undefined;
+          setPanel(wizardBack(p, wSpec));
+          return;
+        }
+        setPanel(null); return;
+      }
       if (p.kind === "static") {
         if (input === "q") { setPanel(null); return; }
         const max = panelMaxScrollRef.current;
@@ -3713,7 +3726,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const n = slugs.length;
         if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, n) });
         else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, n) });
-        else if (key.return) { const slug = slugs[clampIndex(p.index, n)]; setPanel(null); if (slug) handleCommand(`/account ${slug}`); }
+        else if (key.return) {
+          const slug = slugs[clampIndex(p.index, n)];
+          if (slug === "__add__") {
+            setPanel(wizardOpen("add an account"));
+          } else {
+            setPanel(null);
+            if (slug) handleCommand(`/account ${slug}`);
+          }
+        }
         return;
       }
       if (p.kind === "sessions") {
@@ -3722,6 +3743,59 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, n) });
         else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, n) });
         else if (key.return) { const s = sess[clampIndex(p.index, n)]; setPanel(null); if (s) loadInto(s); }
+        return;
+      }
+      // wizard: pick (provider list + type-to-filter) → field (one field at a time via applyKey)
+      if (p.kind === "wizard") {
+        const ph = p.wizardPhase;
+        if (ph.phase === "pick") {
+          const specs = filterAddSpecs(ph.filter);
+          if (key.upArrow) { setPanel(wizardPickMove(p, -1, specs.length)); return; }
+          if (key.downArrow) { setPanel(wizardPickMove(p, 1, specs.length)); return; }
+          if (key.return) {
+            const s = specs[clampIndex(ph.index, specs.length)];
+            if (s) {
+              if (s.group === "subscription") {
+                setPanel(null);
+                handleCommand(`/account add ${s.id.replace("-subscription", "")}`);
+              } else if (!s.fields.length) {
+                setPanel(null);
+                handleCommand(s.paletteCommand);
+              } else {
+                setPanel(wizardPickConfirm(p, s.id));
+              }
+            }
+            return;
+          }
+          if (key.backspace || key.delete) { setPanel(wizardPickBackspace(p)); return; }
+          if (input && !key.ctrl && !key.meta && !key.tab && input.length === 1 && input >= " ") {
+            setPanel(wizardPickFilter(p, input));
+            return;
+          }
+          return;
+        }
+        // field phase — keys go through applyKey just like the composer
+        const wSpec = specFor(ph.specId);
+        const action = applyKey(ph.fieldEdit, input, key);
+        if (action.type === "edit") {
+          setPanel(wizardFieldEdit(p, action.state));
+          return;
+        }
+        if (action.type === "submit") {
+          if (!wSpec) { setPanel(null); return; }
+          const next = wizardFieldAdvance(p, wSpec);
+          if (wizardIsComplete(next, wSpec)) {
+            const filledPhase = next.wizardPhase as Extract<typeof next.wizardPhase, { phase: "field" }>;
+            setPanel(null);
+            void wSpec.build(filledPhase.filled).then((res: AddResult) => {
+              if (res.ok && res.account) void handleAddResult(res.account, res.message);
+              else notice(buildAddGuidance(wSpec.id, res.message));
+            });
+          } else {
+            setPanel(next);
+          }
+          return;
+        }
         return;
       }
       // models: type-to-filter, ↑↓ select, ⏎ pin
@@ -4075,17 +4149,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   let panelAccountView: AccountView | undefined;
   let panelModels: PanelModelRow[] | undefined;
   let panelSessions: PanelSessionRow[] | undefined;
+  let panelWizardSpec: AddSpec | undefined;
   if (panel?.kind === "static") {
     panelStaticLines = itemsToLines(panel.items, panelInnerW);
     panelMaxScrollRef.current = Math.max(0, panelStaticLines.length - panelBodyHeight(transcriptHeight));
   } else if (panel?.kind === "accounts") {
     panelAccountView = buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current);
-    panelAccountSlugsRef.current = panelAccountView.rows.map((r) => r.alias);
+    // "__add__" is the logical index-0 row (+ Add an account); account rows follow.
+    panelAccountSlugsRef.current = ["__add__", ...panelAccountView.rows.map((r) => r.alias)];
   } else if (panel?.kind === "models") {
     panelModels = buildPanelModelRows(panelCurrentModel);
   } else if (panel?.kind === "sessions") {
     panelSessionsRef.current = resumableSessions();
     panelSessions = panelSessionsRef.current.map((s) => ({ id: s.id, when: sessionWhen(s.updatedAt), turns: s.turns?.length ?? 0, title: s.title || "(untitled)" }));
+  } else if (panel?.kind === "wizard" && panel.wizardPhase.phase === "field") {
+    panelWizardSpec = specFor(panel.wizardPhase.specId);
   }
 
   // Keep scrollTop pinned to the bottom as new lines stream in (unless scrolled up).
@@ -4242,7 +4320,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}
         {panel ? (
           <Box paddingX={1} flexGrow={1}>
-            <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} sessions={panelSessions} currentModelId={panelCurrentModel} staticLines={panelStaticLines} />
+            <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} sessions={panelSessions} currentModelId={panelCurrentModel} staticLines={panelStaticLines} wizardSpec={panelWizardSpec} />
           </Box>
         ) : tab !== "session" && !setupRequired ? (
           <Box flexGrow={1}>{tabView}</Box>
