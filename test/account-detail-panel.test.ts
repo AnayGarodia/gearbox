@@ -4,6 +4,8 @@ import {
   detailSetDeployments,
   detailSetAvailableModels,
   detailSetError,
+  detailSetModelsError,
+  detailStartRefresh,
   detailMoveIndex,
   detailStartDeploy,
   detailDeployFilter,
@@ -40,6 +42,7 @@ test("detailOpen: starts at browse phase, loading state", () => {
   expect(p.deployments).toBeNull();
   expect(p.availableModels).toBeNull();
   expect(p.submitting).toBe(false);
+  expect(p.refreshing).toBe(false);
   expect(p.detailPhase.phase).toBe("browse");
 });
 
@@ -56,10 +59,35 @@ test("detailSetAvailableModels: stores models", () => {
   expect(p.availableModels).toEqual(["gpt-4o", "gpt-35-turbo"]);
 });
 
-test("detailSetError: clears deployments, sets loadError", () => {
+test("detailSetError on the initial load: deployments stay null, loadError set", () => {
   const p = detailSetError(base(), "HTTP 401");
   expect(p.deployments).toBeNull();
   expect(p.loadError).toBe("HTTP 401");
+});
+
+test("detailSetError on a failed REFRESH: keeps the stale list visible", () => {
+  const loaded = detailSetDeployments(base(), [mkDep("d1")]);
+  const refreshing = detailStartRefresh(loaded);
+  expect(refreshing.refreshing).toBe(true);
+  expect(refreshing.deployments).toHaveLength(1); // list does NOT vanish during refresh
+  const failed = detailSetError(refreshing, "HTTP 500");
+  expect(failed.refreshing).toBe(false);
+  expect(failed.deployments).toHaveLength(1); // stale data beats a blank screen
+  expect(failed.loadError).toBe("HTTP 500");
+});
+
+test("detailSetDeployments clears refreshing; detailSetAvailableModels clears modelsError", () => {
+  const p = detailSetDeployments(detailStartRefresh(detailSetDeployments(base(), [])), [mkDep("d1")]);
+  expect(p.refreshing).toBe(false);
+  const m = detailSetAvailableModels(detailSetModelsError(base(), "boom"), ["gpt-4o"]);
+  expect(m.modelsError).toBeUndefined();
+  expect(m.availableModels).toEqual(["gpt-4o"]);
+});
+
+test("detailSetModelsError records the failure so deploy can explain itself", () => {
+  const p = detailSetModelsError(base(), "HTTP 403 insufficient role");
+  expect(p.modelsError).toBe("HTTP 403 insufficient role");
+  expect(p.availableModels).toBeNull(); // deploy stays disabled
 });
 
 // ── Browse navigation ─────────────────────────────────────────────────────────
@@ -218,4 +246,41 @@ test("detailBack: deploy-pick → browse", () => {
 test("detailBack: browse → no-op (App closes panel)", () => {
   const p = base();
   expect(detailBack(p).detailPhase.phase).toBe("browse"); // unchanged
+});
+
+// ── Shared panel helpers ──────────────────────────────────────────────────────
+
+import { truncate, fieldWindow } from "../src/ui/panel.ts";
+
+test("truncate: one rule, one glyph", () => {
+  expect(truncate("short", 10)).toBe("short");
+  expect(truncate("exactly-ten", 11)).toBe("exactly-ten");
+  expect(truncate("a-very-long-deployment-name", 10)).toBe("a-very-lo…");
+  expect(truncate("a-very-long-deployment-name", 10).length).toBe(10); // never exceeds n
+});
+
+test("fieldWindow: short value shows whole string, caret at end", () => {
+  const w = fieldWindow("abc", 3, 20);
+  expect(w.pre).toBe("abc");
+  expect(w.at).toBe(" "); // caret past the end renders as an inverse space
+  expect(w.post).toBe("");
+});
+
+test("fieldWindow: long value slides so the caret stays visible", () => {
+  const long = "a".repeat(50) + "XYZ"; // 53 chars
+  const atEnd = fieldWindow(long, 53, 20);
+  expect((atEnd.pre + atEnd.at + atEnd.post).length).toBeLessThanOrEqual(20);
+  expect(atEnd.pre.endsWith("XYZ")).toBe(true); // the tail (with the caret) is in view
+
+  const atStart = fieldWindow(long, 0, 20);
+  expect(atStart.at).toBe("a"); // caret char visible at the window head
+  expect(atStart.pre).toBe("");
+});
+
+test("fieldWindow: mid-string caret is inside the window", () => {
+  const v = "0123456789".repeat(5); // 50 chars
+  const w = fieldWindow(v, 25, 16);
+  const visible = w.pre + w.at + w.post;
+  expect(visible.length).toBeLessThanOrEqual(16);
+  expect(w.at).toBe(v[25]!);
 });

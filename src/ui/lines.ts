@@ -6,7 +6,7 @@
 // break Ink's width math. Wrapping happens here, at a known width, so every Line
 // is exactly one terminal row.
 import { marked } from "marked";
-import { color } from "./theme.ts";
+import { color, themeEpoch } from "./theme.ts";
 import { glyph } from "./theme.ts";
 import { highlightLine } from "./highlight.ts";
 import type { Item } from "./types.ts";
@@ -471,11 +471,13 @@ const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
 // unchanged across renders keep a stable object reference (setItems guarantees
 // this), so the WeakMap hits for history and misses only for the live tail.
 // Tool/phase/etc. items are not cached because they animate (spinner) and are cheap.
-const staticLineCache = new WeakMap<object, { width: number; lines: Line[] }>();
+// Hex colors are baked into the cached lines, so a /theme switch invalidates via
+// themeEpoch — without it, fullscreen history would stay in the old palette.
+const staticLineCache = new WeakMap<object, { width: number; epoch: number; lines: Line[] }>();
 
 export function staticItemLines(it: Item, width: number): Line[] {
   const hit = staticLineCache.get(it);
-  if (hit && hit.width === width) return hit.lines;
+  if (hit && hit.width === width && hit.epoch === themeEpoch) return hit.lines;
   const lines: Line[] = [];
   if (it.kind === "user") {
     const wrapped = wrapSpans(proseSpans(it.text, { color: color.user, bold: true, bg: color.userBg }), Math.max(width - 4, 1));
@@ -488,7 +490,7 @@ export function staticItemLines(it: Item, width: number): Line[] {
   } else if (it.kind === "assistant" && it.text) {
     lines.push(...indent(markdownToLines(it.text, Math.max(width - 2, 1)), 2));
   }
-  staticLineCache.set(it, { width, lines });
+  staticLineCache.set(it, { width, epoch: themeEpoch, lines });
   return lines;
 }
 

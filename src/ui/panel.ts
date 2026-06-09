@@ -49,6 +49,8 @@ export type PanelState =
       deployments: AzureDeploymentInfo[] | null;
       availableModels: string[] | null;
       loadError?: string;
+      modelsError?: string; // the models load failed (deploy disabled until r retries)
+      refreshing: boolean; // a reload is in flight; the stale list stays visible
       submitting: boolean;
       index: number; // selection in browse list
       detailPhase:
@@ -63,6 +65,29 @@ export type PanelState =
 export type WizardPanel = Extract<PanelState, { kind: "wizard" }>;
 
 export const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(n, hi));
+
+/** Shared ellipsis truncation — one glyph, one rule, everywhere a panel clips. */
+export const truncate = (s: string, n: number): string => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + "…" : s);
+
+/** Horizontal window for a single-line field input: slide a `w`-wide window so
+ *  the caret stays visible. `at` is the char under the cursor (a space when the
+ *  cursor sits past the end), rendered inverse by the caller. */
+export function fieldWindow(value: string, cursor: number, w: number): { pre: string; at: string; post: string } {
+  const width = Math.max(3, w);
+  const cur = clamp(cursor, 0, value.length);
+  // Window start: keep the caret in view, preferring to show trailing context.
+  let start = 0;
+  if (value.length + 1 > width) {
+    start = clamp(cur - Math.floor(width * 0.75), 0, Math.max(0, value.length + 1 - width));
+  }
+  const visible = value.slice(start, start + width);
+  const caretIn = cur - start;
+  return {
+    pre: visible.slice(0, caretIn),
+    at: caretIn < visible.length ? visible[caretIn]! : " ",
+    post: caretIn < visible.length ? visible.slice(caretIn + 1) : "",
+  };
+}
 
 /** Clamp a selection index into [0, count-1] (0 when empty). */
 export const clampIndex = (i: number, count: number): number => (count <= 0 ? 0 : clamp(i, 0, count - 1));
@@ -205,25 +230,37 @@ export function detailOpen(accountId: string, title: string): AccountDetailPanel
     accountId,
     deployments: null,
     availableModels: null,
+    refreshing: false,
     submitting: false,
     index: 0,
     detailPhase: { phase: "browse" },
   };
 }
 
-/** Store fetched deployments (clears loading state for the list). */
+/** Store fetched deployments (clears loading + refreshing state for the list). */
 export function detailSetDeployments(p: AccountDetailPanel, deployments: AzureDeploymentInfo[]): AccountDetailPanel {
-  return { ...p, deployments, loadError: undefined };
+  return { ...p, deployments, refreshing: false, loadError: undefined };
 }
 
-/** Store fetched available models. */
+/** Store fetched available models (clears a prior models error). */
 export function detailSetAvailableModels(p: AccountDetailPanel, models: string[]): AccountDetailPanel {
-  return { ...p, availableModels: models };
+  return { ...p, availableModels: models, modelsError: undefined };
 }
 
-/** Store a load error. */
+/** Begin a reload: the stale list stays visible under a "refreshing…" note. */
+export function detailStartRefresh(p: AccountDetailPanel): AccountDetailPanel {
+  return { ...p, refreshing: true, loadError: undefined };
+}
+
+/** Store a load error. An initial-load failure shows the bare error state; a
+ *  failed REFRESH keeps the stale list visible alongside the error note. */
 export function detailSetError(p: AccountDetailPanel, note: string): AccountDetailPanel {
-  return { ...p, deployments: null, loadError: note };
+  return { ...p, refreshing: false, loadError: note };
+}
+
+/** The available-models load failed: deploy is disabled until r retries. */
+export function detailSetModelsError(p: AccountDetailPanel, note: string): AccountDetailPanel {
+  return { ...p, modelsError: note };
 }
 
 /** Move the browse-phase selection (clamped). */

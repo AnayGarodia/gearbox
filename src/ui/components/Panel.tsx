@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { Viewport } from "./Viewport.tsx";
 import { itemsToLines, type Line } from "../lines.ts";
-import { panelBodyHeight, windowStart, filterModelRows, clampIndex, type PanelState, type PanelModelRow, type PanelSessionRow, type AccountDetailViewData } from "../panel.ts";
+import { panelBodyHeight, windowStart, filterModelRows, clampIndex, truncate, fieldWindow, type PanelState, type PanelModelRow, type PanelSessionRow, type AccountDetailViewData } from "../panel.ts";
 import { filterAddSpecs, type AddSpec } from "../../accounts/add-spec.ts";
 import type { AccountView } from "../types.ts";
 
@@ -159,7 +159,7 @@ export function Panel({
           <Box flexDirection="column" marginTop={1}>
             {filledEntries.map(([k, v]) => {
               const f = spec?.fields.find((x) => x.key === k);
-              const shown = f?.secret ? "••••••••" : !v.trim() ? "(skipped)" : v.length > 40 ? v.slice(0, 39) + "…" : v;
+              const shown = f?.secret ? "••••••••" : !v.trim() ? "(skipped)" : truncate(v, 40);
               return (
                 <Text key={k} color={color.faint}>
                   <Text color={color.ok}>{glyph.on} </Text>
@@ -174,11 +174,17 @@ export function Panel({
             <Text color={color.accent} bold>{field?.label ?? ""}</Text>
             {field?.secret ? <Text color={color.faint}>  (visible as typed)</Text> : null}
           </Text>
-          <Box>
-            <Text color={color.faint}>{glyph.prompt} </Text>
-            <Text color={color.text}>{ph.fieldEdit.value}</Text>
-            <Text color={color.accent} inverse> </Text>
-          </Box>
+          {(() => {
+            const fw = fieldWindow(ph.fieldEdit.value, ph.fieldEdit.cursor, Math.max(8, innerW - 4));
+            return (
+              <Box>
+                <Text color={color.faint}>{glyph.prompt} </Text>
+                <Text color={color.text}>{fw.pre}</Text>
+                <Text color={color.accent} inverse>{fw.at}</Text>
+                <Text color={color.text}>{fw.post}</Text>
+              </Box>
+            );
+          })()}
           {!ph.fieldEdit.value && field ? <Text color={color.faint}>  e.g. {field.placeholder}</Text> : null}
           {ph.fieldError ? <Text color={color.err}>  {glyph.err} {ph.fieldError}</Text> : null}
           {field?.hint ? (
@@ -208,7 +214,7 @@ export function Panel({
             return (
               <Text key={r.id} backgroundColor={sel ? color.accentBg : undefined}>
                 <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
-                <Text color={pinned ? color.ok : color.text} bold={pinned}>{(r.label.length > 28 ? r.label.slice(0, 27) + "…" : r.label).padEnd(28)}</Text>
+                <Text color={pinned ? color.ok : color.text} bold={pinned}>{truncate(r.label, 28).padEnd(28)}</Text>
                 <Text color={color.faint}>{r.provider}</Text>
                 {pinned ? <Text color={color.ok}>  {glyph.on} pinned</Text> : null}
               </Text>
@@ -226,29 +232,39 @@ export function Panel({
       const idx = clampIndex(panel.index, deps.length);
       const start = windowStart(idx, deps.length, listH);
       const slice = deps.slice(start, start + listH);
+      // Width-aware columns: the id column flexes with the terminal so a row
+      // can't wrap (a wrapped row breaks the 1-row-per-item window math).
+      const idW = Math.min(40, Math.max(20, innerW - 38));
       body = (
         <Box flexDirection="column" paddingX={1}>
           <Text color={color.faint}>
             {panel.loadError
-              ? <Text color={color.err}>{glyph.err} {panel.loadError}</Text>
+              ? <Text color={color.err}>{glyph.err} {truncate(panel.loadError, Math.max(8, innerW - 4))}</Text>
               : panel.deployments === null
               ? <Text>loading deployments…</Text>
+              : panel.refreshing
+              ? <Text>{deps.length} deployment{deps.length !== 1 ? "s" : ""} · refreshing…</Text>
               : <Text>{deps.length} deployment{deps.length !== 1 ? "s" : ""}</Text>}
-            {accountDetail?.endpoint ? <Text>  · {accountDetail.endpoint}</Text> : null}
+            {accountDetail?.endpoint && !panel.loadError ? <Text>  · {accountDetail.endpoint}</Text> : null}
             {panel.submitting ? <Text>  · working…</Text> : null}
           </Text>
           {deps.length === 0 && !panel.loadError && panel.deployments !== null ? (
-            <Text color={color.faint}>  no deployments yet · press d to deploy a model</Text>
+            <Text color={color.faint}>
+              {panel.modelsError
+                ? `  no deployments yet · couldn't load deployable models — r to retry`
+                : panel.availableModels === null
+                ? `  no deployments yet · loading deployable models…`
+                : `  no deployments yet · press d to deploy a model`}
+            </Text>
           ) : (
             slice.map((d, i) => {
               const sel = start + i === idx;
               const failed = d.status === "failed";
-              const running = d.status === "running" || d.status === "notstarted" || d.status === "canceled";
               return (
                 <Text key={d.id} backgroundColor={sel ? color.accentBg : undefined}>
                   <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
-                  <Text color={failed ? color.err : color.text} bold={sel}>{(d.id.length > 28 ? d.id.slice(0, 27) + "…" : d.id).padEnd(28)}</Text>
-                  <Text color={color.faint}>  {d.model.length > 22 ? d.model.slice(0, 21) + "…" : d.model}</Text>
+                  <Text color={failed ? color.err : color.text} bold={sel}>{truncate(d.id, idW).padEnd(idW)}</Text>
+                  <Text color={color.faint}>  {truncate(d.model, 22)}</Text>
                   <Text color={failed ? color.err : d.status === "succeeded" ? color.ok : color.warn}>  {d.status}</Text>
                   {d.capacityUnits !== undefined ? <Text color={color.faint}>  {d.capacityUnits}PTU</Text> : null}
                 </Text>
@@ -269,7 +285,7 @@ export function Panel({
         <Box flexDirection="column" paddingX={1}>
           {filtered.length === 0 ? (
             panel.availableModels === null
-              ? <Text color={color.faint}>loading available models…</Text>
+              ? <Text color={color.faint}>{panel.modelsError ? `${glyph.err} ${truncate(panel.modelsError, Math.max(8, innerW - 4))}` : "loading available models…"}</Text>
               : <Text color={color.faint}>no models match "{ph.filter}"</Text>
           ) : (
             slice.map((m, i) => {
@@ -277,14 +293,14 @@ export function Panel({
               return (
                 <Text key={m} backgroundColor={sel ? color.accentBg : undefined}>
                   <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
-                  <Text color={color.text} bold={sel}>{m}</Text>
+                  <Text color={color.text} bold={sel}>{truncate(m, Math.max(8, innerW - 4))}</Text>
                 </Text>
               );
             })
           )}
         </Box>
       );
-      hint = `${ph.filter ? `filter: ${ph.filter}  ·  ` : ""}↑↓ · ⏎ select · esc back`;
+      hint = `filter: ${ph.filter || "(type to filter)"}  ·  ↑↓ · ⏎ select · esc back`;
     } else if (ph.phase === "capacity-type") {
       const capacityTypes = [
         { id: "Standard", note: "pay-per-token · shared" },
@@ -311,6 +327,7 @@ export function Panel({
       );
       hint = "↑↓ · ⏎ select · esc back";
     } else if (ph.phase === "deploy-name") {
+      const fw = fieldWindow(ph.fieldEdit.value, ph.fieldEdit.cursor, Math.max(8, innerW - 4));
       body = (
         <Box flexDirection="column" paddingX={1}>
           <Text color={color.faint}>
@@ -322,8 +339,9 @@ export function Panel({
             <Text color={color.accent} bold>Deployment name</Text>
             <Box>
               <Text color={color.faint}>{glyph.prompt} </Text>
-              <Text color={color.text}>{ph.fieldEdit.value}</Text>
-              <Text color={color.accent} inverse> </Text>
+              <Text color={color.text}>{fw.pre}</Text>
+              <Text color={color.accent} inverse>{fw.at}</Text>
+              <Text color={color.text}>{fw.post}</Text>
             </Box>
             {!ph.fieldEdit.value ? <Text color={color.faint}>  e.g. gpt-4o-deployment</Text> : null}
             {ph.fieldError ? <Text color={color.err}>  {glyph.err} {ph.fieldError}</Text> : null}
@@ -333,17 +351,26 @@ export function Panel({
       );
       hint = "⏎ deploy · esc back";
     } else if (ph.phase === "confirm-delete") {
+      // Show what the user is about to destroy, not just its name.
+      const dep = panel.deployments?.find((d) => d.id === ph.deploymentId);
       body = (
         <Box flexDirection="column" paddingX={1}>
-          <Text>Delete <Text color={color.err} bold>{ph.deploymentId}</Text>?</Text>
+          <Text>Delete <Text color={color.err} bold>{truncate(ph.deploymentId, Math.max(8, innerW - 10))}</Text>?</Text>
+          {dep ? (
+            <Text color={color.faint}>
+              {"  "}model: <Text color={color.text}>{truncate(dep.model, 28)}</Text>
+              {"  ·  "}status: <Text color={dep.status === "failed" ? color.err : dep.status === "succeeded" ? color.ok : color.warn}>{dep.status}</Text>
+              {dep.capacityUnits !== undefined ? <Text>  ·  {dep.capacityUnits}PTU</Text> : null}
+            </Text>
+          ) : null}
           <Box marginTop={1}><Text color={color.faint}>This cannot be undone.</Text></Box>
           <Box marginTop={1}>
             <Text color={color.err} bold>⏎ confirm</Text>
-            <Text color={color.faint}>  · esc cancel</Text>
+            <Text color={color.faint}>  · n / esc cancel</Text>
           </Box>
         </Box>
       );
-      hint = "⏎ confirm delete · esc cancel";
+      hint = "⏎ confirm delete · n / esc cancel";
     }
   }
 

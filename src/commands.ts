@@ -67,6 +67,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/verify", usage: "/verify [off|auto]", desc: "checks after edits + auto-fix to green · /verify off disables", group: "modes" },
   // settings
   { name: "/config", usage: "/config", desc: "view or change saved settings", group: "settings" },
+  { name: "/theme", usage: "/theme [light|dark]", desc: "switch the color palette · light for light terminals", group: "settings" },
   // other
   { name: "/init", usage: "/init", desc: "scan this repo and write a GEARBOX.md guide", group: "other" },
   { name: "/keys", usage: "/keys", desc: "keyboard shortcuts", group: "other" },

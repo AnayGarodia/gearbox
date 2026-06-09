@@ -20,7 +20,7 @@ import { loadPrefs } from "./ui/prefs.ts";
 import { setYolo } from "./permission.ts";
 import { latestSession } from "./session.ts";
 import { renderGhost, type SpriteCell } from "./ui/ghost/engine.ts";
-import { wordmarkGradient } from "./ui/theme.ts";
+import { wordmarkGradient, setTheme } from "./ui/theme.ts";
 
 const VERSION = "0.2.81";
 const args = process.argv.slice(2);
@@ -586,6 +586,8 @@ if (process.stdout.isTTY && imageMode === "kitty") process.stdout.write(transmit
 // Fullscreen is the DEFAULT: fixed frame + pinned composer, like a coding IDE.
 // Use --inline or /config inline on for terminal-scrollback mode.
 const uiPrefs = loadPrefs();
+// Apply the saved palette BEFORE the first paint so even the banner is themed.
+if (uiPrefs.theme) setTheme(uiPrefs.theme);
 const explicitInline = args.includes("--inline") || process.env.GEARBOX_INLINE === "1" || process.env.GEARBOX_FULLSCREEN === "0";
 const explicitFullscreen = args.includes("--fullscreen") || process.env.GEARBOX_FULLSCREEN === "1";
 const wantsInline = explicitInline || (!explicitFullscreen && uiPrefs.fullscreen === false);

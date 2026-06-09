@@ -24,7 +24,7 @@ import { premiumRate, estimateSavings, formatPolicyString, savingsLine } from ".
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName, lowContextNotice } from "./character.ts";
-import { color, glyph } from "./theme.ts";
+import { color, glyph, setTheme, activeTheme } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
@@ -36,7 +36,7 @@ import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loa
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
-import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
+import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { classifyTask, type TaskKind } from "../agent/classify.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
@@ -392,6 +392,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
   const [ghostSkin, setGhostSkinState] = useState<GhostSkin>("base");
+  // Counter bumped on /theme so the whole tree repaints in the new palette
+  // (components read `color.*` lazily; this just forces the render pass).
+  const [, setThemeEpochState] = useState(0);
   // `linger` keeps the working line visible briefly after a turn for the celebrate/error beat.
   const [mascotState, setMascotState] = useState<MascotState>("thinking");
   const [linger, setLinger] = useState(false);
@@ -483,6 +486,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const panelMaxScrollRef = useRef(0); // max scroll for a static panel, set in render
   const panelAccountSlugsRef = useRef<string[]>([]); // row index → /account <slug>, set in render
   const panelSessionsRef = useRef<Session[]>([]); // row index → Session to load, set in render
+  // Monotonic token for account-detail loads: every fire bumps it, every .then
+  // checks it — a stale response (open vs refresh vs post-create racing) can
+  // never overwrite a newer one.
+  const detailLoadSeqRef = useRef(0);
   // Persistent usage strip (toggled by /usage) — stays above the composer until toggled
   // off, survives restarts, does not capture input.
   const [statusPinned, setStatusPinnedState] = useState(() => Boolean(loadPrefs().statusPinned));
@@ -2779,6 +2786,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           notice(on ? "vim mode on · esc for normal, i to insert" : "vim mode off");
           return;
         }
+        case "theme": {
+          echo(text);
+          const want = arg.trim().toLowerCase();
+          if (want !== "light" && want !== "dark") {
+            notice(`theme: ${activeTheme()} · switch: /theme light | /theme dark`);
+            return;
+          }
+          setTheme(want);
+          updatePrefs({ theme: want });
+          setThemeEpochState((e) => e + 1); // repaint the whole tree in the new palette
+          notice(`theme → ${want}${fullscreen ? "" : " · already-printed lines keep their colors (inline scrollback is written once)"}`);
+          return;
+        }
         case "config": {
           echo(text);
           const [key, val] = arg.split(/\s+/);
@@ -2790,7 +2810,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 `  notify  ${p.notify === false ? "off" : "on"}          desktop ping when a long turn finishes\n` +
                 `  inline  ${p.fullscreen === false ? "on" : "off"}         terminal scrollback instead of fixed bottom input (restart to apply)\n` +
                 `  verify  ${p.verify === "off" ? "off" : "auto"}        run checks after edits and auto-fix to green (also /verify)\n` +
-                `  change one: /config <vim|notify|inline|verify> <value>`,
+                `  theme   ${p.theme ?? "dark"}        color palette for dark or light terminals (also /theme)\n` +
+                `  change one: /config <vim|notify|inline|verify|theme> <value>`,
             );
             return;
           }
@@ -2810,8 +2831,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             verifyRef.current = on ? "auto" : "off";
             updatePrefs({ verify: on ? "auto" : "off" });
             notice(`verification ${on ? "auto" : "off"}`);
+          } else if (key === "theme") {
+            const want = (val ?? "").toLowerCase();
+            if (want !== "light" && want !== "dark") { notice("theme: /config theme <light|dark>"); return; }
+            setTheme(want);
+            updatePrefs({ theme: want });
+            setThemeEpochState((e) => e + 1);
+            notice(`theme → ${want}`);
           } else {
-            notice("settings: vim · notify · inline · verify");
+            notice("settings: vim · notify · inline · verify · theme");
           }
           return;
         }
@@ -3785,17 +3813,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             if (acc && (acc.provider === "azure" || acc.provider === "azure-foundry")) {
               setPanel(detailOpen(acc.id, accountName(acc)));
               const capturedAcc = acc;
+              const seq = ++detailLoadSeqRef.current;
               void listDeploymentDetails(capturedAcc).then((r) =>
                 setPanel((prev) =>
-                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id
+                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id && seq === detailLoadSeqRef.current
                     ? (r.ok ? detailSetDeployments(prev as AccountDetailPanel, r.deployments) : detailSetError(prev as AccountDetailPanel, r.note ?? "load failed"))
                     : prev,
                 ),
               );
               void listAvailableModels(capturedAcc).then((r) =>
                 setPanel((prev) =>
-                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id
-                    ? (r.ok ? detailSetAvailableModels(prev as AccountDetailPanel, r.models) : prev)
+                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id && seq === detailLoadSeqRef.current
+                    ? (r.ok
+                        ? detailSetAvailableModels(prev as AccountDetailPanel, r.models)
+                        : detailSetModelsError(prev as AccountDetailPanel, r.note ?? "couldn't load deployable models"))
                     : prev,
                 ),
               );
@@ -3827,7 +3858,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (key.upArrow) { setPanel(detailMoveIndex(p, -1, p.deployments?.length ?? 0)); return; }
           if (key.downArrow) { setPanel(detailMoveIndex(p, 1, p.deployments?.length ?? 0)); return; }
           if (input === "d" && !key.ctrl && !key.meta) {
-            if (p.availableModels !== null) { setPanel(detailStartDeploy(p)); } else { notice("models still loading — wait a moment"); }
+            if (p.availableModels !== null) { setPanel(detailStartDeploy(p)); }
+            else if (p.modelsError) { notice(`couldn't load deployable models: ${p.modelsError} · press r to retry`); }
+            else { notice("models still loading — wait a moment"); }
             return;
           }
           if ((key.backspace || key.delete) && p.deployments && p.deployments.length > 0) {
@@ -3836,17 +3869,34 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           if (input === "r" && !key.ctrl && !key.meta) {
+            if (p.deployments === null || p.refreshing) return; // initial load / refresh already in flight
             const acc = listAccounts().find((a) => a.id === p.accountId);
             if (acc) {
-              setPanel({ ...p, deployments: null, loadError: undefined });
+              // Keep the stale list visible under a "refreshing…" note instead of
+              // blanking it (the old inline `deployments: null` spread did that).
+              setPanel(detailStartRefresh(p));
               const capturedAcc = acc;
+              const seq = ++detailLoadSeqRef.current;
               void listDeploymentDetails(capturedAcc).then((r) =>
                 setPanel((prev) =>
-                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id
+                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id && seq === detailLoadSeqRef.current
                     ? (r.ok ? detailSetDeployments(prev as AccountDetailPanel, r.deployments) : detailSetError(prev as AccountDetailPanel, r.note ?? "load failed"))
                     : prev,
                 ),
               );
+              // A failed (or never-finished) models load retries here too — the
+              // only recovery path the panel has for deploy being disabled.
+              if (p.availableModels === null || p.modelsError) {
+                void listAvailableModels(capturedAcc).then((r) =>
+                  setPanel((prev) =>
+                    prev?.kind === "account-detail" && prev.accountId === capturedAcc.id && seq === detailLoadSeqRef.current
+                      ? (r.ok
+                          ? detailSetAvailableModels(prev as AccountDetailPanel, r.models)
+                          : detailSetModelsError(prev as AccountDetailPanel, r.note ?? "couldn't load deployable models"))
+                      : prev,
+                  ),
+                );
+              }
             }
             return;
           }
@@ -3900,9 +3950,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                       ? { ...detailSetSubmitting(prev as AccountDetailPanel, false), detailPhase: { phase: "browse" as const } }
                       : prev,
                   );
+                  const seq = ++detailLoadSeqRef.current;
                   void listDeploymentDetails(acc).then((lr) =>
                     setPanel((p2) =>
-                      p2?.kind === "account-detail" && p2.accountId === acc.id
+                      p2?.kind === "account-detail" && p2.accountId === acc.id && seq === detailLoadSeqRef.current
                         ? (lr.ok ? detailSetDeployments(p2 as AccountDetailPanel, lr.deployments) : p2)
                         : p2,
                     ),
@@ -3930,9 +3981,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               void deleteDeployment(acc, deploymentId).then((r) => {
                 if (!r.ok) {
                   notice(`delete failed: ${r.note ?? "unknown error"}`);
+                  const seq = ++detailLoadSeqRef.current;
                   void listDeploymentDetails(acc).then((lr) =>
                     setPanel((p2) =>
-                      p2?.kind === "account-detail" && p2.accountId === acc.id
+                      p2?.kind === "account-detail" && p2.accountId === acc.id && seq === detailLoadSeqRef.current
                         ? (lr.ok ? detailSetDeployments(p2 as AccountDetailPanel, lr.deployments) : p2)
                         : p2,
                     ),

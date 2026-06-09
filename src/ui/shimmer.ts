@@ -10,9 +10,12 @@
 import { color } from "./theme.ts";
 
 // Base (unlit) → bright core. A glance reads dark→teal→cyan as "lighting up".
-const GLOW = [color.faint, color.dim, color.accentDim, color.accent];
+// Built per call (not captured at import) so a runtime theme switch recolors
+// the glow — `color` is mutated in place by setTheme.
+const glow = () => [color.faint, color.dim, color.accentDim, color.accent];
 
 export function shimmer(text: string, frame: number): { ch: string; color: string }[] {
+  const GLOW = glow();
   const chars = [...text];
   const L = chars.length || 1;
   const peak = ((frame % L) + L) % L; // bright core, wrapping around the word
@@ -32,6 +35,7 @@ export function shimmer(text: string, frame: number): { ch: string; color: strin
 // (a sparkle, never a spinning glyph).
 const PETALS = ["✦", "✶", "✷", "✸", "✹", "✺"]; // closed → full bloom
 export function bloom(frame: number): { glyph: string; color: string } {
+  const GLOW = glow();
   const span = PETALS.length * 2 - 2; // open then close: 0,1,2,3,4,5,4,3,2,1
   const p = ((frame % span) + span) % span;
   const i = p < PETALS.length ? p : span - p;
