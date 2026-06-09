@@ -542,7 +542,17 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         if (it.status !== "running" && it.durationMs != null) head.push({ text: "  " + fmtMs(it.durationMs), color: color.faint });
         if (it.exitCode != null) head.push({ text: "  exit " + it.exitCode, color: it.exitCode === 0 ? color.faint : color.err });
         if (it.diff?.length) head.push({ text: "  " + diffStats(it.diff), color: color.faint });
-        out.push(head);
+        // For clean completed tools (no preview, no output, no diff) put the
+        // summary inline on the head so consecutive reads render as a tight block.
+        const redundantSummary = it.summary != null && (it.summary === it.name || it.summary.toLowerCase() === name);
+        const hasExtraOutput = !!(it.preview || (it.outputTail ?? it.stream) || it.diff?.length);
+        const inlineSummary = it.status !== "running" && it.summary && !redundantSummary && !hasExtraOutput && !(isShell && (it.outputTail ?? it.stream));
+        if (inlineSummary) {
+          head.push({ text: "  " + it.summary, color: it.status === "err" ? color.err : color.dim });
+          out.push(clipSpans(head, width));
+        } else {
+          out.push(head);
+        }
         if (it.status === "running" && it.activity) {
           // Single replacing status line for delegate progress, not a growing log.
           out.push(...indent([clipSpans([{ text: "└─ ", color: color.accentDim }, { text: it.activity, color: color.dim }], Math.max(width - 3, 8))], 3));
@@ -587,11 +597,9 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
             out.push(...streamLines(outTail, outCount, Math.max(width - 5, 1), expand));
           }
         }
-        // Skip the summary for shells that have output (it would duplicate the first
-        // output line already shown in the tail). Also skip when the summary just
-        // echoes the tool name (the CLI backend sets tool-end summary to the tool name).
-        const redundantSummary = it.summary != null && (it.summary === it.name || it.summary.toLowerCase() === name);
-        if (it.status !== "running" && it.summary && !redundantSummary && !(isShell && outTail)) {
+        // Summary as a separate line only for tools that have extra output (shell,
+        // write/edit with diff, preview). Simple reads/searches already put it inline.
+        if (!inlineSummary && it.status !== "running" && it.summary && !redundantSummary && !(isShell && outTail)) {
           out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: it.summary.slice(0, Math.max(width - 5, 1)), color: it.status === "err" ? color.err : color.dim }]);
         }
         if (it.diff?.length) out.push(...diffLines(it.diff, width, expand));

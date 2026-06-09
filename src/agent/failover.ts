@@ -23,6 +23,9 @@ export interface FailoverOpts {
   // Transient (network / 5xx) errors before any output get a few same-account
   // retries with backoff before failing the turn. Injectable for tests.
   maxTransientRetries?: number;
+  // When the entire pool is rate-limited, retry up to this many times with a
+  // waiting pause. Injectable for tests. Default: 3.
+  maxRateLimitRetries?: number;
   sleep?: (ms: number) => Promise<void>;
   backoffMs?: (attempt: number) => number;
 }
@@ -51,54 +54,79 @@ export function fixHint(account: Account, state: HealthState): string {
   return `check: /account ${account.slug ?? account.id}`;
 }
 
+// Delays between rate-limit retries: 10s, 20s, 40s.
+const RATE_LIMIT_DELAYS_MS = [10_000, 20_000, 40_000];
+
 export async function runWithFailover(opts: FailoverOpts): Promise<FailoverResult> {
   const { candidates, onEvent, recordHealth, resolveCreds, runOne } = opts;
   const maxRetries = opts.maxTransientRetries ?? 2;
+  const maxRateLimitRetries = opts.maxRateLimitRetries ?? RATE_LIMIT_DELAYS_MS.length;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const backoff = opts.backoffMs ?? ((attempt: number) => Math.min(8000, 400 * 2 ** (attempt - 1)));
-  const tried: { account: Account; state: HealthState; message: string }[] = [];
 
   if (!candidates.length) {
     onEvent({ type: "error", message: "no account is configured for this model — run /account add to add one" });
     return { messages: [], usage: { inputTokens: 0, outputTokens: 0 } };
   }
 
-  for (let i = 0; i < candidates.length; i++) {
-    const { account, model } = candidates[i]!;
-    const creds = await resolveCreds(account);
-    let res = await runOne({ account, model, creds });
+  let lastResult: FailoverResult = { messages: [], usage: { inputTokens: 0, outputTokens: 0 } };
 
-    // A transient blip (network/5xx) before any output: retry the same account a
-    // few times with backoff before giving up — a hiccup shouldn't lose the turn.
-    for (let attempt = 1; res.failure && !res.failure.producedOutput && isTransient(res.failure.raw) && attempt <= maxRetries; attempt++) {
-      onEvent({ type: "phase", label: `${account.slug ?? account.id} retry ${attempt}/${maxRetries}`, detail: "transient error — retrying", state: "running" });
-      await sleep(backoff(attempt));
-      res = await runOne({ account, model, creds });
+  for (let rateLimitRound = 0; rateLimitRound <= maxRateLimitRetries; rateLimitRound++) {
+    const tried: { account: Account; state: HealthState; message: string }[] = [];
+
+    for (let i = 0; i < candidates.length; i++) {
+      const { account, model } = candidates[i]!;
+      const creds = await resolveCreds(account);
+      let res = await runOne({ account, model, creds });
+
+      // A transient blip (network/5xx) before any output: retry the same account a
+      // few times with backoff before giving up — a hiccup shouldn't lose the turn.
+      for (let attempt = 1; res.failure && !res.failure.producedOutput && isTransient(res.failure.raw) && attempt <= maxRetries; attempt++) {
+        onEvent({ type: "phase", label: `${account.slug ?? account.id} retry ${attempt}/${maxRetries}`, detail: "transient error — retrying", state: "running" });
+        await sleep(backoff(attempt));
+        res = await runOne({ account, model, creds });
+      }
+
+      if (!res.failure) {
+        recordHealth(account, "ok");
+        return { ...res, usedAccountId: account.id };
+      }
+
+      const state = classifyError(account.provider, res.failure.raw);
+      recordHealth(account, state, res.failure.message);
+      tried.push({ account, state, message: res.failure.message });
+
+      const canFailover = isCredentialFailure(state) && !res.failure.producedOutput && i < candidates.length - 1;
+      if (canFailover) {
+        const next = candidates[i + 1]!.account;
+        onEvent({ type: "phase", label: `${account.slug ?? account.id} ${state}`, detail: `→ using ${next.slug ?? next.id}`, state: "err" });
+        continue;
+      }
+
+      // Only one candidate or this is the last — check if it's worth waiting and retrying.
+      lastResult = { ...res };
+      break;
     }
 
-    if (!res.failure) {
-      recordHealth(account, "ok");
-      return { ...res, usedAccountId: account.id };
-    }
-
-    const state = classifyError(account.provider, res.failure.raw);
-    recordHealth(account, state, res.failure.message);
-    tried.push({ account, state, message: res.failure.message });
-
-    const canFailover = isCredentialFailure(state) && !res.failure.producedOutput && i < candidates.length - 1;
-    if (canFailover) {
-      const next = candidates[i + 1]!.account;
-      onEvent({ type: "phase", label: `${account.slug ?? account.id} ${state}`, detail: `→ using ${next.slug ?? next.id}`, state: "err" });
+    // If every account in the pool hit a rate limit and no output was produced,
+    // pause and retry — the model exists, the key is valid, just need to wait.
+    const allRateLimited = tried.length > 0 && tried.every((t) => t.state === "rate-limited") && !lastResult.failure?.producedOutput;
+    if (allRateLimited && rateLimitRound < maxRateLimitRetries) {
+      const delayMs = RATE_LIMIT_DELAYS_MS[rateLimitRound] ?? RATE_LIMIT_DELAYS_MS[RATE_LIMIT_DELAYS_MS.length - 1]!;
+      const delaySec = Math.round(delayMs / 1000);
+      onEvent({ type: "phase", label: "rate limited", detail: `retrying in ${delaySec}s`, state: "running" });
+      await sleep(delayMs);
+      // Re-snapshot health after waiting so a recovered account re-enters the pool.
+      for (const { account } of candidates) recordHealth(account, "unknown");
       continue;
     }
 
-    // Terminal: emit one consolidated, actionable error now.
     onEvent({ type: "error", message: failureReport(tried) });
-    return { ...res };
+    return lastResult;
   }
 
-  onEvent({ type: "error", message: failureReport(tried) });
-  return { messages: [], usage: { inputTokens: 0, outputTokens: 0 } };
+  onEvent({ type: "error", message: failureReport([]) });
+  return lastResult;
 }
 
 function failureReport(tried: { account: Account; state: HealthState; message: string }[]): string {
