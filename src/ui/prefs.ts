@@ -17,7 +17,8 @@ export interface Prefs {
   statusPinned?: boolean; // /cost pins a persistent usage strip above the composer
   verify?: "auto" | "off"; // auto = run checks after edits and iterate to green; off = skip
   budgetCaps?: { session?: number; daily?: number; monthly?: number; total?: number }; // hard spend ceilings (/cap)
-  theme?: "dark" | "light"; // color palette (/theme); dark is the default
+  theme?: string; // color palette name (/theme); "dark" is the default — see theme.ts THEMES
+  editor?: string; // editor scheme for clickable file links (vscode default · cursor · windsurf · zed · off)
   offerTests?: boolean; // false = never offer the characterization test (/verify test off)
 }
 

@@ -216,7 +216,8 @@ function CodeRows({ lines, lang, width, start = 1, rowBg }: { lines: string[]; l
 }
 
 function DiffView({ lines, width }: { lines: { sign: "+" | "-"; text: string }[]; width: number }) {
-  const shown = lines.slice(0, DIFF_MAX);
+  const cap = lines.length > 24 ? 8 : DIFF_MAX; // big diffs collapse harder (matches lines.ts)
+  const shown = lines.slice(0, cap);
   const extra = lines.length - shown.length;
   return (
     <Box flexDirection="column" marginLeft={5} marginTop={1}>
@@ -382,7 +383,12 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
         {item.status === "running" && item.startedAt && Date.now() - item.startedAt >= 2000 ? <Text color={color.faint}>{"  " + fmtElapsed(Math.floor((Date.now() - item.startedAt) / 1000))}</Text> : null}
         {item.status !== "running" && item.durationMs != null ? <Text color={color.faint}>{"  " + fmtMs(item.durationMs)}</Text> : null}
         {item.exitCode != null ? <Text color={item.exitCode === 0 ? color.faint : color.err}>{"  exit " + item.exitCode}</Text> : null}
-        {item.diff?.length ? <Text color={color.faint}>{"  " + diffStats(item.diff)}</Text> : null}
+        {item.diff?.length ? (
+          <Text>
+            <Text color={color.ok}>{"  +" + item.diff.filter((l) => l.sign === "+").length}</Text>
+            <Text color={color.err}>{" −" + item.diff.filter((l) => l.sign === "-").length}</Text>
+          </Text>
+        ) : null}
       </Box>
       {item.status === "running" && item.activity ? (
         <Box marginLeft={3}>

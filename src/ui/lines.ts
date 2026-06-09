@@ -14,6 +14,7 @@ import { barCells } from "../accounts/usage.ts";
 import { retryPhrase } from "./collapse.ts";
 import { scorecardRows } from "../commands.ts";
 import { PROSE_RE, proseTokenStyle } from "./prose.ts";
+import { editorUrl, pathish } from "./links.ts";
 
 import { limitColor } from "./severity.ts";
 // Limit window value: a utilization bar when a percentage is known, else a status word.
@@ -34,7 +35,7 @@ const accountStateColor = (status: string) =>
   status === "duplicate" || status.startsWith("⚠") || status.startsWith("⏳") ? color.warn :
   color.faint;
 
-export type Span = { text: string; color?: string; bold?: boolean; italic?: boolean; dim?: boolean; bg?: string };
+export type Span = { text: string; color?: string; bold?: boolean; italic?: boolean; dim?: boolean; bg?: string; link?: string };
 export type Line = Span[];
 export const BLANK: Line = [];
 
@@ -139,13 +140,18 @@ function proseSpans(text: string, base: Style = { color: color.text }): Span[] {
 
 function noticeSpans(text: string): Span[] {
   const out: Span[] = [];
-  const re = /(\/[a-z][\w-]*(?:\s+[^\s]+)?|\b(?:Claude|ChatGPT|Anthropic|OpenAI|OpenRouter|subscription|API key|active|current|switch|add|remove|use)\b|\b\d+\.\b|\b\/account\s+\d+\b|`[^`]+`)/gi;
+  const re = /(https?:\/\/[^\s)\]]+|\/[a-z][\w-]*(?:\s+[^\s]+)?|\b(?:Claude|ChatGPT|Anthropic|OpenAI|OpenRouter|subscription|API key|active|current|switch|add|remove|use)\b|\b\d+\.\b|\b\/account\s+\d+\b|`[^`]+`)/gi;
   let last = 0;
   for (const m of text.matchAll(re)) {
     const idx = m.index ?? 0;
     const token = m[0]!;
     if (idx > last) out.push({ text: text.slice(last, idx), color: color.dim });
     const low = token.toLowerCase();
+    if (/^https?:\/\//i.test(token)) {
+      out.push({ text: token, color: color.path, link: token });
+      last = idx + token.length;
+      continue;
+    }
     const style =
       token.startsWith("/") || low.startsWith("/account") ? { color: color.accent, bold: true, bg: color.accentBg } :
       token.startsWith("`") ? { color: color.path, bg: color.codeBg } :
@@ -373,15 +379,23 @@ export function markdownToLines(md: string, width: number): Line[] {
 }
 
 // ── transcript items → lines ──
-function diffStats(lines?: { sign: "+" | "-"; text: string }[]): string {
-  if (!lines?.length) return "";
+// Colored ±counts for the tool head: green adds, red deletes — the glanceable
+// "how big was this edit" signal (a la `git diff --stat`).
+function diffStatSpans(lines?: { sign: "+" | "-"; text: string }[]): Span[] {
+  if (!lines?.length) return [];
   const add = lines.filter((l) => l.sign === "+").length;
   const del = lines.filter((l) => l.sign === "-").length;
-  return `+${add} -${del}`;
+  return [
+    { text: `  +${add}`, color: color.ok },
+    { text: ` −${del}`, color: color.err },
+  ];
 }
 
 function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, expand = false): Line[] {
-  const MAX = expand ? Infinity : 16;
+  // Big diffs collapse HARDER: past ~24 changed lines the body is mostly noise
+  // in the transcript — show a taste, keep the colored ± header honest, and
+  // let ⌃O bring the whole thing back.
+  const MAX = expand ? Infinity : diff.length > 24 ? 8 : 16;
   const shown = diff.slice(0, MAX);
   const contentWidth = Math.max(width - 3, 1);
   const out: Line[] = shown.map((d) => {
@@ -530,7 +544,10 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         const headUsed = 2 + 1 + 2 + 6; // pad + dot + spaces + name
         if (it.arg) {
           const shownArg = isShell ? it.arg : relPath(it.arg);
-          head.push({ text: " " + shownArg.slice(0, Math.max(width - headUsed - 1, 0)), color: isShell ? color.text : color.path, bold: true });
+          // File-tool heads are clickable: OSC 8 → the configured editor
+          // (vscode:// by default; /config editor changes or disables it).
+          const link = !isShell && pathish(shownArg) ? editorUrl(shownArg) : undefined;
+          head.push({ text: " " + shownArg.slice(0, Math.max(width - headUsed - 1, 0)), color: isShell ? color.text : color.path, bold: true, link });
         }
         if (it.status === "running") {
           // No "working" badge here (it shows once at the bottom) — just the ticking
@@ -540,7 +557,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         }
         if (it.status !== "running" && it.durationMs != null) head.push({ text: "  " + fmtMs(it.durationMs), color: color.faint });
         if (it.exitCode != null) head.push({ text: "  exit " + it.exitCode, color: it.exitCode === 0 ? color.faint : color.err });
-        if (it.diff?.length) head.push({ text: "  " + diffStats(it.diff), color: color.faint });
+        if (it.diff?.length) head.push(...diffStatSpans(it.diff));
         // For clean completed tools (no preview, no output, no diff) put the
         // summary inline on the head so consecutive reads render as a tight block.
         const redundantSummary = it.summary != null && (it.summary === it.name || it.summary.toLowerCase() === name);

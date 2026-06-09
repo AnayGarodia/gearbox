@@ -40,6 +40,8 @@ export type PanelState =
         | { phase: "pick"; index: number; filter: string }
         | { phase: "field"; specId: string; fieldIndex: number; fieldEdit: Edit; fieldError: string | null; filled: Record<string, string> };
     }
+  // theme gallery: ↑↓ previews LIVE (the whole UI repaints), ⏎ keeps, esc reverts
+  | { kind: "themes"; title: string; index: number; original: string }
   // git confirm: review/edit a generated commit message or PR title before it runs
   | {
       kind: "git-confirm";

@@ -1,5 +1,6 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text , Transform } from "ink";
+import { osc8 } from "../links.ts";
 import { color } from "../theme.ts";
 import type { Line } from "../lines.ts";
 
@@ -61,11 +62,15 @@ const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidt
         const end = pos + s.text.length;
         pos = end;
         if (!range || end <= range[0] || start >= range[1]) {
-          return [
+          const span = (
             <Text key={j} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>
               {s.text}
-            </Text>,
-          ];
+            </Text>
+          );
+          // OSC 8 hyperlink, injected POST-LAYOUT via Transform so Ink's width
+          // math never sees the escape bytes (raw ANSI in span text corrupts
+          // wrapping — the oldest rule in this codebase).
+          return [s.link ? <Transform key={j} transform={osc8(s.link)}>{span}</Transform> : span];
         }
         const a = Math.max(range[0] - start, 0);
         const b = Math.min(range[1] - start, s.text.length);

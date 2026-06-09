@@ -81,24 +81,106 @@ export const light: Theme = {
   diffAddBg: "#DDF4E4", diffDelBg: "#FBE9E9", diffContextBg: "#F3F4F6",
 };
 
+// ── The gallery ───────────────────────────────────────────────────────────────
+// Every palette keeps the SEMANTIC vocabulary (accent = interactive/now, ok/
+// warn/err = severity, money neutral) — only the hues change. The Theme
+// interface forces completeness, so a missing field is a compile error.
+
+// Gruvbox (dark): warm retro groove — aqua accent, the classic red/green/yellow.
+export const gruvbox: Theme = {
+  accent: "#8EC07C", accentDim: "#689D6A", text: "#EBDBB2", dim: "#A89984", faint: "#7C6F64",
+  user: "#83A598", ok: "#B8BB26", warn: "#FABD2F", err: "#FB4934", run: "#83A598", shell: "#D3869B", navy: "#1D2021",
+  userBg: "#3C3836", codeBg: "#32302F", panelBg: "#32302F", accentBg: "#2E3B33",
+  path: "#83A598",
+  codeKeyword: "#D3869B", codeString: "#B8BB26", codeNumber: "#FABD2F",
+  codeComment: "#928374", codePunct: "#A89984",
+  codeFunction: "#FABD2F", codeType: "#8EC07C", codeOperator: "#A89984", codeBracket: "#928374",
+  diffAddBg: "#2A3325", diffDelBg: "#3C2526", diffContextBg: "#32302F",
+};
+
+// Catppuccin (mocha): soft pastels on a deep base — teal accent, mauve keywords.
+export const catppuccin: Theme = {
+  accent: "#94E2D5", accentDim: "#6BB0A8", text: "#CDD6F4", dim: "#A6ADC8", faint: "#6C7086",
+  user: "#89B4FA", ok: "#A6E3A1", warn: "#F9E2AF", err: "#F38BA8", run: "#B4BEFE", shell: "#F5C2E7", navy: "#11111B",
+  userBg: "#202A3C", codeBg: "#313244", panelBg: "#313244", accentBg: "#203437",
+  path: "#89B4FA",
+  codeKeyword: "#CBA6F7", codeString: "#A6E3A1", codeNumber: "#FAB387",
+  codeComment: "#6C7086", codePunct: "#9399B2",
+  codeFunction: "#89B4FA", codeType: "#94E2D5", codeOperator: "#9399B2", codeBracket: "#9399B2",
+  diffAddBg: "#2A3B2E", diffDelBg: "#41262E", diffContextBg: "#313244",
+};
+
+// Solarized (dark): the precise low-contrast classic — cyan accent.
+export const solarized: Theme = {
+  accent: "#2AA198", accentDim: "#1E7D76", text: "#93A1A1", dim: "#657B83", faint: "#586E75",
+  user: "#268BD2", ok: "#859900", warn: "#B58900", err: "#DC322F", run: "#6C71C4", shell: "#D33682", navy: "#002B36",
+  userBg: "#073642", codeBg: "#073642", panelBg: "#073642", accentBg: "#0A3C41",
+  path: "#268BD2",
+  codeKeyword: "#6C71C4", codeString: "#859900", codeNumber: "#B58900",
+  codeComment: "#586E75", codePunct: "#657B83",
+  codeFunction: "#268BD2", codeType: "#2AA198", codeOperator: "#657B83", codeBracket: "#586E75",
+  diffAddBg: "#0D3A24", diffDelBg: "#3D1A16", diffContextBg: "#073642",
+};
+
+// High contrast: maximum legibility — pure white text, saturated semantics.
+export const contrast: Theme = {
+  accent: "#00FFFF", accentDim: "#00B3B3", text: "#FFFFFF", dim: "#C0C0C0", faint: "#808080",
+  user: "#80D4FF", ok: "#00FF66", warn: "#FFD700", err: "#FF4040", run: "#8C9EFF", shell: "#FF7AD9", navy: "#000000",
+  userBg: "#002B40", codeBg: "#101010", panelBg: "#101010", accentBg: "#003A3A",
+  path: "#66B3FF",
+  codeKeyword: "#DDA0FF", codeString: "#99FF99", codeNumber: "#FFD700",
+  codeComment: "#9E9E9E", codePunct: "#C0C0C0",
+  codeFunction: "#66B3FF", codeType: "#00E5CC", codeOperator: "#C0C0C0", codeBracket: "#C0C0C0",
+  diffAddBg: "#003D1A", diffDelBg: "#4D0F0F", diffContextBg: "#101010",
+};
+
+export interface ThemeEntry {
+  name: string; // what the user types: /theme gruvbox
+  label: string;
+  hint: string; // one-line description in the picker
+  palette: Theme;
+}
+
+export const THEMES: ThemeEntry[] = [
+  { name: "dark", label: "gearbox dark", hint: "periwinkle on charcoal · the default", palette: dark },
+  { name: "light", label: "gearbox light", hint: "the same vocabulary tuned for white terminals", palette: light },
+  { name: "gruvbox", label: "gruvbox", hint: "warm retro groove · aqua accent", palette: gruvbox },
+  { name: "catppuccin", label: "catppuccin mocha", hint: "soft pastels on a deep base", palette: catppuccin },
+  { name: "solarized", label: "solarized dark", hint: "the precise low-contrast classic", palette: solarized },
+  { name: "contrast", label: "high contrast", hint: "maximum legibility · pure white text", palette: contrast },
+];
+
 // THE theme object every component reads (`color.accent` at render time).
 // Mutated in place by setTheme so all importers stay untouched — never
 // destructure `color` at module scope (the values would go stale on switch).
 export const color: Theme = { ...dark };
 
-export type ThemeName = "dark" | "light";
+export type ThemeName = string;
 
 // Bumped on every switch; render caches that bake hex strings (lines.ts
 // staticLineCache) compare this to know their colors are stale.
 export let themeEpoch = 0;
 
-export function activeTheme(): ThemeName {
-  return color.text === light.text ? "light" : "dark";
+let currentTheme = "dark";
+
+export function activeTheme(): string {
+  return currentTheme;
 }
 
-export function setTheme(name: ThemeName): void {
-  Object.assign(color, name === "light" ? light : dark);
+export function themeByName(name: string): ThemeEntry | undefined {
+  const q = name.trim().toLowerCase();
+  return THEMES.find((t) => t.name === q) ?? THEMES.find((t) => t.name.startsWith(q) || t.label.toLowerCase().includes(q));
+}
+
+/** Switch the palette in place. Returns false (and changes nothing) for an
+ *  unknown name. */
+export function setTheme(name: string): boolean {
+  const entry = themeByName(name);
+  if (!entry) return false;
+  Object.assign(color, entry.palette);
+  currentTheme = entry.name;
   themeEpoch++;
+  return true;
 }
 
 // Install-screen wordmark gradient: same hue as the in-app accent so the

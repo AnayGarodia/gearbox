@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import { limitColor } from "../severity.ts";
+import { ShimmerText } from "./Shimmer.tsx";
 import { barCells, type LimitWindow, type UsageAcct } from "../../accounts/usage.ts";
 
 // One bar, one direction, everywhere: the fill is "% USED" colored by the
@@ -88,7 +89,7 @@ export function StatusStrip({
             ) : l.status === "warn" ? (
               <Text color={color.warn}>near limit{l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}</Text>
             ) : subProbing ? (
-              <Text color={color.faint}>checking…</Text>
+              <ShimmerText text="checking…" />
             ) : l.resetsIn ? (
               <Text color={color.ok}>ok  <Text color={color.faint}>·  {l.resetsIn}</Text></Text>
             ) : (

@@ -1,7 +1,8 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { color, glyph } from "../theme.ts";
+import { color, glyph, THEMES } from "../theme.ts";
 import { Viewport } from "./Viewport.tsx";
+import { ShimmerText } from "./Shimmer.tsx";
 import { itemsToLines, type Line } from "../lines.ts";
 import { panelBodyHeight, windowStart, filterModelRows, clampIndex, truncate, fieldWindow, type PanelState, type PanelModelRow, type PanelSessionRow, type AccountDetailViewData } from "../panel.ts";
 import { filterAddSpecs, type AddSpec } from "../../accounts/add-spec.ts";
@@ -224,6 +225,32 @@ export function Panel({
       </Box>
     );
     hint = `filter: ${panel.filter || "(type to filter)"}  ·  ↑↓ · ⏎ pin · esc close`;
+  } else if (panel.kind === "themes") {
+    const idx = clampIndex(panel.index, THEMES.length);
+    body = (
+      <Box flexDirection="column" paddingX={1}>
+        {THEMES.map((t, i) => {
+          const sel = i === idx;
+          const active = t.name === panel.original;
+          return (
+            <Text key={t.name} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+              <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
+              <Text color={color.text} bold={sel}>{t.label.padEnd(20)}</Text>
+              {/* A swatch of the palette's own semantics — readable in ANY theme. */}
+              <Text color={t.palette.accent}>{glyph.on}</Text>
+              <Text color={t.palette.ok}>{glyph.on}</Text>
+              <Text color={t.palette.warn}>{glyph.on}</Text>
+              <Text color={t.palette.err}>{glyph.on}</Text>
+              <Text color={t.palette.path}>{glyph.on}</Text>
+              <Text color={color.faint}>  {t.hint}</Text>
+              {active ? <Text color={color.ok}>  {glyph.check} current</Text> : null}
+            </Text>
+          );
+        })}
+        <Box marginTop={1}><Text color={color.faint}>the whole screen previews as you move</Text></Box>
+      </Box>
+    );
+    hint = "↑↓ preview live · ⏎ keep · esc revert";
   } else if (panel.kind === "git-confirm") {
     const fw = fieldWindow(panel.subject.value, panel.subject.cursor, Math.max(8, innerW - 4));
     // Budget with the RENDERED file rows (≤6 + "+N more"), not the raw staged
@@ -275,7 +302,7 @@ export function Panel({
             {panel.loadError
               ? <Text color={color.err}>{glyph.err} {truncate(panel.loadError, Math.max(8, innerW - 4))}</Text>
               : panel.deployments === null
-              ? <Text>loading deployments…</Text>
+              ? <ShimmerText text="loading deployments…" />
               : panel.refreshing
               ? <Text>{deps.length} deployment{deps.length !== 1 ? "s" : ""} · refreshing…</Text>
               : <Text>{deps.length} deployment{deps.length !== 1 ? "s" : ""}</Text>}
@@ -319,7 +346,7 @@ export function Panel({
         <Box flexDirection="column" paddingX={1}>
           {filtered.length === 0 ? (
             panel.availableModels === null
-              ? <Text color={color.faint}>{panel.modelsError ? `${glyph.err} ${truncate(panel.modelsError, Math.max(8, innerW - 4))}` : "loading available models…"}</Text>
+              ? (panel.modelsError ? <Text color={color.faint}>{glyph.err} {truncate(panel.modelsError, Math.max(8, innerW - 4))}</Text> : <ShimmerText text="loading available models…" />)
               : <Text color={color.faint}>no models match “{ph.filter}”</Text>
           ) : (
             slice.map((m, i) => {

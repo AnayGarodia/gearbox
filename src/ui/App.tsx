@@ -24,7 +24,7 @@ import { premiumRate, estimateSavings, formatPolicyString, savingsLine } from ".
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName, lowContextNotice } from "./character.ts";
-import { color, glyph, setTheme, activeTheme } from "./theme.ts";
+import { color, glyph, setTheme, activeTheme, THEMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
@@ -88,6 +88,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { computeDiff, diffStat } from "../diff.ts";
 import { updateRetrievalFile, resetRetrievalIndex } from "../context/retrieve.ts";
+import { addToast, TOAST_TTL_MS, type Toast, type ToastKind } from "./toast.ts";
+import { editorNames, setEditorPref } from "./links.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -200,6 +202,9 @@ function shortFailure(message: string): string {
 // System prompts for the /commit and /pr generators (runCompletion, no tools).
 const COMMIT_MSG_SYSTEM =
   "You write git commit messages. Given a staged diff, reply with ONLY the commit message: an imperative subject line of at most 72 characters; add a short body (wrapped at 72) after a blank line only when the change genuinely needs explanation. No markdown fences, no surrounding quotes, no trailing period on the subject.";
+const TITLE_SYSTEM =
+  "You title coding sessions. Reply with ONLY a 3-8 word title summarizing what the user is working on — lowercase except proper nouns and code identifiers, no quotes, no trailing period. Example: fix azure deploy 404 in manage.ts";
+
 const PR_SYSTEM =
   "You write GitHub pull-request titles and bodies. Given the branch's commits and a diffstat, reply with the PR title on the first line (at most 80 characters, imperative), then a blank line, then a concise markdown body: what changed and why, with a short bullet list when there are several changes. No placeholders, no fences around the whole reply.";
 
@@ -453,8 +458,11 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const transcriptHeightLiveRef = useRef(1);
   const [transcriptSelection, setTranscriptSelectionState] = useState<ViewSelection | null>(null);
   const transcriptSelectionRef = useRef<ViewSelection | null>(null);
-  const [copiedNotice, setCopiedNotice] = useState<string | null>(null);
-  const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ephemeral toasts (src/ui/toast.ts): short confirmations that expire after
+  // ~2s instead of becoming permanent transcript lines.
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastIdRef = useRef(0);
+  const toastTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const outCharsRef = useRef(0); // streamed output chars this turn, for a live tok/s estimate
   // Measured from the first output token, not turn start, so thinking time doesn't drag the rate to ~1/s.
   const firstOutputAtRef = useRef(0);
@@ -824,19 +832,23 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
   useEffect(() => () => { if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current); }, []); // clear the paste coalescer timer on unmount
 
+  const toast = useCallback((text: string, kind: ToastKind = "ok") => {
+    const id = ++toastIdRef.current;
+    setToasts((prev) => addToast(prev, { id, text, kind, at: Date.now() }));
+    const t = setTimeout(() => {
+      toastTimersRef.current.delete(t);
+      setToasts((prev) => prev.filter((x) => x.id !== id));
+    }, TOAST_TTL_MS);
+    toastTimersRef.current.add(t);
+  }, []);
+  useEffect(() => () => { for (const t of toastTimersRef.current) clearTimeout(t); }, []);
   const copyWithFeedback = useCallback((text: string) => {
     const clean = text.replace(/[ \t]+\n/g, "\n").trim();
     if (!clean) return;
     copyToClipboard(clean);
-    setCopiedNotice(`copied ${clean.length} chars to clipboard`);
-    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-    copiedTimerRef.current = setTimeout(() => setCopiedNotice(null), 1400);
-  }, []);
-  const flashStatus = useCallback((text: string, ms = 1200) => {
-    setCopiedNotice(text);
-    if (copiedTimerRef.current) clearTimeout(copiedTimerRef.current);
-    copiedTimerRef.current = setTimeout(() => setCopiedNotice(null), ms);
-  }, []);
+    toast(`copied ${clean.length} chars`);
+  }, [toast]);
+  const flashStatus = useCallback((text: string) => toast(text, "info"), [toast]);
 
   const lineText = (line: Line) => line.map((s) => s.text).join("");
   const textFromTranscriptSelection = (sel: ViewSelection): string => {
@@ -2005,7 +2017,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     }
     effortRef.current = level;
     setEffortState(level);
-    notice(`effort: ${level} · ${target.label}`);
+    toast(`effort → ${level} · ${target.label}`);
   };
 
   // Hand the terminal to an interactive child (e.g. `claude auth login`'s OAuth
@@ -2325,6 +2337,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           at: Date.now(),
         });
         sessionRef.current.turns.push(turnMetaOf(spendEv));
+        // Session auto-title: after the FIRST turn, replace the clipped-prompt
+        // placeholder with a real title from the cheap-model seam (fire-and-
+        // forget; the heuristic title stays if generation can't run). /resume
+        // stops being a wall of identical prompt prefixes.
+        if (sessionRef.current.turns.length === 1) {
+          const sid = sessionRef.current.id;
+          void generateGitText(TITLE_SYSTEM, clipForPrompt(prompt, 600)).then((t) => {
+            const title = t?.split("\n")[0]?.trim().replace(/^["'`]+|["'`.]+$/g, "").slice(0, 80);
+            if (title && sessionRef.current.id === sid) {
+              sessionRef.current.title = title;
+              persist();
+            }
+          });
+        }
         const cost = spendEv.costUSD;
         // The single canonical per-turn routing line: `routed → provider · model · cost`.
         // Every field is real — the model/provider that actually ran (routedRef tracks
@@ -2764,11 +2790,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (a === "off") {
             verifyRef.current = "off";
             updatePrefs({ verify: "off" });
-            notice("verification off · no post-edit checks, no auto-fix");
+            toast("verification off · no post-edit checks, no auto-fix", "info");
           } else if (a === "on" || a === "auto") {
             verifyRef.current = "auto";
             updatePrefs({ verify: "auto" });
-            notice("verification auto · runs checks after edits and iterates to green");
+            toast("verification auto · checks after edits, auto-fix to green");
           } else {
             const cmds = detectVerificationCommands(process.cwd()).map((c) => c.command);
             notice(
@@ -3145,20 +3171,31 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const on = vimRef.current === "off";
           setVim(on ? "insert" : "off");
           updatePrefs({ vim: on });
-          notice(on ? "vim mode on · esc for normal, i to insert" : "vim mode off");
+          toast(on ? "vim mode on · esc for normal, i to insert" : "vim mode off", "info");
           return;
         }
         case "theme": {
           echo(text);
           const want = arg.trim().toLowerCase();
-          if (want !== "light" && want !== "dark") {
-            notice(`theme: ${activeTheme()} · switch: /theme light | /theme dark`);
+          if (!want) {
+            // Fullscreen: the live-preview gallery (↑↓ tries each palette on the
+            // REAL UI, ⏎ keeps it, esc reverts). Inline: list the names.
+            if (fullscreen) {
+              atBottomRef.current = true;
+              setPanel({ kind: "themes", title: "theme · live preview", index: Math.max(0, THEMES.findIndex((t) => t.name === activeTheme())), original: activeTheme() });
+              return;
+            }
+            notice(`theme: ${activeTheme()}\n${THEMES.map((t) => `  ${t.name.padEnd(12)} ${t.hint}`).join("\n")}\n  switch: /theme <name>`);
             return;
           }
-          setTheme(want);
-          updatePrefs({ theme: want });
+          if (!setTheme(want)) {
+            notice(`no theme "${want}" · ${THEMES.map((t) => t.name).join(" · ")}`);
+            return;
+          }
+          updatePrefs({ theme: activeTheme() });
           setThemeEpochState((e) => e + 1); // repaint the whole tree in the new palette
-          notice(`theme → ${want}${fullscreen ? "" : " · already-printed lines keep their colors (inline scrollback is written once)"}`);
+          toast(`theme → ${activeTheme()}`);
+          if (!fullscreen) notice("already-printed lines keep their colors (inline scrollback is written once)");
           return;
         }
         case "config": {
@@ -3173,7 +3210,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 `  inline  ${p.fullscreen === false ? "on" : "off"}         terminal scrollback instead of fixed bottom input (restart to apply)\n` +
                 `  verify  ${p.verify === "off" ? "off" : "auto"}        run checks after edits and auto-fix to green (also /verify)\n` +
                 `  theme   ${p.theme ?? "dark"}        color palette for dark or light terminals (also /theme)\n` +
-                `  change one: /config <vim|notify|inline|verify|theme> <value>`,
+                `  editor  ${p.editor ?? "vscode"}      clickable file links open here (vscode · cursor · windsurf · zed · off)\n` +
+                `  change one: /config <vim|notify|inline|verify|theme|editor> <value>`,
             );
             return;
           }
@@ -3181,27 +3219,32 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (key === "vim") {
             setVim(on ? "insert" : "off");
             updatePrefs({ vim: on });
-            notice(on ? "vim mode on · esc for normal, i to insert" : "vim mode off");
+            toast(on ? "vim mode on · esc for normal, i to insert" : "vim mode off", "info");
           } else if (key === "inline") {
             updatePrefs({ fullscreen: !on });
             notice(`inline mode ${on ? "on" : "off"} · restart gearbox to apply`);
           } else if (key === "notify") {
             notifyRef.current = on;
             updatePrefs({ notify: on });
-            notice(`notifications ${on ? "on" : "off"}`);
+            toast(`notifications ${on ? "on" : "off"}`, "info");
           } else if (key === "verify") {
             verifyRef.current = on ? "auto" : "off";
             updatePrefs({ verify: on ? "auto" : "off" });
             notice(`verification ${on ? "auto" : "off"}`);
+          } else if (key === "editor") {
+            const want = (val ?? "").toLowerCase();
+            if (!editorNames().includes(want)) { notice(`editor: /config editor <${editorNames().join("|")}> — where clickable file links open`); return; }
+            updatePrefs({ editor: want });
+            setEditorPref(want);
+            toast(`file links open in ${want === "off" ? "nothing (links off)" : want}`, "info");
           } else if (key === "theme") {
             const want = (val ?? "").toLowerCase();
-            if (want !== "light" && want !== "dark") { notice("theme: /config theme <light|dark>"); return; }
-            setTheme(want);
-            updatePrefs({ theme: want });
+            if (!want || !setTheme(want)) { notice(`theme: /config theme <${THEMES.map((t) => t.name).join("|")}>`); return; }
+            updatePrefs({ theme: activeTheme() });
             setThemeEpochState((e) => e + 1);
-            notice(`theme → ${want}`);
+            toast(`theme → ${activeTheme()}`);
           } else {
-            notice("settings: vim · notify · inline · verify · theme");
+            notice("settings: vim · notify · inline · verify · theme · editor");
           }
           return;
         }
@@ -3794,7 +3837,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             // probe result lands) instead of showing the seeded "ok". (xiii)
             if (on) void probeAccountUsage(listAccounts().find((x) => x.id === activeCli?.id && x.exec === "cli"));
             // Transient footer flash (a few seconds) — not a permanent transcript line.
-            flashStatus(on ? "usage pinned · /usage to hide" : "usage hidden · /usage to show", 3000);
+            flashStatus(on ? "usage pinned · /usage to hide" : "usage hidden · /usage to show");
             return;
           }
           const accounts = listAccounts();
@@ -3953,7 +3996,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (text.startsWith("#")) {
         const note = text.slice(1).trim();
         echo(text);
-        notice(note && appendFact(note) ? "remembered" : "usage: #<note to remember>");
+        if (note && appendFact(note)) toast("remembered");
+        else notice("usage: #<note to remember>");
         return;
       }
       if (text.startsWith("/")) {
@@ -4144,6 +4188,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (p.detailPhase.phase !== "browse") { setPanel(detailBack(p)); return; }
         }
         if (p.kind === "git-confirm" && p.submitting) return; // a commit/PR is mid-flight
+        if (p.kind === "themes") {
+          // The gallery previews live — esc means "never mind", restore the original.
+          setTheme(p.original);
+          setThemeEpochState((e) => e + 1);
+        }
         setPanel(null); return;
       }
       if (p.kind === "static") {
@@ -4368,6 +4417,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           if (input === "n" && !key.ctrl && !key.meta) { setPanel(detailBack(p)); return; }
+          return;
+        }
+        return;
+      }
+      // themes: ↑↓ previews LIVE on the whole UI, ⏎ keeps, esc reverts (esc branch).
+      if (p.kind === "themes") {
+        const apply = (idx: number) => {
+          const next = clampIndex(idx, THEMES.length);
+          setTheme(THEMES[next]!.name);
+          setThemeEpochState((e) => e + 1);
+          setPanel({ ...p, index: next });
+        };
+        if (key.upArrow) { apply(p.index - 1); return; }
+        if (key.downArrow) { apply(p.index + 1); return; }
+        if (key.return) {
+          const picked = THEMES[clampIndex(p.index, THEMES.length)]!;
+          setTheme(picked.name);
+          updatePrefs({ theme: picked.name });
+          setThemeEpochState((e) => e + 1);
+          setPanel(null);
+          toast(`theme → ${picked.name}`);
           return;
         }
         return;
@@ -4776,7 +4846,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
-  if (copiedNotice) footer += 1;
+  footer += toasts.length;
   if (quickPicker && quickRows.length) footer += quickPickerLimit + 2; // overlay: header + marginTop + rows
   // Pinned usage strip (/usage): header + context? + limit windows / note + api? + session + marginTop.
   // Memoized: currentUsageView() reads usage.json + accounts from disk, so calling it
@@ -4950,9 +5020,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           <Text color={color.dim}>{searchHistory(historyRef.current, search.q, search.idx) ?? (search.q ? "(no match)" : "")}</Text>
         </Box>
       ) : null}
-      {copiedNotice ? (
-        <Box paddingX={1}>
-          <Text color={color.ok}>{glyph.notice} {copiedNotice}</Text>
+      {toasts.length ? (
+        <Box flexDirection="column">
+          {toasts.map((t) => (
+            <Box key={t.id} paddingX={1} justifyContent="flex-end">
+              <Text wrap="truncate-end" color={t.kind === "ok" ? color.ok : t.kind === "err" ? color.err : color.dim}>
+                {t.kind === "ok" ? glyph.check : t.kind === "err" ? glyph.err : glyph.notice} {t.text}
+              </Text>
+            </Box>
+          ))}
         </Box>
       ) : null}
       {quickPickerJsx}
