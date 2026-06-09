@@ -66,7 +66,7 @@ import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
-import { checkHealth, recordHealth, isFresh } from "../accounts/health.ts";
+import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
@@ -1819,7 +1819,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (!a.failure) { emitTerminal(false, undefined, total); return { messages: a.messages, usage: total }; }
         prior.inputTokens = total.inputTokens; prior.outputTokens = total.outputTokens; // this attempt burned tokens too
         const exhausted = classifyFailure(a.failure.message) === "exhausted";
-        if (!exhausted || hop >= MAX_FAILOVERS) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
+        if (!exhausted || hop >= MAX_FAILOVERS) {
+          // "Deployment doesn't exist" on Azure/Foundry: prune that model id from
+          // the account so it never shows up again. User can redeploy + /account refresh to restore.
+          if (isNotDeployedError(a.failure.message) && !a.cooldownKey.startsWith("env:")) {
+            const acc = getAccount(a.cooldownKey);
+            if (acc?.models?.includes(choice.model.sdkId)) {
+              putAccount({ ...acc, models: acc.models.filter((m) => m !== choice.model.sdkId) });
+              notice(`${choice.model.label} isn't deployed on ${acc.slug ?? acc.id} — removed from your model list.\nDeploy it in your Azure portal, then /account refresh to restore it.`);
+            }
+          }
+          emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior };
+        }
         markExhausted(a.cooldownKey, DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
         try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }

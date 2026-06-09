@@ -11,6 +11,14 @@ export function isCredentialFailure(s: HealthState): boolean {
   return s === "expired" || s === "invalid" || s === "no-credit" || s === "rate-limited";
 }
 
+/** True when the error means "this specific model isn't deployed on the account"
+ *  (Azure/Foundry: deployment doesn't exist). Distinct from a credential failure —
+ *  the account is fine, only that one model id is missing. */
+export function isNotDeployedError(message: string): boolean {
+  const m = (message || "").toLowerCase();
+  return /deployment.*does not exist|the api deployment for this resource does not exist|resource.*does not exist|no such deployment|model.*not.*found.*deployment/.test(m);
+}
+
 function statusOf(err: any): number | undefined {
   return err?.statusCode ?? err?.status ?? err?.response?.status ?? err?.data?.error?.status;
 }
