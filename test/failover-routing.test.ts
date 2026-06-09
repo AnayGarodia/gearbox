@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoutingSelector } from "../src/model/router.ts";
-import { markExhausted, clearCooldowns, DEFAULT_COOLDOWN_MS } from "../src/model/cooldown.ts";
+import { markExhausted, modelScopedKey, clearCooldowns, DEFAULT_COOLDOWN_MS } from "../src/model/cooldown.ts";
 
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -42,6 +42,21 @@ test("re-select routes around a cooled-down account, then back once it expires",
   // (clearCooldowns simulates the window resetting.)
   clearCooldowns();
   expect(r.select(task).model.id).toBe("deepseek-v4-pro");
+});
+
+// R-5: a rate-limit on ONE model must not bench the account's other models.
+test("a model-scoped park skips only that model — siblings on the same key still route", () => {
+  delete process.env.DEEPSEEK_API_KEY; // anthropic only, several models on one key
+  const r = new RoutingSelector();
+  const task = { prompt: "refactor the parser" };
+
+  const first = r.select(task);
+  // Park ONLY the winning model on this env key (what the runner does for a 429).
+  markExhausted(modelScopedKey("env:anthropic", first.model.id), DEFAULT_COOLDOWN_MS, "429 rate limit");
+  const next = r.select(task);
+  // Same provider key stays usable — a different anthropic model wins instead.
+  expect(next.model.provider).toBe("anthropic");
+  expect(next.model.id).not.toBe(first.model.id);
 });
 
 test("when the cooled account is the ONLY option, routing relaxes rather than dead-ending", () => {

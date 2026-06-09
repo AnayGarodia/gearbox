@@ -29,7 +29,7 @@ import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector, type ModelChoice } from "../model/selector.ts";
-import { classifyFailure, markExhausted, DEFAULT_COOLDOWN_MS } from "../model/cooldown.ts";
+import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
 import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loadRoutingPreferences, type PreferenceKind } from "../model/preferences.ts";
@@ -188,6 +188,8 @@ function shortFailure(message: string): string {
   if (/over(loaded|capacity)|\b529\b/.test(m)) return "overloaded";
   if (/usage.?limit/.test(m)) return "at its usage limit";
   if (/quota|insufficient_quota/.test(m)) return "out of quota";
+  if (/expired|session (?:has )?ended|not logged in|re-?authenticat/.test(m)) return "expired";
+  if (/\b401\b|invalid|unauthorized|authentication/.test(m)) return "auth failed";
   return "rate-limited";
 }
 
@@ -1734,7 +1736,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Run ONE attempt of a chosen backend (terminal events deferred so the loop
       // owns the final outcome). Returns the produced ledger + a cooldown key so a
       // failure can park that account and re-route around it.
-      type Attempt = { messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string }; cooldownKey: string };
+      type Attempt = { messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string; producedOutput?: boolean }; cooldownKey: string };
       const runAttempt = async (choice: ModelChoice): Promise<Attempt> => {
         if (choice.backend?.kind === "cli") {
           const acct = choice.backend.account;
@@ -1748,7 +1750,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             efforts: choice.model.efforts ?? [], label: choice.model.label,
             pinned: false, deferTerminal: true, showProvenance: showCli, prompt, messages, onEvent, signal,
           });
-          return { messages: out.messages, usage: out.usage, failure: out.failure, cooldownKey: acct.id };
+          // The CLI's failure carries no producedOutput flag; an assistant message
+          // in the returned ledger means text already streamed to the user.
+          const cliProduced = out.messages.length > 0 && out.messages[out.messages.length - 1]!.role === "assistant";
+          return { messages: out.messages, usage: out.usage, failure: out.failure ? { ...out.failure, producedOutput: cliProduced } : undefined, cooldownKey: acct.id };
         }
 
         const missing = missingRequirements(choice.model, requires);
@@ -1827,8 +1832,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const total = { inputTokens: prior.inputTokens + a.usage.inputTokens, outputTokens: prior.outputTokens + a.usage.outputTokens };
         if (!a.failure) { emitTerminal(false, undefined, total); return { messages: a.messages, usage: total }; }
         prior.inputTokens = total.inputTokens; prior.outputTokens = total.outputTokens; // this attempt burned tokens too
-        const exhausted = classifyFailure(a.failure.message) === "exhausted";
-        if (!exhausted || hop >= MAX_FAILOVERS) {
+        // Failover-able failure classes: exhausted (rate/quota/credit — recovers on
+        // its own) and auth (expired/invalid — dead until re-login, but a sibling
+        // account can serve). A failure AFTER output streamed never hops: the user
+        // already saw a partial answer, and a silent re-run would duplicate it.
+        const failKind = classifyFailure(a.failure.message);
+        const canHop = failKind !== "other" && !a.failure.producedOutput;
+        if (!canHop || hop >= MAX_FAILOVERS) {
           // "Deployment doesn't exist" on Azure/Foundry: prune that model id from
           // the account so it never shows up again. User can redeploy + /account refresh to restore.
           if (isNotDeployedError(a.failure.message) && !a.cooldownKey.startsWith("env:")) {
@@ -1840,11 +1850,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }
           emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior };
         }
-        markExhausted(a.cooldownKey, DEFAULT_COOLDOWN_MS, a.failure.message);
+        // R-5: scope the park to what actually failed. Billing/credit drains the
+        // whole account and expired/invalid creds kill it entirely; a rate/quota
+        // blip on one model leaves its siblings fine.
+        const scope = failKind === "auth" ? "account" : cooldownScope(a.failure.message);
+        const parkedKey = scope === "account" ? a.cooldownKey : modelScopedKey(a.cooldownKey, choice.model.id);
+        markExhausted(parkedKey, DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
         try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
-        const nextKey = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
-        if (!next || nextKey === a.cooldownKey) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
+        const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
+        // Bail only when the router hands back the exact pick we just parked
+        // (its zero-candidates fallback) — the same account on a DIFFERENT model
+        // is a legitimate hop now that parks can be model-scoped.
+        const nextEffectiveKey = next && nextAcct ? (scope === "account" ? nextAcct : modelScopedKey(nextAcct, next.model.id)) : null;
+        if (!next || nextEffectiveKey === parkedKey) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
         onEvent({ type: "phase", label: "failover", detail: `${choice.model.label} ${shortFailure(a.failure.message)} → ${next.model.label}, continuing`, state: "running" });
         // Remember what we fell back FROM so the post-turn routing line can flag the
         // provider fallback (a real "surprising" signal) in amber.

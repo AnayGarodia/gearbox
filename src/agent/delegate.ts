@@ -41,6 +41,7 @@ import { resolveCreds } from "../accounts/resolve.ts";
 import { recordUsage } from "../accounts/usage.ts";
 import { estimateCost, type ModelSpec } from "../providers.ts";
 import { spawnSyncProc } from "../proc.ts";
+import { runCliTask } from "./cli-backend.ts";
 import type { Account } from "../accounts/types.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import type { OnEvent, Usage } from "./events.ts";
@@ -118,7 +119,14 @@ const clipTask = (s: string, max: number): string => {
 
 // ── routing a sub-task ────────────────────────────────────────────────────────
 
-type Routed = { model: ModelSpec; account?: Account };
+type Routed = {
+  model: ModelSpec;
+  account?: Account;
+  // Set when the sub-task is hosted by a vendor subscription seat (S-B): the
+  // sub-agent then runs through the vendor binary (its own loop + tools) in the
+  // sub-task's workspace root, instead of the in-loop API.
+  cli?: { binary: string; profile?: string; account: Account };
+};
 
 /**
  * Select a model and account for a sub-task. When the user pinned a model
@@ -127,8 +135,9 @@ type Routed = { model: ModelSpec; account?: Account };
  * best available model for the task kind, which may be a different provider
  * than the parent turn.
  *
- * CLI-backed accounts (vendor subscription seats) cannot host sub-agents
- * because sub-agents need the in-loop API; those are rejected with an error.
+ * A CLI-backed pick (vendor subscription seat) is hosted by the vendor binary
+ * itself, run one-shot in the sub-task's workspace root — so a subscription-only
+ * setup can still delegate (S-B) instead of erroring out.
  */
 function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?: string): Routed | { error: string } {
   const k = kind ?? classify(task);
@@ -136,12 +145,21 @@ function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?:
   try {
     choice = (pinnedModelId ? new FixedSelector(pinnedModelId) : new RoutingSelector()).select({ prompt: task, kind: k, requires: ["tools"] });
   } catch (e: any) {
+    // Subscription-only setups land here: seats fail the in-loop `tools` filter
+    // (the vendor binary owns its own tools), so the select throws before the
+    // cli-backend branch below can ever fire. Retry seat-only — a no-requires
+    // select returns the seat on a subscription-only store, while any setup with
+    // a tools-capable API model never reaches this catch.
+    try {
+      const c2 = new RoutingSelector().select({ prompt: task, kind: k });
+      if (c2.backend?.kind === "cli") {
+        return { model: c2.model, cli: { binary: c2.backend.binary, profile: c2.backend.profile, account: c2.backend.account } };
+      }
+    } catch { /* fall through to the original error */ }
     return { error: `no model available for this sub-task (${e?.message ?? e})` };
   }
-  // CLI (vendor subscription) accounts run external binaries, not the in-loop
-  // API, so they cannot serve as sub-agent hosts. Require an API key account.
   if (choice.backend?.kind === "cli") {
-    return { error: `routed to the ${choice.model.label} subscription, which can't host a sub-agent — add an API key` };
+    return { model: choice.model, cli: { binary: choice.backend.binary, profile: choice.backend.profile, account: choice.backend.account } };
   }
   const account = choice.backend?.kind === "in-loop" ? choice.backend.account : undefined;
   return { model: choice.model, account };
@@ -194,9 +212,8 @@ async function runOne(
   run: SubAgentRunner,
   routed: Routed,
   task: string,
-  opts: { signal?: AbortSignal; root?: string; onActivity?: (line: string) => void },
+  opts: { signal?: AbortSignal; root?: string; onActivity?: (line: string) => void; runCli?: typeof runCliTask },
 ): Promise<{ ok: boolean; text: string }> {
-  const creds = routed.account ? await resolveCreds(routed.account) : undefined;
   let tools = 0;
   let verb = "working";
   let target = "";
@@ -217,6 +234,36 @@ async function runOne(
         }
       }
     : () => {};
+
+  // Subscription-seat host (S-B): the vendor binary runs its own loop + tools in
+  // the sub-task's workspace root. The task rides in the prompt (the system slot
+  // isn't portable across binaries). Flat-rate seats record $0 spend (S-F).
+  if (routed.cli) {
+    const acct = routed.cli.account;
+    const r = await (opts.runCli ?? runCliTask)({
+      binary: routed.cli.binary,
+      prompt: `${SUBAGENT_SYSTEM}\n\nTask:\n${task}`,
+      messages: [],
+      onEvent: subOnEvent,
+      signal: opts.signal,
+      modelId: routed.model.sdkId ?? routed.model.id,
+      cwd: opts.root,
+      profile: routed.cli.profile,
+      accountLabel: acct.slug ?? acct.id,
+      reloginCommand: `/account login ${acct.slug ?? acct.id}`,
+      deferTerminal: true,
+    });
+    recordUsage({ accountId: acct.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, costUSD: 0, estimated: true });
+    if (r.failure) return { ok: false, text: `failed: ${r.failure.message}` };
+    const text = r.messages
+      .filter((m) => m.role === "assistant")
+      .map((m) => (typeof m.content === "string" ? m.content : ""))
+      .join("\n")
+      .trim();
+    return { ok: true, text: text || "(no report)" };
+  }
+
+  const creds = routed.account ? await resolveCreds(routed.account) : undefined;
   const r = await run({ model: routed.model, creds, system: SUBAGENT_SYSTEM, prompt: task, onEvent: subOnEvent, signal: opts.signal, root: opts.root });
   // Record spend even on failure so budget tracking stays accurate.
   const costUSD = estimateCost([{ model: routed.model.id, inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens }]);
@@ -325,8 +372,8 @@ function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean 
 
 // ── exported tool factory ─────────────────────────────────────────────────────
 
-export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string }): Record<string, Tool<any, any>> {
-  const { onEvent, signal, run } = opts;
+export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask }): Record<string, Tool<any, any>> {
+  const { onEvent, signal, run, runCli } = opts;
 
   // ── delegate (sequential, single task) ──────────────────────────────────────
   const delegate = tool({
@@ -340,12 +387,12 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       const routed = routeSubTask(task, kind, opts.pinnedModelId);
       if ("error" in routed) return `delegation skipped: ${routed.error}. Do it yourself.`;
       const id = `delegate-${++counter}`;
-      onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label} · ${clipTask(task, 72)}` });
+      onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label}${routed.cli ? " (subscription)" : ""} · ${clipTask(task, 72)}` });
       let res: { ok: boolean; text: string };
       try {
         // Sequential: runs in the main workspace. Live progress is streamed as
         // a single replacing "activity" line via onActivity.
-        res = await runOne(run, routed, task, { signal, onActivity: (line) => onEvent({ type: "tool-stream", id, activity: line }) });
+        res = await runOne(run, routed, task, { signal, runCli, onActivity: (line) => onEvent({ type: "tool-stream", id, activity: line }) });
       } catch (e: any) {
         onEvent({ type: "tool-end", id, ok: false, summary: `${routed.model.label} · crashed` });
         return `sub-agent (${routed.model.label}) crashed: ${e?.message ?? e}`;
@@ -396,9 +443,9 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
         const allTasks = jobs.map((x) => x.task);
         const outcomes = await Promise.all(jobs.map(async (j, ji) => {
           const jid = `${groupId}:${j.idx}`;
-          onEvent({ type: "tool-start", id: jid, name: "delegate", arg: `#${j.idx + 1} → ${j.routed.model.label} · ${differentiatingSlice(allTasks, ji, 56)}` });
+          onEvent({ type: "tool-start", id: jid, name: "delegate", arg: `#${j.idx + 1} → ${j.routed.model.label}${j.routed.cli ? " (subscription)" : ""} · ${differentiatingSlice(allTasks, ji, 56)}` });
           let res: { ok: boolean; text: string };
-          try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, activity: line }) }); }
+          try { res = await runOne(run, j.routed, j.task, { signal, root: j.dir, runCli, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, activity: line }) }); }
           catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
           onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: reportLine(res.text) || j.routed.model.label });
           // Stage and diff the worktree now while it still exists; we need the

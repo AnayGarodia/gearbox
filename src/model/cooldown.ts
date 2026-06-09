@@ -4,17 +4,45 @@
 // until its window resets. In-memory on purpose (a cooldown is ephemeral, like
 // the rate state it reflects); it never needs to survive a restart.
 
-export type FailureKind = "exhausted" | "other";
+export type FailureKind = "exhausted" | "auth" | "other";
 
 // Classify an error message: does it mean "this account can't serve right now,
-// try another" (exhausted — rate limit / quota / credit / overload / throttle),
-// or a real problem we shouldn't paper over by switching accounts? Pure.
+// try another"? Two failover-able classes — exhausted (rate limit / quota /
+// credit / overload / throttle: the account recovers on its own) and auth
+// (expired / invalid credentials: the account is dead until the user fixes it,
+// but a SIBLING account can still serve the turn). Everything else is a real
+// problem we shouldn't paper over by switching accounts. Pure.
 export function classifyFailure(message: string): FailureKind {
   const m = (message || "").toLowerCase();
   const exhausted =
     /\b429\b|\b529\b|\b402\b/.test(m) ||
     /rate.?limit|too many requests|insufficient_quota|quota|over(loaded|capacity)|throttl|resource.?exhausted|usage.?limit|billing|payment required|out of credit|credit balance/.test(m);
-  return exhausted ? "exhausted" : "other";
+  if (exhausted) return "exhausted";
+  const auth =
+    /\b401\b/.test(m) ||
+    /invalid[ _-]?(api[ _-]?key|x-api-key|key|credential|token)|api key (?:not valid|invalid|expired)|unauthorized|authentication[ _-]?(error|failed)|token (?:has )?expired|expired (?:key|token|credentials?)|not logged in|re-?authenticat|session (?:has )?(?:ended|expired)/.test(m);
+  return auth ? "auth" : "other";
+}
+
+// How wide a cooldown should reach (R-5). A billing/credit failure drains the
+// whole account's wallet, so every model on it is equally dead — park the
+// account. A rate/overload/quota failure is usually scoped to one model or
+// deployment (Anthropic/OpenAI limits are per model; Azure quota is per
+// deployment), so parking the account would needlessly bench its siblings.
+export type CooldownScope = "account" | "model";
+
+export function cooldownScope(message: string): CooldownScope {
+  const m = (message || "").toLowerCase();
+  const billing =
+    /\b402\b/.test(m) ||
+    /billing|payment required|out of credit|credit balance|insufficient_quota|insufficient credit/.test(m);
+  return billing ? "account" : "model";
+}
+
+/** The composite key a model-scoped cooldown is stored under. One format,
+ *  shared by the parker (App hop-loop) and the filter (router enumerate). */
+export function modelScopedKey(accountKey: string, modelId: string): string {
+  return `${accountKey}::${modelId}`;
 }
 
 export const DEFAULT_COOLDOWN_MS = 5 * 60_000;
