@@ -20,7 +20,7 @@ export function FilePalette({ matches, selected = 0, limit = 5, width = 80 }: { 
       <Text color={color.faint}>@ files · tab to complete</Text>
       {shown.rows.map((f, i) => {
         const active = shown.start + i === selected;
-        const raw = `${active ? `${glyph.on} ` : "  "}${f}`;
+        const raw = `${active ? `${glyph.select} ` : "  "}${f}`;
         const text = raw.length > rowWidth ? raw.slice(0, Math.max(0, rowWidth - 1)) + "…" : raw.padEnd(rowWidth);
         return (
           <Text key={f} color={active ? color.text : color.faint} bold={active} backgroundColor={active ? color.accentBg : undefined}>{text}</Text>

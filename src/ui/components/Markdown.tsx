@@ -1,7 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { marked } from "marked";
-import { color } from "../theme.ts";
+import { color, glyph } from "../theme.ts";
 import { highlightLine } from "../highlight.ts";
 import { PROSE_RE, proseTokenStyle } from "../prose.ts";
 
@@ -185,7 +185,7 @@ function Table({ token, width }: { token: any; width: number }) {
         <React.Fragment key={c}>
           {c > 0 ? <Text>{"  "}</Text> : null}
           <Box width={w}>
-            <Text color={bold ? color.accent : color.text} bold={bold} wrap="wrap">
+            <Text color={color.text} bold={bold} wrap="wrap">
               <Inline tokens={cells[c]?.tokens ?? []} />
             </Text>
           </Box>
@@ -211,7 +211,7 @@ function ListBlock({ token, width }: { token: any; width: number }) {
     <Box flexDirection="column">
       {(token.items ?? []).map((item: any, i: number) => (
         <Box key={i} flexDirection="row">
-          <Text color={color.accentDim} bold>{token.ordered ? `${start + i}. ` : "• "}</Text>
+          <Text color={color.accentDim} bold>{token.ordered ? `${start + i}. ` : "· "}</Text>
           <Box flexDirection="column">
             <Blocks tokens={item.tokens} width={width - 3} />
           </Box>
@@ -255,7 +255,7 @@ function Block({ token, width }: { token: any; width: number }): React.ReactElem
         <Text wrap="wrap" color={color.text}>{decode(token.text ?? "")}</Text>
       );
     case "hr":
-      return <Text color={color.faint}>{"─".repeat(Math.min(width, 48))}</Text>;
+      return <Text color={color.faint}>{"─".repeat(Math.min(width, 24))}</Text>;
     case "code":
       return <CodeBlock lang={token.lang ?? ""} code={token.text ?? ""} width={width} />;
     case "list":
@@ -265,7 +265,7 @@ function Block({ token, width }: { token: any; width: number }): React.ReactElem
     case "blockquote":
       return (
         <Box flexDirection="row">
-          <Text color={color.accentDim}>│ </Text>
+          <Text color={color.accentDim}>{glyph.quote} </Text>
           <Box flexDirection="column">
             <Blocks tokens={token.tokens} width={width - 2} />
           </Box>

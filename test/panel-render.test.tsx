@@ -11,7 +11,7 @@ test("static panel shows its title, the esc affordance, and the content", () => 
   const panel: PanelState = { kind: "static", title: "help", items: [item], scroll: 0 };
   const out = render(<Panel panel={panel} width={80} height={12} />).lastFrame() ?? "";
   expect(out).toContain("help");
-  expect(out).toContain("esc to close");
+  expect(out).toContain("esc close");
   expect(out).toContain("line one");
 });
 
@@ -31,7 +31,7 @@ test("accounts panel marks the selected row and the current account", () => {
   const out = render(<Panel panel={panel} width={120} height={12} accounts={view} />).lastFrame() ?? "";
   expect(out).toContain("Claude");
   expect(out).toContain("Anthropic");
-  expect(out).toContain("+ Add an account"); // the pinned add affordance
+  expect(out).toContain("+ add an account"); // the pinned add affordance
   expect(out).toContain("⏎ select");
   expect(out).toContain("▶"); // selection marker present
   expect(out).toContain("founders@aztea.ai"); // identified seat shows its email

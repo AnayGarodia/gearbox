@@ -49,7 +49,7 @@ export function Working({
             {glow.map((s, i) => <Text key={i} color={s.color}>{s.ch}</Text>)}
           </Text>
         )}
-        {!linger ? <Text><Text color={color.accentDim}>{elapsed}s</Text><Text color={color.faint}> · esc to interrupt</Text></Text> : <Text color={color.faint}> </Text>}
+        {!linger ? <Text><Text color={color.accentDim}>{elapsed}s</Text><Text color={color.faint}> · esc interrupt</Text></Text> : <Text color={color.faint}> </Text>}
       </Box>
       {ctxNotice ? <Box paddingX={1}><Text color={color.warn}>{ctxNotice}</Text></Box> : null}
     </Box>

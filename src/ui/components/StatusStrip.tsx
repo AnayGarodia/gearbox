@@ -1,11 +1,21 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
-import type { LimitWindow, UsageAcct } from "../../accounts/usage.ts";
+import { limitColor } from "../severity.ts";
+import { barCells, type LimitWindow, type UsageAcct } from "../../accounts/usage.ts";
 
-function bar(leftPct: number, cells = 12): string {
-  const filled = Math.max(0, Math.min(cells, Math.round((leftPct / 100) * cells)));
-  return "█".repeat(filled) + "░".repeat(cells - filled);
+// One bar, one direction, everywhere: the fill is "% USED" colored by the
+// shared severity ramp (the /usage card and lines.ts render the same way), so
+// a fuller bar always means closer to the wall. The label keeps the friendly
+// "% left" number — the two can't disagree, they're complements.
+function UsedBar({ pct }: { pct: number }) {
+  const b = barCells(pct / 100, 12);
+  return (
+    <Text>
+      <Text color={limitColor(pct)}>{b.fill}</Text>
+      <Text color={color.faint}>{b.empty}</Text>
+    </Text>
+  );
 }
 function fmtTok(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
@@ -36,8 +46,11 @@ export function StatusStrip({
   // Label column wide enough for the longest label we print (e.g. "Anthropic"),
   // so nothing clips to "Anthropi".
   const pad = 9;
+  // wrap="truncate-end": every strip row must stay exactly ONE terminal row —
+  // the footer height budget counts rows, and a wrapped line would push the
+  // frame past the screen (the expensive clearTerminal path).
   const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
-    <Text>
+    <Text wrap="truncate-end">
       <Text color={color.faint}>{label.padEnd(pad)} </Text>
       {children}
     </Text>
@@ -60,8 +73,8 @@ export function StatusStrip({
       {sub?.limits?.map((l) =>
         typeof l.pct === "number" ? (
           <Row key={l.label} label={l.label}>
-            <Text color={l.pct >= 90 ? color.err : color.accentDim}>{bar(100 - l.pct)}</Text>
-            <Text color={l.pct >= 90 ? color.err : color.text}>  {100 - l.pct}% left</Text>
+            <UsedBar pct={l.pct} />
+            <Text color={limitColor(l.pct)}>  {100 - l.pct}% left</Text>
             {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
           </Row>
         ) : (
@@ -101,8 +114,8 @@ export function StatusStrip({
       {api?.limits?.map((l) =>
         typeof l.pct === "number" ? (
           <Row key={`api:${l.label}`} label={l.label}>
-            <Text color={l.pct >= 90 ? color.err : color.accentDim}>{bar(100 - l.pct)}</Text>
-            <Text color={l.pct >= 90 ? color.err : color.text}>  {100 - l.pct}% left</Text>
+            <UsedBar pct={l.pct} />
+            <Text color={limitColor(l.pct)}>  {100 - l.pct}% left</Text>
             {l.resetsIn ? <Text color={color.faint}>  ·  {l.resetsIn}</Text> : null}
           </Row>
         ) : null,

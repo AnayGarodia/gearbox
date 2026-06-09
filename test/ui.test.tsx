@@ -161,10 +161,10 @@ test("accounts card renders grouped rows with name aliases", () => {
 
 test("palettes render a selected row for arrow navigation", () => {
   const cmd = render(<CommandPalette draft="/c" selected={1} />).lastFrame() ?? "";
-  expect(cmd).toContain("●");
+  expect(cmd).toContain("▶");
   const files = render(<FilePalette matches={["a.ts", "b.ts"]} selected={1} />).lastFrame() ?? "";
   expect(files).toContain("b.ts");
-  expect(files).toContain("●");
+  expect(files).toContain("▶");
 });
 
 test("command palette rows keep selected label and detail on one row", () => {
@@ -174,7 +174,7 @@ test("command palette rows keep selected label and detail on one row", () => {
     { value: "/effort max", label: "max", detail: "opus / hardest tasks" },
   ];
   const f = render(<CommandPalette draft="/effort" rows={rows} selected={2} limit={7} />).lastFrame() ?? "";
-  expect(f).toContain("● max");
+  expect(f).toContain("▶ max");
   expect(f).toContain("opus / hardest tasks");
   expect(f).toContain("balanced");
 });
@@ -229,7 +229,7 @@ test("/help opens a dismissable panel in fullscreen and esc closes it", async ()
     stdin.write("\r"); // submit
     await flush();
     const open = lastFrame() ?? "";
-    expect(open).toContain("esc to close"); // panel chrome
+    expect(open).toContain("esc close"); // panel chrome
     expect(open).toContain("conversation"); // a /help group heading (panel body)
     stdin.write(""); // esc
     await flush();

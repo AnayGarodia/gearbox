@@ -101,7 +101,7 @@ export type Runner = (opts: {
 }) => Promise<{ messages: ModelMessage[]; usage: Usage }>;
 
 const KEYS_HELP = [
-  "Keyboard shortcuts",
+  "keyboard shortcuts",
   "  ⏎ send · ⌃J newline · esc interrupt · ⌃C twice to quit",
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
   "  ⌃A / ⌃E line start / end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
@@ -149,7 +149,7 @@ function transcriptMarkdown(items: Item[]): string {
 // case worth special-casing: say "you appear to be offline" + a retry hint
 // instead of a stack-ish ENOTFOUND string.
 function friendlyError(msg: string): string {
-  if (isNetworkError(msg)) return `can't reach the provider · you appear to be offline. Check your connection, then /retry.`;
+  if (isNetworkError(msg)) return `can't reach the provider · you appear to be offline · check your connection, then /retry`;
   return msg;
 }
 
@@ -286,8 +286,8 @@ function ActivityRail({ items, width }: { items: Item[]; width: number }) {
 
   // Line 2 — the recent trail (last few steps) + checks, dim. Static glyphs (no
   // spin) — the only animation is the bottom working shimmer.
-  const trail = tools.slice(-3).map((t) => `${t.status === "running" ? "◇" : t.status === "err" ? "✗" : "✓"} ${friendlyTool(t.name)}`).join("  ");
-  const checkText = checks.map((c) => `${c.ok ? "✓" : "✗"} ${c.command}`).join("  ");
+  const trail = tools.slice(-3).map((t) => `${t.status === "running" ? glyph.running : t.status === "err" ? glyph.cross : glyph.check} ${friendlyTool(t.name)}`).join("  ");
+  const checkText = checks.map((c) => `${c.ok ? glyph.check : glyph.cross} ${c.command}`).join("  ");
   const sub = [trail || null, checkText || null].filter(Boolean).join("   ");
 
   return (
@@ -308,12 +308,9 @@ function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingStat
 
   return (
     <Box flexDirection="column" alignItems="center">
-      <MascotSplash skin={skin} size={splashSize} />
-
-      <Box marginTop={1} flexDirection="column" alignItems="center">
-        <Text color={color.accent} bold>gearbox</Text>
-        <Text color={color.dim}>one terminal · every model you already pay for</Text>
-      </Box>
+      {/* ONE wordmark + ONE tagline (the splash used to print its own pair and
+          this added a second — three "gearbox"es counting the Banner). */}
+      <MascotSplash skin={skin} size={splashSize} tagline="one terminal · every model you already pay for" />
 
       <Box marginTop={2} width={panelWidth} borderStyle="round" borderColor={color.faint} paddingX={2} paddingY={1} flexDirection="column">
         {detected > 0 ? (
@@ -4721,7 +4718,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   let footer = 2; // status line + its top margin
   // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
   if (!panel) footer += perm ? 9 : 5; // permission card vs composer (rule + policy + input + marginTop + marginBottom)
-  // Composer hint row: "↵ queues…" while busy, or "↵ runs in your shell" in ! mode.
+  // Composer hint row: "⏎ queues…" while busy, or "⏎ runs in your shell" in ! mode.
   if (!panel && !perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
   footer += PALETTE_ROWS;
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
@@ -4784,7 +4781,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     panelMaxScrollRef.current = Math.max(0, panelStaticLines.length - panelBodyHeight(transcriptHeight));
   } else if (panel?.kind === "accounts") {
     panelAccountView = buildAccountView(listAccounts(), activeCliRef.current?.id ?? null, importableEnvCreds(), accountStatusCacheRef.current);
-    // "__add__" is the logical index-0 row (+ Add an account); account rows follow.
+    // "__add__" is the logical index-0 row (+ add an account); account rows follow.
     panelAccountSlugsRef.current = ["__add__", ...panelAccountView.rows.map((r) => r.alias)];
   } else if (panel?.kind === "models") {
     panelModels = buildPanelModelRows(panelCurrentModel);
@@ -4844,7 +4841,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           {firstRunRef.current ? (
             <Box marginTop={1} flexDirection="column" alignItems="center">
               <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
-              <Text color={color.faint}>/config inline on for terminal scrollback · /keys for shortcuts</Text>
+              <Text color={color.faint}>/config inline on for terminal scrollback</Text>
             </Box>
           ) : null}
         </>

@@ -4,7 +4,7 @@ import { color } from "../theme.ts";
 
 export const TABS = ["session", "routing", "providers", "cost"] as const;
 export type AppTab = (typeof TABS)[number];
-const LABELS: Record<AppTab, string> = { session: "Session", routing: "Routing", providers: "Providers", cost: "Cost" };
+const LABELS: Record<AppTab, string> = { session: "session", routing: "routing", providers: "providers", cost: "cost" };
 
 const GAP = 1; // spaces between tab pills (the pills carry their own padding)
 const PAD = 1; // leading + trailing space inside every pill, so the active fill reads as a chip
@@ -35,7 +35,7 @@ export function tabStripHit(x: number, y: number, stripRow: number): AppTab | nu
   return null;
 }
 
-// The top tab strip (fullscreen only): Session · Routing · Providers · Cost. The
+// The top tab strip (fullscreen only): session · routing · providers · cost. The
 // active tab is a filled pill (dark text on the accent) so the strip reads as
 // navigation, not content, and the current view is unmistakable; inactive tabs
 // are quiet dim labels. One row, rendered just under the Banner. The ` Label `

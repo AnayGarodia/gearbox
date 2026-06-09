@@ -372,7 +372,7 @@ export function buildAddGuidance(providerOrSpecId: string, rawMessage: string): 
   const spec = specFor(providerOrSpecId);
   if (!spec) {
     const choices = ADD_SPECS.map((s) => `  ${s.paletteCommand.padEnd(34)}${s.summary}`).join("\n");
-    return `${rawMessage}\n\nadd an account — pick a provider:\n${choices}\n\nor run /account → "+ Add an account" for a guided setup.`;
+    return `${rawMessage}\n\nadd an account — pick a provider:\n${choices}\n\nor run /account → "+ add an account" for a guided setup.`;
   }
   const lines: string[] = [rawMessage, "", `${spec.label} needs:`];
   for (const f of spec.fields) {
@@ -395,6 +395,6 @@ export function buildAddGuidance(providerOrSpecId: string, rawMessage: string): 
     );
   }
   if (spec.signupUrl) lines.push("", `Get a key → ${spec.signupUrl}`);
-  lines.push("", `Or skip the syntax: /account → "+ Add an account" → ${spec.label}`);
+  lines.push("", `Or skip the syntax: /account → "+ add an account" → ${spec.label}`);
   return lines.join("\n");
 }

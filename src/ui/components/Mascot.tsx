@@ -166,7 +166,7 @@ function KittyGhost({ variant, size }: { variant: string; size: GhostSize }) {
  *  ghost just blinks occasionally (calm · no float or sparkle); the kitty PNG path
  *  stays static (re-placing a PNG on a timer glitches). `size` is chosen by the
  *  caller: "big" (2×) on a roomy window, "mini" (1×) when short, "none" (wordmark). */
-export function MascotSplash({ skin = "base", size = "big" }: { skin?: GhostSkin; size?: GhostSize | "none" }) {
+export function MascotSplash({ skin = "base", size = "big", wordmark = true, tagline }: { skin?: GhostSkin; size?: GhostSize | "none"; wordmark?: boolean; tagline?: string }) {
   const kitty = getImageMode() === "kitty";
   return (
     <Box flexDirection="column" alignItems="center" marginTop={1}>
@@ -177,12 +177,16 @@ export function MascotSplash({ skin = "base", size = "big" }: { skin?: GhostSkin
           <AnimatedGhost cfg={skinToCfg(skin)} scale={size === "big" ? 2 : 1} anim={{ blink: true }} />
         )
       ) : null}
-      <Box marginTop={size === "none" ? 0 : 1}>
-        <Text color={color.accent} bold>gearbox</Text>
-      </Box>
-      <Box>
-        <Text color={color.dim}>one ghost · every model</Text>
-      </Box>
+      {wordmark ? (
+        <>
+          <Box marginTop={size === "none" ? 0 : 1}>
+            <Text color={color.accent} bold>gearbox</Text>
+          </Box>
+          <Box>
+            <Text color={color.dim}>{tagline ?? "one ghost · every model"}</Text>
+          </Box>
+        </>
+      ) : null}
     </Box>
   );
 }

@@ -112,7 +112,7 @@ export const wordmarkGradient = [dark.accent, "#3AA7B5", "#1F6B76"];
 // not a tick), an angle prompt, a hairline rule. Restraint over decoration.
 export const glyph = {
   prompt: "❯", // composer
-  userBar: "▎", // the colored spine on your messages
+  userBar: "▌", // the colored spine on your messages (thin ▎ = glyph.quote)
   tool: "⏺", // tool call (color = status)
   result: "⎿", // tool result / continuation
   branch: "⎇", // git branch
@@ -122,4 +122,12 @@ export const glyph = {
   rule: "─",
   on: "●",
   off: "○",
+  // One marker per meaning, everywhere (a glyph with two meanings reads as
+  // noise): ▶ = the selected row in ANY list, ◌ = running/in-flight,
+  // ✓/✗ = done-ok / done-failed, ▎ = a thin quote/error spine.
+  select: "▶",
+  running: "◌",
+  check: "✓",
+  cross: "✗",
+  quote: "▎",
 } as const;

@@ -70,12 +70,12 @@ test("buildAddGuidance gives field-by-field help, an example, a signup link and 
   expect(g).toContain("e.g."); // an example
   expect(g).toContain("Foundry:"); // disambiguation
   expect(g).toContain("Get a key → ");
-  expect(g).toContain('"+ Add an account"'); // wizard escape hatch
+  expect(g).toContain('"+ add an account"'); // wizard escape hatch
 });
 
 test("buildAddGuidance lists providers for an unknown one", () => {
   const g = buildAddGuidance("nonsense", "couldn't identify that");
   expect(g).toContain("couldn't identify that");
   expect(g).toContain("/account add azure");
-  expect(g).toContain("+ Add an account");
+  expect(g).toContain("+ add an account");
 });

@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text, Static } from "ink";
 import { color, glyph } from "../theme.ts";
+import { limitColor } from "../severity.ts";
 import { friendlyTool, relPath, fmtElapsed } from "../lines.ts";
 import type { Item } from "../types.ts";
 import { Markdown } from "./Markdown.tsx";
@@ -12,7 +13,6 @@ import type { Scorecard } from "../../model/selector.ts";
 
 // Limit-utilization color: green when there's headroom, accent mid, coral when
 // you're nearly maxed (≥85%) so it reads as a warning.
-const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.warn : color.ok);
 
 function Bar({ frac, width, on }: { frac: number; width: number; on: string }) {
   const { fill, empty } = barCells(frac, width);
@@ -297,12 +297,21 @@ function NoticeText({ text }: { text: string }) {
 }
 
 // Your turn: a full soft band, so old prompts remain readable in scrollback.
+// Long lines are wrapped HERE (not by Ink) so every continuation row keeps the
+// band's prefix + padding — Ink's default wrap would drop the background on
+// the spill rows.
 function UserLine({ text, width }: { text: string; width: number }) {
-  const lines = text.split("\n");
+  const bodyW = Math.max(1, width - 4); // prefix (2) + right margin (2)
+  const lines = text.split("\n").flatMap((line) => {
+    if (line.length <= bodyW) return [line];
+    const out: string[] = [];
+    for (let i = 0; i < line.length; i += bodyW) out.push(line.slice(i, i + bodyW));
+    return out;
+  });
   return (
     <Box marginTop={1} flexDirection="column">
       {lines.map((line, i) => {
-        const prefix = i === 0 ? "▌ " : "  ";
+        const prefix = i === 0 ? glyph.userBar + " " : "  ";
         const used = prefix.length + line.length;
         return (
           <Text key={i}>
@@ -388,7 +397,7 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
           <Text>
             {(() => {
               const label = expandAll ? "full code" : "preview";
-              const meta = expandAll ? ` · ${item.previewLines ?? previewLines.length} lines` : ` · first ${previewShown.length} of ${item.previewLines ?? "?"} lines`;
+              const meta = expandAll ? ` · ${item.previewLines ?? previewLines.length} lines` : ` · ${previewShown.length} of ${item.previewLines ?? "?"} shown`;
               const used = 3 + label.length + meta.length;
               return <>
                 <Text color={color.accentDim} backgroundColor={color.codeBg}>┌─ </Text>
@@ -478,7 +487,7 @@ function SummaryLine({ item }: { item: Extract<Item, { kind: "summary" }> }) {
   return (
     <Box flexDirection="column" marginTop={1} marginLeft={2}>
       <Box>
-        <Text color={item.failures.length ? color.accentDim : color.ok}>{item.failures.length ? "◇ " : "✓ "}</Text>
+        <Text color={item.failures.length ? color.warn : color.ok}>{item.failures.length ? glyph.err + " " : glyph.check + " "}</Text>
         <Text color={color.text} bold>turn summary</Text>
         {bits.length ? <Text color={color.faint}>{" · " + bits.join(" · ")}</Text> : null}
       </Box>
@@ -625,7 +634,7 @@ function Row({ item, width, expandAll = false }: { item: Item; width: number; ex
         <Box marginTop={1} flexDirection="column">
           {item.text.split("\n").map((line, i) => (
             <Box key={i}>
-              <Text color={color.err}>{glyph.userBar} </Text>
+              <Text color={color.err}>{glyph.quote} </Text>
               <Box flexGrow={1}>
                 <Text color={color.err}>{line}</Text>
               </Box>

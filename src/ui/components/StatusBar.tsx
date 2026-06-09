@@ -65,7 +65,7 @@ export function statusBarHit(args: {
   costText?: string;
   width: number;
   hasPolicy?: boolean; // policy row above the input (default true; hidden during onboarding)
-  hintRows?: number; // a hint row below the input (e.g. bash "↵ runs in your shell"); default 0
+  hintRows?: number; // a hint row below the input (e.g. bash "⏎ runs in your shell"); default 0
 }): "model" | null {
   // Composer chrome above the input: marginTop + rule [+ policy]. The optional hint
   // row sits BELOW the input, so it adds to the rows under the status bar. Coupled to
@@ -112,7 +112,7 @@ export function StatusBar({
 
   // Budget the left so the right (model + cost) stays whole and right-aligned — the
   // click hit-test depends on that exact alignment. Truncate the legend to fit.
-  const legend = `↵ send${SEP}@ files${SEP}/ commands${SEP}esc interrupt`;
+  const legend = `⏎ send${SEP}@ files${SEP}/ commands${SEP}esc interrupt`;
   const leftBudget = Math.max(0, width - 2 /*paddingX*/ - right.length - 2 /*gap*/);
   const legendRoom = Math.max(0, leftBudget - chipLen);
   const legendShown =

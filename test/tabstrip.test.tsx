@@ -21,8 +21,8 @@ test("tabStripHit maps a click to the tab on the strip row, null elsewhere", () 
 
 test("TabStrip renders all four tabs and highlights the active one", () => {
   const out = render(<TabStrip active="cost" width={80} />).lastFrame() ?? "";
-  expect(out).toContain("Session");
-  expect(out).toContain("Routing");
-  expect(out).toContain("Providers");
-  expect(out).toContain("Cost");
+  expect(out).toContain("session");
+  expect(out).toContain("routing");
+  expect(out).toContain("providers");
+  expect(out).toContain("cost");
 });

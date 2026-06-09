@@ -215,7 +215,7 @@ test("`!` enters sticky bash mode (consumed), esc exits (iii)", async () => {
   await flush();
   stdin.write("hi"); await flush(); stdin.write("\r"); await flush(); await flush(); // clear the welcome splash
   stdin.write("!"); await flush();
-  expect(lastFrame() ?? "").toContain("esc to exit bash mode"); // entered bash mode, the ! is consumed
+  expect(lastFrame() ?? "").toContain("esc exits bash mode"); // entered bash mode, the ! is consumed
   stdin.write("\x1b"); await flush(); // esc
   expect(lastFrame() ?? "").not.toContain("esc to exit bash mode"); // back to normal input
 });

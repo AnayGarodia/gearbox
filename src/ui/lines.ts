@@ -15,10 +15,7 @@ import { retryPhrase } from "./collapse.ts";
 import { scorecardRows } from "../commands.ts";
 import { PROSE_RE, proseTokenStyle } from "./prose.ts";
 
-// Severity ramp for a utilization bar: healthy → attention → broken. Amber (warn),
-// never accent — the cyan accent means "interactive/now", so keeping it out of the
-// severity scale lets a single glance read the bar as a health gradient.
-const limitColor = (pct: number) => (pct >= 85 ? color.err : pct >= 60 ? color.warn : color.ok);
+import { limitColor } from "./severity.ts";
 // Limit window value: a utilization bar when a percentage is known, else a status word.
 const limitValueSpans = (l: { pct?: number; status?: "ok" | "warn" | "limited" }): Span[] => {
   if (typeof l.pct === "number") {
@@ -297,7 +294,7 @@ function blockLines(tok: any, width: number): Line[] {
     }
     case "blockquote": {
       const inner: Line[] = (tok.tokens ?? []).flatMap((t: any) => blockLines(t, Math.max(width - 2, 1)));
-      const bar: Span = { text: glyph.userBar + " ", color: color.accentDim };
+      const bar: Span = { text: glyph.quote + " ", color: color.accentDim };
       return inner.map((l) => [bar, ...l]);
     }
     case "hr":
@@ -426,7 +423,7 @@ function previewHighlight(line: string, lang: string | undefined, doc: { open: b
 }
 
 export const friendlyTool = (name: string) =>
-  name === "AskUserQuestion" ? "question" :
+  name === "AskUserQuestion" ? "ask" :
   name === "Write" ? "write" :
   name === "Edit" || name === "MultiEdit" ? "edit" :
   name === "Read" ? "read" :
@@ -483,7 +480,7 @@ export function staticItemLines(it: Item, width: number): Line[] {
     const wrapped = wrapSpans(proseSpans(it.text, { color: color.user, bold: true, bg: color.userBg }), Math.max(width - 4, 1));
     wrapped.forEach((l, i) =>
       lines.push(padBg([
-        { text: i === 0 ? "▌ " : "  ", color: color.accent, bold: true, bg: color.userBg },
+        { text: i === 0 ? glyph.userBar + " " : "  ", color: color.accent, bold: true, bg: color.userBg },
         ...l.map((s) => ({ ...s, bg: color.userBg })),
       ], width, color.userBg)),
     );
@@ -668,7 +665,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
           : it.tier === "none" ? { text: " · unverified", color: color.faint }
           : null;
         out.push(clipSpans([
-          { text: "  " + (it.failures.length ? "◇ " : "✓ "), color: it.failures.length ? color.accentDim : color.ok },
+          { text: "  " + (it.failures.length ? glyph.err + " " : glyph.check + " "), color: it.failures.length ? color.warn : color.ok },
           { text: "turn summary", color: color.text },
           ...(bits.length ? [{ text: " · " + bits.join(" · "), color: color.faint }] : []),
           ...(proof ? [proof] : []),
@@ -819,7 +816,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         for (const para of it.text.split("\n")) {
           const wrapped = wrapSpans([{ text: para, color: color.err }], Math.max(width - 2, 1));
           wrapped.forEach((l) => {
-            out.push([{ text: glyph.userBar + " ", color: color.err }, ...l]);
+            out.push([{ text: glyph.quote + " ", color: color.err }, ...l]);
           });
         }
         break;

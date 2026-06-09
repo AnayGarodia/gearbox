@@ -130,7 +130,7 @@ function ComposerImpl({
             {promptGlyph}{" "}
           </Text>
           {!busy ? <Text inverse> </Text> : null}
-          <Text color={color.faint}>{busy ? "type to queue · esc interrupts" : bashMode ? "shell command · esc to exit bash mode" : suggestion ?? placeholder}</Text>
+          <Text color={color.faint}>{busy ? "type to queue · esc interrupt" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder}</Text>
         </Box>
       ) : (
         // Non-empty: render the live editable input WITH the cursor, even while
@@ -143,9 +143,9 @@ function ComposerImpl({
             </Box>
           ))}
           {busy ? (
-            <Text color={color.faint}>↵ queues · sends when the current turn finishes</Text>
+            <Text color={color.faint}>⏎ queues · sends when the current turn finishes</Text>
           ) : shellMode ? (
-            <Text color={color.faint}>↵ runs in your shell</Text>
+            <Text color={color.faint}>⏎ runs in your shell</Text>
           ) : null}
         </Box>
       )}

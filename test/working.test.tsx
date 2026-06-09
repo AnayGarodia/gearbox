@@ -8,7 +8,7 @@ const base = { state: "tool" as const, elapsed: 3, width: 100 };
 test("the live status line keeps the verb and 'esc to interrupt' visible", () => {
   const out = render(<Working {...base} verb="Reading" />).lastFrame() ?? "";
   expect(out).toContain("Reading");
-  expect(out).toContain("esc to interrupt");
+  expect(out).toContain("esc interrupt");
 });
 
 test("low-context notice appears only when context is genuinely low (≥85% used)", () => {

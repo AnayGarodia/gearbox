@@ -58,7 +58,7 @@ export function Panel({
   } else if (panel.kind === "accounts") {
     const rows = accounts?.rows ?? [];
     const labelPad = accounts?.labelPad ?? 0;
-    // A pinned "+ Add an account" row sits at logical index 0; account rows follow.
+    // A pinned "+ add an account" row sits at logical index 0; account rows follow.
     // App's key/mouse handlers move panel.index over (rows.length + 1) and map index 0
     // to the "__add__" slug (opens the wizard). Window over the combined list.
     type AcctRow = (typeof rows)[number];
@@ -72,17 +72,17 @@ export function Panel({
           const sel = start + i === idx;
           if (row.add) {
             return (
-              <Text key="__add__" backgroundColor={sel ? color.accentBg : undefined}>
-                <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
-                <Text color={color.accent} bold={sel}>+ Add an account</Text>
+              <Text key="__add__" wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+                <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
+                <Text color={color.accent} bold={sel}>+ add an account</Text>
                 <Text color={color.faint}>  any provider · subscription · key</Text>
               </Text>
             );
           }
           const r = row.r;
           return (
-            <Text key={r.alias} backgroundColor={sel ? color.accentBg : undefined}>
-              <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+            <Text key={r.alias} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+              <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
               <Text color={color.text} bold={r.active}>{r.name.padEnd(labelPad)}</Text>
               <Text color={color.faint}>  {r.type}</Text>
               <Text color={accountStateColor(r.status)}>  {r.status}</Text>
@@ -110,8 +110,8 @@ export function Panel({
           slice.map((r, i) => {
             const sel = start + i === idx;
             return (
-              <Text key={r.id} backgroundColor={sel ? color.accentBg : undefined}>
-                <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+              <Text key={r.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+                <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
                 <Text color={color.text} bold={sel}>{(r.title || "(untitled)").slice(0, 52)}</Text>
                 <Text color={color.faint}>  · {r.turns} turn{r.turns === 1 ? "" : "s"} · {r.when}</Text>
               </Text>
@@ -135,8 +135,8 @@ export function Panel({
           slice.map((s, i) => {
             const sel = start + i === idx;
             return (
-              <Text key={s.id} backgroundColor={sel ? color.accentBg : undefined}>
-                <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+              <Text key={s.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+                <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
                 <Text color={color.text} bold={sel}>{s.label.padEnd(24)}</Text>
                 <Text color={color.faint}>  {s.summary}</Text>
               </Text>
@@ -212,8 +212,8 @@ export function Panel({
             const sel = start + i === idx;
             const pinned = r.id === currentModelId;
             return (
-              <Text key={r.id} backgroundColor={sel ? color.accentBg : undefined}>
-                <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+              <Text key={r.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+                <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
                 <Text color={pinned ? color.ok : color.text} bold={pinned}>{truncate(r.label, 28).padEnd(28)}</Text>
                 <Text color={color.faint}>{r.provider}</Text>
                 {pinned ? <Text color={color.ok}>  {glyph.on} pinned</Text> : null}
@@ -229,7 +229,7 @@ export function Panel({
     const bodyLines = panel.body ? panel.body.split("\n").slice(0, Math.max(1, bodyH - panel.files.length - 7)) : [];
     body = (
       <Box flexDirection="column" paddingX={1}>
-        <Text color={color.accent} bold>{panel.mode === "commit" ? "Commit message" : "PR title"}</Text>
+        <Text color={color.accent} bold>{panel.mode === "commit" ? "commit message" : "PR title"}</Text>
         <Box>
           <Text color={color.faint}>{glyph.prompt} </Text>
           <Text color={color.text}>{fw.pre}</Text>
@@ -292,8 +292,8 @@ export function Panel({
               const sel = start + i === idx;
               const failed = d.status === "failed";
               return (
-                <Text key={d.id} backgroundColor={sel ? color.accentBg : undefined}>
-                  <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+                <Text key={d.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+                  <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
                   <Text color={failed ? color.err : color.text} bold={sel}>{truncate(d.id, idW).padEnd(idW)}</Text>
                   <Text color={color.faint}>  {truncate(d.model, 22)}</Text>
                   <Text color={failed ? color.err : d.status === "succeeded" ? color.ok : color.warn}>  {d.status}</Text>
@@ -317,13 +317,13 @@ export function Panel({
           {filtered.length === 0 ? (
             panel.availableModels === null
               ? <Text color={color.faint}>{panel.modelsError ? `${glyph.err} ${truncate(panel.modelsError, Math.max(8, innerW - 4))}` : "loading available models…"}</Text>
-              : <Text color={color.faint}>no models match "{ph.filter}"</Text>
+              : <Text color={color.faint}>no models match “{ph.filter}”</Text>
           ) : (
             slice.map((m, i) => {
               const sel = start + i === idx;
               return (
-                <Text key={m} backgroundColor={sel ? color.accentBg : undefined}>
-                  <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+                <Text key={m} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+                  <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
                   <Text color={color.text} bold={sel}>{truncate(m, Math.max(8, innerW - 4))}</Text>
                 </Text>
               );
@@ -346,8 +346,8 @@ export function Panel({
             {capacityTypes.map((t, i) => {
               const sel = i === idx;
               return (
-                <Text key={t.id} backgroundColor={sel ? color.accentBg : undefined}>
-                  <Text color={sel ? color.accent : color.faint}>{sel ? "▶ " : "  "}</Text>
+                <Text key={t.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
+                  <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
                   <Text color={color.text} bold={sel}>{t.id.padEnd(22)}</Text>
                   <Text color={color.faint}>{t.note}</Text>
                 </Text>
@@ -367,7 +367,7 @@ export function Panel({
             capacity: <Text color={color.text}>{ph.capacityType}</Text>
           </Text>
           <Box marginTop={1} flexDirection="column">
-            <Text color={color.accent} bold>Deployment name</Text>
+            <Text color={color.accent} bold>deployment name</Text>
             <Box>
               <Text color={color.faint}>{glyph.prompt} </Text>
               <Text color={color.text}>{fw.pre}</Text>
@@ -386,7 +386,7 @@ export function Panel({
       const dep = panel.deployments?.find((d) => d.id === ph.deploymentId);
       body = (
         <Box flexDirection="column" paddingX={1}>
-          <Text>Delete <Text color={color.err} bold>{truncate(ph.deploymentId, Math.max(8, innerW - 10))}</Text>?</Text>
+          <Text>delete <Text color={color.err} bold>{truncate(ph.deploymentId, Math.max(8, innerW - 10))}</Text>?</Text>
           {dep ? (
             <Text color={color.faint}>
               {"  "}model: <Text color={color.text}>{truncate(dep.model, 28)}</Text>
@@ -394,7 +394,7 @@ export function Panel({
               {dep.capacityUnits !== undefined ? <Text>  ·  {dep.capacityUnits}PTU</Text> : null}
             </Text>
           ) : null}
-          <Box marginTop={1}><Text color={color.faint}>This cannot be undone.</Text></Box>
+          <Box marginTop={1}><Text color={color.faint}>this cannot be undone</Text></Box>
           <Box marginTop={1}>
             <Text color={color.err} bold>⏎ confirm</Text>
             <Text color={color.faint}>  · n / esc cancel</Text>
@@ -409,7 +409,7 @@ export function Panel({
     <Box flexDirection="column" width={width} height={height}>
       <Box width={width} paddingX={1} justifyContent="space-between">
         <Text color={color.accent} bold>{panel.title}</Text>
-        <Text color={color.faint}>esc to close</Text>
+        <Text color={color.faint}> </Text>
       </Box>
       <Box flexDirection="column" width={width} height={bodyH}>{body}</Box>
       <Box width={width} paddingX={1}>

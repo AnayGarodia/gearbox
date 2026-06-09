@@ -1,6 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
-import { color } from "../theme.ts";
+import { color, glyph } from "../theme.ts";
 import { matchCommands } from "../../commands.ts";
 
 export interface PaletteRow {
@@ -21,7 +21,11 @@ function windowed<T>(items: T[], selected: number, limit: number): { rows: T[]; 
  * (secondary) so each can be coloured independently, then pad to fill the row's
  * background. The description is truncated first when the row is too narrow. */
 function rowParts(marker: string, label: string, detail: string | undefined, width: number): { cmd: string; det: string; pad: string } {
-  const cmd = `${marker}${label.padEnd(16)}`;
+  // Clamp the command column too — a long usage string (e.g. "/checkpoint
+  // [name|list|restore|rm]") must truncate, not wrap the row and break the
+  // palette's row budget.
+  let cmd = `${marker}${label.padEnd(16)}`;
+  if (cmd.length > width) cmd = cmd.slice(0, Math.max(1, width - 1)) + "…";
   let det = detail ? "  " + detail : "";
   if (cmd.length + det.length > width) {
     const room = Math.max(0, width - cmd.length);
@@ -53,7 +57,7 @@ export function CommandPalette({ draft, selected = 0, limit = 5, rows, width = 8
       <Box flexDirection="column" paddingX={1} marginTop={1}>
         {shown.rows.map((r, i) => {
           const active = shown.start + i === selected;
-          return <Row key={r.value} active={active} marker={active ? "● " : "  "} label={r.label} detail={r.detail} width={rowWidth} />;
+          return <Row key={r.value} active={active} marker={active ? `${glyph.select} ` : "  "} label={r.label} detail={r.detail} width={rowWidth} />;
         })}
       </Box>
     );
@@ -65,7 +69,7 @@ export function CommandPalette({ draft, selected = 0, limit = 5, rows, width = 8
     <Box flexDirection="column" paddingX={1} marginTop={1}>
       {shown.rows.map((c, i) => {
         const active = shown.start + i === selected;
-        return <Row key={c.name} active={active} marker={active ? "● " : "  "} label={c.usage} detail={c.desc} width={rowWidth} />;
+        return <Row key={c.name} active={active} marker={active ? `${glyph.select} ` : "  "} label={c.usage} detail={c.desc} width={rowWidth} />;
       })}
     </Box>
   );
