@@ -5579,7 +5579,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const groupH = splashH + readinessH + commandsH + 4 + homeLineCount + PALETTE_ROWS; // composer block (lift=false) = 4 + N
     // The REAL centered region is one row taller than transcriptHeight (which
     // carries a deliberate -1 over-estimate so the frame never exceeds rows).
-    const topPad = Math.max(0, Math.floor((transcriptHeight + 1 - groupH) / 2));
+    // Math.round, not floor: Yoga rounds the centering offset to the nearest
+    // row with .5 going UP (an odd leftover puts the extra row on TOP) —
+    // PTY-verified at 160x60 (free=15 → topPad 8).
+    const topPad = Math.max(0, Math.round((transcriptHeight + 1 - groupH) / 2));
     homeGeomRef.current = homeScreen
       ? {
           firstInputRow: 6 + topPad + splashH + readinessH + commandsH, // header(3) + topPad + content + composer marginTop + pad + 1
