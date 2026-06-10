@@ -2175,15 +2175,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [],
   );
 
-  const MODE_NOTE: Record<"normal" | "auto-accept" | "plan", string> = {
-    normal: "normal mode · I'll ask before writes, edits, and shell",
-    "auto-accept": "auto-accept edits · file writes/edits apply without asking (shell still gated)",
-    plan: "plan mode · read-only; I'll propose a plan before changing anything",
-  };
+  // Mode changes are SILENT in the transcript (cycling shift+tab used to spam a
+  // notice line per press): the composer wears the mode — colored edges + a
+  // footer badge (plan green · auto-accept amber) — and that's the whole story.
   const setModeTo = (next: "normal" | "auto-accept" | "plan") => {
     modeRef.current = next;
     setMode(next);
-    notice(MODE_NOTE[next]);
   };
   // Shift+Tab cycles normal → auto-accept → plan → normal (Claude Code style).
   const cycleMode = () => {
@@ -5343,7 +5340,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop) — the meter's ctx gauge carries low-context now (no extra notice row)
   if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
-  if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
   footer += toasts.length;
@@ -5519,7 +5515,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // panel and let esc (the panel-close key) silently DENY the unseen request.
   const composerPlaceholder = setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything";
   const composerAt = (w: number, lift: boolean) => (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
   );
   // Inline keeps full width; fullscreen renders these inside the page column
   // (fsComposerJsx below) so the consent line / composer share the transcript's
@@ -5630,14 +5626,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             {queued.map((q, i) => (
               <Text key={i} color={color.faint}>↳ queued: {q.length > 60 ? q.slice(0, 57) + "…" : q}</Text>
             ))}
-          </Box>
-        ) : null}
-        {mode !== "normal" ? (
-          <Box paddingX={1} marginTop={1}>
-            <Text wrap="truncate-end">
-              <Text color={color.accent}>{glyph.notice} {mode === "plan" ? "plan mode" : "auto-accept edits"}</Text>
-              <Text color={color.faint}> · {mode === "plan" ? "read-only" : "writes apply without asking; shell still gated"} · shift+tab to cycle</Text>
-            </Text>
           </Box>
         ) : null}
         {search ? (
