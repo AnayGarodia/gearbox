@@ -46,11 +46,13 @@ const root = () => join(process.env.GEARBOX_HOME || join(homedir(), ".gearbox"),
  * leading/trailing hyphens are stripped. Falls back to "root" for the
  * filesystem root or any other edge case that produces an empty string.
  */
-const slug = () =>
-  process.cwd().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root";
+const slug = (cwd = process.cwd()) =>
+  cwd.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root";
 
-/** Absolute path to the session directory for the current project. */
-const dir = () => join(root(), slug());
+/** Absolute path to the session directory for the given project (defaults to
+ *  the current one). Callers with a FIXED workspace (conductor tabs persisting
+ *  in the background while another tab owns process.cwd()) pass theirs. */
+const dir = (cwd?: string) => join(root(), slug(cwd));
 
 /**
  * Per-turn metadata captured after every completed assistant response.
@@ -102,7 +104,7 @@ export interface Session {
 }
 
 /** Creates the session directory if it does not already exist. */
-const ensure = () => mkdirSync(dir(), { recursive: true });
+const ensure = (cwd?: string) => mkdirSync(dir(cwd), { recursive: true });
 
 /**
  * Generates a new session id.
@@ -117,11 +119,11 @@ export function newSessionId(): string {
  * Persists a session to disk as `<dir>/<id>.json`.
  * Failures are silently swallowed so a disk error never crashes the app.
  */
-export function saveSession(s: Session): void {
+export function saveSession(s: Session, cwd?: string): void {
   try {
-    ensure();
+    ensure(cwd);
     // Temp-write + rename so a crash mid-write can't tear the session file.
-    const path = join(dir(), `${s.id}.json`);
+    const path = join(dir(cwd), `${s.id}.json`);
     writeFileSync(`${path}.tmp`, JSON.stringify(s));
     renameSync(`${path}.tmp`, path);
   } catch {

@@ -20,7 +20,7 @@ import { buildProvidersView } from "./providers-view.ts";
 import { ProvidersView } from "./components/ProvidersView.tsx";
 import { Masthead } from "./components/Masthead.tsx";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
-import { setPermissionHandler, setPreMutationHook, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
+import { setPermissionHandler, registerPermissionHandler, registerPreMutationHook, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName } from "./character.ts";
 import { color, glyph, setTheme, activeTheme, THEMES } from "./theme.ts";
@@ -369,15 +369,48 @@ function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingStat
   );
 }
 
+/** Conductor-provided tab controls, surfaced as /tab + ctrl+t inside each session. */
+export interface TabControl {
+  create: (name?: string) => void;
+  close: () => void;
+  switchTo: (n: number) => void; // 1-based
+  cycle: (delta: number) => void;
+  list: () => { title: string; dir: string; active: boolean; status: string }[];
+}
+
+/** What a session reports up to the conductor's tab strip. */
+export interface SessionStatus {
+  busy: boolean;
+  needsInput: boolean; // a permission prompt is waiting
+  title: string;
+}
+
 export interface AppProps {
   selector: ModelSelector;
   runner?: Runner;
   fullscreen?: boolean;
   resumeId?: string; // resume this saved session on launch (--continue)
+  /** Fixed workspace root for THIS instance (conductor tabs run one per worktree).
+   *  Captured once; background turns stay rooted here even after the active tab
+   *  chdir'd elsewhere. Default: process.cwd() at mount. */
+  root?: string;
+  /** Is this instance the focused tab? Gates keyboard/mouse input and
+   *  terminal-title side effects. Default true (single-session mode). */
+  active?: boolean;
+  onStatus?: (s: SessionStatus) => void;
+  tabs?: TabControl;
+  /** conductor strip chip rendered in the status bar (the strip costs no row) */
+  tabsLabel?: { text: string; alert: boolean } | null;
 }
 
-export function App({ selector: initialSelector, runner, fullscreen = false, resumeId }: AppProps) {
+export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabsLabel }: AppProps) {
   const { exit } = useApp();
+  // The instance's workspace, FIXED at mount: per-turn root capture, the
+  // session-save slug, and permission routing key off this — never off the
+  // process-global cwd, which follows whichever tab is active.
+  const rootRef = useRef(rootProp ?? process.cwd());
+  const activeRef = useRef(active);
+  activeRef.current = active;
   const { stdin, isRawModeSupported, setRawMode } = useStdin();
   const { columns, rows } = useTerminalSize();
   const online = useOnline(20_000, true); // background reachability → "⚠ offline"
@@ -638,11 +671,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return () => clearInterval(t);
   }, [busy]);
 
-  // Reflect status in the terminal window/tab title (OSC 2).
+  // Reflect status in the terminal window/tab title (OSC 2). Active tab only —
+  // a background session finishing must not retitle the user's terminal.
   useEffect(() => {
-    const proj = basename(process.cwd());
+    if (!active) return;
+    const proj = basename(rootRef.current);
     setTitle(busy ? `✳ ${proj} · working` : `${proj} · gearbox`);
-  }, [busy]);
+  }, [busy, active]);
+
+  // Report up to the conductor's tab strip: busy spinner, the needs-input badge
+  // (a permission prompt is waiting), and this session's display title.
+  useEffect(() => {
+    onStatus?.({ busy, needsInput: perm != null, title: sessionRef.current.title || basename(rootRef.current) });
+  }, [busy, perm, onStatus]);
 
   // Sticky bash mode: `!` on an empty composer enters it (the ! is consumed), each
   // Enter runs the line as a shell command, esc exits back to normal input. (iii)
@@ -814,36 +855,55 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   // Mutating tools (write/edit/shell) block on this; the UI resolves it.
   useEffect(() => {
-    setPermissionHandler(
-      (req) =>
-        new Promise<PermDecision>((resolve) => {
-          // Auto-accept-edits mode: apply file writes/edits without asking (the
-          // diff still renders); shell commands are still gated.
-          if (modeRef.current === "auto-accept" && (req.kind === "write" || req.kind === "edit")) {
-            resolve("once");
-            return;
-          }
-          permQueue.current.push({ req, resolve });
-          pumpPerm();
-        }),
-    );
+    const root = rootRef.current;
+    const handler = (req: PermRequest) =>
+      new Promise<PermDecision>((resolve) => {
+        // Auto-accept-edits mode: apply file writes/edits without asking (the
+        // diff still renders); shell commands are still gated.
+        if (modeRef.current === "auto-accept" && (req.kind === "write" || req.kind === "edit")) {
+          resolve("once");
+          return;
+        }
+        permQueue.current.push({ req, resolve });
+        pumpPerm();
+      });
+    // Registered under THIS instance's root: with multiple tabs mounted, a
+    // background session's prompt lands on its own tab (the strip shows
+    // "needs input"), not whichever tab registered last.
+    registerPermissionHandler(root, handler);
     // Before a turn's FIRST mutating tool (under any approval path — yolo,
     // rules, and grants included), snapshot the whole tree. Synchronous, so the
-    // tool can't mutate before the checkpoint exists.
-    setPreMutationHook(() => {
+    // tool can't mutate before the checkpoint exists. Checkpoints THIS root —
+    // never the process-global cwd, which follows the active tab.
+    const preMutation = () => {
       if (!busyRef.current || turnCheckpointRef.current) return;
       const seq = ++turnSeqRef.current;
-      const r = gitOps.turnCheckpointSave(seq);
+      const r = gitOps.turnCheckpointSave(seq, root);
       if (!r.ok) return; // not a git repo / checkpoint failed → per-file snapshots still apply
       const name = gitOps.turnCheckpointName(seq);
       turnCheckpointRef.current = name;
       if (!sessionBaseRef.current) {
-        const sha = gitOps.git(["rev-parse", `refs/gearbox/checkpoints/${name}`]);
+        const sha = gitOps.git(["rev-parse", `refs/gearbox/checkpoints/${name}`], root);
         if (sha.ok && sha.out) sessionBaseRef.current = sha.out;
       }
-    });
-    return () => { setPermissionHandler(null); setPreMutationHook(null); };
+    };
+    registerPreMutationHook(root, preMutation);
+    return () => { registerPermissionHandler(root, null); registerPreMutationHook(root, null); };
   }, []);
+
+  // The ACTIVE tab also owns the global fallback slots, so rootless requests
+  // (MCP risky tools, headless paths) prompt on whatever the user is looking at.
+  useEffect(() => {
+    if (!active) return;
+    setPermissionHandler((req) =>
+      new Promise<PermDecision>((resolve) => {
+        if (modeRef.current === "auto-accept" && (req.kind === "write" || req.kind === "edit")) { resolve("once"); return; }
+        permQueue.current.push({ req, resolve });
+        pumpPerm();
+      }),
+    );
+    return () => setPermissionHandler(null);
+  }, [active]);
 
   // Plugins (.gearbox/plugins/*.ts + ~/.gearbox/plugins/*.ts): loaded once at
   // boot. A broken plugin becomes a notice, never a crash; ctx.log and hook
@@ -1231,11 +1291,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         } else queueScroll(delta); // frame-throttled (≤~60fps) so fast scrolls don't flood renders
       }
     };
+    if (!active) return; // background tabs must not fight over the one mouse stream
     stdin.on("data", onData);
     return () => {
       stdin.off?.("data", onData);
     };
-  }, [stdin, fullscreen, rows, scrollBy, queueScroll, copyWithFeedback]);
+  }, [stdin, fullscreen, rows, scrollBy, queueScroll, copyWithFeedback, active]);
 
   // Save the current conversation (best-effort) · model-agnostic messages + the UI
   // transcript + per-turn model/usage, so it resumes faithfully and feeds routing.
@@ -1244,14 +1305,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (!itemsRef.current.length) return;
     saveSession({
       id: s.id,
-      cwd: process.cwd(),
+      cwd: rootRef.current,
       createdAt: s.createdAt,
       updatedAt: Date.now(),
       title: s.title,
       messages: msgRef.current,
       items: itemsRef.current,
       turns: s.turns,
-    });
+    }, rootRef.current);
   }, []);
 
   // Saved sessions for this project, newest first, EXCLUDING the one you're in
@@ -1986,7 +2047,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        let { system, messages: ctx, cacheBreak, sections } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        let { system, messages: ctx, cacheBreak, sections } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan, cwd: rootRef.current });
         // Remember this turn's non-history context overhead (system + memory +
         // repomap + retrieval + git) so the auto-compact trigger can budget on
         // the FULL context, not history alone.
@@ -2011,6 +2072,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         const r = await runTask({
           model: choice.model, messages: ctx, onEvent, signal, plan, system, creds,
+          root: rootRef.current, // tools stay rooted in THIS tab's tree even when another tab owns cwd
           effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0,
           pinnedModelId: explicitModelId, cacheBreak,
           onBackground: (rep) => {
@@ -2890,11 +2952,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         resolveCliModel, resumableSessions, runInteractive, runTurn, sessionWhen, toast, togglePlan,
         updatePhase,
         // render-time values
-        activeCli, fullscreen, model, onboardingState, selectorKind, statusPinned,
+        activeCli, fullscreen, model, onboardingState, selectorKind, statusPinned, tabs,
       };
       dispatchCommand(ctx, text);
     },
-    [exit, runTurn, onboardingState],
+    [exit, runTurn, onboardingState, tabs],
   );
 
   const submit = useCallback(
@@ -3033,6 +3095,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // Swallow any stray mouse-report bytes so they never land in the composer
     // (the wheel is handled by the raw stdin listener above).
     if (/\[<\d+;\d+;\d+[Mm]/.test(input)) return;
+    // Conductor tabs: ⌃T cycles to the next session (the /tab command covers
+    // create/close/jump). Only the active tab's useInput runs, so this is safe.
+    if (tabs && key.ctrl && input === "t") { tabs.cycle(1); return; }
     // Bracketed-paste assembly: the terminal wraps a paste in \x1b[200~ … \x1b[201~.
     // Buffer from the opener to the closer (possibly across several reads), then
     // collapse the whole blob · big pastes become a [Pasted N lines · M chars] chip
@@ -3817,7 +3882,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       case "none":
         break;
     }
-  }, { isActive: isRawModeSupported });
+  }, { isActive: isRawModeSupported && active });
 
   const mention = currentMention(edit.value, edit.cursor);
   const fileMatches = mention ? matchFiles(listProjectFiles(), mention.token) : [];
@@ -4249,7 +4314,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
           assumes y === termRows; change in lockstep. */}
       <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
-        <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={process.cwd()} branch={branch} epoch={themeEpochState} />
+        <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} epoch={themeEpochState} tabsLabel={tabsLabel} />
       </Box>
     </>
   );
