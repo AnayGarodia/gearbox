@@ -86,7 +86,6 @@ export interface AnimSpec {
   talk?: boolean; // cycle the mouth shapes while "speaking"
   shake?: boolean; // ±1-col jitter, transient (error beat only)
   overlay?: OverlayKind; // a frame-driven overlay (dots, tears, confetti, …)
-  bob?: boolean; // a one-tick idle lift every ~8s (splash only) — quiet sign of life
   show?: boolean; // the home-screen idle show: occasional costumes/moments (homeShow)
 }
 
@@ -116,7 +115,7 @@ export function homeShow(tick: number): { patch: Partial<GhostCfg>; overlay?: Ov
  *  transient shake offset is applied to a wrapping Box so the sprite itself stays
  *  cache-stable. */
 export function AnimatedGhost({ cfg, scale, anim }: { cfg: GhostCfg; scale: 1 | 2; anim: AnimSpec }) {
-  const tick = useTick(240, !!(anim.blink || anim.talk || anim.shake || anim.overlay || anim.bob || anim.show));
+  const tick = useTick(240, !!(anim.blink || anim.talk || anim.shake || anim.overlay || anim.show));
   const slow = Math.floor(tick / 2); // calmer cadence for talk + overlays
   const frameCfg: GhostCfg = { ...cfg, scale };
   const show = anim.show ? homeShow(tick) : null;
@@ -131,11 +130,10 @@ export function AnimatedGhost({ cfg, scale, anim }: { cfg: GhostCfg; scale: 1 | 
   // 1× and +2 at 2× — compensate with top margin so the block height (and
   // everything laid out below) NEVER changes, costume on or off.
   const personaPad = anim.show ? (frameCfg.persona ? 0 : scale === 2 ? 2 : 1) : 0;
-  // Idle bob: a one-tick lift every ~7.7s. marginTop/marginBottom always sum to 1
-  // so the block height never changes — nothing below the ghost ever shifts.
-  const lift = anim.bob && tick % 32 === 18 && !show ? 0 : 1;
+  // No idle bob (Broadsheet: nothing idles — motion is information). The shows,
+  // blink, talk, and overlays are the only movement.
   return (
-    <Box marginLeft={shake} marginTop={(anim.bob ? lift : 0) + personaPad} marginBottom={anim.bob ? 1 - lift : 0}>
+    <Box marginLeft={shake} marginTop={personaPad}>
       <Sprite data={data} />
     </Box>
   );
@@ -214,7 +212,7 @@ export function MascotSplash({ skin = "base", size = "big", wordmark = true, tag
         kitty ? (
           <KittyGhost variant={skin} size={size} />
         ) : (
-          <AnimatedGhost cfg={cfg} scale={size === "big" ? 2 : 1} anim={{ blink: !mood, bob: true, show: !mood, overlay: mood?.overlay }} />
+          <AnimatedGhost cfg={cfg} scale={size === "big" ? 2 : 1} anim={{ blink: !mood, show: !mood, overlay: mood?.overlay }} />
         )
       ) : null}
       {wordmark ? (

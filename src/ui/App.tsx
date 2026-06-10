@@ -18,12 +18,12 @@ import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
 import { buildProvidersView } from "./providers-view.ts";
 import { ProvidersView } from "./components/ProvidersView.tsx";
-import { TabStrip, tabStripHit, TABS, type AppTab } from "./components/TabStrip.tsx";
+import { Masthead, tabStripHit, TABS, type AppTab } from "./components/TabStrip.tsx";
 import { CostView, RoutingView } from "./components/TabViews.tsx";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
-import { nextVerb, toolVerbFromName, lowContextNotice } from "./character.ts";
+import { nextVerb, toolVerbFromName } from "./character.ts";
 import { color, glyph, setTheme, activeTheme, THEMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
@@ -738,7 +738,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const maxScrollRef = useRef(0);
   const paletteRowsLiveRef = useRef(0); // PALETTE_ROWS, for status-bar click hit-testing
   const homeScreenRef = useRef(false); // fullscreen home screen (composer mid-screen, not at the bottom)
-  const statusBarRenderRef = useRef<{ model: string; costText: string; width: number }>({ model: "", costText: "", width: 0 });
+  const statusBarRenderRef = useRef<{ model: string; costText: string; ctxPct: number | null; width: number }>({ model: "", costText: "", ctxPct: null, width: 0 });
+  // The shared page column's left offset (Broadsheet "one page"): footer surfaces
+  // are indented by this, so the composer mouse hit-test must subtract it.
+  const pageLeftRef = useRef(0);
 
   const setPerm = (p: PermRequest | null) => {
     permRef.current = p;
@@ -1027,26 +1030,28 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const firstInputRow = rows - 1 - lineCount; // below the input: footer hint (rows-1) + marginBottom (rows)
       if (y < firstInputRow || y > rows - 2) return null;
       const lineIdx = y - firstInputRow;
-      const col = Math.max(0, x - 5); // 1 border + space + prompt + space, SGR coords are 1-based
+      // 1 border + space + prompt + space, SGR coords are 1-based — plus the page
+      // column's left offset (the composer sits in the centered page column).
+      const col = Math.max(0, x - 5 - pageLeftRef.current);
       return offsetAt(value, lineIdx, col);
     };
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
     const statusBarZoneAt = (x: number, y: number): "model" | null => {
-      const { model, costText, width: w } = statusBarRenderRef.current;
+      const { model, costText, ctxPct, width: w } = statusBarRenderRef.current;
       if (homeScreenRef.current) {
         // Home screen: the composer lives mid-screen, so the status bar is the
         // very last row (marginTop + bar, nothing below it).
         if (y !== rows || !model) return null;
-        const { modelZone } = statusBarLayout({ model, costText, width: w });
+        const { modelZone } = statusBarLayout({ model, costText, ctxPct, width: w });
         const col = x - 1;
         return col >= modelZone[0] && col < modelZone[1] ? "model" : null;
       }
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, width: w });
+      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, ctxPct, width: w });
     };
-    const viewportTop = 5; // Banner (3 rows) + tab strip (1 row); viewport begins on row 5.
+    const viewportTop = 4; // masthead (marginTop + masthead row + rule = 3 rows); viewport begins on row 4.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
       const viewportBottom = viewportTop + transcriptHeightLiveRef.current - 1;
       if (y < viewportTop || y > viewportBottom) return null;
@@ -1075,10 +1080,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Status-bar click pickers (fullscreen only). A primary press on the
           // model or effort label toggles its floating picker; a press anywhere
           // else closes an open one before normal click handling resumes.
-          // Tab strip click (row 4, just under the 3-row Banner). Works even while
-          // busy — switching the view never touches the running turn.
+          // Masthead tab click (row 2: marginTop is row 1, the masthead row 2).
+          // Works even while busy — switching the view never touches the running
+          // turn. Keep the row in lockstep with the Masthead row contract.
           if (fullscreen && !setupRequiredRef.current && isPrimary && !isDrag && !up) {
-            const t = tabStripHit(x, y, 4);
+            const t = tabStripHit(x, y, 2);
             if (t) { setTab(t); continue; }
           }
           if (fullscreen && isPrimary && !isDrag && !up && !busyRef.current && !permRef.current) {
@@ -1138,7 +1144,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const lineCount = Math.max(1, value.split("\n").length);
             const firstInputRow = rows - lineCount;
             const lineIdx = y - firstInputRow;
-            const col = Math.max(0, x - 5);
+            const col = Math.max(0, x - 5 - pageLeftRef.current); // must match composerOffset above
             const shift = (b & 4) !== 0;
             const now = Date.now();
             const prev = lastComposerClickRef.current;
@@ -1612,7 +1618,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const ctxPct = !setupRequired && activeCtxWindow && lastInput > 0 ? Math.round((lastInput / activeCtxWindow) * 100) : null;
   // Mirror exactly what the status bar renders (model + session cost + width), so
   // the click hit-test's right-aligned model zone matches the rendered position.
-  statusBarRenderRef.current = { model: modelLabel, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), width };
+  statusBarRenderRef.current = { model: modelLabel, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), ctxPct, width };
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const pushPhase = (label: string, detail?: string) => {
@@ -5190,12 +5196,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const CONTENT_CAP = 92;
   const lineWidth = Math.max(Math.min(width - 3, CONTENT_CAP), 20);
   const marginCols = Math.max(0, Math.floor((width - 3 - lineWidth) / 2));
+  // The shared PAGE column (Broadsheet "one page"): every footer surface sits in
+  // the same centered column as the transcript. +1 mirrors the transcript Box's
+  // paddingX so the columns align exactly; pageW = lineWidth + the 2-col padding
+  // the footer components carry themselves (paddingX={1}).
+  const pageLeft = marginCols ? marginCols + 1 : 0;
+  const pageW = lineWidth + 2;
+  pageLeftRef.current = fullscreen ? pageLeft : 0;
+  // History recede: while a turn runs or a consent is pending, settled items
+  // render in receded ink so the now-row / consent line is the only bright thing.
+  const recede = busy || !!perm;
   const lines = useMemo(() => {
-    const raw = itemsToLines(displayItems, lineWidth, expandAll);
+    const raw = itemsToLines(displayItems, lineWidth, expandAll, recede);
     if (!marginCols) return raw;
     const pad = { text: " ".repeat(marginCols) };
     return raw.map((l) => (l.length ? [pad, ...l] : l));
-  }, [displayItems, lineWidth, marginCols, expandAll]);
+  }, [displayItems, lineWidth, marginCols, expandAll, recede]);
 
   // Footer height · over-estimated so the fullscreen frame never exceeds the
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
@@ -5224,11 +5240,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
-  if (perm) footer += 9;
+  if (perm) footer += 5; // consent block: marginTop + title + command + options + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
   else if (!panel && !homeScreen) footer += 4; // composer (marginTop + input + footer hint + marginBottom · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
-  if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
-  if (busy && lowContextNotice(ctxPct)) footer += 1; // optional low-context notice row under it
+  if (busy || linger) footer += 2; // one-line working strip (+ marginTop) — the meter's ctx gauge carries low-context now (no extra notice row)
   if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
   if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
@@ -5253,7 +5268,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // the right account's data immediately without waiting for spend to accumulate.
   const stripApi = stripView ? ((usedAccountRef.current ? stripView.apiKeys.find((a) => a.id === usedAccountRef.current) : null) ?? stripView.apiKeys[0] ?? null) : null;
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
-  const HEADER = setupRequired ? 3 : 4; // Banner (marginTop + title + rule) + the tab strip (hidden during setup)
+  const HEADER = 3; // Masthead (marginTop + wordmark·tabs·account row + rule) — the tabs live IN the masthead row now (keep in lockstep with tabStripHit's row 2 and viewportTop 4)
   // Keep the whole frame STRICTLY under `rows`. Ink redraws with a full
   // clearTerminal (\x1b[2J\x1b[3J\x1b[H — the 3J wipes SCROLLBACK) the moment the
   // output height reaches the terminal height; under-filling by one row keeps it on
@@ -5380,7 +5395,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         <Text color={color.accent}>{quickPicker === "model" ? "model" : "effort"}</Text>
         <Text color={color.faint}> · ↑↓ select · ⏎ apply · esc close</Text>
       </Box>
-      <CommandPalette draft="" selected={Math.min(quickPickerIndex, quickRows.length - 1)} limit={quickPickerLimit} rows={quickRows} width={width} />
+      <CommandPalette draft="" selected={Math.min(quickPickerIndex, quickRows.length - 1)} limit={quickPickerLimit} rows={quickRows} width={fullscreen ? pageW : width} />
     </Box>
   ) : null;
 
@@ -5391,10 +5406,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerAt = (w: number, lift: boolean) => (
     <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
   );
+  // Inline keeps full width; fullscreen renders these inside the page column
+  // (fsComposerJsx below) so the consent line / composer share the transcript's
+  // centered column.
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : panel || homeScreen ? null : (
     composerAt(width, fullscreen)
+  );
+  // flexShrink=0 on the wrappers: when the frame is over-full, Yoga must squeeze
+  // the flexible hero/transcript region — never the input box or the consent
+  // line (mirrors Composer.tsx's own flexShrink=0, which a wrapper Box would
+  // otherwise defeat).
+  const fsComposerJsx = perm ? (
+    <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
+      <PermissionPrompt req={perm} width={pageW} />
+    </Box>
+  ) : panel || homeScreen ? null : (
+    <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
+      {composerAt(pageW, true)}
+    </Box>
   );
 
   // The opencode home screen (fullscreen, fresh session): Boo + wordmark + version,
@@ -5413,9 +5444,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     ["shift+tab", "cycle normal · auto-accept · plan"],
     ["!", "run a shell command"],
   ];
+  // Home readiness fact (Broadsheet idle moment): am I set up, and who will
+  // answer? One dim line — enabled accounts + the routing policy / pin.
+  const readyAccounts = homeScreen ? listAccounts().filter((a) => a.enabled).length : 0;
+  const homePin =
+    selectorKind === "subscription" ? (activeCli?.label ?? "subscription") :
+    selectorKind === "fixed" ? (model?.label ? `${model.label} pinned` : "pinned") :
+    "auto-routing";
   const homeJsx = homeScreen ? (
     <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center">
       {homeRoom >= 4 ? <MascotSplash skin={ghostSkin} size={homeSplashSize} tagline={`v${pkg.version} · one terminal · every model`} mood={ghostMood} /> : null}
+      {homeRoom >= 8 ? (
+        <Box marginTop={1}>
+          <Text color={color.dim}>{readyAccounts} account{readyAccounts === 1 ? "" : "s"} ready · {homePin}</Text>
+        </Box>
+      ) : null}
       {showHomeCommands ? (
         <Box marginTop={1} flexDirection="column">
           {HOME_COMMANDS.map(([k, d]) => (
@@ -5435,46 +5478,56 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     </Box>
   ) : null;
 
+  // The fullscreen footer (Broadsheet "one page"): every surface except the
+  // full-width meter (StatusBar) sits in the SAME centered page column as the
+  // transcript — one Box supplies marginLeft/width, so the row counts are
+  // exactly what they were (the wrapper adds zero rows when its children are null).
   const footerJsx = (
     <>
-      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
-      {busy ? <ActivityRail items={items} width={width} /> : null}
-      {queued.length ? (
-        <Box paddingX={1} marginTop={1} flexDirection="column">
-          {queued.map((q, i) => (
-            <Text key={i} color={color.faint}>↳ queued: {q.length > 60 ? q.slice(0, 57) + "…" : q}</Text>
-          ))}
-        </Box>
-      ) : null}
-      {mode !== "normal" ? (
-        <Box paddingX={1} marginTop={1}>
-          <Text color={color.accent}>{glyph.notice} {mode === "plan" ? "plan mode" : "auto-accept edits"}</Text>
-          <Text color={color.faint}> · {mode === "plan" ? "read-only" : "writes apply without asking; shell still gated"} · shift+tab to cycle</Text>
-        </Box>
-      ) : null}
-      {search ? (
-        <Box paddingX={1}>
-          <Text color={color.accent}>(reverse-i-search)</Text>
-          <Text color={color.text}>`{search.q}`: </Text>
-          <Text color={color.dim}>{searchHistory(historyRef.current, search.q, search.idx) ?? (search.q ? "(no match)" : "")}</Text>
-        </Box>
-      ) : null}
-      {toasts.length ? (
-        <Box flexDirection="column">
-          {toasts.map((t) => (
-            <Box key={t.id} paddingX={1} justifyContent="flex-end">
-              <Text wrap="truncate-end" color={t.kind === "ok" ? color.ok : t.kind === "err" ? color.err : color.dim}>
-                {t.kind === "ok" ? glyph.check : t.kind === "err" ? glyph.err : glyph.notice} {t.text}
-              </Text>
-            </Box>
-          ))}
-        </Box>
-      ) : null}
-      {quickPickerJsx}
-      {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: estimateCost(sessionRef.current.turns), sessionTurns: sessionRef.current.turns.length })} width={width} /> : null}
+      <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
+        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} /> : null}
+        {busy ? <ActivityRail items={items} width={pageW} /> : null}
+        {queued.length ? (
+          <Box paddingX={1} marginTop={1} flexDirection="column">
+            {queued.map((q, i) => (
+              <Text key={i} color={color.faint}>↳ queued: {q.length > 60 ? q.slice(0, 57) + "…" : q}</Text>
+            ))}
+          </Box>
+        ) : null}
+        {mode !== "normal" ? (
+          <Box paddingX={1} marginTop={1}>
+            <Text wrap="truncate-end">
+              <Text color={color.accent}>{glyph.notice} {mode === "plan" ? "plan mode" : "auto-accept edits"}</Text>
+              <Text color={color.faint}> · {mode === "plan" ? "read-only" : "writes apply without asking; shell still gated"} · shift+tab to cycle</Text>
+            </Text>
+          </Box>
+        ) : null}
+        {search ? (
+          <Box paddingX={1}>
+            <Text wrap="truncate-end">
+              <Text color={color.accent}>(reverse-i-search)</Text>
+              <Text color={color.text}>`{search.q}`: </Text>
+              <Text color={color.dim}>{searchHistory(historyRef.current, search.q, search.idx) ?? (search.q ? "(no match)" : "")}</Text>
+            </Text>
+          </Box>
+        ) : null}
+        {toasts.length ? (
+          <Box flexDirection="column">
+            {toasts.map((t) => (
+              <Box key={t.id} paddingX={1} justifyContent="flex-end">
+                <Text wrap="truncate-end" color={t.kind === "ok" ? color.ok : t.kind === "err" ? color.err : color.dim}>
+                  {t.kind === "ok" ? glyph.check : t.kind === "err" ? glyph.err : glyph.notice} {t.text}
+                </Text>
+              </Box>
+            ))}
+          </Box>
+        ) : null}
+        {quickPickerJsx}
+        {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: estimateCost(sessionRef.current.turns), sessionTurns: sessionRef.current.turns.length })} width={pageW} /> : null}
+      </Box>
       <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} cwd={process.cwd()} branch={branch} />
       {homeScreen ? null : <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>}
-      {composerJsx}
+      {fsComposerJsx}
     </>
   );
 
@@ -5483,7 +5536,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} ctxPct={busy ? ctxPct : null} /> : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (
@@ -5536,8 +5589,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
-        <Banner model={modelLabel} account={bannerAccount} width={width} epoch={themeEpochState} />
-        {setupRequired ? null : <TabStrip active={tab} width={width} />}
+        <Masthead active={tab} account={bannerAccount} width={width} showTabs={!setupRequired} epoch={themeEpochState} />
         {/* flexGrow pins the footer (and the composer with it) to the bottom row,
             so however the footer height is estimated, the input bar is always at
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}

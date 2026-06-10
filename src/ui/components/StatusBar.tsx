@@ -1,8 +1,15 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
+import { barCells } from "../../accounts/usage.ts";
+import { limitColor } from "../severity.ts";
 
 const SEP = `  ${glyph.bullet}  `; // separator (5 cols)
+
+// The meter's context gauge: 5 bar cells + " ctx" — shown whenever a context %
+// is known (limitColor carries the severity: green → amber → red as it fills).
+const GAUGE_W = 5;
+const GAUGE_LEN = GAUGE_W + 4; // "█████ ctx"
 
 // Session cost for the footer-right. Shown only once it rounds to a visible cent;
 // a subscription seat estimates to $0, so the field simply disappears (the model
@@ -29,22 +36,27 @@ export function fitStatusFields<T extends { text: string; priority: number }>(fi
 
 export type StatusZone = [start: number, end: number]; // 0-based, half-open cols
 
-// Where the clickable MODEL label sits, in 0-based terminal columns. The footer is
-// now KEYS LEFT, MODEL + COST RIGHT, so the model lives in the right segment which
-// is right-aligned to the 1-col right padding: the right text is
-// `<model>` (+ `  ·  $cost`), so it starts at width − 1 − rightLen and the model is
-// its leading run. Single source of truth · the render and the mouse hit-test both
-// derive from this so they cannot drift.
+// Where the clickable MODEL label sits, in 0-based terminal columns. The meter is
+// WHERE LEFT, MODEL + GAUGE + COST RIGHT, so the model lives in the right segment
+// which is right-aligned to the 1-col right padding: the right text is
+// `<model>` (+ `  ·  █████ ctx`) (+ `  ·  $cost`), so it starts at
+// width − 1 − rightLen and the model is its leading run. Single source of truth ·
+// the render and the mouse hit-test both derive from this so they cannot drift.
 export function statusBarLayout({
   model,
   costText,
+  ctxPct,
   width,
 }: {
   model: string;
   costText?: string;
+  ctxPct?: number | null;
   width: number;
 }): { modelZone: StatusZone } {
-  const rightLen = model.length + (costText ? SEP.length + costText.length : 0);
+  const rightLen =
+    model.length +
+    (ctxPct != null ? SEP.length + GAUGE_LEN : 0) +
+    (costText ? SEP.length + costText.length : 0);
   const start = Math.max(0, width - 1 - rightLen); // 1 = right paddingX
   return { modelZone: [start, start + model.length] };
 }
@@ -63,6 +75,7 @@ export function statusBarHit(args: {
   paletteRows: number;
   model: string;
   costText?: string;
+  ctxPct?: number | null;
   width: number;
 }): "model" | null {
   // Composer chrome around the input: marginTop above, the footer hint line +
@@ -114,30 +127,31 @@ export function StatusBar({
   branch?: string | null;
 }) {
   const costText = formatStatusCost(cost);
-  const right = costText ? `${model}${SEP}${costText}` : model;
+  // The context GAUGE: 5 cells, severity-colored, shown whenever a context % is
+  // known. This replaces the old ≥85-only amber chip — the gauge IS the
+  // low-context notice now (it turns amber/red via limitColor as it fills).
+  const gauge = ctxPct != null ? barCells(Math.max(0, Math.min(100, ctxPct)) / 100, GAUGE_W) : null;
+  const rightLen =
+    model.length + (gauge ? SEP.length + GAUGE_LEN : 0) + (costText ? SEP.length + costText.length : 0);
 
   // Attention chips: scarce, meaningful, spent only where they change what you do.
-  // Context shows ONLY when remaining is low (≤15% left ⇒ ctxPct ≥ 85), in amber.
-  const lowCtx = ctxPct != null && ctxPct >= 85;
   const chips: { text: string; c: string; bold?: boolean }[] = [];
   if (!online) chips.push({ text: "⚠ offline", c: color.err, bold: true });
   if (yolo) chips.push({ text: "yolo", c: color.err, bold: true });
-  if (lowCtx) chips.push({ text: `${Math.max(0, 100 - ctxPct!)}% ctx left`, c: color.warn }); // REMAINING, matching the working-strip notice
   const chipLen = chips.reduce((n, c) => n + c.text.length, 0) + Math.max(0, chips.length - 1) * 2 + (chips.length ? 2 : 0);
 
-  // Left: a quiet wordmark chip + cwd:branch (the opencode bar). Budgeted so the
-  // right (model + cost) stays whole and right-aligned — the click hit-test
-  // depends on that exact alignment.
+  // Left: cwd:branch + the attention chips (the wordmark lives in the masthead
+  // now). Budgeted so the right (model · gauge · cost) stays whole and
+  // right-aligned — the click hit-test depends on that exact alignment.
   const where = cwd ? collapsePath(cwd) + (branch ? `:${branch}` : "") : "";
-  const leftBudget = Math.max(0, width - 2 /*paddingX*/ - right.length - 2 /*gap*/);
-  const whereRoom = Math.max(0, leftBudget - chipLen - " gearbox ".length - 1);
+  const leftBudget = Math.max(0, width - 2 /*paddingX*/ - rightLen - 2 /*gap*/);
+  const whereRoom = Math.max(0, leftBudget - chipLen);
   const whereShown = where.length <= whereRoom ? where : whereRoom > 1 ? where.slice(0, whereRoom - 1) + "…" : "";
 
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
       <Text wrap="truncate-end">
-        <Text color={color.accent} bold backgroundColor={color.elementBg}>{" gearbox "}</Text>
-        {whereShown ? <Text color={color.faint}>{" " + whereShown}</Text> : null}
+        {whereShown ? <Text color={color.faint}>{whereShown}</Text> : null}
         {chips.length ? <Text>{"  "}</Text> : null}
         {chips.map((c, i) => (
           <Text key={c.text} color={c.c} bold={c.bold}>{i > 0 ? "  " : ""}{c.text}</Text>
@@ -145,6 +159,13 @@ export function StatusBar({
       </Text>
       <Text wrap="truncate-end">
         <Text color={color.text}>{model}</Text>
+        {gauge ? (
+          <>
+            <Text color={color.faint}>{SEP}</Text>
+            <Text color={limitColor(ctxPct!)}>{gauge.fill}</Text>
+            <Text color={color.faint}>{gauge.empty + " ctx"}</Text>
+          </>
+        ) : null}
         {costText ? <Text color={color.faint}>{SEP + costText}</Text> : null}
       </Text>
     </Box>

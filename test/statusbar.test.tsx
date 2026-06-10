@@ -5,10 +5,10 @@ import { StatusBar } from "../src/ui/components/StatusBar.tsx";
 
 const base = { model: "claude", ctxPct: 10, width: 100 };
 
-test("footer shows the model on the right and the wordmark + cwd:branch on the left", () => {
+test("the meter shows the model on the right and cwd:branch on the left (wordmark lives in the masthead)", () => {
   const out = render(<StatusBar {...base} cwd="/Users/me/proj" branch="main" />).lastFrame() ?? "";
   expect(out).toContain("claude"); // model, right side
-  expect(out).toContain("gearbox"); // wordmark chip, left side
+  expect(out).not.toContain("gearbox"); // the wordmark moved to the masthead
   expect(out).toContain("/Users/me/proj:main"); // where you are
 });
 
@@ -33,9 +33,14 @@ test("yolo chip shows only under yolo", () => {
   expect(on).toContain("yolo");
 });
 
-test("context appears ONLY when low (≤15% left ⇒ ctxPct ≥ 85), as an amber chip", () => {
+test("the context gauge shows whenever a context % is known (5 cells + 'ctx'), and never without one", () => {
+  const none = render(<StatusBar {...base} ctxPct={null} />).lastFrame() ?? "";
+  expect(none).not.toContain("ctx");
   const fine = render(<StatusBar {...base} ctxPct={40} />).lastFrame() ?? "";
-  expect(fine).not.toContain("ctx");
+  expect(fine).toContain("ctx"); // gauge present even when healthy (severity = color, not visibility)
+  expect(fine).toContain("██"); // ~2 of 5 cells filled at 40%
+  expect(fine).toContain("░");
   const low = render(<StatusBar {...base} ctxPct={92} />).lastFrame() ?? "";
-  expect(low).toContain("8% ctx left"); // remaining, not used
+  expect(low).toContain("ctx");
+  expect(low).not.toContain("ctx left"); // the old amber chip wording is gone — the gauge IS the notice
 });

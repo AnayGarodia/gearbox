@@ -1,12 +1,14 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
-import { lowContextNotice } from "../character.ts";
 import { shimmer, shimmerFrame, bloom } from "../shimmer.ts";
 import type { MascotState } from "./Mascot.tsx";
 
-// One-line working strip. The larger ghost stays out of the transcript and
-// selection zones; state is carried by color + concise text.
+// The "now" row (Broadsheet): one line in the page column. Boo's bloom + the
+// shimmering verb left; the figures (elapsed · esc interrupt) right-aligned at
+// the page's right edge, like every other margin figure. The low-context notice
+// that used to render under this line is gone — the meter's context gauge
+// (StatusBar) carries that signal now, in one place.
 
 export function Working({
   state,
@@ -14,18 +16,13 @@ export function Working({
   elapsed,
   linger,
   width,
-  ctxPct = null,
 }: {
   state: MascotState;
   verb: string;
   elapsed: number;
   linger?: boolean; // post-turn celebrate/error beat · show a label, not the timer
   width: number;
-  ctxPct?: number | null; // context % used; an amber notice shows only when low
 }) {
-  // Low-context notice: shown only when the window is genuinely low (≥85% used),
-  // never during the post-turn linger beat. Real figure or nothing.
-  const ctxNotice = linger ? null : lowContextNotice(ctxPct);
   const label = linger ? (state === "error" ? "something broke" : "done") : verb;
   const labelColor = linger && state === "error" ? color.err : linger && state === "celebrate" ? color.ok : color.text;
   // The working animation: a blooming flower + a soft glow gliding through the verb
@@ -36,22 +33,19 @@ export function Working({
   const glow = shimmer(label, frame);
   const flower = bloom(frame);
   return (
-    <Box flexDirection="column" width={width}>
-      <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
-        {linger ? (
-          <Text color={labelColor}>
-            <Text color={state === "error" ? color.err : color.ok}>● </Text>
-            {label}
-          </Text>
-        ) : (
-          <Text>
-            <Text color={flower.color}>{flower.glyph} </Text>
-            {glow.map((s, i) => <Text key={i} color={s.color}>{s.ch}</Text>)}
-          </Text>
-        )}
-        {!linger ? <Text><Text color={color.accentDim}>{elapsed}s</Text><Text color={color.faint}> · esc interrupt</Text></Text> : <Text color={color.faint}> </Text>}
-      </Box>
-      {ctxNotice ? <Box paddingX={1}><Text color={color.warn}>{ctxNotice}</Text></Box> : null}
+    <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
+      {linger ? (
+        <Text color={labelColor}>
+          <Text color={state === "error" ? color.err : color.ok}>● </Text>
+          {label}
+        </Text>
+      ) : (
+        <Text>
+          <Text color={flower.color}>{flower.glyph} </Text>
+          {glow.map((s, i) => <Text key={i} color={s.color}>{s.ch}</Text>)}
+        </Text>
+      )}
+      {!linger ? <Text><Text color={color.accentDim}>{elapsed}s</Text><Text color={color.faint}> · esc interrupt</Text></Text> : <Text color={color.faint}> </Text>}
     </Box>
   );
 }

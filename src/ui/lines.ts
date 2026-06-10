@@ -525,6 +525,20 @@ const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
   it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change" ? color.ok :
   color.accentDim;
 
+// ── History recede (the working-moment mechanic) ──────────────────────────────
+// While a turn runs or a consent is pending, settled history renders in receded
+// ink so the now-row / consent line is the only bright thing on screen. Pure,
+// cheap span-color mapping: semantic colors (err/warn/ok/accent) keep their
+// meaning, text ink drops one level to dim, everything else drops to faint.
+export function recedeLine(line: Line): Line {
+  return line.map((s) => {
+    const c = s.color;
+    if (c === color.err || c === color.warn || c === color.ok || c === color.accent) return s;
+    if (c === color.text) return { ...s, color: color.dim };
+    return { ...s, color: color.faint };
+  });
+}
+
 // Per-item line cache for the markdown-heavy static kinds (assistant, user).
 // Without this, every prior reply is re-parsed on every streaming token, which is
 // super-linear with transcript length and caused jittery streaming. Items that are
@@ -533,11 +547,13 @@ const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
 // Tool/phase/etc. items are not cached because they animate (spinner) and are cheap.
 // Hex colors are baked into the cached lines, so a /theme switch invalidates via
 // themeEpoch — without it, fullscreen history would stay in the old palette.
-const staticLineCache = new WeakMap<object, { width: number; epoch: number; lines: Line[] }>();
+// `receded` is part of the cache key like width/epoch: a busy render must never
+// serve receded lines to a normal render (or vice versa).
+const staticLineCache = new WeakMap<object, { width: number; epoch: number; receded: boolean; lines: Line[] }>();
 
-export function staticItemLines(it: Item, width: number): Line[] {
+export function staticItemLines(it: Item, width: number, receded = false): Line[] {
   const hit = staticLineCache.get(it);
-  if (hit && hit.width === width && hit.epoch === themeEpoch) return hit.lines;
+  if (hit && hit.width === width && hit.epoch === themeEpoch && hit.receded === receded) return hit.lines;
   const lines: Line[] = [];
   if (it.kind === "user") {
     if (it.turnNo != null) {
@@ -560,22 +576,29 @@ export function staticItemLines(it: Item, width: number): Line[] {
   } else if (it.kind === "assistant" && it.text) {
     lines.push(...indent(markdownToLines(it.text, Math.max(width - 2, 1)), 2));
   }
-  staticLineCache.set(it, { width, epoch: themeEpoch, lines });
-  return lines;
+  const final = receded ? lines.map(recedeLine) : lines;
+  staticLineCache.set(it, { width, epoch: themeEpoch, receded, lines: final });
+  return final;
 }
 
-export function itemsToLines(items: Item[], width: number, expand = false): Line[] {
+export function itemsToLines(items: Item[], width: number, expand = false, recede = false): Line[] {
   const out: Line[] = [];
   let prevKind: string | null = null;
-  for (const it of items) {
+  // recede dims everything EXCEPT the live tail (the last 2 items): while a turn
+  // runs or a consent is pending, only the moving part stays bright.
+  const tailStart = Math.max(0, items.length - 2);
+  for (let idx = 0; idx < items.length; idx++) {
+    const it = items[idx]!;
+    const dimmed = recede && idx < tailStart;
     // Blank line between items, except between consecutive tool calls so a run of
     // reads/edits renders as a tight block rather than a sparse ladder.
     if (!(prevKind === "tool" && it.kind === "tool")) out.push(BLANK);
     prevKind = it.kind;
     if (it.kind === "user" || it.kind === "assistant") {
-      out.push(...staticItemLines(it, width));
+      out.push(...staticItemLines(it, width, dimmed));
       continue;
     }
+    const itemStart = out.length; // recede pass maps this item's lines after the switch
     switch (it.kind) {
       case "tool": {
         // Collapsed delegate_parallel group: ONE summary row that expands (⌃O) to
@@ -902,6 +925,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
     }
+    if (dimmed) for (let i = itemStart; i < out.length; i++) out[i] = recedeLine(out[i]!);
   }
   return out;
 }

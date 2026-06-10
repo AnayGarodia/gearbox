@@ -1,9 +1,10 @@
 import { test, expect } from "bun:test";
 import { statusBarLayout, statusBarHit, fitStatusFields } from "../src/ui/components/StatusBar.tsx";
 
-// The footer is KEYS LEFT, MODEL + COST RIGHT. The right segment is `<model>` (+
-// `  ·  $cost`), right-aligned to the 1-col right padding. So the model zone starts
-// at width − 1 − rightLen. Zones are 0-based, half-open [start, end) terminal cols.
+// The meter is WHERE LEFT, MODEL + GAUGE + COST RIGHT. The right segment is
+// `<model>` (+ `  ·  █████ ctx`) (+ `  ·  $cost`), right-aligned to the 1-col
+// right padding. So the model zone starts at width − 1 − rightLen. Zones are
+// 0-based, half-open [start, end) terminal cols.
 
 test("model zone is right-aligned (no cost)", () => {
   // width 100, "haiku" (5) → start = 100 - 1 - 5 = 94
@@ -15,6 +16,21 @@ test("a cost suffix pushes the model zone further left", () => {
   // "sonnet"(6) + "  ·  "(5) + "$0.44"(5) = 16 → start = 100 - 1 - 16 = 83
   const { modelZone } = statusBarLayout({ model: "sonnet", costText: "$0.44", width: 100 });
   expect(modelZone).toEqual([83, 89]);
+});
+
+test("the context gauge pushes the model zone further left (5 cells + ' ctx' = 9)", () => {
+  // "sonnet"(6) + "  ·  "(5) + "█████ ctx"(9) + "  ·  "(5) + "$0.44"(5) = 30 → start = 100 - 1 - 30 = 69
+  const { modelZone } = statusBarLayout({ model: "sonnet", costText: "$0.44", ctxPct: 40, width: 100 });
+  expect(modelZone).toEqual([69, 75]);
+  // a null ctxPct means no gauge — identical to omitting it
+  expect(statusBarLayout({ model: "sonnet", costText: "$0.44", ctxPct: null, width: 100 }).modelZone).toEqual([83, 89]);
+});
+
+test("statusBarHit accounts for the gauge in the right segment", () => {
+  // statusRow = 40 - 1 - 0 - 3 = 36; model zone [69,75) → x = 70..75
+  const args = { termRows: 40, composerLines: 1, paletteRows: 0, model: "sonnet", costText: "$0.44", ctxPct: 40, width: 100 };
+  expect(statusBarHit({ ...args, x: 70, y: 36 })).toBe("model");
+  expect(statusBarHit({ ...args, x: 84, y: 36 })).toBeNull(); // old (gauge-less) position misses now
 });
 
 // statusBarHit resolves an SGR click (1-based x/y) to the model label. The status
