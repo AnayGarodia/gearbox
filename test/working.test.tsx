@@ -27,16 +27,27 @@ test("Boo IS the indicator on wide frames: the head-crop ghost renders beside th
   expect(out.split("\n").filter((l) => l.trim().length > 0).length).toBe(STATE_GHOST_ROWS);
 });
 
-test("narrow frames drop the ghost and keep the one-line now row", () => {
-  const out = render(<Working {...base} width={WORKING_GHOST_MIN_W - 1} verb="Editing" />).lastFrame() ?? "";
-  expect(out).not.toContain("▀");
-  expect(out).toContain("Editing");
-  expect(out.split("\n").filter((l) => l.trim().length > 0).length).toBe(1);
+test("narrow or short frames drop the ghost and keep the one-line now row", () => {
+  const narrow = render(<Working {...base} width={WORKING_GHOST_MIN_W - 1} verb="Editing" />).lastFrame() ?? "";
+  expect(narrow).not.toContain("▀");
+  expect(narrow).toContain("Editing");
+  expect(narrow.split("\n").filter((l) => l.trim().length > 0).length).toBe(1);
+  // a short terminal keeps its rows for the transcript, not the mascot
+  const short = render(<Working {...base} rows={24} verb="Editing" />).lastFrame() ?? "";
+  expect(short).not.toContain("▀");
 });
 
 test("workingRows matches what renders (the App footer estimate reads it)", () => {
-  expect(workingRows(100)).toBe(1 + STATE_GHOST_ROWS);
-  expect(workingRows(WORKING_GHOST_MIN_W - 1)).toBe(2);
+  expect(workingRows(100, 40)).toBe(1 + STATE_GHOST_ROWS);
+  expect(workingRows(WORKING_GHOST_MIN_W - 1, 40)).toBe(2);
+  expect(workingRows(100, 24)).toBe(2); // short frame → compact row
+});
+
+test("the live activity (action + trail) rides beside Boo — no extra rows", () => {
+  const out = render(<Working {...base} verb="Working" action="running tests  · 12s" trail="✓ read_file  ✓ edit_file  ◷ run_shell" />).lastFrame() ?? "";
+  expect(out).toContain("running tests");
+  expect(out).toContain("edit_file");
+  expect(out.split("\n").filter((l) => l.trim().length > 0).length).toBe(STATE_GHOST_ROWS);
 });
 
 test("the linger beat shows a label, not the timer — ghost still present", () => {

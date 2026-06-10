@@ -278,10 +278,10 @@ function isWriteLikeTool(name: string): boolean {
   return n === "write_file" || n === "edit_file" || n === "write" || n === "edit" || n === "file_change";
 }
 
-// A pinned, live "what's it doing NOW" rail (two lines): the current action with
-// its target and a ticking elapsed, then a short trail of recent steps. So a long
-// agent/tool run reads as alive and legible without chasing the scrolling transcript.
-function ActivityRail({ items, width }: { items: Item[]; width: number }) {
+// What the turn is doing RIGHT NOW, as two short strings for the Working
+// block's side column (beside Boo): the current action (+ its ticking elapsed)
+// and a short trail of recent steps/checks. Pure over the item list.
+export function turnActivity(items: Item[], width: number): { action: string | null; trail: string | null } {
   const lastUser = items.map((it, i) => ({ it, i })).reverse().find((x) => x.it.kind === "user")?.i ?? -1;
   const turn = items.slice(lastUser + 1);
   const tools = turn.filter((i): i is Extract<Item, { kind: "tool" }> => i.kind === "tool");
@@ -289,30 +289,18 @@ function ActivityRail({ items, width }: { items: Item[]; width: number }) {
   const running = [...tools].reverse().find((t) => t.status === "running");
   const cur = running ?? tools[tools.length - 1];
   const checks = turn.filter((i): i is Extract<Item, { kind: "verification" }> => i.kind === "verification").slice(-2);
-  if (!cur && !phase && !checks.length) return null;
+  if (!cur && !phase && !checks.length) return { action: null, trail: null };
 
-  // Line 1 — what's happening now: action + target + a live ticking elapsed.
   const isShell = !!cur && (cur.name === "run_shell" || cur.name === "command_execution" || cur.name === "Bash");
   const target = cur?.arg ? (isShell ? cur.arg : relPath(cur.arg)).replace(/\n/g, " ").slice(0, Math.max(width - 26, 12)) : "";
   const head = cur ? `${friendlyTool(cur.name)}${target ? " " + target : ""}` : phase ? phase.label : "working";
   const timer = running?.startedAt ? fmtElapsed(Math.floor((Date.now() - running.startedAt) / 1000)) : "";
-
-  // Line 2 — the recent trail (last few steps) + checks, dim. Static glyphs (no
-  // spin) — the only animation is the bottom working shimmer.
   const trail = tools.slice(-3).map((t) => `${t.status === "running" ? glyph.running : t.status === "err" ? glyph.cross : glyph.check} ${friendlyTool(t.name)}`).join("  ");
   const checkText = checks.map((c) => `${c.ok ? glyph.check : glyph.cross} ${c.command}`).join("  ");
-  const sub = [trail || null, checkText || null].filter(Boolean).join("   ");
-
-  return (
-    <Box flexDirection="column" paddingX={1} marginTop={1} width={width}>
-      <Box>
-        <Text color={color.accentDim}>▸ </Text>
-        <Text color={color.text}>{head.slice(0, Math.max(width - 14, 12))}</Text>
-        {timer ? <Text color={color.faint}>{"  · " + timer}</Text> : null}
-      </Box>
-      {sub ? <Text color={color.faint}>{"  " + sub.slice(0, Math.max(width - 4, 12))}</Text> : null}
-    </Box>
-  );
+  return {
+    action: `${head}${timer ? "  · " + timer : ""}`,
+    trail: [trail || null, checkText || null].filter(Boolean).join("   ") || null,
+  };
 }
 
 function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingState; width: number; skin: GhostLook; splashSize: "big" | "mini" | "none" }) {
@@ -3938,8 +3926,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (perm) footer += 5; // consent block: marginTop + title + command + options + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
   else if (!panel && !homeScreen) footer += 5; // composer (marginTop + pad + input + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
-  if (busy || linger) footer += workingRows(pageW); // Boo working block (marginTop + the head-crop ghost; 2 on narrow frames) — Working.tsx row contract
-  if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
+  // Boo working block (marginTop + head-crop ghost with verb/action/trail
+  // beside him; 2 on small frames) — Working.tsx row contract. The activity
+  // rail folded INTO this block (it had also been over-estimated at +3 while
+  // never rendering, silently shrinking the busy transcript by 3 phantom rows).
+  if (busy || linger) footer += workingRows(pageW, rows);
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
   footer += toasts.length;
@@ -4220,7 +4211,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const footerJsx = (
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
-        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} skin={ghostSkin} /> : null}
+        {busy || linger ? (() => { const a = turnActivity(items, pageW); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} rows={rows} skin={ghostSkin} action={a.action} trail={a.trail} />; })() : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (
@@ -4268,7 +4259,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} skin={ghostSkin} /> : null}
+      {busy || linger ? (() => { const a = turnActivity(items, width); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} rows={rows} skin={ghostSkin} action={a.action} trail={a.trail} />; })() : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (
