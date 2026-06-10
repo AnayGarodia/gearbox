@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { OnEvent } from "./agent/events.ts";
 import { requestPermission } from "./permission.ts";
+import { CATALOG } from "./accounts/catalog.ts";
 
 export interface McpServerConfig {
   command: string;
@@ -67,6 +68,25 @@ function safeToolName(server: string, name: string): string {
   return `mcp_${server}_${name}`.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
 
+// An MCP server is an untrusted subprocess (often third-party / npx-fetched),
+// so it must NOT inherit our LLM provider credentials — mirrors the CLI
+// backend's KEYS_TO_STRIP. We strip every catalog provider env var plus the
+// common secret-bearing names, then the server's own declared `env` re-adds
+// exactly what it legitimately needs (so a server that wants e.g. GITHUB_TOKEN
+// still gets it, but only by explicit opt-in). Pure + exported for testing.
+const MCP_SECRET_PATTERN = /(API[_-]?KEY|AUTH[_-]?TOKEN|ACCESS[_-]?KEY|SECRET|PASSWORD|CREDENTIAL|_TOKEN$|^GH_TOKEN$|^GITHUB_TOKEN$|SESSION_TOKEN)/i;
+export function mcpSafeEnv(env: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const strip = new Set<string>();
+  for (const p of CATALOG) for (const v of p.envVars) strip.add(v);
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (v == null) continue;
+    if (strip.has(k) || MCP_SECRET_PATTERN.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 async function connectAll(): Promise<Connected[]> {
   const configs = normalizeConfig();
   const rows: Connected[] = [];
@@ -77,7 +97,9 @@ async function connectAll(): Promise<Connected[]> {
         command: config.command,
         args: config.args ?? [],
         cwd: config.cwd,
-        env: { ...process.env, ...(config.env ?? {}) } as Record<string, string>,
+        // Strip our provider credentials before handing env to the untrusted
+        // subprocess; the server re-adds only what it declares in config.env.
+        env: { ...mcpSafeEnv(process.env), ...(config.env ?? {}) } as Record<string, string>,
         stderr: "pipe",
       });
       await client.connect(transport);
