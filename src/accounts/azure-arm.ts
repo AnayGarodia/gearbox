@@ -308,6 +308,8 @@ export interface ArmCatalogModel {
   name: string;
   version?: string;
   skus: { name: string; defaultCapacity?: number }[];
+  /** Azure lifecycle: "GenerallyAvailable" | "Preview" | "Deprecating" | "Deprecated" (free text). */
+  lifecycle?: string;
 }
 
 export function parseArmCatalog(json: any): ArmCatalogModel[] {
@@ -318,7 +320,8 @@ export function parseArmCatalog(json: any): ArmCatalogModel[] {
     const skus = (Array.isArray(m.skus) ? m.skus : [])
       .filter((sk: any) => typeof sk?.name === "string")
       .map((sk: any) => ({ name: sk.name as string, defaultCapacity: typeof sk?.capacity?.default === "number" ? sk.capacity.default : undefined }));
-    out.push({ format: typeof m.format === "string" && m.format ? m.format : "OpenAI", name: m.name, version: typeof m.version === "string" ? m.version : undefined, skus });
+    const lifecycle = typeof m.lifecycleStatus === "string" ? m.lifecycleStatus : typeof item?.lifecycleStatus === "string" ? item.lifecycleStatus : undefined;
+    out.push({ format: typeof m.format === "string" && m.format ? m.format : "OpenAI", name: m.name, version: typeof m.version === "string" ? m.version : undefined, skus, lifecycle });
   }
   return out;
 }
@@ -339,13 +342,22 @@ export function resolveDeploySpec(
   requestedSku: string,
 ): { format: string; version?: string; skuName: string; defaultCapacity?: number } | { error: string } {
   if (!catalog) return { format: "OpenAI", skuName: requestedSku };
-  const m = catalog.find((c) => c.name.toLowerCase() === modelId.toLowerCase());
-  if (!m) {
+  // The catalog lists one entry per VERSION; some versions are mid-retirement
+  // ("Deprecating") and Azure rejects new deployments of them. Prefer a
+  // version that can actually deploy; only when every version is retiring is
+  // the model truly gone — say that without burning a PUT.
+  const isRetiring = (c: ArmCatalogModel) => /deprecat/i.test(c.lifecycle ?? "");
+  const versions = catalog.filter((c) => c.name.toLowerCase() === modelId.toLowerCase());
+  if (!versions.length) {
     const near = catalog
       .filter((c) => c.name.toLowerCase().includes(modelId.toLowerCase().slice(0, 4)))
       .slice(0, 3)
       .map((c) => c.name);
     return { error: `this account can't deploy "${modelId}" — it's not in its deployable catalog${near.length ? ` (close: ${near.join(", ")})` : ""}` };
+  }
+  const m = versions.find((c) => !isRetiring(c)) ?? versions[0]!;
+  if (isRetiring(m)) {
+    return { error: `Azure is retiring "${modelId}" (every catalog version is ${m.lifecycle}) — it can't be newly deployed; pick another model` };
   }
   const sku = m.skus.find((sk) => sk.name.toLowerCase() === requestedSku.toLowerCase()) ?? m.skus[0];
   return { format: m.format, version: m.version, skuName: sku?.name ?? requestedSku, defaultCapacity: sku?.defaultCapacity };

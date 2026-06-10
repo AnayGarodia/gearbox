@@ -124,6 +124,8 @@ export function parseAvailableBaseModels(json: any): string[] {
       if (typeof m?.id !== "string" || !m.id) return false;
       // Skip non-chat model families
       if (/embedding|dall-?e|whisper|tts|text-to-speech|speech|sora|moderation|transcrib|\bada\b|\bbabbage\b/i.test(m.id)) return false;
+      // Skip models Azure is retiring — they reject new deployments anyway.
+      if (/deprecat/i.test(String(m.lifecycle_status ?? m.lifecycleStatus ?? ""))) return false;
       return true;
     })
     .map((m: any) => m.id as string);
