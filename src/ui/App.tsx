@@ -2768,9 +2768,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           interruptedRef.current = false;
         }
         void emitHook("turn.end", { changedFiles: [...changedFiles], hadError }).catch(() => {});
-        // Pause the type-ahead drain after an error or interrupt so queued prompts
-        // don't auto-fire into a still-broken state; a successful turn re-enables it (L-C).
-        lastTurnFailedRef.current = hadError || interrupted;
+        // Pause the type-ahead drain after an ERROR so queued prompts don't
+        // auto-fire into a still-broken state; a successful turn re-enables it
+        // (L-C). A user interrupt is different: esc is often pressed precisely
+        // to get to the queued prompt sooner, so the queue keeps draining.
+        lastTurnFailedRef.current = hadError && !interrupted;
         // A brief post-turn beat: confetti on a clean finish, crying on an error.
         // The working line lingers ~1.5s (it unmounts the instant busy goes false
         // otherwise, so these states would never render). Skip on a user interrupt.
@@ -4483,9 +4485,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [handleCommand, runTurn, setupRequired, onboardingState],
   );
 
-  // Drain the type-ahead queue when a turn finishes — but NOT after an error/interrupt
-  // (L-C): auto-firing the next queued prompt into a broken state just error-loops the
-  // whole queue. The next manual (successful) turn clears the flag and resumes draining.
+  // Drain the type-ahead queue when a turn finishes — but NOT after an error
+  // (L-C): auto-firing the next queued prompt into a broken state just error-loops
+  // the whole queue. A user interrupt does NOT hold the queue (esc is often
+  // pressed to get to the queued prompt sooner). The next successful turn clears
+  // the error flag and resumes draining.
   useEffect(() => {
     if (busy || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
     const next = queueRef.current.shift();

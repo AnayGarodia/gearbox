@@ -32,7 +32,7 @@ export interface ScoreCandidate {
   id: string; // model id for tie-breaking and logging; subscription seats use cli:<account>:<sdkId>
   inUSDPerMtok: number;
   outUSDPerMtok: number;
-  quality: number; // normalised 0..1 quality score
+  quality: number; // normalised 0..1; arrives prior-adjusted (router adds the per-repo measured delta)
   tps: number; // tokens per second, used for the latency-class tie-break
   account: AccountState; // the backing seat or API key
 }
@@ -103,9 +103,12 @@ export interface ScoredCandidate {
 
 const clamp = (n: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, n));
 
-// Score a single candidate against a ScoreInput. Called once per candidate by
-// scoreCandidate and pickBest. Returns the full breakdown so callers can log or
-// display individual terms without re-running the math.
+// Score a single candidate against a ScoreInput. Called per candidate by
+// pickBest, and directly by the /why scorecard (which also scores below-bar
+// candidates pickBest never sees). Ignores input.candidates — only `now`,
+// weights, token estimates, and the warm/interactive flags are read. Returns
+// the full breakdown so callers can display individual terms without
+// re-running the math.
 export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCandidate {
   const w = input.weights ?? DEFAULT_WEIGHTS;
   const inTok = input.estInputTokens;
@@ -185,7 +188,9 @@ export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCand
 }
 
 /** Rank all candidates and return the best. Total-order tie-break keeps it
- *  deterministic: score asc, tps desc, quality desc, id asc. */
+ *  deterministic: score asc, tps desc, quality desc, id asc.
+ *  `candidates` must be non-empty — the router guarantees this (it falls back
+ *  to the default model before ever scoring an empty pool). */
 export function pickBest(input: ScoreInput): ScoredCandidate {
   const scored = input.candidates.map((c) => scoreCandidate(c, input));
   scored.sort(

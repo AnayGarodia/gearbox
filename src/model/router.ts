@@ -33,9 +33,13 @@ import { priorFor, priorLine } from "./priors.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
-// Fallback working-set size when the caller does not supply estTokens. The cost
-// ordering only depends on per-Mtok rates (token count is shared across all
-// candidates), so the exact value does not matter as long as it is positive.
+// Fallback working-set size when the caller does not supply estTokens. The
+// token count is shared across all candidates and most score terms scale
+// linearly with it (cost, scarcity, switch, plan, latency are all proportional
+// to costEst), so the relative ordering of those terms is unaffected by the
+// exact value. The fixed limit/throttle penalties are NOT proportional, so this
+// nominal size also calibrates how strongly an unsized turn avoids a near-limit
+// account: it should stay in the ballpark of a real agent turn's input.
 const NOMINAL_INPUT_TOKENS = 16_000;
 
 // One (model, account) routing candidate, before scoring. `canonicalId` is the
@@ -319,6 +323,9 @@ export class RoutingSelector implements ModelSelector {
     // the scorecard's numbers — and its winner — match the actual pick.
     const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) };
     const scored = new Map<string, ScoredCandidate>();
+    // scoreCandidate ignores input.candidates (it scores one candidate against
+    // the flags only), so the empty array here is inert — it just satisfies the
+    // ScoreInput shape without re-listing the pool per call.
     for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
       ? preferred.spec.id
