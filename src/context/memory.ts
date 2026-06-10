@@ -95,8 +95,14 @@ export function loadFacts(cwd = process.cwd()): string {
  * ISO-date only (YYYY-MM-DD) for conciseness. Returns true on success and
  * false on any error so callers get a signal without a thrown exception.
  */
+// A remembered fact is loaded back into a future turn's system prompt, so a
+// multi-line value could smuggle in fake instructions (e.g. a forged
+// "# SYSTEM" block). Keep it to a single capped line: collapse all whitespace
+// runs (newlines included) to single spaces and cap the length. One short
+// sentence is the intended shape anyway.
+const MAX_FACT_CHARS = 280;
 export function appendFact(text: string, cwd = process.cwd()): boolean {
-  const fact = text.trim();
+  const fact = text.replace(/\s+/g, " ").trim().slice(0, MAX_FACT_CHARS);
   if (!fact) return false;
   try {
     mkdirSync(memDir(cwd), { recursive: true });

@@ -567,6 +567,7 @@ function ContextCard({ view }: { view: ContextView }) {
             <Text color={color.dim}>{"  " + r.label.padEnd(view.labelPad)}</Text>
             <Text color={color.text}>{"  " + r.display.padStart(view.valuePad) + "  "}</Text>
             <Bar frac={r.frac} width={18} on={color.accent} />
+            {r.pct != null ? <Text color={color.faint}>{" " + r.pct + "% of window"}</Text> : null}
           </Box>
         ))}
       </Box>

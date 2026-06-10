@@ -1,7 +1,7 @@
 // Slash commands: metadata (for /help + the live palette) and pure helpers
 // (for model list/switch) kept testable and separate from the UI.
-import { modelRegistry, providerAvailable, findModel, type ProviderId } from "./providers.ts";
-import { catalogProvider } from "./accounts/catalog.ts";
+import { modelRegistry, providerAvailable, findModel, type ProviderId, type ModelSpec } from "./providers.ts";
+import { catalogProvider, CATALOG } from "./accounts/catalog.ts";
 import { glyph } from "./ui/theme.ts";
 import { fuzzyRank } from "./ui/fuzzy.ts";
 import type { ContextView } from "./ui/types.ts";
@@ -238,7 +238,11 @@ export function buildContextView(sections: { name: string; tokens: number }[], c
   const total = sections.reduce((s, x) => s + x.tokens, 0);
   const max = Math.max(1, ...sections.map((s) => s.tokens));
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  const rows = sections.map((s) => ({ label: s.name, display: fmt(s.tokens), frac: s.tokens / max }));
+  // pct = share of the WINDOW (not of the largest section) so the user can see
+  // where the budget actually goes; sub-1% values keep a decimal so a tiny
+  // section doesn't read as zero.
+  const pctOf = (n: number) => (contextWindow ? Math.round(((n / contextWindow) * 100) * 10) / 10 : undefined);
+  const rows = sections.map((s) => ({ label: s.name, display: fmt(s.tokens), frac: s.tokens / max, pct: pctOf(s.tokens) }));
   const labelPad = Math.max("total".length, ...rows.map((r) => r.label.length));
   const valuePad = Math.max(fmt(total).length, ...rows.map((r) => r.display.length));
   return {
@@ -297,34 +301,82 @@ export function scorecardRows(card: Scorecard): ScorecardLine[] {
 }
 
 /**
+ * Display rank for the model list: curated specs first (the data-rich, vetted
+ * rows), then real account-discovered models, then catalog seed examples, and
+ * pin-only (`routable:false`, models.dev overlay) last. Pure; used by both the
+ * inline list and the fullscreen panel so the two can't drift.
+ */
+export function modelRank(m: ModelSpec): number {
+  if (m.routable === false) return 3;
+  const src = m.capabilities?.source;
+  if (src === "api-discovered") return 1;
+  if (src === "seeded") return 2;
+  return 0; // curated
+}
+
+/** Deterministic ordering: rank, then quality (best first), then label. */
+export function compareModels(a: ModelSpec, b: ModelSpec): number {
+  const r = modelRank(a) - modelRank(b);
+  if (r) return r;
+  const q = (b.quality ?? -1) - (a.quality ?? -1);
+  if (q) return q;
+  return a.label.localeCompare(b.label);
+}
+
+/** Honest provenance marker per row — how this id reached the list. */
+export function modelMarker(m: ModelSpec): string {
+  if (m.routable === false) return " · pin-only (unvetted)";
+  const src = m.capabilities?.source;
+  if (src === "api-discovered") return " · discovered";
+  if (src === "seeded") return " · seed (unconfirmed)";
+  return "";
+}
+
+/**
  * Model list. Usable models (you have an account for) come first; the long tail
  * of providers you haven't set up collapses to a one-line count, so the list is
  * short and actionable. `/model all` passes showAll to spell them all out.
  */
 export function formatModelList(currentId: string | null, showAll = false): string {
   const MODELS = modelRegistry();
-  const line = (m: (typeof MODELS)[number]) => `  ${m.id === currentId ? glyph.on : glyph.off} ${m.label.padEnd(18)} ${m.provider}`;
+  const line = (m: (typeof MODELS)[number]) => `  ${m.id === currentId ? glyph.on : glyph.off} ${m.label.padEnd(18)} ${m.provider}${modelMarker(m)}`;
   const usable = MODELS.filter((m) => providerAvailable(m.provider));
   const rest = MODELS.filter((m) => !providerAvailable(m.provider));
   const rows: string[] = ["models · /model <name> pins one · /model auto routes per task"];
 
   if (usable.length) {
     rows.push("", "ready to use");
+    // Group by provider (first-appearance order), each group sorted curated →
+    // discovered → seeds → pin-only, best quality first — so the top-8 cap is
+    // DETERMINISTIC and keeps the most useful rows, not discovery order.
+    const byProvider = new Map<string, typeof usable>();
+    for (const m of usable) {
+      if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
+      byProvider.get(m.provider)!.push(m);
+    }
     // Cap each provider's list · a discovered account (e.g. Azure Foundry) can
     // serve 100+ models, which would bury everything else. `/model all` or a
     // fuzzy `/model <name>` still reaches the rest.
     const CAP = 8;
-    const shown = new Map<string, number>();
     let hidden = 0;
-    for (const m of usable) {
-      const n = shown.get(m.provider) ?? 0;
-      if (!showAll && n >= CAP) { hidden++; continue; }
-      shown.set(m.provider, n + 1);
-      rows.push(line(m));
+    for (const group of byProvider.values()) {
+      group.sort(compareModels);
+      const take = showAll ? group : group.slice(0, CAP);
+      hidden += group.length - take.length;
+      for (const m of take) rows.push(line(m));
     }
     if (hidden) rows.push(`  + ${hidden} more on your accounts · /model all to list · /model <name> to pick`);
   } else {
     rows.push("", "no accounts yet · /account to add one");
+  }
+
+  // A discoverOnly provider (Azure/Foundry) with credentials but ZERO discovered
+  // models would otherwise just vanish from the list — say what to do instead.
+  const usableProviders = new Set(usable.map((m) => m.provider));
+  for (const p of CATALOG) {
+    if (p.discoverOnly && providerAvailable(p.id) && !usableProviders.has(p.id)) {
+      rows.push(`  ${glyph.off} ${p.label}: account added but no models discovered yet · /account refresh`);
+    }
   }
 
   if (showAll && rest.length) {

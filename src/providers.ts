@@ -560,16 +560,7 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
   }
   if (creds?.azure || authKind === "azure") {
     const az = creds?.azure ?? azureFromEnv();
-    // The stored apiVersion is for the LEGACY deployments URL shape (and the
-    // management routes in manage.ts). @ai-sdk/azure v2 builds the new
-    // /openai/v1 surface, where dated versions like 2024-08-01-preview are
-    // invalid — passing one breaks every turn. Dated version → legacy URLs.
-    const dated = az?.apiVersion && /^\d{4}-\d{2}-\d{2}/.test(az.apiVersion);
-    return createAzure({
-      resourceName: az?.resourceName,
-      apiKey: az?.apiKey ?? apiKey,
-      ...(dated ? { apiVersion: az!.apiVersion, useDeploymentBasedUrls: true } : {}),
-    })(spec.sdkId);
+    return createAzure(azureClientConfig({ ...az, apiKey: az?.apiKey ?? apiKey }))(spec.sdkId);
   }
   if (creds?.vertex || authKind === "vertex") {
     const vx = creds?.vertex ?? vertexFromEnv();
@@ -607,6 +598,26 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
       // (chat-completions, same reasoning as above).
       return createOpenAI({ apiKey, headers: creds?.headers }).chat(spec.sdkId);
   }
+}
+
+/** Azure client config policy — pure, fixture-tested. The stored apiVersion
+ *  decides the URL surface:
+ *    · dated (e.g. "2024-08-01-preview") → that version + the battle-tested
+ *      per-deployment URL shape;
+ *    · the literal "v1" → the SDK's new /openai/v1 surface (explicit opt-in);
+ *    · blank (the wizard's default) → the GA deployments API ("2024-10-21" +
+ *      deployment URLs), which works on every classic resource — the previous
+ *      default bet every turn on the young /openai/v1 surface and broke
+ *      inference on resources that don't serve it yet. */
+export const AZURE_GA_API_VERSION = "2024-10-21";
+export function azureClientConfig(az?: { resourceName?: string; apiKey?: string; apiVersion?: string }): {
+  resourceName?: string; apiKey?: string; apiVersion?: string; useDeploymentBasedUrls?: boolean;
+} {
+  const base = { resourceName: az?.resourceName, apiKey: az?.apiKey };
+  const v = az?.apiVersion?.trim();
+  if (v && /^\d{4}-\d{2}-\d{2}/.test(v)) return { ...base, apiVersion: v, useDeploymentBasedUrls: true };
+  if (v === "v1") return base; // SDK default: /openai/v1, no apiVersion
+  return { ...base, apiVersion: AZURE_GA_API_VERSION, useDeploymentBasedUrls: true };
 }
 
 /** Bedrock callable id: current-gen models are invocable only via a CROSS-

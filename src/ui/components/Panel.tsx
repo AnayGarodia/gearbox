@@ -355,6 +355,11 @@ export function Panel({
               );
             })
           )}
+          {panel.armReady === false ? (
+            <Text color={color.warn} wrap="truncate-end">
+              ⚠ deploy/delete needs an Azure sign-in — /account login {accountDetail?.id ?? "<account>"}
+            </Text>
+          ) : null}
         </Box>
       );
       hint = `↑↓ move · d deploy · ⌫ delete · r refresh · esc close`;

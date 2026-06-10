@@ -69,6 +69,16 @@ test("turnMetaOf projects the event onto the session TurnMeta shape", () => {
   });
 });
 
+test("the wire-reported served model rides the event into the session record", () => {
+  // Trust chain: what the provider SAYS it served is recorded alongside what
+  // we asked for, end to end (event → ledger.jsonl → session TurnMeta).
+  const meta = turnMetaOf(ev({ servedModel: "claude-sonnet-4-6-20251114" }));
+  expect(meta.servedModel).toBe("claude-sonnet-4-6-20251114");
+  recordSpend(ev({ servedModel: "claude-sonnet-4-6-20251114" }));
+  const line = JSON.parse(readFileSync(join(home, "ledger.jsonl"), "utf8").trim());
+  expect(line.servedModel).toBe("claude-sonnet-4-6-20251114");
+});
+
 test("a torn usage.json is preserved as .corrupt, not silently discarded", () => {
   writeFileSync(join(home, "usage.json"), "{ this is not json");
   recordSpend(ev()); // load() hits the corrupt file, preserves it, starts fresh

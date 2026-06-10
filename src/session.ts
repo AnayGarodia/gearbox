@@ -73,6 +73,8 @@ export interface TurnMeta {
   cacheCreationInputTokens?: number;
   /** Unix timestamp (ms) when the turn completed. */
   at: number;
+  /** Wire-reported model id that actually served the turn, when the backend exposed one. */
+  servedModel?: string;
 }
 
 /**

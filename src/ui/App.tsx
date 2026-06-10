@@ -36,7 +36,7 @@ import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loa
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, hasPricing, modelRegistry, providerAvailable, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
-import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, truncate, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
+import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, truncate, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, detailSetArmReady, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { classifyTask, type TaskKind } from "../agent/classify.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
@@ -62,7 +62,7 @@ import { probeUsage } from "../accounts/usage-probe.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { repoMap } from "../context/repomap.ts";
-import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
+import { compactHistory, modelSummarizer, estimateHistoryTokens, elideHistory, shouldAutoCompact } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
@@ -70,7 +70,7 @@ import { missingRequirements, capabilitySummary, type ModelRequirement } from ".
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
+import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
@@ -97,7 +97,7 @@ import { checkFileDiagnostics, formatDiagnostics, shutdownAllLsp } from "../lsp/
 import { loadPlugins, emitHook, installPluginLogger } from "../plugins.ts";
 import { loadAgents, agentInvocation, type AgentDef } from "../agents.ts";
 import { recordTurnOutcome } from "../model/priors.ts";
-import { armDeviceLogin } from "../accounts/azure-arm.ts";
+import { armDeviceLogin, armAuthReady } from "../accounts/azure-arm.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -489,6 +489,10 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // WIRE TRUTH: the model id the provider's response says served the last
   // turn. The routing line cross-checks this against what we requested.
   const servedModelRef = useRef<string | null>(null);
+  // Last turn's non-history context overhead (system/memory/repomap/retrieval),
+  // so auto-compact triggers on the full context, not history alone. 0 until an
+  // in-loop turn has built a context (CLI turns don't run buildContext).
+  const ctxOverheadRef = useRef(0);
   const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
@@ -601,10 +605,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     };
     return buildUsageView(estimateCost(sessionRef.current.turns), resolve, Date.now(), accounts.map((a) => a.id));
   };
-  // Usable (API) models for the /model panel, same source and order as the live
-  // registry so the panel's selection index maps to the right model id.
-  const buildPanelModelRows = (cur?: string | null): PanelModelRow[] =>
-    modelRegistry().filter((m) => providerAvailable(m.provider)).map((m) => ({ id: m.id, label: m.label, provider: m.provider, current: m.id === cur }));
+  // Usable (API) models for the /model panel — same grouping + rank order as
+  // the inline `/model` list (commands.ts compareModels) so the two can't drift.
+  const buildPanelModelRows = (cur?: string | null): PanelModelRow[] => {
+    const usable = modelRegistry().filter((m) => providerAvailable(m.provider));
+    const byProvider = new Map<string, typeof usable>();
+    for (const m of usable) {
+      if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
+      byProvider.get(m.provider)!.push(m);
+    }
+    const out: PanelModelRow[] = [];
+    for (const group of byProvider.values()) {
+      group.sort(compareModels);
+      for (const m of group) out.push({ id: m.id, label: m.label, provider: m.provider, current: m.id === cur });
+    }
+    return out;
+  };
   // Open a scrollable static info panel (fullscreen only). Returns false inline so callers
   // fall back to printing in the transcript, keeping it uncluttered.
   const openInfoPanel = (title: string, item: Item): boolean => {
@@ -1795,6 +1811,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // its stream) when the user hasn't pinned one, so the status bar shows e.g.
       // "Claude (personal) · sonnet-4.6" instead of just the account name.
       if (r.model && !activeCliModelRef.current && !args.label) setActiveCliModel(cliModelLabel(r.model));
+      // WIRE TRUTH for subscription turns: the CLI stream reports the model that
+      // actually served the turn — feed it to the same cross-check the in-loop
+      // path uses, so a subscription seat can never silently serve a different
+      // model than the routing line claims.
+      servedModelRef.current = r.model ?? null;
       return { messages: r.messages, usage: r.usage, failure: r.failure };
     },
     [],
@@ -1807,6 +1828,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // works even when /model is pinned to something broken. Read-and-clear.
       const isAsk = askModeRef.current;
       askModeRef.current = false;
+      // Wire truth is per-turn: clear the previous turn's served-model id so a
+      // path that doesn't report one (e.g. /ask via runCompletion) can never
+      // show a stale ✓wire/mismatch from an earlier turn.
+      servedModelRef.current = null;
       if (isAsk) {
         const docs = loadGearboxDocs();
         if (!docs) {
@@ -1874,6 +1899,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // failure can park that account and re-route around it.
       type Attempt = { messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string; producedOutput?: boolean }; cooldownKey: string };
       const runAttempt = async (choice: ModelChoice): Promise<Attempt> => {
+        servedModelRef.current = null; // each attempt re-establishes its own wire truth (failover hops must not inherit)
         if (choice.backend?.kind === "cli") {
           const acct = choice.backend.account;
           // Images flow to the CLI as file paths now (xiv) — no refusal here.
@@ -1901,7 +1927,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        let { system, messages: ctx, cacheBreak } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        let { system, messages: ctx, cacheBreak, sections } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        // Remember this turn's non-history context overhead (system + memory +
+        // repomap + retrieval + git) so the auto-compact trigger can budget on
+        // the FULL context, not history alone.
+        ctxOverheadRef.current = sections.filter((s) => s.name !== "history" && s.name !== "user").reduce((a, s) => a + s.tokens, 0);
         if (agentDef) system = `${system}\n\n# ACTIVE AGENT: ${agentDef.name}\n${agentDef.system}`;
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = account ? await resolveCreds(account) : undefined;
@@ -2036,35 +2066,46 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // only the model's working context shrinks. Returns a status line for a notice.
   const compactNow = useCallback(
     async (keepRecent: number, signal?: AbortSignal): Promise<string> => {
+      // Apply a successful compaction (either path) and report real numbers.
+      const apply = (res: { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number }, how: string): string => {
+        msgRef.current = res.messages;
+        // The status bar's ctx% reads lastInput from the LAST call — after
+        // compaction that's stale (it kept showing the pre-compaction size).
+        // Reset it to the new history estimate so the bar reflects reality now.
+        setLastInput(res.after);
+        const saved = res.before - res.after;
+        const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
+        return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""}${how} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
+      };
+      // The model-free fallback: mechanical elision (tool output distilled to
+      // one line per call). /compact must ALWAYS be able to shrink the history,
+      // even on a subscription-only session with no API-key summarizer.
+      const mechanical = (why: string): string => {
+        const res = elideHistory(msgRef.current, keepRecent);
+        if (!res) return `${why} · nothing left to compact mechanically`;
+        return apply(res, ` mechanically (${why})`);
+      };
       let model, creds;
       try {
         const ch = selectorRef.current.select({ prompt: "", kind: "summarize" });
         // The summarizer runs in-loop (AI SDK), so a flat-rate seat can't host it.
-        // Skip cleanly instead of silently failing (S-A).
-        if (ch.backend?.kind === "cli") return "compaction needs an API-key model · skipped while on a subscription";
+        if (ch.backend?.kind === "cli") return mechanical("no API-key summarizer on a subscription");
         model = ch.model;
         // Resolve the model's account creds so compaction works for STORED API
         // accounts, not just an env key (it silently never compacted before).
         const acct = (ch.backend?.kind === "in-loop" && ch.backend.account) || defaultAccount(model.provider);
         creds = acct ? await resolveCreds(acct) : undefined;
       } catch {
-        return "no model available to compact with";
+        return mechanical("no model available");
       }
       let res;
       try {
         res = await compactHistory({ history: msgRef.current, summarize: modelSummarizer(model, creds, signal), keepRecent });
       } catch (e: any) {
-        return `compaction failed (${model.label}): ${e?.message ?? "summarizer error"} · history unchanged`;
+        return mechanical(`summarizer failed on ${model.label}: ${e?.message ?? "error"}`);
       }
       if (!res) return "nothing old enough to compact yet";
-      msgRef.current = res.messages;
-      // The status bar's ctx% reads lastInput from the LAST call — after
-      // compaction that's stale (it kept showing the pre-compaction size).
-      // Reset it to the new history estimate so the bar reflects reality now.
-      setLastInput(res.after);
-      const saved = res.before - res.after;
-      const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
-      return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
+      return apply(res, "");
     },
     [],
   );
@@ -2466,6 +2507,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens,
           ...resolveTurnCost({ modelId, isSub, cliCostUSD: cm?.costUSD, usage: { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens } }),
           at: Date.now(),
+          servedModel: servedModelRef.current ?? undefined,
         });
         sessionRef.current.turns.push(turnMetaOf(spendEv));
         // Session auto-title: after the FIRST turn, replace the clipped-prompt
@@ -2493,7 +2535,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const ranSpec = routedRef.current?.model ?? findModel(modelId);
           // On an explicitly-pinned subscription, routedRef is null and modelId is the
           // ACCOUNT slug — resolve the real CLI model label instead of showing the slug.
-          const subLabel = findModel(activeCliModelRef.current ?? "")?.label ?? activeCliModelRef.current;
+          const pinnedSpec = isSub ? findModel(activeCliModelRef.current ?? "") : undefined;
+          const subLabel = pinnedSpec?.label ?? activeCliModelRef.current;
           const line = buildRoutingLine({
             model: ranSpec?.label ?? (isSub ? (subLabel ?? modelId) : modelId),
             provider: isSub ? (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude") : (ranSpec?.provider ?? "—"),
@@ -2501,7 +2544,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             kind: isSub ? "subscription" : "metered",
             priced: isSub || hasPricing(modelId),
             servedAs: servedModelRef.current ?? undefined,
-            requestedSdkId: ranSpec?.sdkId,
+            // What we actually asked the backend for: the routed pick's sdk id,
+            // or — on an explicitly-pinned subscription — the pinned seat's model.
+            // Undefined when no model was sent (CLI default); the routing line
+            // then reports the wire id quietly instead of inventing a mismatch.
+            requestedSdkId: ranSpec?.sdkId ?? pinnedSpec?.sdkId,
             fellOverFrom: fellOverFromRef.current,
             escalated: /escalated after/.test(routedRef.current?.reason ?? ""),
           });
@@ -2530,21 +2577,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // losing the gist. Best-effort and skipped on interrupt.
         if (!ac.signal.aborted) {
           try {
-            const cm = selectorRef.current.select({ prompt: "", kind: "summarize" }).model;
             // Trigger off the window of the model that ANSWERED (its window is what
             // overflows), not the summarizer's — a 1M summarizer never triggers a
             // 200k haiku turn; a 128k summarizer over-compacts a 1M model.
             const answeringWindow = activeCliRef.current
               ? (activeCliRef.current.binary?.includes("codex") ? (findModel(activeCliModelRef.current ?? "")?.contextWindow ?? 272_000) : 200_000)
-              : (findModel(modelId)?.contextWindow ?? cm.contextWindow);
-            const budget = Math.max(8000, answeringWindow - 32000);
-            // Conservative on purpose: the builder's per-turn elision already
-            // keeps normal sessions bounded (old tool output dropped every turn);
-            // compaction is the deeper safety net for genuinely long sessions, so
-            // it only fires when even the raw ledger nears the budget. Summarizing
-            // costs a model call, so we don't do it eagerly.
-            const COMPACT_AT = 0.6;
-            if (estimateHistoryTokens(msgRef.current, cm.id) > budget * COMPACT_AT) {
+              : (findModel(modelId)?.contextWindow ?? 200_000);
+            // Budget on the FULL context the next turn will send: history
+            // (tokenized with the answering model, not the summarizer) plus the
+            // non-history overhead buildContext reported (system + memory +
+            // repomap + retrieval). History alone under-counted by 10-20k, so
+            // compaction fired at the wrong point relative to the real window.
+            // The threshold lives in shouldAutoCompact (compact.ts) — still
+            // conservative: the builder's per-turn elision keeps normal sessions
+            // bounded; compaction is the deeper safety net.
+            const historyTokens = estimateHistoryTokens(msgRef.current, modelId);
+            if (shouldAutoCompact(historyTokens, ctxOverheadRef.current, answeringWindow)) {
               setVerb("Compacting context");
               notice(await compactNow(4, ac.signal));
             }
@@ -4460,6 +4508,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                     ? (r.ok
                         ? detailSetAvailableModels(prev as AccountDetailPanel, r.models)
                         : detailSetModelsError(prev as AccountDetailPanel, r.note ?? "couldn't load deployable models"))
+                    : prev,
+                ),
+              );
+              // Cheap no-network probe: warn up front when deploy/delete would
+              // fail for lack of an ARM sign-in, instead of at the end of the flow.
+              void armAuthReady().then((ready) =>
+                setPanel((prev) =>
+                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id && seq === detailLoadSeqRef.current
+                    ? detailSetArmReady(prev as AccountDetailPanel, ready)
                     : prev,
                 ),
               );

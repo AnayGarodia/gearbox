@@ -7,6 +7,7 @@ export interface ContextRow {
   label: string; // padded to labelPad
   display: string; // formatted token count, e.g. "2.5k"
   frac: number; // 0..1 of the largest section (the bar)
+  pct?: number; // 0..100 of the CONTEXT WINDOW (where the budget actually goes)
 }
 export interface ContextView {
   rows: ContextRow[];

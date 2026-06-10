@@ -123,6 +123,15 @@ export async function addAzureFoundryAccount(endpoint: string, key: string, opts
 
 /** Store an Azure OpenAI / Azure AI Foundry resource account. */
 export async function addAzureAccount(resourceOrEndpoint: string, key: string, opts: { apiVersion?: string; id?: string; label?: string } = {}): Promise<AddResult> {
+  // A full URL whose host is NOT *.openai.azure.com is a Foundry/AI-services
+  // endpoint (services.ai.azure.com, cognitiveservices.azure.com, custom
+  // domains). Minting a classic account from it builds a broken
+  // https://<sub>.openai.azure.com base for every call — route it to the
+  // Foundry/openai-compat path, which carries the real baseUrl.
+  const url = /^https?:\/\//i.test(resourceOrEndpoint.trim()) ? (() => { try { return new URL(resourceOrEndpoint.trim()); } catch { return null; } })() : null;
+  if (url && !/\.openai\.azure\.com$/i.test(url.hostname)) {
+    return addAzureFoundryAccount(resourceOrEndpoint.trim(), key, { id: opts.id, label: opts.label });
+  }
   const resourceName = azureResourceName(resourceOrEndpoint);
   if (!resourceName || !key.trim()) return { ok: false, message: "usage: /account add azure <resource-or-endpoint> <api-key> [api-version]" };
   const id = opts.id ?? `azure-${slugify(resourceName)}`;

@@ -87,7 +87,9 @@ export function armToken(execImpl: typeof spawnSyncProc = spawnSyncProc): { toke
     return { error: "ARM management is disabled (GEARBOX_DISABLE_AZ=1) — create the deployment in the portal" };
   }
   if (tokenCache && Date.now() < tokenCache.expiresAt - 5 * 60_000) return { token: tokenCache.token };
-  if (!which("az")) {
+  // Only consult the real PATH when running the real az — an injected exec
+  // (tests) must not be short-circuited by the host machine's missing CLI.
+  if (execImpl === spawnSyncProc && !which("az")) {
     return { error: "the Azure CLI isn't installed" };
   }
   const r = execImpl(["az", "account", "get-access-token", "--resource", ARM, "--output", "json"], { stdout: "pipe", stderr: "pipe" });
@@ -123,6 +125,21 @@ async function tokenFromServicePrincipal(fetchImpl: typeof fetch): Promise<{ tok
   } catch {
     return null;
   }
+}
+
+/** Cheap, NO-NETWORK probe: is any rung of the token ladder even plausible?
+ *  Used by the account panel to warn BEFORE the user walks the whole
+ *  deploy-pick → capacity → name flow only to hit "no Azure management
+ *  sign-in" at the end. A true here doesn't guarantee the token works —
+ *  the real ladder remains the backstop. */
+export async function armAuthReady(): Promise<boolean> {
+  if (process.env.GEARBOX_DISABLE_AZ === "1") return false;
+  if (tokenCache && Date.now() < tokenCache.expiresAt - 5 * 60_000) return true;
+  const refresh = await getSecret(REFRESH_REF).catch(() => null);
+  if (refresh) return true;
+  if (which("az")) return true;
+  const { AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET } = process.env;
+  return Boolean(AZURE_TENANT_ID && AZURE_CLIENT_ID && AZURE_CLIENT_SECRET);
 }
 
 /** The management token, from whichever rung works. The error names ALL the

@@ -211,6 +211,10 @@ export function subscriptionEnv(binary: string, profile?: string): Record<string
 function cliModelArg(binary: string, modelId?: string): string | undefined {
   if (!modelId) return undefined;
   if (binary.includes("claude")) {
+    // Pass full ids straight through — `claude --model` accepts a model's full
+    // name (e.g. "claude-opus-4-8"), and the family alias ("opus") lets the CLI
+    // substitute its own default version, breaking the routed-model promise.
+    if (modelId.startsWith("claude-")) return modelId;
     if (modelId.includes("opus")) return "opus";
     if (modelId.includes("sonnet")) return "sonnet";
     if (modelId.includes("haiku")) return "haiku";

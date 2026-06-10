@@ -101,6 +101,18 @@ test("wire-truth: the routing line verifies the provider's reported model", () =
   expect(bad.surprising).toBe(true);
 });
 
+test("wire-truth without a requested model is informational, never a mismatch", () => {
+  // A subscription CLI ran its own default (no --model sent): the wire id is
+  // reported quietly against the seat's display label — not flagged amber.
+  const quiet = buildRoutingLine({ model: "claude-work", provider: "claude", costUSD: 0, kind: "subscription", servedAs: "claude-sonnet-4-6" });
+  expect(quiet.model).toBe('claude-work · served as claude-sonnet-4-6');
+  expect(quiet.surprising).toBe(false);
+  // When the label itself matches the wire id, it upgrades to ✓wire.
+  const match = buildRoutingLine({ model: "sonnet-4.6", provider: "claude", costUSD: 0, kind: "subscription", servedAs: "claude-sonnet-4-6" });
+  expect(match.model).toContain("✓wire");
+  expect(match.surprising).toBe(false);
+});
+
 test("servedMatchesRequested tolerates provider id decoration", () => {
   expect(servedMatchesRequested("claude-sonnet-4-6-20251114", "claude-sonnet-4-6")).toBe(true);
   expect(servedMatchesRequested("gpt-5.5-2026-01-12", "gpt-5.5")).toBe(true);

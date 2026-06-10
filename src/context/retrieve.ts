@@ -265,8 +265,11 @@ export interface RetrievedFile {
  *
  * Files are added in descending score order. An oversize file is SKIPPED (not
  * truncated) so that a smaller but still relevant file can fill the remaining
- * budget. This avoids presenting the model with a partial, potentially
- * misleading view of a file.
+ * budget — with ONE exception: if nothing fit at all and the TOP-ranked file is
+ * the oversize one, include its head with an explicit truncation marker. The
+ * best match partially beats the best match absent (which used to leave the
+ * model with zero retrieved context exactly when the most relevant file was a
+ * big one).
  */
 export function retrieveFiles(
   query: string,
@@ -280,15 +283,33 @@ export function retrieveFiles(
   const ranked = rankFiles(query, cwd).slice(0, k);
   const out: RetrievedFile[] = [];
   let used = 0;
+  let topOversize: { file: string; content: string } | null = null;
   for (const { file } of ranked) {
     const content = idx.raw.get(file);
     if (content == null) continue;
     const tokens = countTokens(content, modelId);
     // Skip files that would overflow the remaining budget, but keep trying
     // smaller files that might still fit.
-    if (used + tokens > budget) continue;
+    if (used + tokens > budget) {
+      if (!out.length && !topOversize) topOversize = { file, content };
+      continue;
+    }
     out.push({ file, content, tokens });
     used += tokens;
+  }
+  if (!out.length && topOversize && budget > 200) {
+    // Head-truncate the best match to the budget, marked clearly so the model
+    // knows to read_file for the rest. Start from a ~4 chars/token estimate and
+    // shrink once if the real count still overflows (code tokenizes denser).
+    let head = topOversize.content.slice(0, Math.max(0, budget - 50) * 4);
+    let content = `${head}\n…[truncated — file continues; use read_file for the rest]`;
+    let tokens = countTokens(content, modelId);
+    if (tokens > budget) {
+      head = head.slice(0, Math.floor((head.length * budget) / (tokens + 50)));
+      content = `${head}\n…[truncated — file continues; use read_file for the rest]`;
+      tokens = countTokens(content, modelId);
+    }
+    out.push({ file: topOversize.file, content, tokens });
   }
   return out;
 }

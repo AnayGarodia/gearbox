@@ -12,7 +12,7 @@
 import { generateText, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
-import { groupTurns, textOf, msgTokens } from "./builder.ts";
+import { groupTurns, textOf, msgTokens, elideTurn } from "./builder.ts";
 
 // Injectable so tests can compact without a live model call.
 export type Summarizer = (transcript: string) => Promise<string>;
@@ -44,6 +44,43 @@ export function modelSummarizer(model: ModelSpec, creds?: ResolvedCreds, signal?
 /** Estimate the token cost of a full message history (for the compaction trigger). */
 export function estimateHistoryTokens(history: ModelMessage[], modelId?: string): number {
   return history.reduce((s, m) => s + msgTokens(m, modelId), 0);
+}
+
+// Auto-compact when the FULL projected context (history + the per-turn
+// overhead of system/memory/repomap/retrieval) nears the answering model's
+// window. The old trigger measured history alone, so a 15-20k overhead meant
+// it fired too late relative to the real window.
+const COMPACT_AT = 0.75;
+const COMPACT_OUTPUT_RESERVE = 32_000;
+
+/** Pure trigger predicate for auto-compaction (App wires the live numbers). */
+export function shouldAutoCompact(historyTokens: number, overheadTokens: number, contextWindow: number): boolean {
+  const budget = Math.max(8_000, contextWindow - COMPACT_OUTPUT_RESERVE);
+  return historyTokens + Math.max(0, overheadTokens) > budget * COMPACT_AT;
+}
+
+/**
+ * MODEL-FREE compaction: mechanically elide every turn older than `keepRecent`
+ * (tool exchanges distilled to one line each via builder's elideTurn). Used
+ * when no API-key summarizer is available (subscription-only sessions) and as
+ * the fallback when the summarizer fails — /compact must always be able to
+ * shrink the history. Returns null when there's nothing old enough, or when
+ * elision wouldn't actually save tokens (no-op honesty).
+ */
+export function elideHistory(history: ModelMessage[], keepRecent = 4): { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number } | null {
+  const turns = groupTurns(history);
+  const split = turns.length - keepRecent;
+  if (split < 1) return null;
+  const messages: ModelMessage[] = [
+    { role: "user", content: "Compact the earlier conversation." },
+    { role: "assistant", content: "Earlier turns follow with their full tool output elided — each turn keeps its prose plus a one-line trail per tool call." },
+    ...turns.slice(0, split).flatMap((t) => elideTurn(t)),
+    ...turns.slice(split).flat(),
+  ];
+  const before = estimateHistoryTokens(history);
+  const after = estimateHistoryTokens(messages);
+  if (after >= before) return null;
+  return { messages, summarizedTurns: split, before, after };
 }
 
 /** Render turns as a readable transcript for the summarizer. */

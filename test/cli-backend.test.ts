@@ -85,7 +85,12 @@ test("buildCliArgs uses each binary's stream-json flags", () => {
   expect(buildCliArgs("codex", "x", { autoApprove: true })).toContain("--dangerously-bypass-approvals-and-sandbox");
   // session resume threads through
   expect(buildCliArgs("claude", "x", { sessionId: "s9" })).toContain("s9");
-  expect(buildCliArgs("claude", "x", { modelId: "claude-haiku-4-5" })).toContain("haiku");
+  // Full claude ids pass through UNREDUCED — the family alias ("haiku") would
+  // let the CLI substitute its own default version, breaking the routed promise.
+  expect(buildCliArgs("claude", "x", { modelId: "claude-haiku-4-5" })).toContain("claude-haiku-4-5");
+  expect(buildCliArgs("claude", "x", { modelId: "claude-opus-4-8" })).toContain("claude-opus-4-8");
+  // Non-full ids still fall back to the family alias the CLI understands.
+  expect(buildCliArgs("claude", "x", { modelId: "opus-4.8" })).toContain("opus");
   expect(buildCliArgs("codex", "x", { modelId: "gpt-5.5" })).toContain("gpt-5.5");
   expect(buildCliArgs("codex", "x", { effort: "xhigh" })).toContain('model_reasoning_effort="xhigh"');
 });

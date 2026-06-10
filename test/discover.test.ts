@@ -101,6 +101,68 @@ test("discoverModels reports a note (not a throw) when the endpoint errors", asy
   expect(d.note).toBeTruthy();
 });
 
+// ── status-specific Azure discovery notes (401 and 404 need OPPOSITE fixes) ──
+import { azureListNote } from "../src/accounts/discover.ts";
+
+test("azureListNote distinguishes 401/403/404 per provider", () => {
+  expect(azureListNote(401, "azure")).toContain("key rejected");
+  expect(azureListNote(403, "azure")).toContain("firewall");
+  expect(azureListNote(404, "azure")).toContain("Foundry endpoint");
+  expect(azureListNote(404, "azure-foundry")).toContain("HTTP 404");
+  expect(azureListNote(500, "azure")).toContain("HTTP 500");
+});
+
+test("classic azure discovery failure carries the status-specific note", async () => {
+  const res = await addAzureAccount("aztea-aoai", "az-key");
+  const f401 = fakeFetch([{ match: "/openai/deployments", status: 401, body: {} }]);
+  const d = await discoverModels(res.account!, f401 as unknown as typeof fetch);
+  expect(d.ok).toBe(false);
+  expect(d.note).toContain("key rejected");
+});
+
+// THE Foundry trust fix: an OK deployments answer is authoritative even when
+// EMPTY. Falling through to /models used to persist the resource's deployable
+// CATALOG (hundreds of ids) as callable models — all of which 404 at inference.
+test("Foundry: an empty deployments list is trusted — the /models catalog is NOT dumped", async () => {
+  const res = await addAzureFoundryAccount("https://aztea-foundry.services.ai.azure.com", "f-key");
+  const hits: string[] = [];
+  const inner = fakeFetch([
+    { match: "/openai/deployments", body: { data: [] } },
+    { match: "/models", body: { data: [{ id: "catalog-model-1", capabilities: { chat_completion: true } }] } },
+  ]);
+  const f = (async (url: string | URL) => { hits.push(String(url)); return inner(url); }) as unknown as typeof fetch;
+  const d = await discoverModels(res.account!, f);
+  expect(d.ok).toBe(true);
+  expect(d.models).toEqual([]);
+  expect(d.note).toContain("no chat deployments yet");
+  expect(hits.some((u) => /\/models(\?|$)/.test(u))).toBe(false); // catalog never consulted
+});
+
+test("Foundry: a 401 on the deployments route is a credential error, not a fallback", async () => {
+  const res = await addAzureFoundryAccount("https://aztea-foundry.services.ai.azure.com", "f-key");
+  const f = fakeFetch([
+    { match: "/openai/deployments", status: 401, body: {} },
+    { match: "/models", body: { data: [{ id: "catalog-model-1", capabilities: { chat_completion: true } }] } },
+  ]);
+  const d = await discoverModels(res.account!, f as unknown as typeof fetch);
+  expect(d.ok).toBe(false);
+  expect(d.models).toEqual([]);
+  expect(d.note).toContain("key rejected");
+});
+
+// ── one router for Azure adds: a Foundry-shaped URL never mints a classic account ──
+test("addAzureAccount delegates URL-shaped Foundry endpoints to the foundry path", async () => {
+  const r = await addAzureAccount("https://my-proj.services.ai.azure.com", "k-1234567890");
+  expect(r.ok).toBe(true);
+  expect(r.account!.provider).toBe("azure-foundry");
+  expect(r.account!.baseUrl).toContain("my-proj.services.ai.azure.com");
+  // a bare resource name (or a classic URL) still mints a classic account
+  const c = await addAzureAccount("my-res", "k-1234567890");
+  expect(c.account!.provider).toBe("azure");
+  const c2 = await addAzureAccount("https://my-res.openai.azure.com", "k-1234567890");
+  expect(c2.account!.provider).toBe("azure");
+});
+
 // ── honest registry: no fabricated seeds for discoverOnly providers ──
 test("Azure / Foundry seed models are NOT advertised as ready-to-use", () => {
   // the catalog seeds (gpt-5.5, o4-mini, ...) must not appear as selectable models
