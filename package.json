@@ -1,6 +1,6 @@
 {
   "name": "gearbox-code",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "A beautiful multi-provider coding harness for the terminal. (Intelligent model routing lands on top of this soon.)",
   "type": "module",
   "license": "MIT",
