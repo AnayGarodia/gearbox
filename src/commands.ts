@@ -41,6 +41,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/effort", usage: "/effort [level]", desc: "set the active model's reasoning level, e.g. low · high · xhigh · max", group: "models" },
   { name: "/prefer", usage: "/prefer kind model", desc: "remember a confirmed model preference for a task type", group: "models" },
   { name: "/why", usage: "/why", desc: "show the routing scorecard: every candidate scored, and why this one won", group: "models" },
+  { name: "/agents", usage: "/agents", desc: "list agents · run one with @<name> <task> (scout is built in) · add .gearbox/agents/*.md", group: "models" },
   // conversation
   { name: "/clear", usage: "/clear", desc: "start a fresh conversation", group: "chat" },
   { name: "/resume", usage: "/resume [n]", desc: "reopen a past conversation", group: "chat" },

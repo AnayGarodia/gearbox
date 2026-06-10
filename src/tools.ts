@@ -52,6 +52,7 @@ import { applyEdit } from "./edit.ts";
 import { updateRetrievalFile } from "./context/retrieve.ts";
 import { runShellStream } from "./shell.ts";
 import { appendFact } from "./context/memory.ts";
+import { emitHook } from "./plugins.ts";
 import { requestPermission } from "./permission.ts";
 import { which, Glob, spawnSyncProc } from "./proc.ts";
 import type { OnEvent } from "./agent/events.ts";
@@ -502,5 +503,38 @@ export async function createToolset(
   // agents don't get them, so delegation can't recurse. Absent means no delegation
   // (plan mode, sub-agents).
   if (opts.extraTools) for (const [k, v] of Object.entries(opts.extraTools)) set[k] = v;
-  return set;
+  return wrapWithPluginHooks(set);
+}
+
+// Plugin hooks around EVERY tool call (built-ins, MCP, delegate alike):
+// tool.execute.before can patch args or block with a reason (the block string
+// becomes the tool result the model sees); tool.execute.after observes results.
+// A plugin throw never breaks the agent — emitHook isolates handlers.
+function wrapWithPluginHooks(set: Record<string, Tool<any, any>>): Record<string, Tool<any, any>> {
+  const out: Record<string, Tool<any, any>> = {};
+  for (const [name, t] of Object.entries(set)) {
+    const exec = (t as any).execute;
+    if (typeof exec !== "function") {
+      out[name] = t;
+      continue;
+    }
+    out[name] = {
+      ...t,
+      execute: async (args: any, callOpts: any) => {
+        let finalArgs = args;
+        try {
+          const pre = await emitHook("tool.execute.before", { tool: name, args });
+          if (pre?.block) return `blocked by a plugin: ${pre.block}`;
+          if (pre?.args) finalArgs = pre.args;
+        } catch { /* hook isolation */ }
+        const startedAt = Date.now();
+        const result = await exec(finalArgs, callOpts);
+        try {
+          await emitHook("tool.execute.after", { tool: name, args: finalArgs, result, durationMs: Date.now() - startedAt });
+        } catch { /* hook isolation */ }
+        return result;
+      },
+    } as Tool<any, any>;
+  }
+  return out;
 }

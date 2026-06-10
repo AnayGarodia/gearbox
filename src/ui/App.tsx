@@ -94,6 +94,8 @@ import { liveCheckAll, formatDoctorRows } from "../accounts/doctor.ts";
 import { searchSessions } from "../session-search.ts";
 import { syncModelsDev } from "../model/modelsdev.ts";
 import { checkFileDiagnostics, formatDiagnostics, shutdownAllLsp } from "../lsp/diagnostics.ts";
+import { loadPlugins, emitHook, installPluginLogger } from "../plugins.ts";
+import { loadAgents, agentInvocation, type AgentDef } from "../agents.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -474,6 +476,11 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // inline-mode draft awaiting `/commit go` · `/pr go`.
   const gitRegenRef = useRef<{ mode: "commit" | "pr"; system: string; prompt: string; files: string[]; stat: string } | null>(null);
   const gitDraftRef = useRef<{ mode: "commit" | "pr"; subject: string; body: string } | null>(null);
+  // The agent persona for the CURRENT turn (`@scout …`), read by defaultRunner.
+  const agentTurnRef = useRef<AgentDef | null>(null);
+  // Reports from BACKGROUNDED delegate sub-tasks, delivered into the next
+  // turn's prompt (the model asked for them; the user saw the notice).
+  const pendingBackgroundRef = useRef<string[]>([]);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
   const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
@@ -816,6 +823,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     );
     return () => setPermissionHandler(null);
   }, []);
+
+  // Plugins (.gearbox/plugins/*.ts + ~/.gearbox/plugins/*.ts): loaded once at
+  // boot. A broken plugin becomes a notice, never a crash; ctx.log and hook
+  // errors surface as faint notices.
+  useEffect(() => {
+    installPluginLogger((msg) => notice(msg));
+    void loadPlugins().then((r) => {
+      if (r.errors.length) notice(`plugin errors:\n${r.errors.map((e) => `  ${e.file}: ${e.message}`).join("\n")}`);
+      if (r.loaded.length) toast(`${r.loaded.length} plugin${r.loaded.length === 1 ? "" : "s"} loaded`, "info");
+      void emitHook("session.start", { sessionId: sessionRef.current.id });
+    });
+    return () => { installPluginLogger(null as any); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // models.dev catalog: refresh in the background (24h cache) so newly shipped
   // models become pin-able without a release. Never blocks anything.
@@ -1872,7 +1892,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        const { system, messages: ctx, cacheBreak } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        let { system, messages: ctx, cacheBreak } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        if (agentDef) system = `${system}\n\n# ACTIVE AGENT: ${agentDef.name}\n${agentDef.system}`;
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = account ? await resolveCreds(account) : undefined;
         usedAccountRef.current = account?.id ?? null;
@@ -1890,7 +1911,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
           } // else: model has no effort control → omit effort (leave null)
         }
-        const r = await runTask({ model: choice.model, messages: ctx, onEvent, signal, plan, system, creds, effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, pinnedModelId: explicitModelId, cacheBreak });
+        const r = await runTask({
+          model: choice.model, messages: ctx, onEvent, signal, plan, system, creds,
+          effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0,
+          pinnedModelId: explicitModelId, cacheBreak,
+          onBackground: (rep) => {
+            // Surface NOW (notice + toast), deliver the full text next turn.
+            push({ kind: "notice", id: idRef.current++, text: `background sub-task #bg${rep.id} ${rep.ok ? "finished" : "FAILED"} · ${rep.task.slice(0, 70)}\n${rep.text.split("\n").slice(0, 3).join("\n")}` });
+            pendingBackgroundRef.current.push(`[background sub-task #bg${rep.id} · ${rep.ok ? "finished" : "failed"}]\nTask: ${rep.task}\nReport:\n${rep.text}`);
+            toast(`background sub-task #bg${rep.id} ${rep.ok ? "done" : "failed"}`, rep.ok ? "ok" : "err");
+          },
+        });
         if (account && r.headers) {
           const apiRates = parseRateHeaders(account.provider, r.headers, Date.now());
           if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };
@@ -1914,7 +1945,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // routing — the router only ever saw a task KIND, so "use opus" used to be
       // invisible and you'd get sonnet. A direct /model pin (FixedSelector) already
       // wins; this adds the natural-language path.
-      const directiveId = sel instanceof RoutingSelector ? modelDirectiveIn(prompt) : null;
+      const agentDef = agentTurnRef.current; // set by runTurn for @agent turns
+      const directiveId = (agentDef?.model ?? null) || (sel instanceof RoutingSelector ? modelDirectiveIn(prompt) : null);
       if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
         routedKind = await classifyTask(prompt, signal);
@@ -2106,7 +2138,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const turnVerb = nextVerb();
       setVerb(turnVerb);
       activeImagesRef.current = [];
-      let { text: modelPrompt, attached } = expandMentions(prompt);
+      // `@<agent> task` runs the turn AS that agent: its system prompt rides the
+      // context, its model (when set) pins the turn — everything else is the
+      // normal machinery. Falls through harmlessly when @x isn't an agent name
+      // (a leading @file mention still expands below).
+      const agentInv = agentInvocation(prompt);
+      agentTurnRef.current = agentInv?.agent ?? null;
+      const effectivePrompt = agentInv ? agentInv.task : prompt;
+      let { text: modelPrompt, attached } = expandMentions(effectivePrompt);
+      // Backgrounded delegate reports arrive with the next turn — the model
+      // requested the work and needs the result in context exactly once.
+      if (pendingBackgroundRef.current.length) {
+        modelPrompt = `${pendingBackgroundRef.current.join("\n\n")}\n\n---\n\n${modelPrompt}`;
+        pendingBackgroundRef.current = [];
+      }
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
       const imagePaths = uniq([...chipImagePathsIn(modelPrompt), ...imagePathsInText(modelPrompt)]);
       let displayPrompt = prompt;
@@ -2320,6 +2365,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             };
           }));
         } else if (e.type === "file-change") {
+          void emitHook("file.edited", { path: e.path }).catch(() => {});
           turnChanges = recordChange(turnChanges, { path: e.path, before: e.before, existed: e.existed });
           changedFiles.add(e.path); // also drive the end-of-turn summary + verification (delegated edits arrive only as file-change events, not write-tool ends)
         } else if (e.type === "verification") {
@@ -2503,6 +2549,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           notice("interrupted");
           interruptedRef.current = false;
         }
+        void emitHook("turn.end", { changedFiles: [...changedFiles], hadError }).catch(() => {});
         // Pause the type-ahead drain after an error or interrupt so queued prompts
         // don't auto-fire into a still-broken state; a successful turn re-enables it (L-C).
         lastTurnFailedRef.current = hadError || interrupted;
@@ -2891,6 +2938,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 `\n  /verify off  ·  /verify auto  ·  /verify test (write a characterization test)`,
             );
           }
+          return;
+        }
+        case "agents": {
+          echo(text);
+          const defs = loadAgents();
+          notice(
+            "agents · run one with @<name> <task>\n" +
+              defs.map((a) => `  @${a.name.padEnd(14)} ${a.description}${a.model ? ` · pinned to ${a.model}` : ""} · ${a.source}`).join("\n") +
+              "\n  add your own: .gearbox/agents/<name>.md (frontmatter: description, model) — body = its system prompt",
+          );
           return;
         }
         case "doctor": {

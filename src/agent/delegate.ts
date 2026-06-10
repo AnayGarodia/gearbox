@@ -384,8 +384,8 @@ function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean 
 
 // ── exported tool factory ─────────────────────────────────────────────────────
 
-export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask }): Record<string, Tool<any, any>> {
-  const { onEvent, signal, run, runCli } = opts;
+export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void }): Record<string, Tool<any, any>> {
+  const { onEvent, signal, run, runCli, onBackground } = opts;
 
   // ── delegate (sequential, single task) ──────────────────────────────────────
   const delegate = tool({
@@ -394,10 +394,29 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
     inputSchema: z.object({
       task: z.string().describe("The complete, self-contained sub-task: what to do, which files, constraints, definition of done."),
       kind: KIND.optional().describe("Optional task-kind hint to steer model routing (inferred if omitted)."),
+      background: z.boolean().optional().describe("true = don't wait: keep working while the sub-agent runs; its report arrives in the conversation when it finishes. Use for research/long tasks whose result you don't need THIS turn."),
     }),
-    execute: async ({ task, kind }) => {
+    execute: async ({ task, kind, background }) => {
       const routed = routeSubTask(task, kind, opts.pinnedModelId);
       if ("error" in routed) return `delegation skipped: ${routed.error}. Do it yourself.`;
+      // Background mode: fire-and-continue. The live activity line still
+      // streams (the rail shows it running); the report is delivered to the
+      // conversation by the host when it settles.
+      if (background && onBackground) {
+        const bgNum = ++counter;
+        const bgId = `delegate-${bgNum}`;
+        onEvent({ type: "tool-start", id: bgId, name: "delegate", arg: `#bg${bgNum} (background) → ${routed.model.label} · ${clipTask(task, 60)}` });
+        void runOne(run, routed, task, { signal, runCli, onActivity: (line) => onEvent({ type: "tool-stream", id: bgId, activity: line }) })
+          .then((res) => {
+            onEvent({ type: "tool-end", id: bgId, ok: res.ok, summary: reportLine(res.text) || routed.model.label });
+            onBackground({ id: bgNum, task, ok: res.ok, text: res.text });
+          })
+          .catch((e: any) => {
+            onEvent({ type: "tool-end", id: bgId, ok: false, summary: "crashed" });
+            onBackground({ id: bgNum, task, ok: false, text: `crashed: ${e?.message ?? e}` });
+          });
+        return `Sub-task #bg${bgNum} is running in the BACKGROUND on ${routed.model.label}. Its report will arrive in the conversation when it finishes — do not wait for it; continue with other work now.`;
+      }
       const id = `delegate-${++counter}`;
       onEvent({ type: "tool-start", id, name: "delegate", arg: `→ ${routed.model.label}${routed.cli ? " (subscription)" : ""} · ${clipTask(task, 72)}` });
       let res: { ok: boolean; text: string };

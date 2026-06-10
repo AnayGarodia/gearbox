@@ -224,6 +224,7 @@ export async function runTask(opts: {
   maxRetries?: number; // SDK retry budget; set to 0 when offline so a no-network turn fails in one connect-timeout instead of the default 3-attempt storm
   pinnedModelId?: string; // when the user explicitly chose a model (via /model or "use opus"), delegated sub-tasks inherit it instead of re-routing to the cheapest
   cacheBreak?: number; // index of the last settled-history message (from the context engine), cache that prefix; the volatile turn-context tail rides after it
+  onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; // backgrounded delegate reports (host injects them into the conversation)
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
 }): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
   const { model, messages, onEvent, signal, plan } = opts;
@@ -271,7 +272,7 @@ export async function runTask(opts: {
     const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content: p.prompt }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries });
     return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
   };
-  const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId }) : undefined;
+  const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground }) : undefined;
   const activeTools = await createToolset(onEvent, { readOnly: Boolean(plan), extraTools, root: opts.root });
 
   // Mark the stable prefix for prompt caching. Providers with explicit cache

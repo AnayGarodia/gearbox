@@ -42,6 +42,9 @@
  * both yolo and all standing grants, which is useful in tests between cases.
  */
 
+import { ruleFor, loadPermissionRules } from "./permission-rules.ts";
+import { emitHook } from "./plugins.ts";
+
 /** The category of action being requested. Drives per-kind standing grants. */
 export type PermKind = "write" | "edit" | "shell";
 
@@ -114,9 +117,22 @@ export function resetPermissions(): void {
  * resulting decision is applied to the broker state before returning.
  */
 export async function requestPermission(req: PermRequest): Promise<boolean> {
+  // Project rules (.gearbox/permissions.json) pre-decide first: an explicit
+  // "deny" refuses even under yolo (the user wrote it down — "rm *": "deny"
+  // must hold precisely when everything else is auto-approved), "allow" skips
+  // the prompt, "ask" forces one. Unmatched falls through to the broker.
+  const rule = ruleFor(loadPermissionRules(), req.kind, req.detail);
+  if (rule === "deny") return false;
   if (yolo) return true;
-  if (granted.has(req.kind)) return true;
+  if (rule === "allow") return true;
+  if (granted.has(req.kind) && rule !== "ask") return true;
   if (!handler) return true;
+  // A plugin can resolve the request programmatically (permission.ask hook).
+  try {
+    const hook = await emitHook("permission.ask", { kind: req.kind, title: req.title, detail: req.detail });
+    if (hook?.decision === "allow") return true;
+    if (hook?.decision === "deny") return false;
+  } catch { /* a plugin must never wedge the gate */ }
   const decision = await handler(req);
   if (decision === "all") {
     yolo = true;
