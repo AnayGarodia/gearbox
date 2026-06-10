@@ -302,7 +302,7 @@ function NoticeText({ text }: { text: string }) {
 // band's prefix + padding — Ink's default wrap would drop the background on
 // the spill rows.
 function UserLine({ text, width }: { text: string; width: number }) {
-  const bodyW = Math.max(1, width - 4); // prefix (2) + right margin (2)
+  const bodyW = Math.max(1, width - 5); // spine prefix (3) + right margin (2)
   const lines = text.split("\n").flatMap((line) => {
     if (line.length <= bodyW) return [line];
     // Chunk over CODE POINTS — slicing UTF-16 units would split an emoji's
@@ -312,19 +312,23 @@ function UserLine({ text, width }: { text: string; width: number }) {
     for (let i = 0; i < chars.length; i += bodyW) out.push(chars.slice(i, i + bodyW).join(""));
     return out;
   });
+  // Same card as the fullscreen path (lines.ts): blue spine running the full
+  // block height (padding rows included), panel bg, plain text ink.
+  const row = (line: string, key: number) => {
+    const used = 3 + line.length;
+    return (
+      <Text key={key}>
+        <Text color={color.user} backgroundColor={color.userBg}>{glyph.userBar + "  "}</Text>
+        <Text color={color.text} backgroundColor={color.userBg}>{line}</Text>
+        <Text backgroundColor={color.userBg}>{" ".repeat(Math.max(0, width - used - 2))}</Text>
+      </Text>
+    );
+  };
   return (
     <Box marginTop={1} flexDirection="column">
-      {lines.map((line, i) => {
-        const prefix = i === 0 ? glyph.userBar + " " : "  ";
-        const used = prefix.length + line.length;
-        return (
-          <Text key={i}>
-            <Text color={color.accent} bold backgroundColor={color.userBg}>{prefix}</Text>
-            <Text color={color.user} bold backgroundColor={color.userBg}>{line}</Text>
-            <Text backgroundColor={color.userBg}>{" ".repeat(Math.max(0, width - used - 2))}</Text>
-          </Text>
-        );
-      })}
+      {row("", -1)}
+      {lines.map((line, i) => row(line, i))}
+      {row("", lines.length)}
     </Box>
   );
 }
@@ -352,7 +356,7 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
     return (
       <Box flexDirection="column" marginLeft={2} marginTop={1}>
         <Box>
-          <Text color={toolColor(item)}>{glyph.tool}</Text>
+          <Text color={item.status === "err" ? color.err : item.status === "running" ? toolColor(item) : color.faint}>{item.status === "running" ? glyph.off : glyph.corner}</Text>
           <Text color={color.dim} bold>{"  " + friendlyTool(item.name)}</Text>
           {item.summary ? <Text color={color.dim}>{"  ·  " + item.summary}</Text> : null}
           {item.durationMs != null ? <Text color={color.faint}>{"  ·  ~" + fmtMs(item.durationMs) + " total"}</Text> : null}
@@ -377,8 +381,8 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
       <Box>
-        <Text color={dotColor}>{item.status === "running" ? glyph.off : glyph.tool}</Text>
-        <Text color={dotColor} bold>{"  " + verb}</Text>
+        <Text color={item.status === "err" ? color.err : item.status === "running" ? dotColor : color.faint}>{item.status === "running" ? glyph.off : glyph.corner}</Text>
+        <Text color={item.status === "err" ? color.err : color.dim} bold>{"  " + verb}</Text>
         {item.arg ? <Text color={isShell ? color.text : color.path} bold>{" " + (isShell ? item.arg : relPath(item.arg))}</Text> : null}
         {item.status === "running" && item.startedAt && Date.now() - item.startedAt >= 2000 ? <Text color={color.faint}>{"  " + fmtElapsed(Math.floor((Date.now() - item.startedAt) / 1000))}</Text> : null}
         {item.status !== "running" && item.durationMs != null ? <Text color={color.faint}>{"  " + fmtMs(item.durationMs)}</Text> : null}

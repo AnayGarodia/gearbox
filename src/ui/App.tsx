@@ -5157,9 +5157,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // running view detailed and compacts each batch as soon as it's done.
   const displayItems = useMemo(() => collapseDelegateGroups(items), [items]);
 
-  // The transcript as a flat styled-line buffer, wrapped to the full content width.
-  const lineWidth = Math.max(width - 3, 20);
-  const lines = useMemo(() => itemsToLines(displayItems, lineWidth, expandAll), [displayItems, lineWidth, expandAll]);
+  // The transcript as a flat styled-line buffer. The content column is CAPPED
+  // (≤92 cols) and centered — a transcript that reads like a document, not a
+  // log dump spanning an ultrawide. The margin is baked into the lines (not a
+  // Box offset) so mouse-selection column math stays 1:1 with the screen.
+  const CONTENT_CAP = 92;
+  const lineWidth = Math.max(Math.min(width - 3, CONTENT_CAP), 20);
+  const marginCols = Math.max(0, Math.floor((width - 3 - lineWidth) / 2));
+  const lines = useMemo(() => {
+    const raw = itemsToLines(displayItems, lineWidth, expandAll);
+    if (!marginCols) return raw;
+    const pad = { text: " ".repeat(marginCols) };
+    return raw.map((l) => (l.length ? [pad, ...l] : l));
+  }, [displayItems, lineWidth, marginCols, expandAll]);
 
   // Footer height · over-estimated so the fullscreen frame never exceeds the
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
@@ -5377,7 +5387,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       ) : null}
       {quickPickerJsx}
       {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: estimateCost(sessionRef.current.turns), sessionTurns: sessionRef.current.turns.length })} width={width} /> : null}
-      <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} />
+      <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} cwd={process.cwd()} branch={branch} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}
     </>

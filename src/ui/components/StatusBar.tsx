@@ -83,6 +83,19 @@ export function statusBarHit(args: {
 // (offline / yolo / low-context). Right: the live model + the session cost. The
 // per-turn routing provenance line in the transcript carries the routing reason, so
 // the footer stays calm. A blank row above keeps the composer from crowding it.
+// Collapse $HOME to ~ and middle-truncate a long path so the bar never crowds.
+export function collapsePath(p: string, max = 32): string {
+  const home = process.env.HOME ?? "";
+  let s = home && p.startsWith(home) ? "~" + p.slice(home.length) : p;
+  if (s.length > max) {
+    const parts = s.split("/");
+    while (parts.length > 3 && parts.join("/").length > max) parts.splice(1, 1);
+    s = parts.length < s.split("/").length ? [parts[0], "…", ...parts.slice(1)].join("/") : s;
+    if (s.length > max) s = "…" + s.slice(s.length - max + 1);
+  }
+  return s;
+}
+
 export function StatusBar({
   model,
   cost = 0,
@@ -90,6 +103,8 @@ export function StatusBar({
   yolo,
   width,
   online = true,
+  cwd,
+  branch,
 }: {
   model: string;
   cost?: number;
@@ -97,6 +112,8 @@ export function StatusBar({
   yolo?: boolean;
   width: number;
   online?: boolean;
+  cwd?: string;
+  branch?: string | null;
 }) {
   const costText = formatStatusCost(cost);
   const right = costText ? `${model}${SEP}${costText}` : model;
@@ -110,22 +127,23 @@ export function StatusBar({
   if (lowCtx) chips.push({ text: `${Math.max(0, 100 - ctxPct!)}% ctx left`, c: color.warn }); // REMAINING, matching the working-strip notice
   const chipLen = chips.reduce((n, c) => n + c.text.length, 0) + Math.max(0, chips.length - 1) * 2 + (chips.length ? 2 : 0);
 
-  // Budget the left so the right (model + cost) stays whole and right-aligned — the
-  // click hit-test depends on that exact alignment. Truncate the legend to fit.
-  const legend = `⏎ send${SEP}@ files${SEP}/ commands${SEP}esc interrupt`;
+  // Left: a quiet wordmark chip + cwd:branch (the opencode bar). Budgeted so the
+  // right (model + cost) stays whole and right-aligned — the click hit-test
+  // depends on that exact alignment.
+  const where = cwd ? collapsePath(cwd) + (branch ? `:${branch}` : "") : "";
   const leftBudget = Math.max(0, width - 2 /*paddingX*/ - right.length - 2 /*gap*/);
-  const legendRoom = Math.max(0, leftBudget - chipLen);
-  const legendShown =
-    legend.length <= legendRoom ? legend : legendRoom > 1 ? legend.slice(0, legendRoom - 1) + "…" : "";
+  const whereRoom = Math.max(0, leftBudget - chipLen - " gearbox ".length - 1);
+  const whereShown = where.length <= whereRoom ? where : whereRoom > 1 ? where.slice(0, whereRoom - 1) + "…" : "";
 
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
       <Text wrap="truncate-end">
+        <Text color={color.accent} bold backgroundColor={color.elementBg}>{" gearbox "}</Text>
+        {whereShown ? <Text color={color.faint}>{" " + whereShown}</Text> : null}
+        {chips.length ? <Text>{"  "}</Text> : null}
         {chips.map((c, i) => (
           <Text key={c.text} color={c.c} bold={c.bold}>{i > 0 ? "  " : ""}{c.text}</Text>
         ))}
-        {chips.length && legendShown ? <Text color={color.faint}>{"  "}</Text> : null}
-        <Text color={color.faint}>{legendShown}</Text>
       </Text>
       <Text wrap="truncate-end">
         <Text color={color.text}>{model}</Text>

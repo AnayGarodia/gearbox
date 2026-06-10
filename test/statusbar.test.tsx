@@ -5,11 +5,11 @@ import { StatusBar } from "../src/ui/components/StatusBar.tsx";
 
 const base = { model: "claude", ctxPct: 10, width: 100 };
 
-test("footer shows the model on the right and a key legend on the left", () => {
-  const out = render(<StatusBar {...base} />).lastFrame() ?? "";
+test("footer shows the model on the right and the wordmark + cwd:branch on the left", () => {
+  const out = render(<StatusBar {...base} cwd="/Users/me/proj" branch="main" />).lastFrame() ?? "";
   expect(out).toContain("claude"); // model, right side
-  expect(out).toContain("commands"); // key legend, left side
-  expect(out).toContain("send");
+  expect(out).toContain("gearbox"); // wordmark chip, left side
+  expect(out).toContain("/Users/me/proj:main"); // where you are
 });
 
 test("session cost appears only once it rounds to a visible cent", () => {

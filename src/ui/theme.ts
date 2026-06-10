@@ -1,7 +1,7 @@
 // The look lives here. Change colors/glyphs in one place, never inline.
-// Restraint is the aesthetic: one cool accent (periwinkle — the ghost mascot),
-// near-black canvas so the accent reads without competing background hues,
-// color only used to mean something (running / ok / error).
+// Restraint is the aesthetic: one warm accent (peach), structure from layered
+// background shades (terminal canvas → panelBg → elementBg) instead of drawn
+// boxes, color only used to mean something (running / ok / error).
 //
 // Color discipline — each hue means ONE thing, so a glance decodes the screen:
 //   accent  = interactive / now — the live composer, the active tab, a clickable
@@ -30,6 +30,7 @@ export interface Theme {
   userBg: string;
   codeBg: string;
   panelBg: string;
+  elementBg: string; // input/chips/modal elements — one layer above panelBg
   accentBg: string;
   codeKeyword: string;
   codeString: string;
@@ -45,24 +46,27 @@ export interface Theme {
   diffContextBg: string;
 }
 
-// Periwinkle-on-charcoal. Near-black canvas so the accent pops without a blue-tinted
-// background. Syntax uses a single accent family (blues) + violet for types.
+// Warm peach on layered charcoal (the opencode-derived language): grouping comes
+// from three background layers (terminal canvas → panelBg → elementBg), not from
+// drawn boxes; the single warm accent reads as "now" against the neutral grays.
 export const dark: Theme = {
-  accent: "#56D4E0", accentDim: "#4F8C99", text: "#E4E6EB", dim: "#8A909C", faint: "#5B626E",
+  accent: "#FAB283", accentDim: "#C98A5E", text: "#EEEEEE", dim: "#9A9FA8", faint: "#6B7077",
   // `warn` is the ONLY amber in the semantic vocabulary — spent sparingly on a
   // surprising routing decision, a balance running low, or a key needing
   // attention. Same hue as the code-number amber, kept distinct from `err` (red
   // = something went wrong) so amber can mean "look, but nothing is broken".
-  user: "#BFE0F0", ok: "#6FCF97", warn: "#E0B057", err: "#E5675C", run: "#7E8AF0", shell: "#E27BB0", navy: "#0E0F13",
-  userBg: "#0E2233", codeBg: "#16181E", panelBg: "#16181E", accentBg: "#0E2027",
-  path: "#86B8E0",
+  // `user` is the blue spine on your messages — the one cool hue, so your turns
+  // anchor the transcript against the warm accent.
+  user: "#5C9CF5", ok: "#7FD88F", warn: "#F5A742", err: "#E06C75", run: "#9D7CD8", shell: "#F5C2E7", navy: "#0A0A0A",
+  userBg: "#141414", codeBg: "#141414", panelBg: "#141414", elementBg: "#1E1E1E", accentBg: "#2A1E14",
+  path: "#87B7F0",
   // Distinct hues so a code block isn't a wall of one blue: keyword violet,
-  // function cyan, type teal, string green, number amber, comment gray. Amber (not
+  // function blue, type teal, string green, number amber, comment gray. Amber (not
   // red) for numbers keeps red reserved for things that went wrong.
-  codeKeyword: "#C7A0F0", codeString: "#B9E08A", codeNumber: "#E0B057",
-  codeComment: "#6E7681", codePunct: "#7E8696",
-  codeFunction: "#74B0E6", codeType: "#79D9C2", codeOperator: "#94A0AE", codeBracket: "#8C95A8",
-  diffAddBg: "#103A22", diffDelBg: "#3A1414", diffContextBg: "#16181E",
+  codeKeyword: "#C39AE8", codeString: "#A9D98C", codeNumber: "#E8C27E",
+  codeComment: "#6E7681", codePunct: "#8A919C",
+  codeFunction: "#82B3E8", codeType: "#7FD3C0", codeOperator: "#99A2AD", codeBracket: "#8A95A5",
+  diffAddBg: "#20303B", diffDelBg: "#37222C", diffContextBg: "#141414",
 };
 
 // The same vocabulary tuned FOR a light terminal background (Gearbox never
@@ -72,8 +76,8 @@ export const dark: Theme = {
 // accent chip", not "canvas".
 export const light: Theme = {
   accent: "#0E7C8C", accentDim: "#3C95A3", text: "#2A2E37", dim: "#6B7280", faint: "#9CA3AF",
-  user: "#155E89", ok: "#1A7F4B", warn: "#9A6700", err: "#C2362B", run: "#4F46E5", shell: "#B83280", navy: "#0E0F13",
-  userBg: "#E3F0F9", codeBg: "#F3F4F6", panelBg: "#F3F4F6", accentBg: "#DFF3F6",
+  user: "#155E89", ok: "#1A7F4B", warn: "#9A6700", err: "#C2362B", run: "#4F46E5", shell: "#B83280", navy: "#0A0A0A",
+  userBg: "#E3F0F9", codeBg: "#F3F4F6", panelBg: "#F3F4F6", elementBg: "#E9EBEE", accentBg: "#DFF3F6",
   path: "#1E6091",
   codeKeyword: "#7C3AED", codeString: "#3F7B27", codeNumber: "#9A6700",
   codeComment: "#6E7781", codePunct: "#57606A",
@@ -90,7 +94,7 @@ export const light: Theme = {
 export const gruvbox: Theme = {
   accent: "#8EC07C", accentDim: "#689D6A", text: "#EBDBB2", dim: "#A89984", faint: "#7C6F64",
   user: "#83A598", ok: "#B8BB26", warn: "#FABD2F", err: "#FB4934", run: "#83A598", shell: "#D3869B", navy: "#1D2021",
-  userBg: "#3C3836", codeBg: "#32302F", panelBg: "#32302F", accentBg: "#2E3B33",
+  userBg: "#3C3836", codeBg: "#32302F", panelBg: "#32302F", elementBg: "#3C3836", accentBg: "#2E3B33",
   path: "#83A598",
   codeKeyword: "#D3869B", codeString: "#B8BB26", codeNumber: "#FABD2F",
   codeComment: "#928374", codePunct: "#A89984",
@@ -102,7 +106,7 @@ export const gruvbox: Theme = {
 export const catppuccin: Theme = {
   accent: "#94E2D5", accentDim: "#6BB0A8", text: "#CDD6F4", dim: "#A6ADC8", faint: "#6C7086",
   user: "#89B4FA", ok: "#A6E3A1", warn: "#F9E2AF", err: "#F38BA8", run: "#B4BEFE", shell: "#F5C2E7", navy: "#11111B",
-  userBg: "#202A3C", codeBg: "#313244", panelBg: "#313244", accentBg: "#203437",
+  userBg: "#202A3C", codeBg: "#313244", panelBg: "#313244", elementBg: "#45475A", accentBg: "#203437",
   path: "#89B4FA",
   codeKeyword: "#CBA6F7", codeString: "#A6E3A1", codeNumber: "#FAB387",
   codeComment: "#6C7086", codePunct: "#9399B2",
@@ -114,7 +118,7 @@ export const catppuccin: Theme = {
 export const solarized: Theme = {
   accent: "#2AA198", accentDim: "#1E7D76", text: "#93A1A1", dim: "#657B83", faint: "#586E75",
   user: "#268BD2", ok: "#859900", warn: "#B58900", err: "#DC322F", run: "#6C71C4", shell: "#D33682", navy: "#002B36",
-  userBg: "#073642", codeBg: "#073642", panelBg: "#073642", accentBg: "#0A3C41",
+  userBg: "#073642", codeBg: "#073642", panelBg: "#073642", elementBg: "#0A4150", accentBg: "#0A3C41",
   path: "#268BD2",
   codeKeyword: "#6C71C4", codeString: "#859900", codeNumber: "#B58900",
   codeComment: "#586E75", codePunct: "#657B83",
@@ -126,7 +130,7 @@ export const solarized: Theme = {
 export const contrast: Theme = {
   accent: "#00FFFF", accentDim: "#00B3B3", text: "#FFFFFF", dim: "#C0C0C0", faint: "#808080",
   user: "#80D4FF", ok: "#00FF66", warn: "#FFD700", err: "#FF4040", run: "#8C9EFF", shell: "#FF7AD9", navy: "#000000",
-  userBg: "#002B40", codeBg: "#101010", panelBg: "#101010", accentBg: "#003A3A",
+  userBg: "#002B40", codeBg: "#101010", panelBg: "#101010", elementBg: "#1C1C1C", accentBg: "#003A3A",
   path: "#66B3FF",
   codeKeyword: "#DDA0FF", codeString: "#99FF99", codeNumber: "#FFD700",
   codeComment: "#9E9E9E", codePunct: "#C0C0C0",
@@ -187,7 +191,7 @@ export function setTheme(name: string): boolean {
 // onboarding figlet and the running app read as one brand. Bright accent →
 // mid teal → deep teal. Same-hue cyan→teal only — NO blue/indigo stop.
 // (Captured at import; startup-only, so a runtime theme switch doesn't apply.)
-export const wordmarkGradient = [dark.accent, "#3AA7B5", "#1F6B76"];
+export const wordmarkGradient = [dark.accent, "#E29362", "#B5714A"];
 
 // A considered set, not emoji: a quarter-block spine for your turns, a filled
 // circle + result connector for tool calls (status shown by the circle's COLOR,
@@ -195,6 +199,7 @@ export const wordmarkGradient = [dark.accent, "#3AA7B5", "#1F6B76"];
 export const glyph = {
   prompt: "❯", // composer
   userBar: "▌", // the colored spine on your messages (thin ▎ = glyph.quote)
+  corner: "∟", // collapsed tool stub (the opencode-style step marker)
   tool: "⏺", // tool call (color = status)
   result: "⎿", // tool result / continuation
   branch: "⎇", // git branch

@@ -492,13 +492,18 @@ export function staticItemLines(it: Item, width: number): Line[] {
   if (hit && hit.width === width && hit.epoch === themeEpoch) return hit.lines;
   const lines: Line[] = [];
   if (it.kind === "user") {
-    const wrapped = wrapSpans(proseSpans(it.text, { color: color.user, bold: true, bg: color.userBg }), Math.max(width - 4, 1));
-    wrapped.forEach((l, i) =>
-      lines.push(padBg([
-        { text: i === 0 ? glyph.userBar + " " : "  ", color: color.accent, bold: true, bg: color.userBg },
-        ...l.map((s) => ({ ...s, bg: color.userBg })),
-      ], width, color.userBg)),
-    );
+    // The opencode-style user card: a blue spine running the block's full height
+    // (padding rows included), panel background, 2-col inner padding. The
+    // assistant's reply renders bare on the canvas — that quiet asymmetry is
+    // what makes the dialogue scannable.
+    const row = (l: Line): Line =>
+      padBg([
+        { text: glyph.userBar + "  ", color: color.user, bg: color.userBg },
+        ...l.map((s) => ({ ...s, bg: s.bg ?? color.userBg })),
+      ], width, color.userBg);
+    lines.push(row([]));
+    for (const l of wrapSpans(proseSpans(it.text, { color: color.text, bg: color.userBg }), Math.max(width - 5, 1))) lines.push(row(l));
+    lines.push(row([]));
   } else if (it.kind === "assistant" && it.text) {
     lines.push(...indent(markdownToLines(it.text, Math.max(width - 2, 1)), 2));
   }
@@ -525,7 +530,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         if (it.collapsed) {
           const head: Line = clipSpans([
             { text: "  " },
-            { text: glyph.tool, color: toolColor(it) },
+            { text: it.status === "running" ? glyph.off : glyph.corner, color: it.status === "err" ? color.err : it.status === "running" ? toolColor(it) : color.faint },
             { text: "  " + friendlyTool(it.name), color: color.dim, bold: true },
             ...(it.summary ? [{ text: "  ·  " + it.summary, color: color.dim }] : []),
             ...(it.durationMs != null ? [{ text: "  ·  ~" + fmtMs(it.durationMs) + " total", color: color.faint }] : []),
@@ -535,13 +540,14 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
           if (expand && it.children?.length) out.push(...indent(itemsToLines(it.children, Math.max(width - 2, 8), expand), 2));
           break;
         }
-        // Static dot — colour carries status. Running uses a HOLLOW marker so the
-        // filled ⏺ (done) is never confused with the running state (running ≠ passed).
-        const dot: Span = it.status === "running" ? { text: glyph.off, color: toolColor(it) } : { text: glyph.tool, color: toolColor(it) };
+        // Corner-glyph stub (the opencode `∟ Edit src/foo.ts` shape) — status
+        // carried by the GLYPH's color (purple running, red failed, dim done),
+        // the name stays quiet so a run of tools reads as a step list.
+        const dot: Span = it.status === "running" ? { text: glyph.off, color: toolColor(it) } : { text: glyph.corner, color: it.status === "err" ? color.err : color.faint };
         const name = friendlyTool(it.name);
         const isShell = it.name === "run_shell" || it.name === "command_execution" || it.name === "Bash";
         const isWrite = !isShell && (it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change");
-        const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: toolColor(it), bold: true }];
+        const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: it.status === "err" ? color.err : color.dim, bold: true }];
         const headUsed = 2 + 1 + 2 + 6; // pad + dot + spaces + name
         if (it.arg) {
           const shownArg = isShell ? it.arg : relPath(it.arg);
