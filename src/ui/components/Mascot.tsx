@@ -165,11 +165,24 @@ export function homeShow(tick: number): { patch: Partial<GhostCfg>; overlay?: Ov
   const cycle = Math.floor(tick / SHOW_PERIOD);
   const r = mulberry32(Math.imul(cycle, 0x9e3779b9) ^ 0xb00);
   const pick = <T,>(arr: T[]): T => arr[Math.floor(r() * arr.length)]!;
-  const patch: Partial<GhostCfg> = { face: pick(FACE_POOL) };
-  if (r() < 0.55) patch.palette = pick(PALETTE_POOL);
   const costume = r();
-  if (costume < 0.45) patch.persona = pick(PERSONA_POOL);
-  else if (costume < 0.8) patch.accessory = pick(ACCESSORY_POOL);
+  if (costume < 0.45) {
+    // Persona bits play AS DESIGNED: each costume carries its own palette,
+    // face, and (for the wizard) sparkle — the gallery pairs them deliberately
+    // (ninja = slate+angry, wizard = void+happy+stars). Random mashups under a
+    // costume read as bugs, not variety.
+    const name = pick(PERSONA_POOL);
+    const per = PERSONAS[name]!;
+    const patch: Partial<GhostCfg> = { persona: name, palette: per.palette, face: per.face };
+    return name === "wizard" ? { patch, overlay: "sparkle" } : { patch };
+  }
+  const patch: Partial<GhostCfg> = {};
+  if (costume < 0.8) patch.accessory = pick(ACCESSORY_POOL);
+  else if (r() < 0.7) patch.palette = pick(PALETTE_POOL); // plain bit: usually a recolor
+  // Face after the costume: shades hide the eyes, so heart-eyes (love) can't
+  // show under them — and cool's own sunglasses double up. Pick a face that reads.
+  const faces = patch.accessory === "shades" ? FACE_POOL.filter((f) => f !== "love" && f !== "cool") : FACE_POOL;
+  patch.face = pick(faces);
   // Hearts always accompany the love face; otherwise an occasional flourish.
   const overlay = patch.face === "love" ? ("hearts" as OverlayKind) : r() < 0.3 ? pick(OVERLAY_POOL) : undefined;
   return overlay ? { patch, overlay } : { patch };
