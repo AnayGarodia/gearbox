@@ -167,6 +167,39 @@ function noticeSpans(text: string): Span[] {
   return out.length ? out : [{ text, color: color.dim }];
 }
 
+// ── The telemetry margin (Broadsheet) ─────────────────────────────────────────
+// The page has two channels: a prose column and a right-aligned MARGIN column of
+// figures (model, $, duration, ±lines). Narrative left, truth right. Below the
+// threshold the margin folds inline (` · fig · fig`) — same data, narrow form.
+export const MARGIN_W = 16;
+export const marginWidth = (width: number): number => (width >= 88 ? MARGIN_W : 0);
+
+/** One line: body clipped to the prose column, figures right-aligned in the
+ *  margin column (or folded inline when the page is narrow). ≤width always. */
+export function marginLine(body: Span[], figures: Span[], width: number): Line {
+  const m = marginWidth(width);
+  if (!figures.length) return clipSpans(body, width);
+  if (m === 0) {
+    const folded: Span[] = [...body];
+    figures.forEach((f, i) => {
+      folded.push({ text: i === 0 ? "  · " : " · ", color: color.faint });
+      folded.push(f);
+    });
+    return clipSpans(folded, width);
+  }
+  const bodyW = width - m;
+  const clipped = clipSpans(body, bodyW);
+  const used = lineWidth(clipped);
+  const figs: Span[] = [];
+  figures.forEach((f, i) => {
+    if (i > 0) figs.push({ text: " · ", color: color.faint });
+    figs.push(f);
+  });
+  const figLine = clipSpans(figs, m);
+  const pad = Math.max(0, bodyW - used + (m - lineWidth(figLine)));
+  return [...clipped, { text: " ".repeat(pad) }, ...figLine];
+}
+
 /** Word-wrap a run of styled spans to `width`, preserving each span's style. */
 export function wrapSpans(spans: Span[], width: number): Line[] {
   if (width < 1) width = 1;
@@ -546,15 +579,13 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         // Collapsed delegate_parallel group: ONE summary row that expands (⌃O) to
         // the per-task children — the finished block compacts to a single fact.
         if (it.collapsed) {
-          const head: Line = clipSpans([
+          out.push(marginLine([
             { text: "  " },
             { text: it.status === "running" ? glyph.off : glyph.corner, color: it.status === "err" ? color.err : it.status === "running" ? toolColor(it) : color.faint },
             { text: "  " + friendlyTool(it.name), color: color.dim, bold: true },
             ...(it.summary ? [{ text: "  ·  " + it.summary, color: color.dim }] : []),
-            ...(it.durationMs != null ? [{ text: "  ·  ~" + fmtMs(it.durationMs) + " total", color: color.faint }] : []),
             ...((it.children?.length ?? 0) ? [{ text: expand ? "  ⌃O collapses" : "  ⌃O expands", color: color.faint }] : []),
-          ], width);
-          out.push(head);
+          ], it.durationMs != null ? [{ text: "~" + fmtMs(it.durationMs), color: color.faint }] : [], width));
           if (expand && it.children?.length) out.push(...indent(itemsToLines(it.children, Math.max(width - 2, 8), expand), 2));
           break;
         }
@@ -658,12 +689,11 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         const head = it.surprising ? color.warn : color.faint;
         const body = it.surprising ? color.warn : color.dim;
         const spans = [
-          { text: "  ↳ routed → ", color: head },
+          { text: "  ↳ ", color: head },
           { text: it.provider + " · " + it.model, color: body },
         ];
-        if (it.costText) spans.push({ text: " · " + it.costText, color: head });
         if (it.surprising && it.reason) spans.push({ text: " · " + it.reason, color: color.warn });
-        out.push(clipSpans(spans, width));
+        out.push(marginLine(spans, it.costText ? [{ text: it.costText, color: head }] : [], width));
         break;
       }
       case "verification": {
@@ -676,14 +706,14 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
           { text: label, color: color.text, bold: true },
           { text: " · " + state, color: it.ok ? color.ok : color.err },
         ];
-        if (it.durationMs != null) head.push({ text: " in " + fmtMs(it.durationMs), color: color.faint });
+        const vFigs: Span[] = it.durationMs != null ? [{ text: fmtMs(it.durationMs), color: color.faint }] : [];
         const retry = retryPhrase(it.ok, it.attempts ?? 1);
         // A retry is a real event — elevate it (amber + ⚠), don't bury it in faint grey.
         if (retry) head.push({ text: " · ⚠ " + retry, color: color.warn, bold: true });
         if (!it.ok && it.summary) head.push({ text: " · " + it.summary, color: color.err });
         const body = it.output ?? "";
         if (body && (it.command || it.output)) head.push({ text: "  ⌃O for output", color: color.faint });
-        out.push(clipSpans(head, width));
+        out.push(marginLine(head, vFigs, width));
         if (expand && (it.command || body)) {
           if (it.command) out.push(...indent([[{ text: "$ " + it.command, color: color.dim }]], 4));
           const lines = body.split("\n").filter(Boolean).slice(-14);

@@ -1,5 +1,5 @@
 // The look lives here. Change colors/glyphs in one place, never inline.
-// Restraint is the aesthetic: one warm accent (peach), structure from layered
+// Restraint is the aesthetic: one ghost-indigo accent (Boo is the brand), structure from layered
 // background shades (terminal canvas → panelBg → elementBg) instead of drawn
 // boxes, color only used to mean something (running / ok / error).
 //
@@ -50,28 +50,29 @@ export interface Theme {
   diffDelGutterBg: string;
 }
 
-// Warm peach on layered charcoal (the opencode-derived language): grouping comes
-// from three background layers (terminal canvas → panelBg → elementBg), not from
-// drawn boxes; the single warm accent reads as "now" against the neutral grays.
+// "Ghost" — the Broadsheet identity. The palette derives from Boo (lavender
+// body, indigo eyes): one ghost-indigo accent on warm-paper grays, structure
+// from three background layers (terminal canvas → panelBg → elementBg), and
+// figures set in neutral ink (money is never green — spend isn't "good").
 export const dark: Theme = {
-  accent: "#FAB283", accentDim: "#C98A5E", text: "#EEEEEE", dim: "#9A9FA8", faint: "#6B7077",
+  accent: "#8B93F8", accentDim: "#6B72C4", text: "#E8E6E1", dim: "#9A97A0", faint: "#6A6772",
   // `warn` is the ONLY amber in the semantic vocabulary — spent sparingly on a
   // surprising routing decision, a balance running low, or a key needing
   // attention. Same hue as the code-number amber, kept distinct from `err` (red
   // = something went wrong) so amber can mean "look, but nothing is broken".
-  // `user` is the blue spine on your messages — the one cool hue, so your turns
-  // anchor the transcript against the warm accent.
-  user: "#5C9CF5", ok: "#7FD88F", warn: "#F5A742", err: "#E06C75", run: "#9D7CD8", shell: "#F5C2E7", navy: "#0A0A0A",
-  userBg: "#141414", codeBg: "#141414", panelBg: "#141414", elementBg: "#1E1E1E", accentBg: "#2A1E14",
-  path: "#87B7F0",
+  // `user` is the light-indigo ink on turn headings/indexes — your turns anchor
+  // the page in the brand hue, one step softer than the live accent.
+  user: "#B9BDF9", ok: "#5FD39A", warn: "#E5B567", err: "#E06C75", run: "#8B93F8", shell: "#E8A2C8", navy: "#0B0B10",
+  userBg: "#15141A", codeBg: "#15141A", panelBg: "#15141A", elementBg: "#1E1D26", accentBg: "#232238",
+  path: "#8FB6E8",
   // Distinct hues so a code block isn't a wall of one blue: keyword violet,
   // function blue, type teal, string green, number amber, comment gray. Amber (not
   // red) for numbers keeps red reserved for things that went wrong.
-  codeKeyword: "#C39AE8", codeString: "#A9D98C", codeNumber: "#E8C27E",
-  codeComment: "#6E7681", codePunct: "#8A919C",
-  codeFunction: "#82B3E8", codeType: "#7FD3C0", codeOperator: "#99A2AD", codeBracket: "#8A95A5",
-  diffAddBg: "#20303B", diffDelBg: "#37222C", diffContextBg: "#141414",
-  diffAddGutterBg: "#1B2B34", diffDelGutterBg: "#2D1F26",
+  codeKeyword: "#C0A2EE", codeString: "#A9D98C", codeNumber: "#E8C27E",
+  codeComment: "#6E6B78", codePunct: "#8A8794",
+  codeFunction: "#86AEE8", codeType: "#7FD3C0", codeOperator: "#9996A4", codeBracket: "#8A8FA5",
+  diffAddBg: "#1E2B33", diffDelBg: "#33212A", diffContextBg: "#15141A",
+  diffAddGutterBg: "#142028", diffDelGutterBg: "#281A20",
 };
 
 // The same vocabulary tuned FOR a light terminal background (Gearbox never
@@ -81,7 +82,7 @@ export const dark: Theme = {
 // accent chip", not "canvas".
 export const light: Theme = {
   accent: "#0E7C8C", accentDim: "#3C95A3", text: "#2A2E37", dim: "#6B7280", faint: "#9CA3AF",
-  user: "#155E89", ok: "#1A7F4B", warn: "#9A6700", err: "#C2362B", run: "#4F46E5", shell: "#B83280", navy: "#0A0A0A",
+  user: "#155E89", ok: "#1A7F4B", warn: "#9A6700", err: "#C2362B", run: "#4F46E5", shell: "#B83280", navy: "#0B0B10",
   userBg: "#E3F0F9", codeBg: "#F3F4F6", panelBg: "#F3F4F6", elementBg: "#E9EBEE", accentBg: "#DFF3F6",
   path: "#1E6091",
   codeKeyword: "#7C3AED", codeString: "#3F7B27", codeNumber: "#9A6700",
@@ -156,7 +157,7 @@ export interface ThemeEntry {
 }
 
 export const THEMES: ThemeEntry[] = [
-  { name: "dark", label: "gearbox dark", hint: "periwinkle on charcoal · the default", palette: dark },
+  { name: "dark", label: "ghost", hint: "ghost indigo on warm charcoal · the default", palette: dark },
   { name: "light", label: "gearbox light", hint: "the same vocabulary tuned for white terminals", palette: light },
   { name: "gruvbox", label: "gruvbox", hint: "warm retro groove · aqua accent", palette: gruvbox },
   { name: "catppuccin", label: "catppuccin mocha", hint: "soft pastels on a deep base", palette: catppuccin },
@@ -201,7 +202,7 @@ export function setTheme(name: string): boolean {
 // onboarding figlet and the running app read as one brand. Bright accent →
 // mid teal → deep teal. Same-hue cyan→teal only — NO blue/indigo stop.
 // (Captured at import; startup-only, so a runtime theme switch doesn't apply.)
-export const wordmarkGradient = [dark.accent, "#E29362", "#B5714A"];
+export const wordmarkGradient = [dark.accent, "#7178D9", "#565CAD"];
 
 // A considered set, not emoji: a quarter-block spine for your turns, a filled
 // circle + result connector for tool calls (status shown by the circle's COLOR,
