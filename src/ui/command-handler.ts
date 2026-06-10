@@ -64,7 +64,7 @@ export const KEYS_HELP = [
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
   "  ⌃A select all · ⌃E line end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
   "  ⌃Y copy last reply · ⌃V paste image from clipboard · shift+tab cycle mode",
-  "  ⌃T next tab · /tab new [name] parallel session in its own worktree (fullscreen)",
+  "  ⌃T next tab · click the masthead bar · /tab run <task> · fork · merge (fullscreen)",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
   "  click the model label in the status bar to pick (fullscreen)",
@@ -637,16 +637,61 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           const rest = restWords.join(" ");
           if (!sub || sub === "list") {
             const rows = tabs.list().map((t, i) => `${t.active ? "●" : " "} ${i + 1}  ${t.title}${t.status !== "idle" ? `  · ${t.status}` : ""}\n     ${t.dir}`);
-            notice(`tabs (⌃T next · /tab new [name] · /tab <n> · /tab close)\n${rows.join("\n")}`);
+            notice(`tabs (⌃T next · click the bar · /tab new|run|fork|merge|close)\n${rows.join("\n")}`);
             return;
           }
           if (sub === "new") { tabs.create(rest || undefined); return; }
+          if (sub === "run") {
+            // Spawn-with-a-task: a new session in its own worktree that starts
+            // on the prompt immediately — a manual conductor dispatch.
+            if (!rest) { notice("usage: /tab run <task> — new tab that starts on the task right away"); return; }
+            tabs.create(rest.split(/\s+/).slice(0, 4).join(" "), { task: rest });
+            return;
+          }
+          if (sub === "fork") {
+            // Fork THIS conversation into a new tab: full history rides along,
+            // then the two sessions diverge in separate worktrees.
+            tabs.create(rest || `${sessionRef.current.title || "fork"}`, {
+              fork: {
+                title: sessionRef.current.title ? `${sessionRef.current.title} (fork)` : "forked session",
+                messages: msgRef.current,
+                items: itemsRef.current,
+                turns: sessionRef.current.turns,
+              },
+            });
+            return;
+          }
+          if (sub === "merge") {
+            // Land this tab's work: commit anything pending on the tab branch,
+            // then merge the branch into the BASE tab's checked-out branch.
+            const list = tabs.list();
+            const self = list.find((t) => t.active);
+            const base = list[0];
+            if (!self || !base || self.dir === base.dir) { notice("run /tab merge from a session tab (tab 1 is the base it merges into)"); return; }
+            if (busyRef.current) { notice("this tab is mid-turn — wait for it to finish before merging"); return; }
+            if (base.status === "working") { notice("the base tab is mid-turn — let it finish before merging into its tree"); return; }
+            const branch = gitOps.currentBranch(self.dir);
+            if (!branch) { notice("couldn't resolve this tab's branch"); return; }
+            if (gitOps.status(self.dir).length) {
+              gitOps.stageAll(self.dir);
+              const c = gitOps.commit(`tab work: ${self.title}`, self.dir);
+              if (!c.ok) { notice(`couldn't commit this tab's changes: ${c.err || c.out}`); return; }
+            }
+            const m = gitOps.git(["merge", "--no-edit", branch], base.dir);
+            if (!m.ok) {
+              gitOps.git(["merge", "--abort"], base.dir);
+              notice(`merge of ${branch} into the base tab hit conflicts — aborted cleanly.\n  resolve manually: cd ${base.dir} && git merge ${branch}`);
+              return;
+            }
+            notice(`✓ merged ${branch} into the base tab\n  /tab close closes this tab · /worktree rm removes its worktree when you're done`);
+            return;
+          }
           if (sub === "close") { tabs.close(); return; }
           if (sub === "next") { tabs.cycle(1); return; }
           if (sub === "prev") { tabs.cycle(-1); return; }
           const n = parseInt(sub, 10);
           if (Number.isFinite(n) && n >= 1) { tabs.switchTo(n); return; }
-          notice("usage: /tab [list | new [name] | <n> | next | prev | close]");
+          notice("usage: /tab [list | new [name] | run <task> | fork [name] | merge | <n> | next | prev | close]");
           return;
         }
         case "undo": {

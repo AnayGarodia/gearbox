@@ -13,7 +13,8 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Box } from "ink";
 import { basename, join } from "node:path";
-import { App, type AppProps, type SessionStatus, type TabControl } from "../App.tsx";
+import { App, type AppProps, type ForkPayload, type SessionStatus, type TabControl } from "../App.tsx";
+import { newSessionId, saveSession, type Session } from "../../session.ts";
 import type { TabRow } from "../tabbar.ts";
 import type { ModelSelector } from "../../model/selector.ts";
 import { repoRoot, worktreeAdd } from "../../git/ops.ts";
@@ -30,17 +31,21 @@ interface TabState {
   dir: string;
   selector: ModelSelector;
   resumeId?: string;
+  initialPrompt?: string;
   status: SessionStatus;
+  /** finished a turn while hidden, not yet visited — the cell shows ✓ green */
+  unseen?: boolean;
 }
 
 /** Pure: the masthead tab-bar rows for a tab set (always shown, even with one
  *  tab — the + cell is how parallel sessions are discovered). */
-export function tabRowsOf(tabs: { dir: string; status: SessionStatus }[], activeIdx: number): TabRow[] {
+export function tabRowsOf(tabs: { dir: string; status: SessionStatus; unseen?: boolean }[], activeIdx: number): TabRow[] {
   return tabs.map((t, i) => ({
     title: t.status.title || basename(t.dir),
     active: i === activeIdx,
     busy: t.status.busy,
     needsInput: t.status.needsInput,
+    done: !!t.unseen && i !== activeIdx,
   }));
 }
 
@@ -73,10 +78,12 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     // The process-global cwd follows the active tab (status line, !cmd, git
     // suite). Background turns are immune: they captured their root at start.
     try { process.chdir(list[idx]!.dir); } catch { /* dir vanished: stay put visually anyway */ }
+    // Visiting a tab acknowledges its ✓ (the green cell is the notification).
+    setTabs((t) => t.map((tab, i) => (i === idx && tab.unseen ? { ...tab, unseen: false } : tab)));
     setActiveIdx(idx);
   }, []);
 
-  const create = useCallback((name?: string) => {
+  const create = useCallback((name?: string, opts?: { task?: string; fork?: ForkPayload }) => {
     const id = nextTabId++;
     const slug = tabSlug(name, id);
     const root = repoRoot(process.cwd());
@@ -91,7 +98,25 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
       // Not a repo / worktree failed → same-dir tab (sessions share files; the
       // permission/checkpoint seams still key on the shared root correctly).
     }
-    const tab: TabState = { id, dir, selector: makeSelector(), status: idleStatus(dir) };
+    // Fork: snapshot the source conversation as a session under the NEW tab's
+    // slug, then let the new App resume it — the fork continues with the full
+    // history (and the routing/cost records) in its own worktree.
+    let resumeId: string | undefined;
+    if (opts?.fork) {
+      const snap: Session = {
+        id: newSessionId(),
+        cwd: dir,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        title: opts.fork.title,
+        messages: opts.fork.messages as Session["messages"],
+        items: opts.fork.items as Session["items"],
+        turns: opts.fork.turns as Session["turns"],
+      };
+      saveSession(snap, dir);
+      resumeId = snap.id;
+    }
+    const tab: TabState = { id, dir, selector: makeSelector(), resumeId, initialPrompt: opts?.task, status: idleStatus(dir) };
     setTabs((t) => [...t, tab]);
     try { process.chdir(dir); } catch { /* keep going; the App pins its own root */ }
     setActiveIdx(tabsRef.current.length); // the new tab lands at the end
@@ -134,7 +159,14 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
   }), [create, close, switchTo, cycle]);
 
   const onStatusFor = useCallback((id: number) => (s: SessionStatus) => {
-    setTabs((t) => t.map((tab) => (tab.id === id ? { ...tab, status: s } : tab)));
+    setTabs((t) =>
+      t.map((tab, i) => {
+        if (tab.id !== id) return tab;
+        // busy → idle while HIDDEN marks the cell ✓-unseen (cleared on visit).
+        const finishedHidden = tab.status.busy && !s.busy && i !== activeIdxRef.current;
+        return { ...tab, status: s, unseen: finishedHidden ? true : tab.unseen };
+      }),
+    );
   }, []);
   // Stable per-tab callbacks (a fresh closure per render would re-fire App's
   // onStatus effect every frame).
@@ -159,6 +191,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
             onStatus={statusCb(t.id)}
             tabs={control}
             tabRows={rows}
+            initialPrompt={t.initialPrompt}
           />
         </Box>
       ))}

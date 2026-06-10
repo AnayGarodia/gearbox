@@ -370,9 +370,18 @@ function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingStat
   );
 }
 
+/** A conversation snapshot carried into a forked tab (saved as a session in
+ *  the new tab's slug, then resumed there). */
+export interface ForkPayload {
+  title: string;
+  messages: unknown[];
+  items: unknown[];
+  turns: unknown[];
+}
+
 /** Conductor-provided tab controls, surfaced as /tab + ctrl+t inside each session. */
 export interface TabControl {
-  create: (name?: string) => void;
+  create: (name?: string, opts?: { task?: string; fork?: ForkPayload }) => void;
   close: () => void;
   switchTo: (n: number) => void; // 1-based
   cycle: (delta: number) => void;
@@ -402,9 +411,11 @@ export interface AppProps {
   tabs?: TabControl;
   /** conductor session tabs, rendered as the CLICKABLE masthead tab bar */
   tabRows?: TabRow[] | null;
+  /** submit this prompt as the session's first turn on mount (/tab run) */
+  initialPrompt?: string;
 }
 
-export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows }: AppProps) {
+export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows, initialPrompt }: AppProps) {
   const { exit } = useApp();
   // The instance's workspace, FIXED at mount: per-turn root capture, the
   // session-save slug, and permission routing key off this — never off the
@@ -1360,13 +1371,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     notice(`resumed · ${s.items.length} messages · ${new Date(s.updatedAt).toLocaleString()}`);
   };
 
-  // On launch: load persisted prompt history; resume a session if asked (--continue).
+  // On launch: load persisted prompt history; resume a session if asked
+  // (--continue, or a forked tab whose snapshot was saved under this root).
   useEffect(() => {
     const h = loadHistory();
     if (h.length) historyRef.current = h;
     if (resumeId) {
-      const s = loadSession(resumeId);
+      const s = loadSession(resumeId, rootRef.current);
       if (s) loadInto(s);
+    }
+    // Spawn-with-a-task (/tab run): submit the tab's initial prompt once the
+    // turn machinery exists. Deferred a tick so the resumed history (fork) and
+    // the first render land first.
+    if (initialPrompt?.trim()) {
+      const t = setTimeout(() => runTurnRef.current?.(initialPrompt), 50);
+      return () => clearTimeout(t);
     }
   }, []);
 

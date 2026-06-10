@@ -28,9 +28,12 @@ function MastheadImpl({ account, width, tabRows }: { account?: string | null; wi
     for (const s of segs) {
       if (s.x0 > x) spans.push(<Text key={`g${s.x0}`}>{" ".repeat(s.x0 - x)}</Text>);
       const alert = s.row?.needsInput;
+      const done = s.row?.done;
       spans.push(
         s.row ? (
-          <Text key={s.x0} bold={s.row.active} inverse={s.row.active} color={alert ? color.err : s.row.active ? color.accent : color.faint}>
+          // The cell IS the notification (no toasts): finished-while-hidden
+          // flips it green+bold+inverse until visited; blocked flips it red.
+          <Text key={s.x0} bold={s.row.active || done || alert} inverse={s.row.active || done} color={alert ? color.err : done ? color.ok : s.row.active ? color.accent : color.faint}>
             {s.text}
           </Text>
         ) : (

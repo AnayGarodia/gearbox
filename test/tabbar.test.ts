@@ -38,3 +38,11 @@ test("hit-test maps columns to actions; gaps miss", () => {
   expect(tabBarHit(segs, segs[0]!.x1)).toBeNull(); // the gap between cells
   expect(tabBarHit(segs, 0)).toBeNull(); // the wordmark
 });
+
+test("done (finished-while-hidden) shows ✓ and is outranked only by needs-input", () => {
+  expect(tabMark(row("x", { done: true }))).toBe("✓");
+  expect(tabMark(row("x", { done: true, busy: true }))).toBe("✓");
+  expect(tabMark(row("x", { done: true, needsInput: true }))).toBe("⚠");
+  const segs = tabBarSegments([row("fix", { done: true })], 0, 80);
+  expect(segs[0]!.text).toBe(" 1 fix✓ ");
+});
