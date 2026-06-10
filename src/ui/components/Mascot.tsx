@@ -16,12 +16,15 @@ import { renderGhost, EYES_CLOSED, TALK, type GhostCfg, type OverlayKind } from 
 // The baked GHOSTS sprites (mascot-sprite.ts) are retained only for the opt-in
 // kitty/iTerm PNG path; the default blocks path renders the engine live.
 
-export type GhostSkin = "base" | "mint" | "pink" | "golden" | "shades";
-export const SKINS: GhostSkin[] = ["base", "mint", "pink", "golden", "shades"];
+export type GhostSkin = "base" | "mint" | "pink" | "golden" | "lavender" | "shades";
+export const SKINS: GhostSkin[] = ["base", "mint", "pink", "golden", "lavender", "shades"];
 
 // A persisted skin → an engine cfg. `shades` is now an accessory + the cool face.
+// `base` wears the warm peach (fire) palette so Boo matches the brand accent;
+// the old lavender default survives as the `lavender` skin.
 const SKIN_CFG: Record<GhostSkin, GhostCfg> = {
-  base: { palette: "default", face: "happy" },
+  base: { palette: "fire", face: "happy" },
+  lavender: { palette: "default", face: "happy" },
   mint: { palette: "mint", face: "happy" },
   pink: { palette: "pink", face: "happy" },
   golden: { palette: "golden", face: "joy" },
@@ -83,13 +86,14 @@ export interface AnimSpec {
   talk?: boolean; // cycle the mouth shapes while "speaking"
   shake?: boolean; // ±1-col jitter, transient (error beat only)
   overlay?: OverlayKind; // a frame-driven overlay (dots, tears, confetti, …)
+  bob?: boolean; // a one-tick idle lift every ~8s (splash only) — quiet sign of life
 }
 
 /** A live ghost: applies the anim spec to the cfg per frame and renders it. The
  *  transient shake offset is applied to a wrapping Box so the sprite itself stays
  *  cache-stable. */
 export function AnimatedGhost({ cfg, scale, anim }: { cfg: GhostCfg; scale: 1 | 2; anim: AnimSpec }) {
-  const tick = useTick(240, !!(anim.blink || anim.talk || anim.shake || anim.overlay));
+  const tick = useTick(240, !!(anim.blink || anim.talk || anim.shake || anim.overlay || anim.bob));
   const slow = Math.floor(tick / 2); // calmer cadence for talk + overlays
   const frameCfg: GhostCfg = { ...cfg, scale };
   if (anim.blink && tick % 26 === 0 && tick !== 0) frameCfg.eyesOverride = EYES_CLOSED;
@@ -97,8 +101,11 @@ export function AnimatedGhost({ cfg, scale, anim }: { cfg: GhostCfg; scale: 1 | 
   if (anim.overlay) frameCfg.overlay = { kind: anim.overlay, frame: slow };
   const data = useMemo(() => renderGhost(frameCfg), [JSON.stringify(frameCfg)]);
   const shake = anim.shake ? tick % 2 : 0;
+  // Idle bob: a one-tick lift every ~7.7s. marginTop/marginBottom always sum to 1
+  // so the block height never changes — nothing below the ghost ever shifts.
+  const lift = anim.bob && tick % 32 === 18 ? 0 : 1;
   return (
-    <Box marginLeft={shake}>
+    <Box marginLeft={shake} marginTop={anim.bob ? lift : 0} marginBottom={anim.bob ? 1 - lift : 0}>
       <Sprite data={data} />
     </Box>
   );
@@ -166,15 +173,18 @@ function KittyGhost({ variant, size }: { variant: string; size: GhostSize }) {
  *  ghost just blinks occasionally (calm · no float or sparkle); the kitty PNG path
  *  stays static (re-placing a PNG on a timer glitches). `size` is chosen by the
  *  caller: "big" (2×) on a roomy window, "mini" (1×) when short, "none" (wordmark). */
-export function MascotSplash({ skin = "base", size = "big", wordmark = true, tagline }: { skin?: GhostSkin; size?: GhostSize | "none"; wordmark?: boolean; tagline?: string }) {
+export function MascotSplash({ skin = "base", size = "big", wordmark = true, tagline, mood }: { skin?: GhostSkin; size?: GhostSize | "none"; wordmark?: boolean; tagline?: string; mood?: { face: string; overlay?: OverlayKind } | null }) {
   const kitty = getImageMode() === "kitty";
+  // A one-shot mood (wink after a pin, hearts after a theme switch, sleepy when
+  // idle) overrides the skin's face for a beat; App owns the decay timer.
+  const cfg = mood ? { ...skinToCfg(skin), face: mood.face } : skinToCfg(skin);
   return (
     <Box flexDirection="column" alignItems="center" marginTop={1}>
       {size !== "none" ? (
         kitty ? (
           <KittyGhost variant={skin} size={size} />
         ) : (
-          <AnimatedGhost cfg={skinToCfg(skin)} scale={size === "big" ? 2 : 1} anim={{ blink: true }} />
+          <AnimatedGhost cfg={cfg} scale={size === "big" ? 2 : 1} anim={{ blink: !mood, bob: true, overlay: mood?.overlay }} />
         )
       ) : null}
       {wordmark ? (

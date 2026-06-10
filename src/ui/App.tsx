@@ -456,6 +456,17 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
   const [ghostSkin, setGhostSkinState] = useState<GhostSkin>("base");
+  // One-shot splash moods (wink after a pin, hearts after a theme switch,
+  // sleepy when idle on home). flashMood decays back to the base face; a real
+  // state change (typing, a turn starting) always wins because the splash only
+  // renders on the idle home/welcome screens.
+  const [ghostMood, setGhostMood] = useState<{ face: string; overlay?: "tears" | "dots" | "load" | "zzz" | "sparkle" | "confetti" | "hearts" } | null>(null);
+  const moodTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashMood = (face: string, overlay?: "hearts" | "sparkle" | "confetti", ms = 1600) => {
+    setGhostMood({ face, overlay });
+    if (moodTimerRef.current) clearTimeout(moodTimerRef.current);
+    moodTimerRef.current = setTimeout(() => setGhostMood(null), ms);
+  };
   // Counter bumped on /theme so the whole tree repaints in the new palette
   // (components read `color.*` lazily; this just forces the render pass).
   // Threaded into memoized components (Banner) so their memo invalidates too.
@@ -3481,6 +3492,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           updatePrefs({ theme: activeTheme() });
           setThemeEpochState((e) => e + 1); // repaint the whole tree in the new palette
           toast(`theme → ${activeTheme()}`);
+          flashMood("love", "hearts"); // Boo approves of the new outfit
           if (!fullscreen) notice("already-printed lines keep their colors (inline scrollback is written once)");
           return;
         }
@@ -3649,6 +3661,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                   setLastPick(null);
                   routedRef.current = null;
                   updatePrefs({ pinnedModel: r.modelId });
+                  flashMood("wink");
                   const newSpec2 = findModel(r.modelId);
                   const effortSuffix2 = applyEffortClamp(newSpec2 ? effortLevels(newSpec2) : []);
                   notice(`${r.message} · pinned (left subscription).${left}${effortSuffix2}`);
@@ -3672,6 +3685,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               setLastPick(null);
               routedRef.current = null;
               updatePrefs({ pinnedModel: r.modelId }); // persist the pin across sessions
+              flashMood("wink");
               const newSpec = findModel(r.modelId);
               const effortSuffix = applyEffortClamp(newSpec ? effortLevels(newSpec) : []);
               notice(`${r.message} · pinned (persists across sessions). /model auto to route per task again.${left}${effortSuffix}`);
@@ -5193,6 +5207,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // The first submitted prompt creates an item → the layout flips to the chat view.
   const homeScreen = fullscreen && welcome && !setupRequired && tab === "session" && !panel && !perm;
   homeScreenRef.current = homeScreen;
+
+  // Sleepy idle: 90s with no typing on the home screen → Boo dozes off (rising
+  // Z's). Any keystroke re-arms the timer and wakes him via the cleanup.
+  useEffect(() => {
+    if (!homeScreen) return;
+    const t = setTimeout(() => setGhostMood({ face: "sleepy", overlay: "zzz" }), 90_000);
+    return () => {
+      clearTimeout(t);
+      setGhostMood((m) => (m?.face === "sleepy" ? null : m));
+    };
+  }, [homeScreen, edit.value]);
+
   let footer = 2; // status line + its top margin
   // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
   // Permission card renders even while a panel is open (it owns the keys), so
@@ -5309,7 +5335,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         <SetupSplash state={onboardingState} width={width} skin={ghostSkin} splashSize={splashSize} />
       ) : (
         <>
-          <MascotSplash skin={ghostSkin} size={splashSize} />
+          <MascotSplash skin={ghostSkin} size={splashSize} mood={ghostMood} />
           <Box marginTop={1}>
             <Text color={color.dim}>talk or type </Text>
             <Text color={color.faint}>{glyph.bullet} </Text>
@@ -5388,7 +5414,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   ];
   const homeJsx = homeScreen ? (
     <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center">
-      {homeRoom >= 4 ? <MascotSplash skin={ghostSkin} size={homeSplashSize} tagline={`v${pkg.version} · one terminal · every model`} /> : null}
+      {homeRoom >= 4 ? <MascotSplash skin={ghostSkin} size={homeSplashSize} tagline={`v${pkg.version} · one terminal · every model`} mood={ghostMood} /> : null}
       {showHomeCommands ? (
         <Box marginTop={1} flexDirection="column">
           {HOME_COMMANDS.map(([k, d]) => (
