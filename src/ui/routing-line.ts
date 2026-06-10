@@ -63,7 +63,7 @@ export interface RoutingLine {
 // misleading "$0.00" that could read as broken/free. Metered turns under a cent
 // collapse to "<$0.01" instead of rounding to "$0.00".
 export function formatTurnCost(costUSD: number, kind: RouteKind, priced = true): string {
-  if (kind === "subscription") return "subscription seat";
+  if (kind === "subscription") return "seat · ~$0"; // fits the 16-col margin ("subscription seat" clipped)
   // No pricing data → say so. "$0.00" on an unpriced model reads as "free",
   // which is a guess wearing a number.
   if (!priced) return "$ unknown (no price data for this model)";

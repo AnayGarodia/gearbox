@@ -141,9 +141,9 @@ function ComposerImpl({
             <Text backgroundColor={color.elementBg}>
               <Text color={busy ? color.faint : accent} bold>{" " + promptGlyph + " "}</Text>
               {!busy ? <Text inverse> </Text> : null}
-              <Text color={color.faint}>{busy ? "type to queue" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder}</Text>
+              <Text color={color.faint}>{busy ? "" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder}</Text>
             </Text>
-            {bgPad(3 + (busy ? 0 : 1) + (busy ? "type to queue" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder).length)}
+            {bgPad(3 + (busy ? 0 : 1) + (busy ? "" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder).length)}
           </Box>
         ) : (
           // Non-empty: render the live editable input WITH the cursor, even while
@@ -167,7 +167,6 @@ function ComposerImpl({
           {badge ? <Text color={badge.c} bold>{badge.text + "  "}</Text> : null}
           <Text color={color.faint}>{hint}</Text>
           {policy ? <Text color={color.dim}>{`  ${glyph.bullet}  ${policy}`}</Text> : null}
-          {branch ? <Text color={color.faint}>{`  ${glyph.bullet}  ${glyph.branch} ${branch}`}</Text> : null}
         </Text>
         {provider || model ? (
           <Text wrap="truncate-end">

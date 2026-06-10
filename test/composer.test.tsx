@@ -34,12 +34,12 @@ test("empty composer while busy invites queueing", () => {
   expect(out).toContain("type to queue");
 });
 
-test("the footer hint line shows the routing policy and branch under the box", () => {
+test("the footer hint line shows the routing policy under the box (branch lives on the meter)", () => {
   const out = render(
     <Composer value="" cursor={0} placeholder="ask anything" busy={false} width={80} policy="auto-route" branch="main" />,
   ).lastFrame() ?? "";
   expect(out).toContain("auto-route");
-  expect(out).toContain("main"); // branch
+  expect(out).not.toContain("⎇"); // branch is said ONCE, on the meter's cwd:branch
   expect(out).toContain("┃"); // thick left + right edges (the opencode editor box)
   expect(out).toContain("⏎ send"); // idle contextual hint
 });

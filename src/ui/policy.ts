@@ -16,10 +16,10 @@ export function policyLabel(args: {
   const { selectorKind, pinnedModelLabel, subscriptionLabel, mode } = args;
   const base =
     selectorKind === "subscription"
-      ? subscriptionLabel ?? "subscription"
+      ? "subscription" // the seat itself is named once, on the meter / footer right
       : selectorKind === "fixed"
       ? pinnedModelLabel
-        ? `pinned ${pinnedModelLabel}`
+        ? "pinned" // the model itself is named once, on the footer's right
         : "pinned"
       : "auto-route";
   // Mode prefix leads the label because it changes what the turn does (plan =

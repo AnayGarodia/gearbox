@@ -27,47 +27,44 @@ test("the context gauge pushes the model zone further left (5 cells + ' ctx' = 9
 });
 
 test("statusBarHit accounts for the gauge in the right segment", () => {
-  // statusRow = 40 - 1 - 0 - 3 = 36; model zone [69,75) → x = 70..75
+  // the meter is the BOTTOM row now: y = termRows; model zone [69,75) → x = 70..75
   const args = { termRows: 40, composerLines: 1, paletteRows: 0, model: "sonnet", costText: "$0.44", ctxPct: 40, width: 100 };
-  expect(statusBarHit({ ...args, x: 70, y: 36 })).toBe("model");
-  expect(statusBarHit({ ...args, x: 84, y: 36 })).toBeNull(); // old (gauge-less) position misses now
+  expect(statusBarHit({ ...args, x: 70, y: 40 })).toBe("model");
+  expect(statusBarHit({ ...args, x: 84, y: 40 })).toBeNull(); // old (gauge-less) position misses now
 });
 
-// statusBarHit resolves an SGR click (1-based x/y) to the model label. The status
-// row sits above the composer block: marginTop(1) + input(composerLines) + footer
-// hint(1) + marginBottom(1), so statusRow = termRows - composerLines - paletteRows
-// - 3 (chrome = marginTop + footer hint + marginBottom · Composer.tsx row contract).
+// statusBarHit resolves an SGR click (1-based x/y) to the model label. The METER
+// is the frame's bottom edge (App renders it last), so the hit row is simply the
+// terminal's last row — independent of composer height and palettes.
 const base = { termRows: 40, composerLines: 1, paletteRows: 0, model: "sonnet", costText: "$0.44", width: 100 };
 
-test("click on the model label hits 'model' on the computed status row", () => {
-  // statusRow = 40 - 1 - 0 - 3 = 36; model zone [83,89) → x = col+1 = 84..89
-  expect(statusBarHit({ ...base, x: 84, y: 36 })).toBe("model");
-  expect(statusBarHit({ ...base, x: 89, y: 36 })).toBe("model"); // col 88, last model col
+test("click on the model label hits 'model' on the bottom row", () => {
+  // y = termRows = 40; model zone [83,89) → x = col+1 = 84..89
+  expect(statusBarHit({ ...base, x: 84, y: 40 })).toBe("model");
+  expect(statusBarHit({ ...base, x: 89, y: 40 })).toBe("model"); // col 88, last model col
 });
 
 test("click just past the model label (the separator) misses", () => {
-  expect(statusBarHit({ ...base, x: 90, y: 36 })).toBeNull(); // col 89 = end (exclusive)
-  expect(statusBarHit({ ...base, x: 83, y: 36 })).toBeNull(); // col 82 = before start
+  expect(statusBarHit({ ...base, x: 90, y: 40 })).toBeNull(); // col 89 = end (exclusive)
+  expect(statusBarHit({ ...base, x: 83, y: 40 })).toBeNull(); // col 82 = before start
 });
 
-test("click off the status row misses", () => {
-  expect(statusBarHit({ ...base, x: 84, y: 35 })).toBeNull();
-  expect(statusBarHit({ ...base, x: 84, y: 37 })).toBeNull();
+test("click off the bottom row misses", () => {
+  expect(statusBarHit({ ...base, x: 84, y: 39 })).toBeNull();
+  expect(statusBarHit({ ...base, x: 84, y: 38 })).toBeNull();
 });
 
-test("a multi-line composer raises the status row", () => {
-  // composerLines = 3 → statusRow = 40 - 3 - 0 - 3 = 34
-  expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 34 })).toBe("model");
+test("composer height no longer moves the meter (it is the bottom edge)", () => {
+  expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 40 })).toBe("model");
   expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 36 })).toBeNull();
 });
 
-test("an open palette raises the status row by paletteRows", () => {
-  // paletteRows = 5 → statusRow = 40 - 1 - 5 - 3 = 31
-  expect(statusBarHit({ ...base, paletteRows: 5, x: 84, y: 31 })).toBe("model");
+test("an open palette does not move the meter either", () => {
+  expect(statusBarHit({ ...base, paletteRows: 5, x: 84, y: 40 })).toBe("model");
 });
 
 test("no model label means no hit", () => {
-  expect(statusBarHit({ ...base, model: "", x: 84, y: 36 })).toBeNull();
+  expect(statusBarHit({ ...base, model: "", x: 84, y: 40 })).toBeNull();
 });
 
 test("fitStatusFields keeps the first field and sheds lowest-priority ones to fit width", () => {

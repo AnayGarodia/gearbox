@@ -75,9 +75,12 @@ const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidt
         }
         const a = Math.max(range[0] - start, 0);
         const b = Math.min(range[1] - start, s.text.length);
+        // ONE selection treatment — accent-tinted band with plain text ink.
+        // `inverse` flipped every span's own color, turning a styled line into
+        // a garish patchwork; a single quiet band reads like selection should.
         return [
           s.text.slice(0, a) ? <Text key={`${j}-a`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>{s.text.slice(0, a)}</Text> : null,
-          <Text key={`${j}-b`} inverse>{s.text.slice(a, b)}</Text>,
+          <Text key={`${j}-b`} color={color.text} bold={s.bold} backgroundColor={color.accentBg}>{s.text.slice(a, b)}</Text>,
           s.text.slice(b) ? <Text key={`${j}-c`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>{s.text.slice(b)}</Text> : null,
         ].filter(Boolean);
       })}

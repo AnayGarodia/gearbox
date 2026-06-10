@@ -7,8 +7,8 @@ import {
 } from "../src/ui/routing-line.ts";
 
 test("formatTurnCost: subscription seat is never a misleading dollar amount", () => {
-  expect(formatTurnCost(0, "subscription")).toBe("subscription seat");
-  expect(formatTurnCost(5, "subscription")).toBe("subscription seat"); // metered-equiv is fiction for a seat
+  expect(formatTurnCost(0, "subscription")).toBe("seat · ~$0");
+  expect(formatTurnCost(5, "subscription")).toBe("seat · ~$0"); // metered-equiv is fiction for a seat
 });
 
 test("formatTurnCost: metered turns format honestly, sub-cent collapses to <$0.01", () => {
@@ -70,7 +70,7 @@ test("buildRoutingLine: composes the real fields + surprise verdict", () => {
   });
 
   const sub = buildRoutingLine({ model: "sonnet", provider: "claude", costUSD: 0, kind: "subscription" });
-  expect(sub.costText).toBe("subscription seat");
+  expect(sub.costText).toBe("seat · ~$0");
   expect(sub.surprising).toBe(false);
 });
 

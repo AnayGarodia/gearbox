@@ -71,19 +71,16 @@ export function statusBarHit(args: {
   x: number;
   y: number;
   termRows: number;
-  composerLines: number;
+  composerLines: number; // kept for call-site compatibility; the meter no longer depends on it
   paletteRows: number;
   model: string;
   costText?: string;
   ctxPct?: number | null;
   width: number;
 }): "model" | null {
-  // Composer chrome around the input: marginTop above, the footer hint line +
-  // marginBottom below. Coupled to App.tsx's footer estimate and Composer.tsx's
-  // row-count contract · keep in sync.
-  const chrome = 3; // marginTop + footer hint + marginBottom
-  const statusRow = args.termRows - args.composerLines - args.paletteRows - chrome;
-  if (args.y !== statusRow || !args.model) return null;
+  // The meter is the BOTTOM EDGE of the frame (App renders it last) — the row
+  // math is simply "the last row". Lockstep with App.tsx footerJsx ordering.
+  if (args.y !== args.termRows || !args.model) return null;
   const { modelZone } = statusBarLayout(args);
   const col = args.x - 1; // SGR x is 1-based; zones are 0-based
   if (col >= modelZone[0] && col < modelZone[1]) return "model";

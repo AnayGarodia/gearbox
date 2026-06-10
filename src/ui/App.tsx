@@ -1033,8 +1033,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (homeScreenRef.current) return null; // home screen: the composer floats mid-screen, not at the bottom
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      const firstInputRow = rows - 1 - lineCount; // below the input: footer hint (rows-1) + marginBottom (rows)
-      if (y < firstInputRow || y > rows - 2) return null;
+      const firstInputRow = rows - 3 - lineCount; // below the input: footer hint, then the meter (marginTop + row = bottom 2 rows)
+      if (y < firstInputRow || y > rows - 4) return null;
       const lineIdx = y - firstInputRow;
       // 1 border + space + prompt + space, SGR coords are 1-based — plus the page
       // column's left offset (the composer sits in the centered page column).
@@ -1601,8 +1601,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     : policyLabel({ selectorKind, pinnedModelLabel: model?.label, subscriptionLabel: activeCli?.label, mode });
   // Footer-right of the composer hint line: `provider` (dim) + `model` (bold).
   // On a subscription the label already carries the account, so provider is omitted.
-  const composerProvider = setupRequired || activeCli ? null : model?.provider ?? null;
-  const composerModelName = setupRequired ? null : modelLabel;
+  // Fullscreen has the METER as the single model line (one row below the
+  // composer) — the footer-right model shows only in INLINE mode, which has no
+  // meter. One fact, one place.
+  const composerProvider = setupRequired || activeCli || fullscreen ? null : model?.provider ?? null;
+  const composerModelName = setupRequired || fullscreen ? null : modelLabel;
   // Compact identity for the top-right corner: "claude · Max · you@host" for a
   // subscription (id stays the slug under the hood), else nothing.
   const bannerAccount = (() => {
@@ -5290,7 +5293,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
   if (perm) footer += 5; // consent block: marginTop + title + command + options + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
-  else if (!panel && !homeScreen) footer += 4; // composer (marginTop + input + footer hint + marginBottom · Composer.tsx row contract)
+  else if (!panel && !homeScreen) footer += 3; // composer (marginTop + input + footer hint; no lift — the meter sits below · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop) — the meter's ctx gauge carries low-context now (no extra notice row)
   if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
@@ -5461,7 +5464,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : panel || homeScreen ? null : (
-    composerAt(width, fullscreen)
+    composerAt(width, false)
   );
   // flexShrink=0 on the wrappers: when the frame is over-full, Yoga must squeeze
   // the flexible hero/transcript region — never the input box or the consent
@@ -5573,9 +5576,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         {quickPickerJsx}
         {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: estimateCost(sessionRef.current.turns), sessionTurns: sessionRef.current.turns.length })} width={pageW} /> : null}
       </Box>
-      <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} cwd={process.cwd()} branch={branch} />
       {homeScreen ? null : <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>}
       {fsComposerJsx}
+      {/* The meter is the page's BOTTOM EDGE — composer above it, one quiet rule
+          of truth below everything (cwd:branch · model · ctx · $). statusBarHit
+          assumes y === termRows; change in lockstep. */}
+      <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} cwd={process.cwd()} branch={branch} />
     </>
   );
 
