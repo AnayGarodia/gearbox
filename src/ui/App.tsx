@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput, useStdin } from "ink";
 import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
 import { Transcript } from "./components/Transcript.tsx";
-import { StatusBar, statusBarHit, formatStatusCost } from "./components/StatusBar.tsx";
+import { StatusBar, statusBarHit, statusBarLayout, formatStatusCost } from "./components/StatusBar.tsx";
 import { StatusStrip } from "./components/StatusStrip.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
@@ -78,6 +78,7 @@ import { copyToClipboard } from "./clipboard.ts";
 import { clipboardImageToFile } from "./clipboard-image.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
 import { navHistory, searchHistory } from "./history.ts";
+import pkg from "../../package.json";
 import { currentMention, matchFiles, completeMention } from "./mention.ts";
 import { listProjectFiles, expandMentions } from "./files.ts";
 import { useTerminalSize } from "./useTerminalSize.ts";
@@ -725,6 +726,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const viewportHeightRef = useRef(1);
   const maxScrollRef = useRef(0);
   const paletteRowsLiveRef = useRef(0); // PALETTE_ROWS, for status-bar click hit-testing
+  const homeScreenRef = useRef(false); // fullscreen home screen (composer mid-screen, not at the bottom)
   const statusBarRenderRef = useRef<{ model: string; costText: string; width: number }>({ model: "", costText: "", width: 0 });
 
   const setPerm = (p: PermRequest | null) => {
@@ -1008,25 +1010,30 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (!stdin || !fullscreen || process.env.GEARBOX_MOUSE === "0") return;
     const composerOffset = (x: number, y: number): number | null => {
       if (busyRef.current || permRef.current) return null;
+      if (homeScreenRef.current) return null; // home screen: the composer floats mid-screen, not at the bottom
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      const firstInputRow = rows - lineCount; // input bottom is rows-1 (composer marginBottom leaves a gap)
-      if (y < firstInputRow || y > rows - 1) return null;
+      const firstInputRow = rows - 1 - lineCount; // below the input: footer hint (rows-1) + marginBottom (rows)
+      if (y < firstInputRow || y > rows - 2) return null;
       const lineIdx = y - firstInputRow;
-      const col = Math.max(0, x - 5); // 1 border + 1 pad + prompt + space, SGR coords are 1-based
+      const col = Math.max(0, x - 5); // 1 border + space + prompt + space, SGR coords are 1-based
       return offsetAt(value, lineIdx, col);
     };
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
     const statusBarZoneAt = (x: number, y: number): "model" | null => {
+      const { model, costText, width: w } = statusBarRenderRef.current;
+      if (homeScreenRef.current) {
+        // Home screen: the composer lives mid-screen, so the status bar is the
+        // very last row (marginTop + bar, nothing below it).
+        if (y !== rows || !model) return null;
+        const { modelZone } = statusBarLayout({ model, costText, width: w });
+        const col = x - 1;
+        return col >= modelZone[0] && col < modelZone[1] ? "model" : null;
+      }
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      // The policy row is hidden during onboarding; the bash hint row sits below the
-      // input. Both shift the status bar — keep the hit-test exact (matches App's footer).
-      const hasPolicy = !setupRequiredRef.current;
-      const hintRows = value !== "" && value.startsWith("!") ? 1 : 0;
-      const { model, costText, width: w } = statusBarRenderRef.current;
-      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, width: w, hasPolicy, hintRows });
+      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, width: w });
     };
     const viewportTop = 5; // Banner (3 rows) + tab strip (1 row); viewport begins on row 5.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
@@ -1569,6 +1576,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerPolicy: string | undefined = setupRequired
     ? undefined
     : policyLabel({ selectorKind, pinnedModelLabel: model?.label, subscriptionLabel: activeCli?.label, mode });
+  // Footer-right of the composer hint line: `provider` (dim) + `model` (bold).
+  // On a subscription the label already carries the account, so provider is omitted.
+  const composerProvider = setupRequired || activeCli ? null : model?.provider ?? null;
+  const composerModelName = setupRequired ? null : modelLabel;
   // Compact identity for the top-right corner: "claude · Max · you@host" for a
   // subscription (id stays the slug under the hood), else nothing.
   const bannerAccount = (() => {
@@ -5177,15 +5188,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const PALETTE_ROWS = pickerRows.length ? Math.min(7, pickerRows.length) : fileMatches.length ? Math.min(5, fileMatches.length) : cmdMatches.length ? Math.min(7, cmdMatches.length) : 0;
   const quickRows = quickPicker ? quickPickerRows(quickPicker) : [];
   const quickPickerLimit = Math.min(7, Math.max(1, quickRows.length));
+  // The opencode home screen: a fresh fullscreen session centers the wordmark +
+  // key commands + the composer mid-screen; the footer keeps only the status bar.
+  // The first submitted prompt creates an item → the layout flips to the chat view.
+  const homeScreen = fullscreen && welcome && !setupRequired && tab === "session" && !panel && !perm;
+  homeScreenRef.current = homeScreen;
   let footer = 2; // status line + its top margin
   // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
   if (perm) footer += 9;
-  else if (!panel) footer += 5; // composer (rule + policy + input + marginTop + marginBottom)
-  // Composer hint row: "⏎ queues…" while busy, or "⏎ runs in your shell" in ! mode.
-  if (!panel && !perm && edit.value !== "" && (busy || edit.value.startsWith("!"))) footer += 1;
-  footer += PALETTE_ROWS;
+  else if (!panel && !homeScreen) footer += 4; // composer (marginTop + input + footer hint + marginBottom · Composer.tsx row contract)
+  footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop)
   if (busy && lowContextNotice(ctxPct)) footer += 1; // optional low-context notice row under it
   if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
@@ -5322,12 +5336,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     </Box>
   );
 
-  const paletteJsx = pickerRows.length || cmdMatches.length || fileMatches.length ? (
-    <Box flexDirection="column">
-      <CommandPalette draft={edit.value} selected={selectedPalette} limit={7} rows={pickerRows} width={width} />
-      <FilePalette matches={fileMatches} selected={selectedPalette} limit={5} width={width} />
-    </Box>
-  ) : null;
+  const paletteAt = (w: number) =>
+    pickerRows.length || cmdMatches.length || fileMatches.length ? (
+      <Box flexDirection="column">
+        <CommandPalette draft={edit.value} selected={selectedPalette} limit={7} rows={pickerRows} width={w} />
+        <FilePalette matches={fileMatches} selected={selectedPalette} limit={5} width={w} />
+      </Box>
+    ) : null;
+  const paletteJsx = paletteAt(width);
 
   // Status-bar click picker overlay (rendered just above the status bar). Shares
   // the CommandPalette renderer with the slash pickers.
@@ -5344,11 +5360,53 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // The permission prompt OUTRANKS an open panel: its key capture runs first
   // in useInput, so hiding the card while a panel is open would freeze the
   // panel and let esc (the panel-close key) silently DENY the unseen request.
+  const composerPlaceholder = setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything";
+  const composerAt = (w: number, lift: boolean) => (
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
+  );
   const composerJsx = perm ? (
     <PermissionPrompt req={perm} width={width} />
-  ) : panel ? null : (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything"} suggestion={suggestion} busy={busy} width={width} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} lift={fullscreen} />
+  ) : panel || homeScreen ? null : (
+    composerAt(width, fullscreen)
   );
+
+  // The opencode home screen (fullscreen, fresh session): Boo + wordmark + version,
+  // a short dim command list, then THE composer floating mid-screen (≤80 cols).
+  // Heights are gated against the available region so the centered stack can never
+  // overflow the frame (the palette opening swaps the command list for itself).
+  const homeW = Math.min(Math.max(width - 8, 24), 80);
+  const homeRoom = transcriptHeight - 3 - PALETTE_ROWS; // minus the composer block + any open palette
+  const homeSplashSize: "big" | "mini" | "none" = homeRoom >= 36 ? "big" : homeRoom >= 24 ? "mini" : "none";
+  const showHomeCommands = PALETTE_ROWS === 0 && homeRoom >= (homeSplashSize === "big" ? 32 : homeSplashSize === "mini" ? 22 : 10);
+  const HOME_COMMANDS: [string, string][] = [
+    ["/model", "pick a model · auto-routes by default"],
+    ["/account", "add a provider or subscription"],
+    ["/resume", "continue a previous session"],
+    ["/help", "all commands"],
+    ["shift+tab", "cycle normal · auto-accept · plan"],
+    ["!", "run a shell command"],
+  ];
+  const homeJsx = homeScreen ? (
+    <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center">
+      {homeRoom >= 4 ? <MascotSplash skin={ghostSkin} size={homeSplashSize} tagline={`v${pkg.version} · one terminal · every model`} /> : null}
+      {showHomeCommands ? (
+        <Box marginTop={1} flexDirection="column">
+          {HOME_COMMANDS.map(([k, d]) => (
+            <Text key={k}>
+              <Text color={color.accentDim}>{k.padStart(9)}</Text>
+              <Text color={color.faint}>  {d}</Text>
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+      <Box width={homeW} flexDirection="column">
+        {composerAt(homeW, false)}
+        {/* homeW − 2: inside the centered fixed-width box the palette needs the
+            slack or its exactly-fitting rows wrap and break the row budget. */}
+        {paletteAt(homeW - 2)}
+      </Box>
+    </Box>
+  ) : null;
 
   const footerJsx = (
     <>
@@ -5388,7 +5446,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {quickPickerJsx}
       {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: estimateCost(sessionRef.current.turns), sessionTurns: sessionRef.current.turns.length })} width={width} /> : null}
       <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} cwd={process.cwd()} branch={branch} />
-      <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
+      {homeScreen ? null : <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>}
       {composerJsx}
     </>
   );
@@ -5462,6 +5520,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           </Box>
         ) : tab !== "session" && !setupRequired ? (
           <Box flexGrow={1}>{tabView}</Box>
+        ) : homeScreen ? (
+          homeJsx
         ) : welcome ? (
           <Box flexGrow={1} flexDirection="column" justifyContent="center">
             {hero}

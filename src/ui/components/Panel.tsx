@@ -463,11 +463,15 @@ export function Panel({
     }
   }
 
+  // The opencode modal chrome: the title as an element-layer chip top-left, a
+  // muted `esc` affordance top-right on the SAME row; the detailed key hint
+  // stays on the bottom row. Visual only — the row budget (panelBodyHeight =
+  // height − 2) and all key handling are unchanged.
   return (
     <Box flexDirection="column" width={width} height={height}>
       <Box width={width} paddingX={1} justifyContent="space-between">
-        <Text color={color.accent} bold>{panel.title}</Text>
-        <Text color={color.faint}> </Text>
+        <Text color={color.accent} bold backgroundColor={color.elementBg}>{` ${panel.title} `}</Text>
+        <Text color={color.faint}>esc</Text>
       </Box>
       <Box flexDirection="column" width={width} height={bodyH}>{body}</Box>
       <Box width={width} paddingX={1}>

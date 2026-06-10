@@ -44,6 +44,10 @@ export interface Theme {
   diffAddBg: string;
   diffDelBg: string;
   diffContextBg: string;
+  // Line-number gutter tints (the opencode diff look): a step darker than the
+  // full-row add/remove tints so the gutter reads as its own column.
+  diffAddGutterBg: string;
+  diffDelGutterBg: string;
 }
 
 // Warm peach on layered charcoal (the opencode-derived language): grouping comes
@@ -67,6 +71,7 @@ export const dark: Theme = {
   codeComment: "#6E7681", codePunct: "#8A919C",
   codeFunction: "#82B3E8", codeType: "#7FD3C0", codeOperator: "#99A2AD", codeBracket: "#8A95A5",
   diffAddBg: "#20303B", diffDelBg: "#37222C", diffContextBg: "#141414",
+  diffAddGutterBg: "#1B2B34", diffDelGutterBg: "#2D1F26",
 };
 
 // The same vocabulary tuned FOR a light terminal background (Gearbox never
@@ -83,6 +88,7 @@ export const light: Theme = {
   codeComment: "#6E7781", codePunct: "#57606A",
   codeFunction: "#0550AE", codeType: "#0F766E", codeOperator: "#57606A", codeBracket: "#6E7781",
   diffAddBg: "#DDF4E4", diffDelBg: "#FBE9E9", diffContextBg: "#F3F4F6",
+  diffAddGutterBg: "#CDEBD6", diffDelGutterBg: "#F4DCDC",
 };
 
 // ── The gallery ───────────────────────────────────────────────────────────────
@@ -100,6 +106,7 @@ export const gruvbox: Theme = {
   codeComment: "#928374", codePunct: "#A89984",
   codeFunction: "#FABD2F", codeType: "#8EC07C", codeOperator: "#A89984", codeBracket: "#928374",
   diffAddBg: "#2A3325", diffDelBg: "#3C2526", diffContextBg: "#32302F",
+  diffAddGutterBg: "#242C20", diffDelGutterBg: "#332022",
 };
 
 // Catppuccin (mocha): soft pastels on a deep base — teal accent, mauve keywords.
@@ -112,6 +119,7 @@ export const catppuccin: Theme = {
   codeComment: "#6C7086", codePunct: "#9399B2",
   codeFunction: "#89B4FA", codeType: "#94E2D5", codeOperator: "#9399B2", codeBracket: "#9399B2",
   diffAddBg: "#2A3B2E", diffDelBg: "#41262E", diffContextBg: "#313244",
+  diffAddGutterBg: "#243228", diffDelGutterBg: "#382129",
 };
 
 // Solarized (dark): the precise low-contrast classic — cyan accent.
@@ -124,6 +132,7 @@ export const solarized: Theme = {
   codeComment: "#586E75", codePunct: "#657B83",
   codeFunction: "#268BD2", codeType: "#2AA198", codeOperator: "#657B83", codeBracket: "#586E75",
   diffAddBg: "#0D3A24", diffDelBg: "#3D1A16", diffContextBg: "#073642",
+  diffAddGutterBg: "#0A311E", diffDelGutterBg: "#341612",
 };
 
 // High contrast: maximum legibility — pure white text, saturated semantics.
@@ -136,6 +145,7 @@ export const contrast: Theme = {
   codeComment: "#9E9E9E", codePunct: "#C0C0C0",
   codeFunction: "#66B3FF", codeType: "#00E5CC", codeOperator: "#C0C0C0", codeBracket: "#C0C0C0",
   diffAddBg: "#003D1A", diffDelBg: "#4D0F0F", diffContextBg: "#101010",
+  diffAddGutterBg: "#003315", diffDelGutterBg: "#400C0C",
 };
 
 export interface ThemeEntry {

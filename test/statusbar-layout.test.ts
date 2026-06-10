@@ -18,52 +18,40 @@ test("a cost suffix pushes the model zone further left", () => {
 });
 
 // statusBarHit resolves an SGR click (1-based x/y) to the model label. The status
-// row sits above the composer: composer = marginTop(1) + rule(1) + policy(1) +
-// marginBottom(1) + input(composerLines), so statusRow = termRows - composerLines
-// - paletteRows - 4 (chrome = marginTop + rule + marginBottom + policy).
+// row sits above the composer block: marginTop(1) + input(composerLines) + footer
+// hint(1) + marginBottom(1), so statusRow = termRows - composerLines - paletteRows
+// - 3 (chrome = marginTop + footer hint + marginBottom · Composer.tsx row contract).
 const base = { termRows: 40, composerLines: 1, paletteRows: 0, model: "sonnet", costText: "$0.44", width: 100 };
 
 test("click on the model label hits 'model' on the computed status row", () => {
-  // statusRow = 40 - 1 - 0 - 4 = 35; model zone [83,89) → x = col+1 = 84..89
-  expect(statusBarHit({ ...base, x: 84, y: 35 })).toBe("model");
-  expect(statusBarHit({ ...base, x: 89, y: 35 })).toBe("model"); // col 88, last model col
+  // statusRow = 40 - 1 - 0 - 3 = 36; model zone [83,89) → x = col+1 = 84..89
+  expect(statusBarHit({ ...base, x: 84, y: 36 })).toBe("model");
+  expect(statusBarHit({ ...base, x: 89, y: 36 })).toBe("model"); // col 88, last model col
 });
 
 test("click just past the model label (the separator) misses", () => {
-  expect(statusBarHit({ ...base, x: 90, y: 35 })).toBeNull(); // col 89 = end (exclusive)
-  expect(statusBarHit({ ...base, x: 83, y: 35 })).toBeNull(); // col 82 = before start
+  expect(statusBarHit({ ...base, x: 90, y: 36 })).toBeNull(); // col 89 = end (exclusive)
+  expect(statusBarHit({ ...base, x: 83, y: 36 })).toBeNull(); // col 82 = before start
 });
 
 test("click off the status row misses", () => {
-  expect(statusBarHit({ ...base, x: 84, y: 34 })).toBeNull();
-  expect(statusBarHit({ ...base, x: 84, y: 36 })).toBeNull();
+  expect(statusBarHit({ ...base, x: 84, y: 35 })).toBeNull();
+  expect(statusBarHit({ ...base, x: 84, y: 37 })).toBeNull();
 });
 
 test("a multi-line composer raises the status row", () => {
-  // composerLines = 3 → statusRow = 40 - 3 - 0 - 4 = 33
-  expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 33 })).toBe("model");
-  expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 35 })).toBeNull();
+  // composerLines = 3 → statusRow = 40 - 3 - 0 - 3 = 34
+  expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 34 })).toBe("model");
+  expect(statusBarHit({ ...base, composerLines: 3, x: 84, y: 36 })).toBeNull();
 });
 
 test("an open palette raises the status row by paletteRows", () => {
-  // paletteRows = 5 → statusRow = 40 - 1 - 5 - 4 = 30
-  expect(statusBarHit({ ...base, paletteRows: 5, x: 84, y: 30 })).toBe("model");
+  // paletteRows = 5 → statusRow = 40 - 1 - 5 - 3 = 31
+  expect(statusBarHit({ ...base, paletteRows: 5, x: 84, y: 31 })).toBe("model");
 });
 
 test("no model label means no hit", () => {
-  expect(statusBarHit({ ...base, model: "", x: 84, y: 35 })).toBeNull();
-});
-
-test("hasPolicy=false (onboarding) drops the policy chrome row, raising the status row by 1", () => {
-  // chrome 3 instead of 4 → statusRow = 40 - 1 - 0 - 3 = 36
-  expect(statusBarHit({ ...base, hasPolicy: false, x: 84, y: 36 })).toBe("model");
-  expect(statusBarHit({ ...base, hasPolicy: false, x: 84, y: 35 })).toBeNull();
-});
-
-test("a bash hint row below the input lowers the status row by 1", () => {
-  // hintRows 1 → statusRow = 40 - 1 - 1 - 0 - 4 = 34
-  expect(statusBarHit({ ...base, hintRows: 1, x: 84, y: 34 })).toBe("model");
-  expect(statusBarHit({ ...base, hintRows: 1, x: 84, y: 35 })).toBeNull();
+  expect(statusBarHit({ ...base, model: "", x: 84, y: 36 })).toBeNull();
 });
 
 test("fitStatusFields keeps the first field and sheds lowest-priority ones to fit width", () => {

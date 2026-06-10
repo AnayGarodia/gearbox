@@ -51,10 +51,10 @@ export function statusBarLayout({
 
 // Resolve a fullscreen SGR mouse click (1-based x/y) to the model label, or null.
 // The status-bar row is measured up from the composer pinned to the bottom:
-// composer = marginTop(1) + rule(1) + policy(1) + input(N) → 3 chrome rows above
-// the input; the palette box sits between the status bar and the composer. Pure so
-// the fragile row math is testable. (Effort is no longer a clickable label — it is
-// set via /effort and shift+tab; the footer redesign dropped that hit zone.)
+// composer = marginTop(1) + input(N) + footer hint(1) + marginBottom(1) → 3 chrome
+// rows around the input; the palette box sits between the status bar and the
+// composer. Pure so the fragile row math is testable. (Effort is no longer a
+// clickable label — it is set via /effort and shift+tab.)
 export function statusBarHit(args: {
   x: number;
   y: number;
@@ -64,14 +64,12 @@ export function statusBarHit(args: {
   model: string;
   costText?: string;
   width: number;
-  hasPolicy?: boolean; // policy row above the input (default true; hidden during onboarding)
-  hintRows?: number; // a hint row below the input (e.g. bash "⏎ runs in your shell"); default 0
 }): "model" | null {
-  // Composer chrome above the input: marginTop + rule [+ policy]. The optional hint
-  // row sits BELOW the input, so it adds to the rows under the status bar. Coupled to
-  // App.tsx's footer estimate and Composer.tsx's layout · keep in sync.
-  const chrome = 3 + (args.hasPolicy === false ? 0 : 1); // marginTop + rule + marginBottom [+ policy]
-  const statusRow = args.termRows - args.composerLines - (args.hintRows ?? 0) - args.paletteRows - chrome;
+  // Composer chrome around the input: marginTop above, the footer hint line +
+  // marginBottom below. Coupled to App.tsx's footer estimate and Composer.tsx's
+  // row-count contract · keep in sync.
+  const chrome = 3; // marginTop + footer hint + marginBottom
+  const statusRow = args.termRows - args.composerLines - args.paletteRows - chrome;
   if (args.y !== statusRow || !args.model) return null;
   const { modelZone } = statusBarLayout(args);
   const col = args.x - 1; // SGR x is 1-based; zones are 0-based

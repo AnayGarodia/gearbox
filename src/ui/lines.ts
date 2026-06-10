@@ -396,18 +396,33 @@ function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, exp
   // in the transcript — show a taste, keep the colored ± header honest, and
   // let ⌃O bring the whole thing back.
   const MAX = expand ? Infinity : diff.length > 24 ? 8 : 16;
-  const shown = diff.slice(0, MAX);
-  const contentWidth = Math.max(width - 3, 1);
+  // The opencode diff look: a line-number gutter on its own (darker) tint, a
+  // bold +/− marker, then the code on a full-row add/remove tint. The diff
+  // strips context lines (src/diff.ts), so the numbers are per-side running
+  // counters over the CHANGED lines (old side → −, new side → +), numbered
+  // across the whole diff so the collapsed taste matches the expanded view.
+  let oldN = 0;
+  let newN = 0;
+  const numbered = diff.map((d) => ({ ...d, n: d.sign === "+" ? ++newN : ++oldN }));
+  const numW = Math.max(2, String(Math.max(oldN, newN, 1)).length);
+  const shown = numbered.slice(0, MAX);
   const out: Line[] = shown.map((d) => {
-    const bg = d.sign === "+" ? color.diffAddBg : color.diffDelBg;
-    const fg = d.sign === "+" ? color.ok : color.err;
-    return [
-      { text: "   ", bg },
-      ...padBg(clipSpans([
-      { text: d.sign === "+" ? "+ " : "− ", color: fg, bold: true, bg },
-      ...highlightLine(d.text).map((s) => ({ ...s, bg })),
-      ], contentWidth), contentWidth, bg),
-    ];
+    const add = d.sign === "+";
+    const bg = add ? color.diffAddBg : color.diffDelBg;
+    const gutterBg = add ? color.diffAddGutterBg : color.diffDelGutterBg;
+    const fg = add ? color.ok : color.err;
+    const pad = " ".repeat(numW);
+    const num = String(d.n).padStart(numW);
+    const gutter = ` ${add ? pad : num} ${add ? num : pad} `;
+    const contentWidth = Math.max(width - 3 - gutter.length, 1);
+    return clipSpans([
+      { text: "   ", bg: gutterBg },
+      { text: gutter, color: fg, dim: true, bg: gutterBg },
+      ...padBg([
+        { text: add ? "+ " : "− ", color: fg, bold: true, bg },
+        ...highlightLine(d.text).map((s) => ({ ...s, bg })),
+      ], contentWidth, bg),
+    ], width);
   });
   if (diff.length > MAX) out.push([{ text: `… +${diff.length - MAX} more lines · ⌃O to expand`, color: color.faint }]);
   return out;

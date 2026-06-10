@@ -34,13 +34,29 @@ test("empty composer while busy invites queueing", () => {
   expect(out).toContain("type to queue");
 });
 
-test("the policy + branch line shows the routing policy and branch inside the box", () => {
+test("the footer hint line shows the routing policy and branch under the box", () => {
   const out = render(
     <Composer value="" cursor={0} placeholder="ask anything" busy={false} width={80} policy="auto-route" branch="main" />,
   ).lastFrame() ?? "";
   expect(out).toContain("auto-route");
   expect(out).toContain("main"); // branch
-  expect(out).toContain("│"); // the single accent left bar (box border)
+  expect(out).toContain("┃"); // thick left + right edges (the opencode editor box)
+  expect(out).toContain("⏎ send"); // idle contextual hint
+});
+
+test("the footer hint line shows provider dim + model on the right", () => {
+  const out = render(
+    <Composer value="" cursor={0} placeholder="ask anything" busy={false} width={80} provider="anthropic" model="sonnet-4.6" />,
+  ).lastFrame() ?? "";
+  expect(out).toContain("anthropic");
+  expect(out).toContain("sonnet-4.6");
+});
+
+test("busy with an empty composer shows the working hint on the footer line", () => {
+  const out = render(
+    <Composer value="" cursor={0} placeholder="ask anything" busy={true} width={80} />,
+  ).lastFrame() ?? "";
+  expect(out).toContain("working ⋯ esc interrupt");
 });
 
 test("a pinned policy shows the model as the policy, not a second model name", () => {
