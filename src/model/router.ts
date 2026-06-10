@@ -90,11 +90,20 @@ export function confidentKeywordKind(prompt: string): Kind | null {
   return null;
 }
 
+// Question-shaped prompt with no mutation verb: "what is X", "how does Y work",
+// or anything ending in "?". Used only by the fallback below — a confident
+// keyword match (incl. MUTATION → code) always wins first.
+const QUESTIONISH = /^(how|what|who|when|where|why|which|can|does|do|is|are)\b|\?\s*$/i;
+
 // Conservative keyword classifier used as a fallback when the LLM classifier is
-// unavailable. Defaults to "code" (high bar) unless the prompt is clearly a
-// cheap bounded sub-task. Never silently downgrades real work.
+// unavailable. A question-shaped prompt with no mutation verb falls back to
+// "chat" (a bare question never needs the code bar — "What is capital of India"
+// must not route at 0.70); everything else ambiguous defaults to "code" (high
+// bar) so real work is never silently downgraded.
 export function classify(prompt: string): Kind {
-  return confidentKeywordKind(prompt) ?? "code";
+  const confident = confidentKeywordKind(prompt);
+  if (confident) return confident;
+  return QUESTIONISH.test(prompt.trim()) ? "chat" : "code";
 }
 
 // Resolve quality from the canonical model profile. Uses sweBenchVerified if

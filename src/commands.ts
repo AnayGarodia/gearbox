@@ -296,7 +296,10 @@ const wrapWords = (text: string, width: number): string[] => {
 
 export function scorecardRows(card: Scorecard, width = 80): ScorecardLine[] {
   const out: ScorecardLine[] = [];
-  out.push({ text: `why · ${card.kind} task · quality bar ${card.bar.toFixed(2)}`, tone: "title" });
+  // Kind provenance: "fallback" means the LLM classifier was unavailable and the
+  // keyword default decided — worth flagging, since that default can misroute.
+  const src = card.kindSource ? ` (${card.kindSource === "fallback" ? "fallback — classifier unavailable" : card.kindSource})` : "";
+  out.push({ text: `why · ${card.kind} task${src} · quality bar ${card.bar.toFixed(2)}`, tone: "title" });
   if (card.prompt) out.push({ text: `"${card.prompt.length > 60 ? card.prompt.slice(0, 57) + "…" : card.prompt}"`, tone: "note" });
   if (!card.entries.length) {
     out.push({ text: card.note ?? "no candidates", tone: "note" });
