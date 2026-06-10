@@ -311,7 +311,7 @@ export const PERSONAS: Record<string, Persona> = {
     over: [
       [7, 2, "#92400e"], [8, 2, "#92400e"], [9, 2, "#92400e"], [10, 2, "#92400e"], [11, 2, "#92400e"], [12, 2, "#92400e"],
       [7, 3, "#b45309"], [8, 3, "#fbbf24"], [9, 3, "#fbbf24"], [10, 3, "#fbbf24"], [11, 3, "#fbbf24"], [12, 3, "#b45309"],
-      [3, 4, "#92400e"], [4, 4, "#78350f"], [5, 4, "#92400e"], [6, 4, "#92400e"], [7, 4, "#92400e"], [8, 4, "#92400e"], [9, 4, "#92400e"], [10, 4, "#92400e"], [11, 4, "#92400e"], [12, 4, "#92400e"], [13, 4, "#92400e"], [14, 4, "#78350f"], [15, 4, "#92400e"],
+      [3, 4, "#92400e"], [4, 4, "#78350f"], [5, 4, "#92400e"], [6, 4, "#92400e"], [7, 4, "#92400e"], [8, 4, "#92400e"], [9, 4, "#92400e"], [10, 4, "#92400e"], [11, 4, "#92400e"], [12, 4, "#92400e"], [13, 4, "#92400e"], [14, 4, "#92400e"], [15, 4, "#78350f"], [16, 4, "#92400e"],
     ],
   },
 };
@@ -345,13 +345,21 @@ export function overlayPixels(kind: OverlayKind, frame: number, cropActive = fal
       return [0, 1, 2].filter((i) => frame % 4 > i).map((i) => [8 + 2 * i, row, "#38bdf8"] as [number, number, Color]);
     }
     case "zzz": {
-      // A single Z pixel climbing and drifting right in the top-right corner.
-      const r = 4 - (frame % 5);
-      const c = 16 + (frame % 3);
-      return [[c, r, "#a5b4fc"]];
+      // A readable 3×3 "Z" glyph drifting up-right, with a single trailing
+      // z-pixel behind it (a lone pixel on its own read as a glitch, not sleep).
+      const Z = (c: number, r: number, col: Color): [number, number, Color][] =>
+        [[c, r, col], [c + 1, r, col], [c + 2, r, col], [c + 1, r + 1, col], [c, r + 2, col], [c + 1, r + 2, col], [c + 2, r + 2, col]];
+      const phase = frame % 6;
+      const big = Z(15, Math.max(0, 3 - Math.floor(phase / 2)), "#a5b4fc");
+      const trail: [number, number, Color][] = phase >= 2 ? [[14, 6 - (phase % 3), "#818cf8"]] : [];
+      return big.concat(trail);
     }
     case "sparkle": {
-      return SPARK_SPOTS.filter((_, i) => (frame + i) % 2 === 0).map(([c, r], i) => [c, r, i % 2 ? "#fde047" : "#a5b4fc"] as [number, number, Color]);
+      // 5-px star crosses (✦) twinkling in alternation — a single pixel doesn't
+      // read as a sparkle at terminal resolution.
+      const star = (c: number, r: number, col: Color): [number, number, Color][] =>
+        [[c, r, col], [c - 1, r, col], [c + 1, r, col], [c, r - 1, col], [c, r + 1, col]];
+      return SPARK_SPOTS.filter((_, i) => (frame + i) % 2 === 0).flatMap(([c, r], i) => star(c, r, i % 2 ? "#fde047" : "#a5b4fc"));
     }
     case "confetti": {
       return CONF_SPOTS.map(([c, r], i) => [c, (r + frame) % 15, CONF_COLS[i % CONF_COLS.length]!] as [number, number, Color]);

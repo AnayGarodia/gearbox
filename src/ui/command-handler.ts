@@ -155,6 +155,8 @@ export interface CommandCtx {
   panelSessionsRef: MutableRefObject<Session[]>;
   resumeListRef: MutableRefObject<Session[]>;
   routedRef: MutableRefObject<{ model: ModelSpec; reason: string } | null>;
+  /** the kind the last auto-routed turn ran with + how it was determined (/why provenance) */
+  routedKindRef: MutableRefObject<{ kind: import("../agent/classify.ts").TaskKind; source: string } | null>;
   runTurnRef: MutableRefObject<(prompt: string, attempt?: number) => Promise<void>>;
   selectorRef: MutableRefObject<ModelSelector>;
   sessionRef: MutableRefObject<{ id: string; createdAt: number; title: string; turns: TurnMeta[] }>;
@@ -239,7 +241,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
     busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
     gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
     lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
-    routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
+    routedKindRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
     setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
     setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
     setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
@@ -1297,8 +1299,13 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             return;
           }
           try {
-            const card = sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : undefined });
-            push({ kind: "scorecard", id: idRef.current++, card });
+            // Use the kind the last turn ACTUALLY ran with (routedKindRef), not a
+            // re-classification: the synchronous keyword fallback defaults bare
+            // questions differently than the LLM verdict that routed the turn, so
+            // re-deriving here showed a scorecard that disagreed with reality.
+            const last = modeRef.current === "plan" ? null : routedKindRef.current;
+            const card = sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : last?.kind });
+            push({ kind: "scorecard", id: idRef.current++, card: last ? { ...card, kindSource: last.source } : card });
           } catch (e: any) {
             notice(e?.message ?? "couldn't build the scorecard");
           }

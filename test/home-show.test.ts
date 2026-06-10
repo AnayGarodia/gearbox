@@ -33,8 +33,15 @@ test("homeShow draws valid combos from the engine catalog only", () => {
     if (show.patch.accessory) expect(ACCESSORIES[show.patch.accessory]).toBeDefined();
     // never both a persona and an accessory at once (one costume slot)
     expect(show.patch.persona && show.patch.accessory).toBeFalsy();
-    // no downer faces on the welcome mat
-    expect(["sad", "angry", "crying", "thinking", "sleepy", "neutral"]).not.toContain(show.patch.face);
+    if (show.patch.persona) {
+      // persona bits play AS DESIGNED: the costume's own palette + face
+      const per = PERSONAS[show.patch.persona]!;
+      expect(show.patch.palette).toBe(per.palette);
+      expect(show.patch.face).toBe(per.face);
+    } else {
+      // no downer faces on the welcome mat (a costume's designed face is exempt)
+      expect(["sad", "angry", "crying", "thinking", "sleepy", "neutral"]).not.toContain(show.patch.face);
+    }
   }
 });
 

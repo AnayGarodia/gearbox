@@ -40,6 +40,19 @@ test("classify defaults to code and never downgrades a mutation request", () => 
   expect(classify("categorize these log lines")).toBe("classify");
 });
 
+// ── classifier fallback: a bare question never needs the code bar ──
+test("classify falls back to chat for question-shaped prompts with no mutation verb", () => {
+  expect(classify("What is capital of India")).toBe("chat");
+  expect(classify("how does the event loop work?")).toBe("chat");
+  expect(classify("is bun faster than node?")).toBe("chat");
+  expect(classify("does typescript erase enums at runtime")).toBe("chat");
+  // question-shaped but a mutation verb is present → still code
+  expect(classify("how do I fix this flaky test?")).toBe("code");
+  expect(classify("can you refactor the loader?")).toBe("code");
+  // ambiguous NON-question prompts keep the conservative code default
+  expect(classify("the parser chokes on nested templates")).toBe("code");
+});
+
 // ── routing with only the Anthropic key: the demonstrable behavior ──
 test("Anthropic-only: code → sonnet, summarize → haiku", () => {
   only("ANTHROPIC_API_KEY");

@@ -76,6 +76,8 @@ export interface ScorecardEntry {
   estCostPerMtok: number;
   balanceText?: string; // "$12.50" or "$12 est" or undefined when not applicable
   headroomText?: string; // subscription "84% left" or "throttling" for near-limit metered keys
+  accountLabel?: string; // account slug/label serving this candidate ("claude-max"); undefined = bare env key
+  headroomPct?: number; // subscription window headroom 0–100, when known
   score: number;
   chosen: boolean;
   verdict: string;
@@ -87,6 +89,10 @@ export interface ScorecardEntry {
 // can implement explain().
 export interface Scorecard {
   kind: NonNullable<Task["kind"]>;
+  /** How the kind was determined ("llm" | "keyword" | "cache" | "fallback") —
+   *  set by the caller (App) from the last turn's classification so a fallback
+   *  default is never mistaken for a real classifier verdict. */
+  kindSource?: string;
   bar: number;
   prompt: string;
   entries: ScorecardEntry[];

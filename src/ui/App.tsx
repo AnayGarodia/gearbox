@@ -27,7 +27,7 @@ import { color, glyph, setTheme, activeTheme, THEMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
-import { FixedSelector, type ModelSelector, type ModelChoice } from "../model/selector.ts";
+import { FixedSelector, type ModelSelector, type ModelChoice, type Backend } from "../model/selector.ts";
 import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS, AUTH_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
@@ -38,7 +38,7 @@ import { Panel } from "./components/Panel.tsx";
 import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, truncate, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, detailSetArmReady, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { classifyTask, type TaskKind } from "../agent/classify.ts";
-import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
+import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion, sessionDigest } from "../help/ask.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
 import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount, getAccount, putAccount, defaultAccount } from "../accounts/store.ts";
 import type { Account } from "../accounts/types.ts";
@@ -152,6 +152,13 @@ const FALLBACK_CODEX_MODELS: CliModelChoice[] = [
   { id: "gpt-5.4-mini", label: "gpt-5.4-mini", provider: "codex", efforts: ["low", "medium", "high", "xhigh"] },
 ];
 // A short, human category for a failover narration ("sonnet rate-limited → …").
+// The (backend kind, account) identity of a routing pick — the unit the
+// API↔seat switch notice compares across turns.
+const backendKeyOf = (b: Backend | undefined): { kind: string; accountId?: string } => ({
+  kind: b?.kind ?? "in-loop",
+  accountId: b && "account" in b ? b.account?.id : undefined,
+});
+
 function shortFailure(message: string): string {
   const m = (message || "").toLowerCase();
   if (/\b402\b|credit|payment|billing|out of credit/.test(m)) return "out of credit";
@@ -447,9 +454,13 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Reports from BACKGROUNDED delegate sub-tasks, delivered into the next
   // turn's prompt (the model asked for them; the user saw the notice).
   const pendingBackgroundRef = useRef<string[]>([]);
-  // The flywheel's recording hooks: what kind routed this turn, and the last
-  // edited turn's (kind, model) so /undo can debit it as a human revert.
-  const routedKindRef = useRef<string | null>(null);
+  // The flywheel's recording hooks: what kind routed this turn (+ how it was
+  // determined, for /why provenance), and the last edited turn's (kind, model)
+  // so /undo can debit it as a human revert.
+  const routedKindRef = useRef<{ kind: TaskKind; source: string } | null>(null);
+  // The backend that served the last auto-routed turn, so a silent hop between
+  // a metered API account and a subscription seat gets a one-line notice.
+  const lastBackendRef = useRef<{ kind: string; accountId?: string } | null>(null);
   // WIRE TRUTH: the model id the provider's response says served the last
   // turn. The routing line cross-checks this against what we requested.
   const servedModelRef = useRef<string | null>(null);
@@ -1627,6 +1638,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const echo = (text: string, numbered = false) => push({ kind: "user", id: idRef.current++, text, turnNo: numbered ? ++turnNoRef.current : undefined });
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
 
+  // Surface an auto-routing hop between a metered API account and a subscription
+  // seat (or between accounts). The seat preference itself is by design — a seat
+  // you already pay for is ~$0 until its window fills — but a silent switch
+  // reads as a bug, so name it the moment it happens. Pins skip this (the user
+  // chose explicitly); failover hops narrate themselves.
+  const noteBackendSwitch = (choice: ModelChoice) => {
+    const next = backendKeyOf(choice.backend);
+    const prev = lastBackendRef.current;
+    lastBackendRef.current = next;
+    if (!prev || (prev.kind === next.kind && prev.accountId === next.accountId)) return;
+    if (next.kind === "cli") notice(`↳ switched to the ${choice.model.label} seat (subscription · ~$0 marginal) — /why for the scorecard`);
+    else if (prev.kind === "cli") notice(`↳ switched to ${choice.model.label} via the ${choice.model.provider} API — /why for the scorecard`);
+    else notice(`↳ switched account: ${choice.model.label} via ${choice.model.provider} — /why for the scorecard`);
+  };
+
   const handleAddResult = async (account: Account, initialMessage: string) => {
     notice(`${initialMessage} · testing…`);
     const t = await testAccount(account);
@@ -1871,12 +1897,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         } catch {
           choice = new RoutingSelector().select({ prompt, kind: "search" });
         }
+        routedKindRef.current = { kind: "search", source: "ask" }; // /why after an /ask turn shows what actually ran
+        if (!activeCliRef.current && sel instanceof RoutingSelector) noteBackendSwitch(choice);
+        // The session digest grounds meta-questions about THIS conversation
+        // ("which model answered my last question") in real per-turn records.
+        const session = sessionDigest(messages, sessionRef.current.turns);
         // On a subscription (no in-loop API), run the grounded answer THROUGH the
         // CLI seat instead of refusing — prepend the docs so it stays grounded and
         // tell the binary not to use tools. (vi)
         const askCli = activeCliRef.current ?? (choice.backend?.kind === "cli" ? { binary: choice.backend.binary, id: choice.backend.account.id, label: choice.model.label, profile: choice.backend.profile, sdkId: choice.model.sdkId } : null);
         if (askCli) {
-          const askPrompt = `${buildAskSystem(docs)}\n\nAnswer the following question about Gearbox using ONLY the reference above. Do not use any tools.\n\nQuestion: ${prompt}`;
+          const askPrompt = `${buildAskSystem(docs, session)}\n\nAnswer the following question about Gearbox using ONLY the reference above. Do not use any tools.\n\nQuestion: ${prompt}`;
           // Keep the per-turn provenance truthful: the routing line reads
           // routedRef after the turn, so a stale pick from an EARLIER turn here
           // reported the wrong model + a phantom wire mismatch. An explicit
@@ -1897,7 +1928,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         usedAccountRef.current = acct?.id ?? null;
         cliMetaRef.current = null;
         if (acct) markUsed(acct.id);
-        const r = await runCompletion({ model: choice.model, system: buildAskSystem(docs), prompt, onEvent, signal, creds, maxRetries: onlineRef.current ? 2 : 0 });
+        const r = await runCompletion({ model: choice.model, system: buildAskSystem(docs, session), prompt, onEvent, signal, creds, maxRetries: onlineRef.current ? 2 : 0 });
         return { messages, usage: r.usage };
       }
       const imagesPresent = activeImagesRef.current.length > 0;
@@ -2026,11 +2057,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // wins; this adds the natural-language path.
       const agentDef = agentTurnRef.current; // set by runTurn for @agent turns
       const directiveId = (agentDef?.model ?? null) || (sel instanceof RoutingSelector ? modelDirectiveIn(prompt) : null);
+      let routedSource = "plan mode"; // only plan pre-sets routedKind; otherwise the classifier below decides
       if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
-        routedKind = await classifyTask(prompt, signal);
+        const cls = await classifyTask(prompt, signal);
+        routedKind = cls.kind;
+        routedSource = cls.source;
       }
-      routedKindRef.current = routedKind ?? null;
+      routedKindRef.current = routedKind ? { kind: routedKind, source: routedSource } : null;
       let choice: ModelChoice;
       try {
         // interactive: true — this is the foreground turn the user is waiting on, so
@@ -2040,6 +2074,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
       }
+      if (sel instanceof RoutingSelector && !directiveId) noteBackendSwitch(choice);
       // When the user explicitly chose the model (a directive or a /model pin),
       // delegated sub-tasks inherit it instead of re-routing to the cheapest.
       const explicitModelId = directiveId || (sel instanceof FixedSelector ? choice.model.id : undefined);
@@ -2113,6 +2148,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // Remember what we fell back FROM so the post-turn routing line can flag the
         // provider fallback (a real "surprising" signal) in amber.
         fellOverFromRef.current = choice.model.label;
+        // Track the hopped-to backend silently — the failover line above already
+        // narrates the switch, but the NEXT turn's comparison must start from
+        // what actually served this one.
+        lastBackendRef.current = backendKeyOf(next.backend);
         choice = next;
       }
     },
@@ -2708,9 +2747,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           interruptedRef.current = false;
         }
         void emitHook("turn.end", { changedFiles: [...changedFiles], hadError }).catch(() => {});
-        // Pause the type-ahead drain after an error or interrupt so queued prompts
-        // don't auto-fire into a still-broken state; a successful turn re-enables it (L-C).
-        lastTurnFailedRef.current = hadError || interrupted;
+        // Pause the type-ahead drain after an ERROR so queued prompts don't
+        // auto-fire into a still-broken state; a successful turn re-enables it
+        // (L-C). A user interrupt is different: esc is often pressed precisely
+        // to get to the queued prompt sooner, so the queue keeps draining.
+        lastTurnFailedRef.current = hadError && !interrupted;
         // A brief post-turn beat: confetti on a clean finish, crying on an error.
         // The working line lingers ~1.5s (it unmounts the instant busy goes false
         // otherwise, so these states would never render). Skip on a user interrupt.
@@ -2737,7 +2778,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // router stop guessing in this repo (priors.ts).
           const ranModel = sessionRef.current.turns[sessionRef.current.turns.length - 1]?.model;
           if (changed.length && ranModel && ranModel !== "unknown") {
-            const outcomeKind = routedKindRef.current ?? "code";
+            const outcomeKind = routedKindRef.current?.kind ?? "code";
             const outcome = failed.length ? "failed" : tier && tier !== "none" ? "passed" : "unverified";
             try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome }); } catch { /* never break settle */ }
             lastOutcomeKeyRef.current = { kind: outcomeKind, modelId: ranModel };
@@ -2847,7 +2888,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
         gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
         lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
-        routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
+        routedKindRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
         // state setters
         setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
         setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
@@ -2945,9 +2986,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [handleCommand, runTurn, setupRequired, onboardingState],
   );
 
-  // Drain the type-ahead queue when a turn finishes — but NOT after an error/interrupt
-  // (L-C): auto-firing the next queued prompt into a broken state just error-loops the
-  // whole queue. The next manual (successful) turn clears the flag and resumes draining.
+  // Drain the type-ahead queue when a turn finishes — but NOT after an error
+  // (L-C): auto-firing the next queued prompt into a broken state just error-loops
+  // the whole queue. A user interrupt does NOT hold the queue (esc is often
+  // pressed to get to the queued prompt sooner). The next successful turn clears
+  // the error flag and resumes draining.
   useEffect(() => {
     if (busy || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
     const next = queueRef.current.shift();

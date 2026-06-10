@@ -33,9 +33,13 @@ import { priorFor, priorLine } from "./priors.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
-// Fallback working-set size when the caller does not supply estTokens. The cost
-// ordering only depends on per-Mtok rates (token count is shared across all
-// candidates), so the exact value does not matter as long as it is positive.
+// Fallback working-set size when the caller does not supply estTokens. The
+// token count is shared across all candidates and most score terms scale
+// linearly with it (cost, scarcity, switch, plan, latency are all proportional
+// to costEst), so the relative ordering of those terms is unaffected by the
+// exact value. The fixed limit/throttle penalties are NOT proportional, so this
+// nominal size also calibrates how strongly an unsized turn avoids a near-limit
+// account: it should stay in the ballpark of a real agent turn's input.
 const NOMINAL_INPUT_TOKENS = 16_000;
 
 // One (model, account) routing candidate, before scoring. `canonicalId` is the
@@ -90,11 +94,20 @@ export function confidentKeywordKind(prompt: string): Kind | null {
   return null;
 }
 
+// Question-shaped prompt with no mutation verb: "what is X", "how does Y work",
+// or anything ending in "?". Used only by the fallback below — a confident
+// keyword match (incl. MUTATION → code) always wins first.
+const QUESTIONISH = /^(how|what|who|when|where|why|which|can|does|do|is|are)\b|\?\s*$/i;
+
 // Conservative keyword classifier used as a fallback when the LLM classifier is
-// unavailable. Defaults to "code" (high bar) unless the prompt is clearly a
-// cheap bounded sub-task. Never silently downgrades real work.
+// unavailable. A question-shaped prompt with no mutation verb falls back to
+// "chat" (a bare question never needs the code bar — "What is capital of India"
+// must not route at 0.70); everything else ambiguous defaults to "code" (high
+// bar) so real work is never silently downgraded.
 export function classify(prompt: string): Kind {
-  return confidentKeywordKind(prompt) ?? "code";
+  const confident = confidentKeywordKind(prompt);
+  if (confident) return confident;
+  return QUESTIONISH.test(prompt.trim()) ? "chat" : "code";
 }
 
 // Resolve quality from the canonical model profile. Uses sweBenchVerified if
@@ -310,6 +323,9 @@ export class RoutingSelector implements ModelSelector {
     // the scorecard's numbers — and its winner — match the actual pick.
     const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) };
     const scored = new Map<string, ScoredCandidate>();
+    // scoreCandidate ignores input.candidates (it scores one candidate against
+    // the flags only), so the empty array here is inert — it just satisfies the
+    // ScoreInput shape without re-listing the pool per call.
     for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
       ? preferred.spec.id
@@ -336,6 +352,9 @@ export class RoutingSelector implements ModelSelector {
         estCostPerMtok: costPerMtok(c),
         balanceText: balanceText(c.state),
         headroomText: headroomText(c.state),
+        // slug ?? label inline (not commands.ts accountName) to avoid an import cycle
+        accountLabel: c.backend.account ? (c.backend.account.slug ?? c.backend.account.label) : undefined,
+        headroomPct: c.state.isSubscription && c.state.rateHeadroom !== undefined ? Math.round(c.state.rateHeadroom * 100) : undefined,
         score: s.score,
         chosen,
         verdict: chosen ? (preferred ? "preferred" : "chosen") : !clears ? "below bar" : verdictFor(c, s),
