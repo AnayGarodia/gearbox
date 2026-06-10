@@ -15,7 +15,7 @@ import { Box } from "ink";
 import { basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import { App, type AppProps, type SessionStatus, type TabControl } from "../App.tsx";
-import type { TabRow } from "../tabbar.ts";
+import { nextTabName, TAB_NAMES, type TabRow } from "../tabbar.ts";
 import type { ModelSelector } from "../../model/selector.ts";
 import { repoRoot, worktreeAdd } from "../../git/ops.ts";
 
@@ -84,10 +84,30 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     setTabState((s) => ({ ...s, active: idx }));
   }, []);
 
+  // The LAUNCH repo root, fixed at mount: new tab worktrees always nest under
+  // it. Deriving it from process.cwd() at create time nested worktrees inside
+  // worktrees (cwd follows the active tab — creating tab 3 from tab 2 put it
+  // at <wizard-worktree>/.gearbox/tabs/skater).
+  const homeRootRef = useRef<string | null | undefined>(undefined);
+  if (homeRootRef.current === undefined) homeRootRef.current = repoRoot(process.cwd());
+
   const create = useCallback((name?: string) => {
     const id = nextTabId++;
-    const slug = tabSlug(name, id);
-    const root = repoRoot(process.cwd());
+    const home = homeRootRef.current ?? null;
+    // No name given → dress the tab from Boo's wardrobe (wizard, skater, mint…)
+    // instead of "tab-2". A name is taken if an open tab uses it OR its worktree
+    // dir already exists on disk (reattaching to old work should be a choice —
+    // `/tab new wizard` — not a surprise).
+    const slug = name
+      ? tabSlug(name, id)
+      : nextTabName(
+          [
+            ...tabsRef.current.map((t) => basename(t.dir)),
+            ...TAB_NAMES.filter((n) => home && existsSync(join(home, ".gearbox", "tabs", n))),
+          ],
+          id,
+        );
+    const root = home;
     let dir = process.cwd();
     if (root) {
       // One worktree per tab so parallel sessions never stomp each other's

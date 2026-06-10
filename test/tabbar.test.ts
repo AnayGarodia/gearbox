@@ -38,3 +38,22 @@ test("hit-test maps columns to actions; gaps miss", () => {
   expect(tabBarHit(segs, segs[0]!.x1)).toBeNull(); // the gap between cells
   expect(tabBarHit(segs, 0)).toBeNull(); // the wordmark
 });
+
+// ── wardrobe names ────────────────────────────────────────────────────────────
+import { nextTabName, TAB_NAMES } from "../src/ui/tabbar.ts";
+
+test("nextTabName dresses tabs from Boo's wardrobe, skipping taken names", () => {
+  expect(nextTabName([], 2)).toBe("wizard");
+  expect(nextTabName(["wizard"], 3)).toBe("skater");
+  expect(nextTabName(["Wizard", "skater", "pirate"], 4)).toBe("ninja"); // case-insensitive
+});
+
+test("nextTabName falls back to the counter when the wardrobe is exhausted", () => {
+  expect(nextTabName([...TAB_NAMES], 7)).toBe("tab-7");
+});
+
+test("segments expose styled parts that concatenate to the hit-test text", () => {
+  const segs = tabBarSegments([{ title: "wizard", active: true, busy: true, needsInput: false }], 10, 120);
+  const cell = segs[0]!;
+  expect(`${cell.num}${cell.title}${cell.mark} `).toBe(cell.text);
+});

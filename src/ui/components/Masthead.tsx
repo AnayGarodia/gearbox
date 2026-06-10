@@ -28,15 +28,23 @@ function MastheadImpl({ account, width, tabRows }: { account?: string | null; wi
     for (const s of segs) {
       if (s.x0 > x) spans.push(<Text key={`g${s.x0}`}>{" ".repeat(s.x0 - x)}</Text>);
       const alert = s.row?.needsInput;
-      spans.push(
-        s.row ? (
-          <Text key={s.x0} bold={s.row.active} inverse={s.row.active} color={alert ? color.err : s.row.active ? color.accent : color.faint}>
-            {s.text}
-          </Text>
-        ) : (
-          <Text key={s.x0} color={color.accent}>{s.text}</Text>
-        ),
-      );
+      if (s.row) {
+        // Cell anatomy (widths owned by tabBarSegments — concatenates to s.text):
+        // active = an accent pill (navy ink on accent bg, like the home pills);
+        // inactive = dim number · text-ink title · status mark in its own color
+        // (⚠ err when a hidden tab waits on consent · ● run-indigo while busy).
+        const on = s.row.active;
+        spans.push(
+          <Text key={s.x0} backgroundColor={on ? color.accent : undefined} bold={on}>
+            <Text color={on ? color.navy : color.faint}>{s.num}</Text>
+            <Text color={on ? color.navy : alert ? color.err : color.dim}>{s.title}</Text>
+            <Text color={on ? color.navy : alert ? color.err : color.run}>{s.mark}</Text>
+            <Text color={on ? color.navy : color.dim}>{" "}</Text>
+          </Text>,
+        );
+      } else {
+        spans.push(<Text key={s.x0} color={color.accent} bold>{s.text}</Text>);
+      }
       x = s.x1;
     }
     const acctRoom = Math.max(0, width - x - 4);

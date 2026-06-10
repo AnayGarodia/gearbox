@@ -16,11 +16,16 @@ export interface TabRow {
 export type TabAction = { type: "switch"; n: number } | { type: "new" };
 
 export interface TabSegment {
-  text: string; // rendered cell text (marker included)
+  text: string; // rendered cell text (marker included) — the hit-test width truth
   x0: number; // 0-based start column, inclusive
   x1: number; // 0-based end column, exclusive
   action: TabAction;
   row: TabRow | null; // null for the + cell
+  // Styled parts (concatenate to exactly `text`): the Masthead colors the
+  // number, title, and status mark independently without re-deriving widths.
+  num?: string; // " 1 "
+  title?: string; // truncated title
+  mark?: string; // "" | "●" | "⚠"
 }
 
 const TITLE_MAX = 14;
@@ -36,9 +41,11 @@ export const tabMark = (r: TabRow): string => (r.needsInput ? "⚠" : r.busy ? "
  * when space runs out, trailing inactive tabs go first.
  */
 export function tabBarSegments(rows: TabRow[], left: number, maxX: number): TabSegment[] {
-  const cells: { text: string; action: TabAction; row: TabRow | null }[] = rows.map((r, i) => {
+  const cells: { text: string; action: TabAction; row: TabRow | null; num?: string; title?: string; mark?: string }[] = rows.map((r, i) => {
     const title = r.title.length > TITLE_MAX ? r.title.slice(0, TITLE_MAX - 1) + "…" : r.title;
-    return { text: ` ${i + 1} ${title}${tabMark(r)} `, action: { type: "switch", n: i + 1 }, row: r };
+    const num = ` ${i + 1} `;
+    const mark = tabMark(r);
+    return { text: `${num}${title}${mark} `, action: { type: "switch", n: i + 1 }, row: r, num, title, mark };
   });
   const plus = { text: " + ", action: { type: "new" } as TabAction, row: null };
 
@@ -72,7 +79,7 @@ export function tabBarSegments(rows: TabRow[], left: number, maxX: number): TabS
   for (const c of kept) {
     const w = displayWidth(c.text);
     if (x + w > maxX) break;
-    segs.push({ text: c.text, x0: x, x1: x + w, action: c.action, row: c.row });
+    segs.push({ text: c.text, x0: x, x1: x + w, action: c.action, row: c.row, num: c.num, title: c.title, mark: c.mark });
     x += w + GAP;
   }
   return segs;
@@ -82,4 +89,21 @@ export function tabBarSegments(rows: TabRow[], left: number, maxX: number): TabS
 export function tabBarHit(segs: TabSegment[], x: number): TabAction | null {
   for (const s of segs) if (x >= s.x0 && x < s.x1) return s.action;
   return null;
+}
+
+// ── tab names ─────────────────────────────────────────────────────────────────
+// New tabs are named from Boo's wardrobe — the personas and palettes of the
+// mascot gallery — instead of "tab-2". Short, filesystem/branch-safe, and
+// they make worktree dirs (.gearbox/tabs/wizard) and branches (tab/wizard)
+// read like a crew instead of a counter. Pure; the conductor passes the names
+// already taken (open tabs + dirs on disk).
+export const TAB_NAMES = [
+  "wizard", "skater", "pirate", "ninja", "chef", "astronaut", "cowboy", "graduate", "superhero",
+  "mint", "golden", "ember", "void", "ice", "pink", "slate", "party", "crown",
+] as const;
+
+export function nextTabName(taken: Iterable<string>, id: number): string {
+  const used = new Set([...taken].map((t) => t.toLowerCase()));
+  for (const n of TAB_NAMES) if (!used.has(n)) return n;
+  return `tab-${id}`; // the whole wardrobe is in use — fall back to the counter
 }
