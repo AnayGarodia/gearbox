@@ -336,6 +336,9 @@ export class RoutingSelector implements ModelSelector {
         estCostPerMtok: costPerMtok(c),
         balanceText: balanceText(c.state),
         headroomText: headroomText(c.state),
+        // slug ?? label inline (not commands.ts accountName) to avoid an import cycle
+        accountLabel: c.backend.account ? (c.backend.account.slug ?? c.backend.account.label) : undefined,
+        headroomPct: c.state.isSubscription && c.state.rateHeadroom !== undefined ? Math.round(c.state.rateHeadroom * 100) : undefined,
         score: s.score,
         chosen,
         verdict: chosen ? (preferred ? "preferred" : "chosen") : !clears ? "below bar" : verdictFor(c, s),

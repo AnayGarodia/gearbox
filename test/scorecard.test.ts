@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoutingSelector } from "../src/model/router.ts";
 import { scorecardRows } from "../src/commands.ts";
+import type { Scorecard, ScorecardEntry } from "../src/model/selector.ts";
 
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -78,4 +79,78 @@ test("scorecardRows renders a title, a column header, and one row per candidate"
   expect(rows[0]!.tone).toBe("title");
   expect(rows.some((r) => r.tone === "colhead")).toBe(true);
   expect(rows.some((r) => r.tone === "chosen" && r.text.includes("◀"))).toBe(true);
+});
+
+// A hand-built card with the shapes that confused real users: the same model on
+// a subscription seat AND a metered key, a seeded below-bar row, a measured prior.
+const entry = (over: Partial<ScorecardEntry>): ScorecardEntry => ({
+  label: "sonnet-4.6",
+  backend: "api",
+  quality: 0.77,
+  qualitySrc: "researched",
+  estCostPerMtok: 6,
+  score: 0.1,
+  chosen: false,
+  verdict: "ok",
+  ...over,
+});
+const fixtureCard = (): Scorecard => ({
+  kind: "code",
+  bar: 0.7,
+  prompt: "WHat is capital of India",
+  entries: [
+    entry({ backend: "seat", accountLabel: "claude-max", headroomPct: 34, score: 0, chosen: true, verdict: "chosen", priorNote: "measured here: 7/9 ✓ (−0.04)" }),
+    entry({ label: "opus-4.8", backend: "seat", accountLabel: "claude-max", headroomPct: 34, quality: 0.83, estCostPerMtok: 10, score: 0.16, verdict: "seat ~free" }),
+    entry({ balanceText: "$12.50" }),
+    entry({ label: "haiku-4.5", quality: 0.38, qualitySrc: "seeded", estCostPerMtok: 2, verdict: "below bar" }),
+  ],
+});
+
+test("scorecard speaks plainly: summary sentence, via column, honest seat cost, worded verdicts, legend", () => {
+  const texts = scorecardRows(fixtureCard(), 80).map((r) => r.text);
+  const all = texts.join("\n");
+  // the plain-English "why" leads, and names the plan for a seat winner
+  expect(all).toContain("picked sonnet-4.6 on your claude-max plan");
+  // duplicate model rows are distinguishable: seat shows the account, api shows "api key"
+  expect(all).toContain("claude-max");
+  expect(all).toContain("api key");
+  // seat rows cost "plan" (not the misleading metered price) and show window headroom
+  expect(texts.some((t) => t.includes("claude-max") && t.includes("plan") && !t.includes("$10.00"))).toBe(true);
+  expect(all).toContain("34% plan");
+  // verdicts are words, not jargon
+  expect(all).toContain("free on plan");
+  expect(all).toContain("eligible");
+  expect(all).toContain("under 0.70 bar");
+  expect(all).not.toContain("seat ~free");
+  expect(all).not.toContain("rsch");
+  // the measured prior gets its own sub-line; seeded quality gets the ~ marker
+  expect(texts.some((t) => t.trimStart().startsWith("↳ measured here"))).toBe(true);
+  expect(all).toContain("0.38~");
+  // the legend explains score and the left column
+  expect(all).toContain("lowest eligible wins");
+  expect(all).toContain("~ = estimated quality");
+});
+
+test("every scorecard line fits the given width", () => {
+  for (const width of [80, 60]) {
+    for (const r of scorecardRows(fixtureCard(), width)) {
+      // name columns shrink to fit; only the verdict tail may ever exceed and
+      // be clipped by the renderer — assert the table body itself fits
+      expect(r.text.length).toBeLessThanOrEqual(width);
+    }
+  }
+});
+
+test("unknown router verdicts pass through verbatim", () => {
+  const card = fixtureCard();
+  card.entries[2] = entry({ verdict: "context too small" });
+  const all = scorecardRows(card, 80).map((r) => r.text).join("\n");
+  expect(all).toContain("context too small");
+});
+
+test("env-default candidates carry no accountLabel (rendered as 'api key')", () => {
+  const card = new RoutingSelector().explain({ prompt: "refactor the parser" });
+  const api = card.entries.filter((e) => e.backend === "api");
+  expect(api.length).toBeGreaterThan(0);
+  for (const e of api) expect(e.accountLabel).toBeUndefined();
 });

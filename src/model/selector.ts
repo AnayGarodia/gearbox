@@ -76,6 +76,8 @@ export interface ScorecardEntry {
   estCostPerMtok: number;
   balanceText?: string; // "$12.50" or "$12 est" or undefined when not applicable
   headroomText?: string; // subscription "84% left" or "throttling" for near-limit metered keys
+  accountLabel?: string; // account slug/label serving this candidate ("claude-max"); undefined = bare env key
+  headroomPct?: number; // subscription window headroom 0–100, when known
   score: number;
   chosen: boolean;
   verdict: string;
