@@ -13,6 +13,7 @@ import { generateText, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import { groupTurns, textOf, msgTokens, elideTurn } from "./builder.ts";
+import { countTokens } from "../model/tokens.ts";
 
 // Injectable so tests can compact without a live model call.
 export type Summarizer = (transcript: string) => Promise<string>;
@@ -59,28 +60,119 @@ export function shouldAutoCompact(historyTokens: number, overheadTokens: number,
   return historyTokens + Math.max(0, overheadTokens) > budget * COMPACT_AT;
 }
 
+/** What a compaction pass actually returned. `how` is the honest description of
+ *  which escalation rung fired ("summarized N turns" | "elided M turns" |
+ *  "truncated K oversized tool results") so the caller's notice tells the truth
+ *  instead of "nothing old enough" when a deeper rung did the work. */
+export interface CompactResult {
+  messages: ModelMessage[];
+  summarizedTurns: number;
+  before: number;
+  after: number;
+  how: string;
+}
+
+// Per-result token cap for the final escalation rung: a single oversized
+// tool result (one mega read_file) is capped in place rather than letting it
+// pin the whole window above the compaction threshold forever.
+const TRUNCATE_RESULT_TOKENS = 2_000;
+const TRUNCATION_MARKER = "\n[output truncated during compaction — re-read the file if needed]";
+
+// Sentinel preamble for mechanical elision. Detected by EXACT match so repeated
+// elideHistory calls reuse one preamble instead of stacking a new synthetic
+// user→assistant pair per pass.
+const ELIDE_PREAMBLE_USER = "Compact the earlier conversation.";
+const ELIDE_PREAMBLE_ASSISTANT = "Earlier turns follow with their full tool output elided — each turn keeps its prose plus a one-line trail per tool call.";
+
+/** Strip a previously-injected elision preamble (exact sentinel match on
+ *  history[0]) so a fresh one can be prepended without stacking. */
+function stripElidePreamble(history: ModelMessage[]): ModelMessage[] {
+  if (history[0]?.role !== "user" || history[0].content !== ELIDE_PREAMBLE_USER) return history;
+  const framing = history[1];
+  return history.slice(framing?.role === "assistant" && framing.content === ELIDE_PREAMBLE_ASSISTANT ? 2 : 1);
+}
+
+/**
+ * Cap each oversized tool-result part IN PLACE (head-truncated with a marker
+ * telling the model to re-read if it needs the rest). The tool-call/tool-result
+ * PAIRING is untouched — only result content shrinks — so this is safe to apply
+ * anywhere, including the very last turn. Pure.
+ */
+export function truncateToolResults(messages: ModelMessage[], maxTokensPerResult = TRUNCATE_RESULT_TOKENS, modelId?: string): { messages: ModelMessage[]; truncated: number } {
+  let truncated = 0;
+  const out = messages.map((m) => {
+    if (m.role !== "tool" || !Array.isArray((m as any).content)) return m;
+    let changed = false;
+    const kept = (m as any).content.map((p: any) => {
+      if (p?.type !== "tool-result") return p;
+      const raw = typeof p.output === "string" ? p.output : p.output?.value;
+      if (typeof raw !== "string" || countTokens(raw, modelId) <= maxTokensPerResult) return p;
+      changed = true;
+      truncated++;
+      const capped = raw.slice(0, maxTokensPerResult * 4) + TRUNCATION_MARKER; // ~4 chars/token estimate
+      return { ...p, output: typeof p.output === "string" ? capped : { ...p.output, value: capped } };
+    });
+    return changed ? ({ ...(m as any), content: kept } as ModelMessage) : m;
+  });
+  return { messages: out, truncated };
+}
+
+/**
+ * The LAST escalation rungs, shared by both compaction paths: when no turn is
+ * old enough to summarize/elide away (a single mega-turn can fill the window),
+ * shrink INSIDE the recent window instead of giving up —
+ *   1. elide every kept turn except the last (tool IO distilled to one line);
+ *   2. truncate oversized tool results in place, INCLUDING the last turn.
+ * Each rung keeps the after >= before honesty check; null only when the
+ * history is genuinely small (no rung saves anything).
+ */
+function shrinkRecentWindow(history: ModelMessage[], modelId?: string): CompactResult | null {
+  const before = estimateHistoryTokens(history, modelId);
+  const turns = groupTurns(history);
+  if (turns.length > 1) {
+    const messages: ModelMessage[] = [...turns.slice(0, -1).flatMap((t) => elideTurn(t)), ...turns[turns.length - 1]!];
+    const after = estimateHistoryTokens(messages, modelId);
+    if (after < before) {
+      const n = turns.length - 1;
+      return { messages, summarizedTurns: n, before, after, how: `elided ${n} turn${n > 1 ? "s" : ""}` };
+    }
+  }
+  const { messages, truncated } = truncateToolResults(history, TRUNCATE_RESULT_TOKENS, modelId);
+  if (truncated > 0) {
+    const after = estimateHistoryTokens(messages, modelId);
+    if (after < before) return { messages, summarizedTurns: 0, before, after, how: `truncated ${truncated} oversized tool result${truncated > 1 ? "s" : ""}` };
+  }
+  return null;
+}
+
 /**
  * MODEL-FREE compaction: mechanically elide every turn older than `keepRecent`
  * (tool exchanges distilled to one line each via builder's elideTurn). Used
  * when no API-key summarizer is available (subscription-only sessions) and as
  * the fallback when the summarizer fails — /compact must always be able to
- * shrink the history. Returns null when there's nothing old enough, or when
- * elision wouldn't actually save tokens (no-op honesty).
+ * shrink the history. ESCALATION LADDER: if nothing is old enough at the given
+ * keepRecent, it is lowered (n-1 … 1); if there is still nothing to elide away
+ * (≤1 turn), it shrinks INSIDE the window (elide all but the last turn, then
+ * truncate oversized tool results in place). Returns null only when the
+ * history is genuinely small — no rung saves any tokens.
  */
-export function elideHistory(history: ModelMessage[], keepRecent = 4): { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number } | null {
-  const turns = groupTurns(history);
-  const split = turns.length - keepRecent;
-  if (split < 1) return null;
-  const messages: ModelMessage[] = [
-    { role: "user", content: "Compact the earlier conversation." },
-    { role: "assistant", content: "Earlier turns follow with their full tool output elided — each turn keeps its prose plus a one-line trail per tool call." },
-    ...turns.slice(0, split).flatMap((t) => elideTurn(t)),
-    ...turns.slice(split).flat(),
-  ];
+export function elideHistory(history: ModelMessage[], keepRecent = 4): CompactResult | null {
+  const base = stripElidePreamble(history);
   const before = estimateHistoryTokens(history);
-  const after = estimateHistoryTokens(messages);
-  if (after >= before) return null;
-  return { messages, summarizedTurns: split, before, after };
+  const turns = groupTurns(base);
+  for (let k = Math.min(keepRecent, turns.length - 1); k >= 1; k--) {
+    const split = turns.length - k;
+    if (split < 1) continue;
+    const messages: ModelMessage[] = [
+      { role: "user", content: ELIDE_PREAMBLE_USER },
+      { role: "assistant", content: ELIDE_PREAMBLE_ASSISTANT },
+      ...turns.slice(0, split).flatMap((t) => elideTurn(t)),
+      ...turns.slice(split).flat(),
+    ];
+    const after = estimateHistoryTokens(messages);
+    if (after < before) return { messages, summarizedTurns: split, before, after, how: `elided ${split} turn${split > 1 ? "s" : ""}` };
+  }
+  return shrinkRecentWindow(base);
 }
 
 /** Render turns as a readable transcript for the summarizer. */
@@ -99,24 +191,29 @@ function renderTranscript(turns: ModelMessage[][]): string {
 /**
  * Compact `history`: summarize every turn older than `keepRecent` into a single
  * synthetic user→assistant exchange, then keep the recent turns verbatim. The
- * recent turns stay whole (tool pairing intact). Returns null when there's
- * nothing old enough to be worth compacting, or if summarization fails/empties.
+ * recent turns stay whole (tool pairing intact). ESCALATION LADDER: when nothing
+ * is old enough at the requested keepRecent, it is lowered (n-1 … 1); with ≤1
+ * turn (one mega-turn filling the window) it falls through to the model-free
+ * intra-window rungs (elide all but the last turn, then truncate oversized tool
+ * results in place). Returns null only when the history is genuinely small;
+ * throws when the summarizer itself fails.
  */
 export async function compactHistory(opts: {
   history: ModelMessage[];
   summarize: Summarizer;
   keepRecent?: number;
-}): Promise<{ messages: ModelMessage[]; summarizedTurns: number; before: number; after: number } | null> {
+}): Promise<CompactResult | null> {
   const { history, summarize } = opts;
-  const keepRecent = opts.keepRecent ?? 4;
   const turns = groupTurns(history);
+  // Lower keepRecent until at least one turn is old enough to summarize away.
+  const keepRecent = Math.min(opts.keepRecent ?? 4, Math.max(1, turns.length - 1));
   const split = turns.length - keepRecent;
-  if (split < 1) return null; // nothing old enough to compact
+  if (split < 1) return shrinkRecentWindow(history); // ≤1 turn: shrink inside the window
 
   const old = turns.slice(0, split);
   const recent = turns.slice(split);
   const transcript = renderTranscript(old);
-  if (!transcript.trim()) return null;
+  if (!transcript.trim()) return shrinkRecentWindow(history);
 
   let summary: string;
   try {
@@ -136,5 +233,5 @@ export async function compactHistory(opts: {
   ];
   const before = estimateHistoryTokens(history);
   const after = estimateHistoryTokens(messages);
-  return { messages, summarizedTurns: old.length, before, after };
+  return { messages, summarizedTurns: old.length, before, after, how: `summarized ${old.length} turn${old.length > 1 ? "s" : ""}` };
 }

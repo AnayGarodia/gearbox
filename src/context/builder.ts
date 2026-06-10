@@ -489,7 +489,7 @@ export function buildContext(opts: {
   // Repo map: compact structural signatures ranked by import in-degree. Capped
   // at 5% of the input budget so it never dominates the window. See repomap.ts.
   const mapBudget = Math.min(4_000, Math.floor(inputBudget * 0.05));
-  const map = safe(() => repoMap(cwd, mapBudget), "");
+  const map = safe(() => repoMap(cwd, mapBudget, modelId), "");
   if (map) {
     system += `\n\n# REPO MAP (structure for awareness; read files for detail)\n${map}`;
     sections.push({ name: "repomap", tokens: countTokens(map, modelId) });
@@ -519,35 +519,40 @@ export function buildContext(opts: {
   const split = Math.max(0, turns.length - recent);
 
   // BM25 retrieval: top-k files scored against the current user prompt, packed
-  // within 15% of the input budget. See retrieve.ts for scoring details.
+  // within 15% of the input budget. See retrieve.ts for scoring details. The
+  // recently-read filter is applied AFTER the budget trim (Step 3), against the
+  // turns actually kept — filtering against the pre-trim window wrongly treated
+  // files in subsequently-dropped turns as in-context and skipped them.
   const retrieveBudget = Math.min(12_000, Math.floor(inputBudget * 0.15));
-  const recentlyRead = recentlyReadPaths(turns.slice(split), cwd);
-  const hits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), [])
-    // Don't inject a file the model JUST read — its full content is already in
-    // the kept window, so the retrieval copy is pure duplication.
-    .filter((h) => !recentlyRead.has(resolvePath(cwd, h.file)));
-  if (hits.length) {
-    const block = hits.map((h) => `=== ${h.file} ===\n${h.content}`).join("\n\n");
-    volatileParts.push(`# RELEVANT FILES (retrieved for this task)\n${block}`);
-    sections.push({ name: "retrieved", tokens: hits.reduce((s, h) => s + h.tokens, 0) });
-  }
+  const allHits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), []);
 
   // ── Step 3: curated history + current user message, budgeted ───────────────
 
-  // Wrap the volatile block into the current user message. A header labels the
-  // block as reference material so the model doesn't treat it as part of the
-  // conversation transcript.
-  const turnContext = volatileParts.length
-    ? `# CONTEXT FOR THIS TURN (current repo state + files retrieved for your task — reference material, not part of our conversation)\n\n${volatileParts.join("\n\n")}`
-    : "";
-  const baseUserContent = opts.userContent ?? userText;
-  const userContent = turnContext
-    ? typeof baseUserContent === "string"
-      ? [{ type: "text" as const, text: turnContext }, { type: "text" as const, text: baseUserContent }]
-      : [{ type: "text" as const, text: turnContext }, ...(baseUserContent as any[])]
-    : baseUserContent;
-  const userMsg: ModelMessage = { role: "user", content: userContent as any };
-  const userTokens = msgTokens(userMsg, modelId);
+  // Wrap the volatile block (plus the given retrieval hits) into the current
+  // user message. A header labels the block as reference material so the model
+  // doesn't treat it as part of the conversation transcript.
+  const composeUser = (hits: typeof allHits): ModelMessage => {
+    const parts = [...volatileParts];
+    if (hits.length) {
+      const block = hits.map((h) => `=== ${h.file} ===\n${h.content}`).join("\n\n");
+      parts.push(`# RELEVANT FILES (retrieved for this task)\n${block}`);
+    }
+    const turnContext = parts.length
+      ? `# CONTEXT FOR THIS TURN (current repo state + files retrieved for your task — reference material, not part of our conversation)\n\n${parts.join("\n\n")}`
+      : "";
+    const baseUserContent = opts.userContent ?? userText;
+    const userContent = turnContext
+      ? typeof baseUserContent === "string"
+        ? [{ type: "text" as const, text: turnContext }, { type: "text" as const, text: baseUserContent }]
+        : [{ type: "text" as const, text: turnContext }, ...(baseUserContent as any[])]
+      : baseUserContent;
+    return { role: "user", content: userContent as any };
+  };
+  // Provisional user message with ALL hits: trimming against the larger size is
+  // conservative — once duplicate hits are filtered out below, the final send
+  // can only be smaller than what the trim budgeted for.
+  let userMsg = composeUser(allHits);
+  let userTokens = msgTokens(userMsg, modelId);
 
   // Apply elision to old turns: assistant text survives, tool exchanges are
   // distilled to one line each. Recent turns keep full tool IO, except that any
@@ -576,6 +581,19 @@ export function buildContext(opts: {
   while (projected.length && total > historyBudget) {
     total -= turnCost(projected.shift()!);
   }
+
+  // Now that the kept window is final, filter retrieval against the reads that
+  // actually survived: elided turns carry no tool-call parts and dropped turns
+  // are gone, so this is exactly the set whose full content rides in-context.
+  // Don't inject a file the model JUST read — the retrieval copy is pure
+  // duplication; a read in a dropped/elided turn no longer suppresses the hit.
+  const recentlyRead = recentlyReadPaths(projected, cwd);
+  const hits = allHits.filter((h) => !recentlyRead.has(resolvePath(cwd, h.file)));
+  if (hits.length !== allHits.length) {
+    userMsg = composeUser(hits);
+    userTokens = msgTokens(userMsg, modelId);
+  }
+  if (hits.length) sections.push({ name: "retrieved", tokens: hits.reduce((s, h) => s + h.tokens, 0) });
 
   // ── Step 4: deduplicate stale reads and sanitize orphan tool pairs ─────────
 

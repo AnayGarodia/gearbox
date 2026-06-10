@@ -1,5 +1,102 @@
 import { test, expect } from "bun:test";
-import { differentiatingSlice, longestCommonPrefixLen } from "../src/truncate.ts";
+import { mkdtempSync, readFileSync, utimesSync, writeFileSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { differentiatingSlice, longestCommonPrefixLen, truncateOutput, spillOutput, gcSpills } from "../src/truncate.ts";
+
+// ── truncateOutput ───────────────────────────────────────────────────────────
+
+const numbered = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n");
+
+test("no truncation under both limits", () => {
+  const text = numbered(10);
+  const r = truncateOutput(text);
+  expect(r.truncated).toBe(false);
+  expect(r.text).toBe(text);
+  expect(r.totalLines).toBe(10);
+  expect(r.totalBytes).toBe(Buffer.byteLength(text));
+});
+
+test("line cap: head keeps the start and the notice names the counts + recovery move", () => {
+  const r = truncateOutput(numbered(50), { maxLines: 10 });
+  expect(r.truncated).toBe(true);
+  expect(r.totalLines).toBe(50);
+  expect(r.text.startsWith("line 1\n")).toBe(true);
+  expect(r.text).toContain("line 10");
+  expect(r.text).not.toContain("line 11\n");
+  expect(r.text).toContain("[truncated: showing lines 1-10 of 50.");
+  expect(r.text).toContain("offset=11");
+  expect(r.text).toContain("search");
+});
+
+test("line cap: tail keeps the end and prepends the notice", () => {
+  const r = truncateOutput(numbered(50), { maxLines: 10, direction: "tail" });
+  expect(r.truncated).toBe(true);
+  expect(r.text.startsWith("[truncated: showing last 10 of 50 lines.")).toBe(true);
+  expect(r.text).toContain("line 41");
+  expect(r.text.endsWith("line 50")).toBe(true);
+  expect(r.text).not.toContain("line 40\n");
+});
+
+test("byte cap bites even when the line count is fine", () => {
+  const text = Array.from({ length: 5 }, (_, i) => `${i}:${"x".repeat(100)}`).join("\n");
+  const r = truncateOutput(text, { maxBytes: 250 });
+  expect(r.truncated).toBe(true);
+  expect(r.text).toContain("0:"); // head keeps the start
+  expect(r.text).not.toContain("4:x");
+  expect(Buffer.byteLength(r.text)).toBeLessThan(Buffer.byteLength(text));
+});
+
+test("byte cap, tail direction, keeps the end", () => {
+  const text = Array.from({ length: 5 }, (_, i) => `${i}:${"x".repeat(100)}`).join("\n");
+  const r = truncateOutput(text, { maxBytes: 250, direction: "tail" });
+  expect(r.truncated).toBe(true);
+  expect(r.text).toContain("4:");
+  expect(r.text).not.toContain("0:x");
+});
+
+test("a single line over the byte budget is hard-sliced, not dropped", () => {
+  const r = truncateOutput("y".repeat(1000), { maxBytes: 100 });
+  expect(r.truncated).toBe(true);
+  expect(r.text).toContain("y".repeat(100));
+  expect(r.text).not.toContain("y".repeat(101));
+});
+
+test("spillPath is woven into the notice", () => {
+  const r = truncateOutput(numbered(50), { maxLines: 10, spillPath: "/tmp/spill.txt" });
+  expect(r.text).toContain("Full output: /tmp/spill.txt.");
+  const tail = truncateOutput(numbered(50), { maxLines: 10, direction: "tail", spillPath: "/tmp/spill.txt" });
+  expect(tail.text).toContain("Full output: /tmp/spill.txt.");
+});
+
+// ── spillOutput / gcSpills ───────────────────────────────────────────────────
+
+test("spillOutput writes the full text under GEARBOX_HOME/tool-outputs and gcSpills reaps old files", () => {
+  const home = mkdtempSync(join(tmpdir(), "gearbox-spill-"));
+  const prev = process.env.GEARBOX_HOME;
+  process.env.GEARBOX_HOME = home;
+  try {
+    const path = spillOutput("run-shell", "the full output");
+    expect(path).toBeTruthy();
+    expect(path!).toContain(join(home, "tool-outputs"));
+    expect(readFileSync(path!, "utf8")).toBe("the full output");
+
+    // age a file past the cutoff and gc it
+    const old = join(home, "tool-outputs", "old-spill.txt");
+    writeFileSync(old, "stale");
+    const past = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    utimesSync(old, past, past);
+    gcSpills();
+    const left = readdirSync(join(home, "tool-outputs"));
+    expect(left).not.toContain("old-spill.txt");
+    expect(left.length).toBe(1); // the fresh spill survives
+  } finally {
+    if (prev === undefined) delete process.env.GEARBOX_HOME;
+    else process.env.GEARBOX_HOME = prev;
+  }
+});
+
+// ── differentiating truncation ───────────────────────────────────────────────
 
 test("longestCommonPrefixLen finds the shared prefix length", () => {
   expect(longestCommonPrefixLen(["abcd", "abce"])).toBe(3);

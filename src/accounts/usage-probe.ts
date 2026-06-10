@@ -68,8 +68,10 @@ export function parseCodexRateLimits(rl: any, observedAt?: number): ProbeSnapsho
   return out;
 }
 
-function windowType(windowMinutes: number | undefined, slot: "primary" | "secondary"): string {
-  if (windowMinutes != null) return windowMinutes <= 24 * 60 ? "five_hour" : "seven_day";
+export function windowType(windowMinutes: number | undefined, slot: "primary" | "secondary"): string {
+  // ≈300 min is the 5-hour window; anything longer (1440-min daily, 10080-min
+  // weekly) is NOT — bucket it with seven_day rather than mislabel it 5-hour.
+  if (windowMinutes != null) return windowMinutes <= 8 * 60 ? "five_hour" : "seven_day";
   return slot === "primary" ? "five_hour" : "seven_day";
 }
 

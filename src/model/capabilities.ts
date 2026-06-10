@@ -114,15 +114,23 @@ export function capabilitySummary(spec: ModelSpec): string {
   return parts.length ? parts.join(" · ") : "text only";
 }
 
+// A requirement is "missing" only when the capability is known-absent (an
+// explicit `false`). "unknown" PASSES: gateway/openai-compat/local providers
+// report unknown for tools/images/jsonSchema, and treating that as missing
+// silently excluded every such model from routing (every turn requires tools).
+// Optimistic is safe — a real runtime failure is classified and parked by the
+// live failover hop, so a model that genuinely lacks the capability routes
+// around itself after one miss instead of never being tried at all.
 export function missingRequirements(spec: ModelSpec, required: ModelRequirement[] = []): ModelRequirement[] {
   if (!required.length) return [];
   const caps = capabilitiesFor(spec);
   return required.filter((r) => {
     if (r === "reasoningEffort") return caps.reasoningEffort === false;
-    return caps[r] !== true;
+    return caps[r] === false; // only known-absent excludes; "unknown" is optimistic
   });
 }
 
+/** True when no required capability is known-absent (unknowns pass — see missingRequirements). */
 export function supportsRequirements(spec: ModelSpec, required: ModelRequirement[] = []): boolean {
   return missingRequirements(spec, required).length === 0;
 }

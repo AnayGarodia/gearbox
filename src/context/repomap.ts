@@ -66,9 +66,11 @@ const moduleName = (spec: string): string => (spec.split("/").pop() ?? spec).rep
  *     ...
  *
  * Files are ranked by import in-degree before the budget cap is applied, so
- * the most structurally important modules appear first.
+ * the most structurally important modules appear first. `modelId` calibrates
+ * the token counting to the answering model — without it the default safe
+ * over-estimate (1.35x) under-fills the map for non-Anthropic models.
  */
-export function repoMap(cwd = process.cwd(), budget = 4000): string {
+export function repoMap(cwd = process.cwd(), budget = 4000, modelId?: string): string {
   const files = listProjectFiles(cwd).filter((f) => CODE.test(f));
 
   // Single read pass per file: extract both signature lines and import targets.
@@ -124,7 +126,7 @@ export function repoMap(cwd = process.cwd(), budget = 4000): string {
   let used = 0;
   for (const p of parsed) {
     const block = `${p.file}\n${p.sigs.join("\n")}`;
-    const cost = countTokens(block);
+    const cost = countTokens(block, modelId);
     if (used + cost > budget) {
       if (!blocks.length) blocks.push(block); // guarantee at least one entry
       break;

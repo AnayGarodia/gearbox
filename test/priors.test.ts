@@ -24,17 +24,15 @@ afterEach(() => {
   clearPriorsCache();
 });
 
-test("a prior stays silent below 4 verified outcomes (opinion is not evidence)", () => {
-  recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
-  recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
-  recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
+test("a prior stays silent below 8 verified outcomes (opinion is not evidence)", () => {
+  for (let i = 0; i < 7; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
   expect(priorFor("code", "m", "r")).toBeNull();
   recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
   expect(priorFor("code", "m", "r")).not.toBeNull();
 });
 
 test("persistent failures pull quality DOWN; passes push it up only slightly", () => {
-  for (let i = 0; i < 6; i++) recordTurnOutcome({ kind: "code", modelId: "bad", outcome: "failed", repo: "r" });
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "bad", outcome: "failed", repo: "r" });
   for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "good", outcome: "passed", repo: "r" });
   const bad = priorFor("code", "bad", "r")!;
   const good = priorFor("code", "good", "r")!;
@@ -43,27 +41,39 @@ test("persistent failures pull quality DOWN; passes push it up only slightly", (
   expect(good.delta).toBeLessThanOrEqual(0.04); // asymmetric on purpose
 });
 
-test("an /undo counts double — a human revert is the costliest outcome", () => {
-  for (let i = 0; i < 3; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+test("an /undo counts as HALF a failure — weaker evidence than a red VERIFY", () => {
+  for (let i = 0; i < 7; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
   recordTurnOutcome({ kind: "code", modelId: "m", outcome: "undone", repo: "r" });
   const withUndo = priorFor("code", "m", "r")!;
   clearPriorsCache();
   process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-priors2-"));
-  for (let i = 0; i < 3; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  for (let i = 0; i < 7; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
   recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
   const withFail = priorFor("code", "m", "r")!;
-  expect(withUndo.passRate).toBeLessThan(withFail.passRate);
+  // An undo hurts LESS than a failed verification (it is ambiguous evidence).
+  expect(withUndo.passRate).toBeGreaterThan(withFail.passRate);
+});
+
+test("routine /undo cleanups alone cannot sink a bar-clearing model below the bar", () => {
+  // 8 undos with zero failed VERIFYs: delta must stay above the worst case —
+  // half-weighted undos leave passRate at (0+1)/(0+4+2)=0.167, still clamped,
+  // but a mixed history (4 passes + 4 undos) must NOT clamp to MIN_DELTA.
+  for (let i = 0; i < 4; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  for (let i = 0; i < 4; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "undone", repo: "r" });
+  const p = priorFor("code", "m", "r")!;
+  expect(p.delta).toBeGreaterThan(-0.12); // not the full clamp
+  expect(0.806 + p.delta).toBeGreaterThan(0.7); // a deepseek-class model still clears the code bar
 });
 
 test("priors are scoped per repo and per kind", () => {
-  for (let i = 0; i < 5; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "repo-a" });
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "repo-a" });
   expect(priorFor("code", "m", "repo-a")).not.toBeNull();
   expect(priorFor("code", "m", "repo-b")).toBeNull();
   expect(priorFor("summarize", "m", "repo-a")).toBeNull();
 });
 
 test("priorLine renders the /why note", () => {
-  for (let i = 0; i < 4; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
   expect(priorLine("code", "m", "r")).toContain("measured here");
   expect(priorLine("code", "nope", "r")).toBeNull();
 });
@@ -73,10 +83,10 @@ test("ROUTER: a model that keeps failing verification HERE stops being routed he
   const r = new RoutingSelector();
   const task = { prompt: "refactor the parser", kind: "code" as const };
   expect(r.select(task).model.id).toBe("deepseek-v4-pro");
-  // Six failed verifications in THIS repo sink it below the bar → routing
+  // Eight failed verifications in THIS repo sink it below the bar → routing
   // climbs to the next candidate without any cooldown or error.
   const repo = process.cwd().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root";
-  for (let i = 0; i < 6; i++) recordTurnOutcome({ kind: "code", modelId: "deepseek-v4-pro", outcome: "failed", repo });
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "deepseek-v4-pro", outcome: "failed", repo });
   clearPriorsCache();
   const after = r.select(task);
   expect(after.model.id).not.toBe("deepseek-v4-pro");

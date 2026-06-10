@@ -74,9 +74,11 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
         break;
       }
       case "turn.completed":
+        // Only overwrite with numbers the event actually carries — a final
+        // event with no usage must not clobber counts already accumulated.
         if (obj.usage) {
-          state.usage.inputTokens = obj.usage.input_tokens ?? 0;
-          state.usage.outputTokens = obj.usage.output_tokens ?? 0;
+          state.usage.inputTokens = obj.usage.input_tokens ?? state.usage.inputTokens;
+          state.usage.outputTokens = obj.usage.output_tokens ?? state.usage.outputTokens;
         }
         break;
     }
@@ -108,6 +110,15 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
     }
     case "assistant": {
       if (obj.message?.model) state.model = obj.message.model; // the model that produced this message
+      // Per-message usage accumulates as the stream runs so a subprocess that
+      // dies before its final `result` event (which carries the authoritative
+      // totals and overwrites these) still reports the tokens it streamed,
+      // instead of emitting `done` with zero usage.
+      const mu = obj.message?.usage;
+      if (mu) {
+        state.usage.inputTokens += mu.input_tokens ?? 0;
+        state.usage.outputTokens += mu.output_tokens ?? 0;
+      }
       for (const part of obj.message?.content ?? []) {
         if (part.type === "text" && part.text) {
           state.text += part.text;
@@ -136,9 +147,11 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
       break;
     }
     case "result": {
+      // Authoritative turn totals — overwrite the streamed accumulation, but
+      // never clobber it with zero when a field is missing.
       const u = obj.usage ?? {};
-      state.usage.inputTokens = u.input_tokens ?? 0;
-      state.usage.outputTokens = u.output_tokens ?? 0;
+      state.usage.inputTokens = u.input_tokens ?? state.usage.inputTokens;
+      state.usage.outputTokens = u.output_tokens ?? state.usage.outputTokens;
       if (typeof obj.total_cost_usd === "number") state.costUSD = obj.total_cost_usd;
       if (obj.session_id) state.sessionId = obj.session_id;
       // `result` text is the final answer; if no streamed assistant text arrived

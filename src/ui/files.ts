@@ -10,6 +10,12 @@ const MAX_ATTACH = 20_000;
 
 let cache: string[] | null = null;
 
+/** Drop the cached file list so the next listProjectFiles() re-scans — called
+ *  after the agent creates a file, so new files show up in @mentions. */
+export function invalidateFileListCache(): void {
+  cache = null;
+}
+
 export function listProjectFiles(cwd = process.cwd()): string[] {
   if (cache) return cache;
   // git ls-files is fast and automatically respects .gitignore.

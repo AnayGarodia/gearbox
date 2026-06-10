@@ -39,6 +39,39 @@ test("below-bar candidates are shown but never chosen, with provenance tags", ()
   for (const e of card.entries) expect(["measured", "researched", "seeded"]).toContain(e.qualitySrc);
 });
 
+// Regression: explain() used to drop `interactive` (and warm) from its scoring
+// call while select() passed them, so /why could show a different winner than
+// the actual pick. Both must score with the same flags.
+test("explain agrees with select under warm + interactive", () => {
+  const r = new RoutingSelector();
+  // First pick establishes the selector's own warm memory (the default warm).
+  r.select({ prompt: "refactor the parser" });
+  const task = { prompt: "refactor the parser", interactive: true };
+  const chosen = r.explain(task).entries.filter((e) => e.chosen);
+  expect(chosen.length).toBe(1);
+  expect(chosen[0]!.label).toBe(r.select(task).model.label);
+
+  // An explicitly supplied task.warm is honored the same way by both paths.
+  const warmTask = { prompt: "refactor the parser", interactive: true, warm: { accountId: "env:deepseek", modelId: "deepseek-v4-pro" } };
+  expect(r.explain(warmTask).entries.find((e) => e.chosen)!.label).toBe(r.select(warmTask).model.label);
+});
+
+// The selector remembers its own last pick as the default warm: after a select,
+// every OTHER candidate is charged the switch penalty, so the same candidate
+// scores higher (worse) on a warmed selector than on a cold one.
+test("the selector's own last pick acts as the default warm for the next turn", () => {
+  const task = { prompt: "refactor the parser" };
+  const cold = new RoutingSelector().explain(task); // no pick yet → no warm → no switch penalty
+  const warmed = new RoutingSelector();
+  expect(warmed.select(task).model.id).toBe("deepseek-v4-pro"); // establishes warm
+  const after = warmed.explain(task);
+  const score = (card: ReturnType<RoutingSelector["explain"]>, label: string) =>
+    card.entries.find((e) => e.label === label)!.score;
+  // The warm model's score is unchanged; a cold sibling now pays the penalty.
+  expect(score(after, "sonnet-4.6")).toBeGreaterThan(score(cold, "sonnet-4.6"));
+  expect(score(after, "deepseek-v4-pro")).toBeCloseTo(score(cold, "deepseek-v4-pro"), 10);
+});
+
 test("scorecardRows renders a title, a column header, and one row per candidate", () => {
   const card = new RoutingSelector().explain({ prompt: "refactor the parser" });
   const rows = scorecardRows(card);

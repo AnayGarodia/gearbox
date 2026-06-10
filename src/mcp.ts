@@ -270,8 +270,13 @@ export async function mcpTools(onEvent?: OnEvent, readOnly = false): Promise<Rec
             throw new Error("Permission denied by the user — they declined this MCP tool.");
           }
           onEvent?.({ type: "phase", label: "using MCP", detail: `${server.name}.${remote.name}`, state: "running" });
-          const result = await server.client.callTool({ name: remote.name, arguments: input ?? {} }, undefined, { timeout: 120_000 });
-          return formatMcpResult(result);
+          try {
+            const result = await server.client.callTool({ name: remote.name, arguments: input ?? {} }, undefined, { timeout: 120_000 });
+            return formatMcpResult(result);
+          } catch (e: any) {
+            // SDK exceptions can be raw objects — surface a readable message to the model.
+            throw new Error(e?.message ?? "MCP call failed");
+          }
         },
       });
     }

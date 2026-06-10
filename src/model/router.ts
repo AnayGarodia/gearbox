@@ -145,6 +145,17 @@ function toScoreCandidate(c: Candidate, kind?: string): ScoreCandidate {
 export class RoutingSelector implements ModelSelector {
   constructor(private fallbackId?: string) {}
 
+  // The (account, model) this selector last returned — the cache-warm pair.
+  // Used as the default `warm` for the scorer when the task does not supply
+  // one, so near-tied candidates stick with the loaded model instead of
+  // ping-ponging every turn. A task-supplied warm (the caller knows better,
+  // e.g. after a failover hop landed elsewhere) always wins over this memory.
+  private lastPick?: { accountId: string; modelId: string };
+
+  private warmFor(task: Task): { accountId: string; modelId: string } | undefined {
+    return task.warm ?? this.lastPick;
+  }
+
   // Enumerate every (model, account) pair the user can run right now.
   // Registry models are paired with each enabled non-CLI account for their
   // provider, or with a neutral env-default state when no account is stored.
@@ -188,7 +199,7 @@ export class RoutingSelector implements ModelSelector {
   // Returns a `fallback` field when the enumeration is empty (no keys configured).
   private prepare(task: Task): {
     kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
-    pool: Candidate[]; clears: Candidate[]; estInputTokens: number;
+    pool: Candidate[]; clears: Candidate[]; eligible: Candidate[]; estInputTokens: number;
     fallback?: ModelSpec;
   } {
     const kind = task.kind ?? classify(task.prompt);
@@ -203,7 +214,7 @@ export class RoutingSelector implements ModelSelector {
     if (all.length === 0) {
       // No API keys or seats configured: fall back to the default model if available.
       const m = pickDefaultModel(this.fallbackId);
-      return { kind, bar, escalate, required, ctx, pool: [], clears: [], estInputTokens, fallback: m ?? undefined };
+      return { kind, bar, escalate, required, ctx, pool: [], clears: [], eligible: [], estInputTokens, fallback: m ?? undefined };
     }
     // Filter to models that satisfy every required capability.
     const capable = required.length ? all.filter((c) => supportsRequirements(c.spec, required)) : all;
@@ -217,8 +228,12 @@ export class RoutingSelector implements ModelSelector {
     const fits = need > 0 ? capable.filter((c) => c.spec.contextWindow >= need) : capable;
     // If nothing fits the context requirement, use the full capable set (prefer
     // a likely-too-small model over no model at all).
-    let pool = fits.length ? fits : capable;
-    pool = applyGlobalPreference(pool);
+    // `eligible` is the capability/context-filtered set BEFORE the global
+    // preference narrows it: an explicit per-kind /prefer is searched against
+    // THIS set, so "/prefer code haiku" wins even when a global preference
+    // (e.g. "subscription only") would have filtered haiku out of the pool.
+    const eligible = fits.length ? fits : capable;
+    const pool = applyGlobalPreference(eligible);
     // Seats with no quality profile clear the bar unconditionally (do not
     // penalise them on a 0.5 guess). Seats with a known-weak quality (e.g.
     // Haiku) are still held to the bar so they are not chosen for hard tasks
@@ -226,7 +241,7 @@ export class RoutingSelector implements ModelSelector {
     // Measured per-repo priors (the flywheel): a model that keeps failing
     // verification HERE has its effective quality pulled down — enough turns
     // of red and it sinks below the bar for this repo's work. Conservative,
-    // asymmetric, and silent until ≥4 verified outcomes exist (priors.ts).
+    // asymmetric, and silent until ≥8 verified outcomes exist (priors.ts).
     const adjQuality = (c: Candidate): number => qualityOf(c) + (priorFor(kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
     const clearsAdj = (c: Candidate): boolean =>
       c.backend?.kind === "cli" ? !hasKnownQuality(c) || adjQuality(c) >= bar : adjQuality(c) >= bar;
@@ -238,7 +253,7 @@ export class RoutingSelector implements ModelSelector {
       const top = Math.max(...pool.map(qualityOf));
       clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= top - 1e-9);
     }
-    return { kind, bar, escalate, required, ctx, pool, clears, estInputTokens };
+    return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens };
   }
 
   // Return the per-kind remembered preference if it is present in the given
@@ -262,15 +277,21 @@ export class RoutingSelector implements ModelSelector {
     }
     // Use the bar-clearing set when one exists; otherwise fall back to the full pool.
     const candidates = p.clears.length ? p.clears : p.pool;
-    // An explicit /prefer must be searched in the WHOLE pool, not only the
-    // bar-clearing set. Otherwise "prefer haiku for code" was silently ignored
-    // because Haiku sits below the code bar and never entered `clears`.
-    const preferred = this.preferredIn(p.kind, p.pool);
-    if (preferred) return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
+    // An explicit /prefer must be searched in the ELIGIBLE set (capability- and
+    // context-filtered, but BEFORE the global preference and the bar). Otherwise
+    // "prefer haiku for code" was silently ignored when haiku sits below the
+    // code bar, or when a global preference filtered it out of the pool — a
+    // per-kind preference is the more specific instruction, so it wins.
+    const preferred = this.preferredIn(p.kind, p.eligible);
+    if (preferred) {
+      this.lastPick = { accountId: preferred.state.accountId, modelId: preferred.spec.id };
+      return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
+    }
 
     // Score all bar-clearing candidates and pick the winner.
-    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive });
+    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) });
     const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
+    this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
     return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
   }
@@ -286,16 +307,19 @@ export class RoutingSelector implements ModelSelector {
       return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: p.fallback ? `only ${p.fallback.label} has a key` : "no model available" };
     }
     const candidates = p.clears.length ? p.clears : p.pool;
-    // Explicit preference overrides the bar, matching the select() logic exactly.
-    const preferred = this.preferredIn(p.kind, p.pool);
+    // Explicit preference overrides the bar and the global filter, matching select().
+    const preferred = this.preferredIn(p.kind, p.eligible);
 
     // Score the entire pool (including below-bar) so the UI can display all
     // candidates. The winner is still determined from the bar-clearing set only.
+    // The SAME flags (warm, interactive) as select() feed every score here, so
+    // the scorecard's numbers — and its winner — match the actual pick.
+    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) };
     const scored = new Map<string, ScoredCandidate>();
-    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind), { candidates: [], now: p.ctx.now, estInputTokens: p.estInputTokens }))) scored.set(s.candidate.id, s);
+    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
       ? preferred.spec.id
-      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive }).candidate.id;
+      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), ...flags }).candidate.id;
 
     const clearsForBar = clearsBar(p.bar);
     for (const c of p.pool) {

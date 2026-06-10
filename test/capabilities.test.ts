@@ -13,6 +13,25 @@ test("capabilities distinguish normal tool turns from image turns", () => {
   expect(missingRequirements(deepseek, ["tools", "images"])).toEqual(["images"]);
 });
 
+test("unknown capability support passes the requirements filter (optimistic)", () => {
+  // Gateway / openai-compat / local providers report "unknown" for tools —
+  // treating that as missing silently excluded every such model from routing
+  // (every turn requires tools). Unknown passes; only explicit false excludes.
+  const gateway = findModel("openrouter/anthropic/claude-sonnet-4.5") ?? {
+    id: "openrouter/test",
+    provider: "openrouter",
+    sdkId: "test",
+    label: "test",
+    contextWindow: 128_000,
+  };
+  expect(supportsRequirements(gateway, ["tools"])).toBe(true);
+  expect(missingRequirements(gateway, ["tools", "images", "jsonSchema"])).toEqual([]);
+  // Explicit false is still a hard exclusion.
+  const noTools = { ...gateway, id: "x/no-tools", capabilities: { tools: false as const } };
+  expect(supportsRequirements(noTools, ["tools"])).toBe(false);
+  expect(missingRequirements(noTools, ["tools"])).toEqual(["tools"]);
+});
+
 test("capability matrix is readable and marks unknown support explicitly", () => {
   const sonnet = findModel("claude-sonnet-4-6")!;
   const openrouter = findModel("openrouter/anthropic/claude-sonnet-4.5") ?? {

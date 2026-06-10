@@ -69,7 +69,8 @@ export function provenTier(passedIntents: (string | undefined)[]): ProofTier {
   return "none";
 }
 
-function summarize(output: string): string {
+/** One-line failure summary from check output: the first error-looking line, clipped. */
+export function summarize(output: string): string {
   const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
   const fail = lines.find((l) => /\b(error|failed|failures?|exception|panic)\b/i.test(l));
   return (fail ?? lines[0] ?? "(no output)").slice(0, 160);

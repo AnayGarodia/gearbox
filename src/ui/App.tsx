@@ -29,7 +29,7 @@ import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector, type ModelChoice } from "../model/selector.ts";
-import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS } from "../model/cooldown.ts";
+import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS, AUTH_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
 import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loadRoutingPreferences, type PreferenceKind } from "../model/preferences.ts";
@@ -1148,7 +1148,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             // index from y so applyMouse gets the correct col/line.
             const value = editRef.current.value;
             const lineCount = Math.max(1, value.split("\n").length);
-            const firstInputRow = rows - lineCount;
+            // MUST mirror composerOffset's row math above — the two diverged once
+            // (rows - lineCount here vs rows - 3 - lineCount there), so every
+            // multi-line click landed the cursor rows away from the click point.
+            const firstInputRow = rows - 3 - lineCount;
             const lineIdx = y - firstInputRow;
             const col = Math.max(0, x - 5 - pageLeftRef.current); // must match composerOffset above
             const shift = (b & 4) !== 0;
@@ -1952,7 +1955,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Run ONE attempt of a chosen backend (terminal events deferred so the loop
       // owns the final outcome). Returns the produced ledger + a cooldown key so a
       // failure can park that account and re-route around it.
-      type Attempt = { messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string; producedOutput?: boolean }; cooldownKey: string };
+      type Attempt = { messages: ModelMessage[]; usage: Usage; failure?: { message: string; producedOutput?: boolean }; cooldownKey: string };
       const runAttempt = async (choice: ModelChoice): Promise<Attempt> => {
         servedModelRef.current = null; // each attempt re-establishes its own wire truth (failover hops must not inherit)
         if (choice.backend?.kind === "cli") {
@@ -2061,12 +2064,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const explicitModelId = directiveId || (sel instanceof FixedSelector ? choice.model.id : undefined);
       // Tokens a FAILED attempt already burned must still be counted (C-A) — they
       // hit the wire. Accumulate across hops so cost/ledger aren't under-counted.
-      const prior = { inputTokens: 0, outputTokens: 0 };
+      const prior: Usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheCreationInputTokens: 0 };
       for (let hop = 0; ; hop++) {
         const a = await runAttempt(choice);
-        const total = { inputTokens: prior.inputTokens + a.usage.inputTokens, outputTokens: prior.outputTokens + a.usage.outputTokens };
+        // Cache read/write tokens ride along (they bill too) — dropping them on a
+        // hop under-counted every failed attempt's real cost in the ledger.
+        const total: Usage = {
+          inputTokens: prior.inputTokens + a.usage.inputTokens,
+          outputTokens: prior.outputTokens + a.usage.outputTokens,
+          cachedInputTokens: (prior.cachedInputTokens ?? 0) + (a.usage.cachedInputTokens ?? 0),
+          cacheCreationInputTokens: (prior.cacheCreationInputTokens ?? 0) + (a.usage.cacheCreationInputTokens ?? 0),
+        };
         if (!a.failure) { emitTerminal(false, undefined, total); return { messages: a.messages, usage: total }; }
         prior.inputTokens = total.inputTokens; prior.outputTokens = total.outputTokens; // this attempt burned tokens too
+        prior.cachedInputTokens = total.cachedInputTokens; prior.cacheCreationInputTokens = total.cacheCreationInputTokens;
         // Failover-able failure classes: exhausted (rate/quota/credit — recovers on
         // its own) and auth (expired/invalid — dead until re-login, but a sibling
         // account can serve). A failure AFTER output streamed never hops: the user
@@ -2085,7 +2096,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Even when this turn can't hop (output already streamed / hop cap),
           // park the failed account so the NEXT turn routes around it instead
           // of marching straight back into the same wall.
-          if (failKind !== "other") markExhausted(parkedKey, DEFAULT_COOLDOWN_MS, a.failure.message);
+          // Auth-dead accounts park for hours, not minutes — a 5-minute park just
+          // meant the router marched back into the same dead account all day.
+          if (failKind !== "other") markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
           // "Deployment doesn't exist" on Azure/Foundry: prune that model id from
           // the account so it never shows up again. User can redeploy + /account refresh to restore.
           if (isNotDeployedError(a.failure.message) && !a.cooldownKey.startsWith("env:")) {
@@ -2095,9 +2108,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               notice(`${choice.model.label} isn't deployed on ${acc.slug ?? acc.id} — removed from your model list.\nDeploy it in your Azure portal, then /account refresh to restore it.`);
             }
           }
-          emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior };
+          // A turn that died before ANY output must not commit its dangling user
+          // message — the next turn would append another user message and every
+          // provider 400s on consecutive user roles, poisoning the whole session.
+          // Output streamed → keep the partial (user → partial assistant is legal).
+          emitTerminal(true, a.failure.message, prior);
+          return { messages: a.failure.producedOutput ? a.messages : messages, usage: prior };
         }
-        markExhausted(parkedKey, DEFAULT_COOLDOWN_MS, a.failure.message);
+        markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
         try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
@@ -2105,7 +2123,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
         // is a legitimate hop now that parks can be model-scoped.
         const nextEffectiveKey = next && nextAcct ? (scope === "account" ? nextAcct : modelScopedKey(nextAcct, next.model.id)) : null;
-        if (!next || nextEffectiveKey === parkedKey) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
+        if (!next || nextEffectiveKey === parkedKey) {
+          emitTerminal(true, a.failure.message, prior);
+          // Same no-dangling rule as the no-hop bail above.
+          return { messages: a.failure.producedOutput ? a.messages : messages, usage: prior };
+        }
         onEvent({ type: "phase", label: "failover", detail: `${choice.model.label} ${shortFailure(a.failure.message)} → ${next.model.label}, continuing`, state: "running" });
         // Remember what we fell back FROM so the post-turn routing line can flag the
         // provider fallback (a real "surprising" signal) in amber.
@@ -2122,23 +2144,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const compactNow = useCallback(
     async (keepRecent: number, signal?: AbortSignal): Promise<string> => {
       // Apply a successful compaction (either path) and report real numbers.
-      const apply = (res: { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number }, how: string): string => {
+      const apply = (res: { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number; how: string }, how: string): string => {
         msgRef.current = res.messages;
         // The status bar's ctx% reads lastInput from the LAST call — after
         // compaction that's stale (it kept showing the pre-compaction size).
-        // Reset it to the new history estimate so the bar reflects reality now.
-        setLastInput(res.after);
+        // Reset to history + the non-history overhead (system/memory/repomap/
+        // retrieval) — history alone showed a falsely roomy bar after /compact.
+        setLastInput(res.after + ctxOverheadRef.current);
         const saved = res.before - res.after;
         const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
-        return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""}${how} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
+        // res.how carries the truth per rung (summarized/elided/truncated) —
+        // summarizedTurns is 0 on the tool-result-truncation rung.
+        return `${res.how}${how} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
       };
       // The model-free fallback: mechanical elision (tool output distilled to
       // one line per call). /compact must ALWAYS be able to shrink the history,
       // even on a subscription-only session with no API-key summarizer.
       const mechanical = (why: string): string => {
         const res = elideHistory(msgRef.current, keepRecent);
-        if (!res) return `${why} · nothing left to compact mechanically`;
-        return apply(res, ` mechanically (${why})`);
+        // null now genuinely means nothing-to-shrink at ANY rung of the ladder.
+        if (!res) return `${why} · history is already minimal — nothing to compact`;
+        return apply(res, ` (${why})`);
       };
       let model, creds;
       try {
@@ -2159,7 +2185,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       } catch (e: any) {
         return mechanical(`summarizer failed on ${model.label}: ${e?.message ?? "error"}`);
       }
-      if (!res) return "nothing old enough to compact yet";
+      if (!res) return "history is already minimal — nothing to compact";
       return apply(res, "");
     },
     [],
@@ -2551,7 +2577,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // router can vary the model later without changing this shape).
         // The model that actually ran this turn (set by defaultRunner). Falls
         // back to a fresh select only if a custom runner bypassed defaultRunner.
-        let modelId = activeCliRef.current?.id ?? routedRef.current?.model.id;
+        // Prefer the routed MODEL id — activeCliRef.id is the account slug, which
+        // used to land in ledger.jsonl/cost-tab as the "model" for subscription turns.
+        let modelId = routedRef.current?.model.id ?? activeCliRef.current?.id;
         if (!modelId) {
           try {
             modelId = selectorRef.current.select({ prompt: lastPromptRef.current ?? "" }).model.id;
@@ -2663,7 +2691,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const historyTokens = estimateHistoryTokens(msgRef.current, modelId);
             if (shouldAutoCompact(historyTokens, ctxOverheadRef.current, answeringWindow)) {
               setVerb("Compacting context");
-              notice(await compactNow(4, ac.signal));
+              const msg = await compactNow(4, ac.signal);
+              // Only narrate when compaction actually changed something — the old
+              // "nothing old enough" notice repeated after every turn once the
+              // trigger latched, nagging without acting.
+              if (!msg.includes("nothing to compact")) notice(msg);
             }
           } catch {
             /* compaction is best-effort; never fail the turn over it */
