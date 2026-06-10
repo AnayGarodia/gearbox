@@ -5260,11 +5260,30 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // History recede: while a turn runs or a consent is pending, settled items
   // render in receded ink so the now-row / consent line is the only bright thing.
   const recede = busy || !!perm;
+  const padCacheRef = useRef(new WeakMap<Line, Line>()); // centered-margin pad, keyed by raw line ref
+  const padCacheKeyRef = useRef(0);
   const lines = useMemo(() => {
     const raw = itemsToLines(displayItems, lineWidth, expandAll, recede);
     if (!marginCols) return raw;
+    // Cache the padded line BY RAW-LINE REF: itemsToLines keeps stable refs for
+    // unchanged items (its WeakMap), and rebuilding `[pad, ...l]` fresh each pass
+    // gave every row a new identity on wide terminals — defeating LineRow's
+    // reference memo on every streaming flush. Reset when the margin changes.
+    if (padCacheKeyRef.current !== marginCols) {
+      padCacheRef.current = new WeakMap();
+      padCacheKeyRef.current = marginCols;
+    }
+    const cache = padCacheRef.current;
     const pad = { text: " ".repeat(marginCols) };
-    return raw.map((l) => (l.length ? [pad, ...l] : l));
+    return raw.map((l) => {
+      if (!l.length) return l;
+      let p = cache.get(l);
+      if (!p) {
+        p = [pad, ...l];
+        cache.set(l, p);
+      }
+      return p;
+    });
   }, [displayItems, lineWidth, marginCols, expandAll, recede]);
 
   // Footer height · over-estimated so the fullscreen frame never exceeds the
@@ -5321,6 +5340,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // top-spend default, so switching between GPT / Azure / DeepSeek / etc. shows
   // the right account's data immediately without waiting for spend to accumulate.
   const stripApi = stripView ? ((usedAccountRef.current ? stripView.apiKeys.find((a) => a.id === usedAccountRef.current) : null) ?? stripView.apiKeys[0] ?? null) : null;
+  // Same hot-path rule as stripView: turnsLeftForecast calls totalSpentToday(),
+  // which reads usage.json from disk — computing it inline in the strip JSX ran
+  // that read on every render (every scroll frame while the strip is pinned).
+  const stripForecast = useMemo(
+    () =>
+      stripView
+        ? turnsLeftForecast({
+            dailyCapUSD: capsRef.current.daily,
+            spentTodayUSD: totalSpentToday(),
+            sessionUSD: estimateCost(sessionRef.current.turns),
+            sessionTurns: sessionRef.current.turns.length,
+          })
+        : null,
+    [stripView, tokens], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
   const HEADER = 3; // Masthead (marginTop + wordmark·tabs·account row + rule) — the tabs live IN the masthead row now (keep in lockstep with tabStripHit's row 2 and viewportTop 4)
   // Keep the whole frame STRICTLY under `rows`. Ink redraws with a full
@@ -5344,7 +5378,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // handler and the renderer agree on line count / row numbers.
   const panelW = width - 2;
   const panelInnerW = Math.max(4, panelW - 2);
-  const panelCurrentModel = loadPrefs().pinnedModel ?? null;
+  // Only read prefs when a panel is actually open — loadPrefs() is a disk read,
+  // and this line used to run on EVERY render (every scroll frame).
+  const panelCurrentModel = panel ? (loadPrefs().pinnedModel ?? null) : null;
   let panelStaticLines: Line[] | undefined;
   let panelAccountView: AccountView | undefined;
   let panelModels: PanelModelRow[] | undefined;
@@ -5576,7 +5612,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           </Box>
         ) : null}
         {quickPickerJsx}
-        {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: estimateCost(sessionRef.current.turns), sessionTurns: sessionRef.current.turns.length })} width={pageW} /> : null}
+        {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={stripForecast!} width={pageW} epoch={themeEpochState} /> : null}
       </Box>
       {/* The command/file palette sits in the page column, aligned with the composer above it. */}
       {homeScreen ? null : <Box height={PALETTE_ROWS} flexDirection="column" marginLeft={pageLeft} width={pageW} flexShrink={0}>{paletteAt(pageW - 2)}</Box>}
@@ -5585,7 +5621,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
           assumes y === termRows; change in lockstep. */}
       <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
-        <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={process.cwd()} branch={branch} />
+        <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={process.cwd()} branch={branch} epoch={themeEpochState} />
       </Box>
     </>
   );

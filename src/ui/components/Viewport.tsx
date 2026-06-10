@@ -107,6 +107,10 @@ const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidt
   );
 }, (a, b) => a.line === b.line && a.absLine === b.absLine && a.lineWidth === b.lineWidth && a.selection === b.selection);
 
+// One shared empty line for bottom padding — a fresh [] per render would break
+// LineRow's reference-equality memo on every blank row.
+const EMPTY_LINE: Line = [];
+
 // The scroll region: shows exactly `height` rows from the line buffer starting at
 // `scrollTop`, padded so the chrome below stays pinned, with a scrollbar on the
 // right. Rendering a fixed line count is what keeps the frame from ever exceeding
@@ -114,7 +118,7 @@ const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidt
 export function Viewport({ lines, scrollTop, height, width, selection }: { lines: Line[]; scrollTop: number; height: number; width: number; selection?: ViewSelection | null }) {
   const visible = lines.slice(scrollTop, scrollTop + height);
   const padded: Line[] = visible.slice();
-  while (padded.length < height) padded.push([]);
+  while (padded.length < height) padded.push(EMPTY_LINE);
 
   const total = lines.length;
   const hasBar = total > height;
@@ -127,21 +131,22 @@ export function Viewport({ lines, scrollTop, height, width, selection }: { lines
   return (
     <Box width={width}>
       <Box flexDirection="column" width={width - 1}>
+        {/* Keyed by ABSOLUTE line, not screen row: a 3-line scroll then reuses
+            every still-visible row's memoized element (same key, same line ref →
+            LineRow's memo bails) instead of re-rendering the whole viewport.
+            This is the difference between smooth and laggy wheel scrolling. */}
         {padded.map((l, i) => (
-          <LineRow key={i} line={l} absLine={scrollTop + i} selection={selection} lineWidth={width - 1} />
+          <LineRow key={scrollTop + i} line={l} absLine={scrollTop + i} selection={selection} lineWidth={width - 1} />
         ))}
       </Box>
       <Box flexDirection="column" width={1}>
-        {Array.from({ length: height }, (_, i) => {
-          const on = hasBar && i >= thumbStart && i < thumbStart + thumb;
-          // Thumb only — a full-height track (a column of `│` down the edge) read
-          // as visual noise. The short thumb floating on its position is enough.
-          return (
-            <Text key={i} color={color.accentDim}>
-              {on ? "┃" : " "}
-            </Text>
-          );
-        })}
+        {/* Thumb only — a full-height track (a column of `│` down the edge) read
+            as visual noise. One multi-line Text instead of `height` Text nodes:
+            the scrollbar moves every scroll frame, so its node count is pure
+            per-frame reconciliation cost. */}
+        <Text color={color.accentDim}>
+          {Array.from({ length: height }, (_, i) => (hasBar && i >= thumbStart && i < thumbStart + thumb ? "┃" : " ")).join("\n")}
+        </Text>
       </Box>
     </Box>
   );
