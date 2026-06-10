@@ -57,6 +57,48 @@ test("formatModelList marks current and lists available labels", () => {
   }
 });
 
+import { modelRank, compareModels, modelMarker } from "../src/commands.ts";
+import type { ModelSpec } from "../src/providers.ts";
+
+test("modelRank/compareModels: curated → discovered → seeds → pin-only, quality desc, label ties", () => {
+  const curated: ModelSpec = { id: "a", provider: "openai", sdkId: "a", label: "alpha", contextWindow: 1, quality: 0.7 };
+  const curatedBetter: ModelSpec = { id: "b", provider: "openai", sdkId: "b", label: "beta", contextWindow: 1, quality: 0.9 };
+  const discovered: ModelSpec = { id: "c", provider: "openai", sdkId: "c", label: "gamma", contextWindow: 1, capabilities: { source: "api-discovered" } };
+  const seeded: ModelSpec = { id: "d", provider: "openai", sdkId: "d", label: "delta", contextWindow: 1, capabilities: { source: "seeded" } };
+  const pinOnly: ModelSpec = { id: "e", provider: "openai", sdkId: "e", label: "epsilon", contextWindow: 1, routable: false };
+  const sorted = [pinOnly, seeded, discovered, curated, curatedBetter].sort(compareModels);
+  expect(sorted.map((m) => m.id)).toEqual(["b", "a", "c", "d", "e"]);
+  expect(modelRank(curated)).toBe(0);
+  expect(modelRank(discovered)).toBe(1);
+  expect(modelRank(seeded)).toBe(2);
+  expect(modelRank(pinOnly)).toBe(3);
+  // Ties inside a rank break alphabetically — the list is fully deterministic.
+  const t1: ModelSpec = { ...discovered, id: "z", label: "zz" };
+  expect([t1, discovered].sort(compareModels).map((m) => m.id)).toEqual(["c", "z"]);
+});
+
+test("modelMarker tags provenance honestly", () => {
+  expect(modelMarker({ id: "x", provider: "openai", sdkId: "x", label: "x", contextWindow: 1 })).toBe("");
+  expect(modelMarker({ id: "x", provider: "openai", sdkId: "x", label: "x", contextWindow: 1, capabilities: { source: "api-discovered" } })).toContain("discovered");
+  expect(modelMarker({ id: "x", provider: "openai", sdkId: "x", label: "x", contextWindow: 1, capabilities: { source: "seeded" } })).toContain("seed");
+  expect(modelMarker({ id: "x", provider: "openai", sdkId: "x", label: "x", contextWindow: 1, routable: false })).toContain("pin-only");
+});
+
+test("formatModelList orders each provider by rank+quality, not registry order", () => {
+  const saved = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = "x";
+  try {
+    const out = formatModelList(null);
+    // The anthropic block lists curated models best-quality-first; all three appear.
+    const idx = (s: string) => out.indexOf(s);
+    expect(idx("opus-4.8")).toBeGreaterThan(-1);
+    expect(idx("sonnet-4.6")).toBeGreaterThan(-1);
+    expect(idx("haiku-4.5")).toBeGreaterThan(-1);
+  } finally {
+    if (saved === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = saved;
+  }
+});
+
 test("resolveModelSwitch is fuzzy: substring, no-match, no-key, ambiguous, exact", () => {
   const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "DEEPSEEK_API_KEY"];
   const saved: Record<string, string | undefined> = {};

@@ -100,8 +100,14 @@ export function buildRoutingLine(input: RoutingLineInput): RoutingLine {
   // ("served as <wire id>"); a MISMATCH is the loudest thing on the line —
   // the user must never discover it by interrogating the model.
   if (input.servedAs) {
-    const requested = input.requestedSdkId ?? input.model;
-    if (servedMatchesRequested(input.servedAs, requested)) {
+    if (!input.requestedSdkId) {
+      // No model was explicitly requested (e.g. a subscription CLI running its
+      // own default) — the wire id is information, not a verdict. Report it
+      // quietly; comparing against a display label would invent false mismatches.
+      model = servedMatchesRequested(input.servedAs, input.model)
+        ? `${input.model} ✓wire`
+        : `${input.model} · served as ${input.servedAs}`;
+    } else if (servedMatchesRequested(input.servedAs, input.requestedSdkId)) {
       model = `${input.model} ✓wire`;
     } else {
       model = `${input.model} ⚠ provider served "${input.servedAs}"`;

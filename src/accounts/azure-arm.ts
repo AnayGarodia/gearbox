@@ -87,7 +87,9 @@ export function armToken(execImpl: typeof spawnSyncProc = spawnSyncProc): { toke
     return { error: "ARM management is disabled (GEARBOX_DISABLE_AZ=1) — create the deployment in the portal" };
   }
   if (tokenCache && Date.now() < tokenCache.expiresAt - 5 * 60_000) return { token: tokenCache.token };
-  if (!which("az")) {
+  // Only consult the real PATH when running the real az — an injected exec
+  // (tests) must not be short-circuited by the host machine's missing CLI.
+  if (execImpl === spawnSyncProc && !which("az")) {
     return { error: "the Azure CLI isn't installed" };
   }
   const r = execImpl(["az", "account", "get-access-token", "--resource", ARM, "--output", "json"], { stdout: "pipe", stderr: "pipe" });

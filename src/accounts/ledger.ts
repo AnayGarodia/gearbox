@@ -26,6 +26,9 @@ export interface SpendEvent {
   costUSD: number;
   estimated: boolean;
   at: number;
+  /** WIRE TRUTH: the model id the provider/CLI reported actually served the
+   *  call, when exposed. Absent = the backend didn't report one. */
+  servedModel?: string;
 }
 
 /** The one cost policy, lifted out of App.tsx so the main turn and delegation
@@ -57,6 +60,7 @@ export function turnMetaOf(ev: SpendEvent): TurnMeta {
     cachedInputTokens: ev.cachedInputTokens,
     cacheCreationInputTokens: ev.cacheCreationInputTokens,
     at: ev.at,
+    servedModel: ev.servedModel,
   };
 }
 

@@ -70,7 +70,7 @@ import { missingRequirements, capabilitySummary, type ModelRequirement } from ".
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
+import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
@@ -601,10 +601,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     };
     return buildUsageView(estimateCost(sessionRef.current.turns), resolve, Date.now(), accounts.map((a) => a.id));
   };
-  // Usable (API) models for the /model panel, same source and order as the live
-  // registry so the panel's selection index maps to the right model id.
-  const buildPanelModelRows = (cur?: string | null): PanelModelRow[] =>
-    modelRegistry().filter((m) => providerAvailable(m.provider)).map((m) => ({ id: m.id, label: m.label, provider: m.provider, current: m.id === cur }));
+  // Usable (API) models for the /model panel — same grouping + rank order as
+  // the inline `/model` list (commands.ts compareModels) so the two can't drift.
+  const buildPanelModelRows = (cur?: string | null): PanelModelRow[] => {
+    const usable = modelRegistry().filter((m) => providerAvailable(m.provider));
+    const byProvider = new Map<string, typeof usable>();
+    for (const m of usable) {
+      if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
+      byProvider.get(m.provider)!.push(m);
+    }
+    const out: PanelModelRow[] = [];
+    for (const group of byProvider.values()) {
+      group.sort(compareModels);
+      for (const m of group) out.push({ id: m.id, label: m.label, provider: m.provider, current: m.id === cur });
+    }
+    return out;
+  };
   // Open a scrollable static info panel (fullscreen only). Returns false inline so callers
   // fall back to printing in the transcript, keeping it uncluttered.
   const openInfoPanel = (title: string, item: Item): boolean => {
@@ -1795,6 +1807,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // its stream) when the user hasn't pinned one, so the status bar shows e.g.
       // "Claude (personal) · sonnet-4.6" instead of just the account name.
       if (r.model && !activeCliModelRef.current && !args.label) setActiveCliModel(cliModelLabel(r.model));
+      // WIRE TRUTH for subscription turns: the CLI stream reports the model that
+      // actually served the turn — feed it to the same cross-check the in-loop
+      // path uses, so a subscription seat can never silently serve a different
+      // model than the routing line claims.
+      servedModelRef.current = r.model ?? null;
       return { messages: r.messages, usage: r.usage, failure: r.failure };
     },
     [],
@@ -1807,6 +1824,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // works even when /model is pinned to something broken. Read-and-clear.
       const isAsk = askModeRef.current;
       askModeRef.current = false;
+      // Wire truth is per-turn: clear the previous turn's served-model id so a
+      // path that doesn't report one (e.g. /ask via runCompletion) can never
+      // show a stale ✓wire/mismatch from an earlier turn.
+      servedModelRef.current = null;
       if (isAsk) {
         const docs = loadGearboxDocs();
         if (!docs) {
@@ -1874,6 +1895,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // failure can park that account and re-route around it.
       type Attempt = { messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string; producedOutput?: boolean }; cooldownKey: string };
       const runAttempt = async (choice: ModelChoice): Promise<Attempt> => {
+        servedModelRef.current = null; // each attempt re-establishes its own wire truth (failover hops must not inherit)
         if (choice.backend?.kind === "cli") {
           const acct = choice.backend.account;
           // Images flow to the CLI as file paths now (xiv) — no refusal here.
@@ -2466,6 +2488,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens,
           ...resolveTurnCost({ modelId, isSub, cliCostUSD: cm?.costUSD, usage: { inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens, cachedInputTokens: turnUsage.cachedInputTokens, cacheCreationInputTokens: turnUsage.cacheCreationInputTokens } }),
           at: Date.now(),
+          servedModel: servedModelRef.current ?? undefined,
         });
         sessionRef.current.turns.push(turnMetaOf(spendEv));
         // Session auto-title: after the FIRST turn, replace the clipped-prompt
@@ -2493,7 +2516,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const ranSpec = routedRef.current?.model ?? findModel(modelId);
           // On an explicitly-pinned subscription, routedRef is null and modelId is the
           // ACCOUNT slug — resolve the real CLI model label instead of showing the slug.
-          const subLabel = findModel(activeCliModelRef.current ?? "")?.label ?? activeCliModelRef.current;
+          const pinnedSpec = isSub ? findModel(activeCliModelRef.current ?? "") : undefined;
+          const subLabel = pinnedSpec?.label ?? activeCliModelRef.current;
           const line = buildRoutingLine({
             model: ranSpec?.label ?? (isSub ? (subLabel ?? modelId) : modelId),
             provider: isSub ? (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude") : (ranSpec?.provider ?? "—"),
@@ -2501,7 +2525,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             kind: isSub ? "subscription" : "metered",
             priced: isSub || hasPricing(modelId),
             servedAs: servedModelRef.current ?? undefined,
-            requestedSdkId: ranSpec?.sdkId,
+            // What we actually asked the backend for: the routed pick's sdk id,
+            // or — on an explicitly-pinned subscription — the pinned seat's model.
+            // Undefined when no model was sent (CLI default); the routing line
+            // then reports the wire id quietly instead of inventing a mismatch.
+            requestedSdkId: ranSpec?.sdkId ?? pinnedSpec?.sdkId,
             fellOverFrom: fellOverFromRef.current,
             escalated: /escalated after/.test(routedRef.current?.reason ?? ""),
           });
