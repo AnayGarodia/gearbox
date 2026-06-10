@@ -22,10 +22,11 @@ function fmtTok(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-// A persistent, toggle-able usage strip (/cost) that sits above the composer and
+// A persistent, toggle-able usage strip (/usage) that sits above the composer and
 // does NOT capture input — you keep typing while watching context %, subscription
-// 5h/7d headroom, and session spend. Closed with /cost again.
-export function StatusStrip({
+// 5h/7d headroom, and session spend. Closed with /usage again. (/cost is the
+// separate deep money-story card.)
+function StatusStripImpl({
   ctxPct,
   tokens,
   contextWindow,
@@ -45,6 +46,7 @@ export function StatusStrip({
   api?: UsageAcct | null;
   forecast?: string | null; // "≈N turns left today …" when a daily cap is set
   width: number;
+  epoch?: number; // /theme invalidates the memo (setTheme mutates `color` in place)
 }) {
   // Label column wide enough for the longest label we print (e.g. "Anthropic"),
   // so nothing clips to "Anthropi".
@@ -130,3 +132,10 @@ export function StatusStrip({
     </Box>
   );
 }
+
+// Memoized: while pinned, the strip sat in the footer of every render (every
+// scroll frame). Its object props (sub/api/forecast) come from App's memoized
+// stripView/stripForecast, so their refs are stable between usage changes and
+// the shallow compare holds; usage changes rebuild stripView → new refs →
+// re-render, and /theme invalidates via the epoch prop.
+export const StatusStrip = React.memo(StatusStripImpl);

@@ -11,6 +11,7 @@ import { glyph } from "./theme.ts";
 import { highlightLine } from "./highlight.ts";
 import type { Item } from "./types.ts";
 import { barCells } from "../accounts/usage.ts";
+import { sparkline } from "./cost-tab.ts";
 import { retryPhrase } from "./collapse.ts";
 import { scorecardRows } from "../commands.ts";
 import { PROSE_RE, proseTokenStyle } from "./prose.ts";
@@ -905,6 +906,19 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
       case "usage": {
         const v = it.view;
         out.push([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: "usage ", color: color.text }, { text: "· spend & limits (all sessions)", color: color.faint }]);
+        // The money story (attached by /cost): the 7-day spend shape first —
+        // it's the "how have my days been" glance the rest details.
+        if (v.daily?.length) {
+          const peak = Math.max(...v.daily.map((d) => d.usd), 0);
+          const today = v.daily[v.daily.length - 1]?.usd ?? 0;
+          out.push(BLANK);
+          out.push(clipSpans([
+            { text: "  7-day spend  ", color: color.faint },
+            { text: sparkline(v.daily.map((d) => d.usd)), color: color.text },
+            { text: "  today $" + today.toFixed(2) + " · peak $" + peak.toFixed(2), color: color.faint },
+          ], width));
+        }
+        if (v.forecast) out.push(clipSpans([{ text: "  " + v.forecast, color: color.warn }], width));
         if (v.subscriptions.length) {
           out.push(BLANK);
           out.push([{ text: "  subscriptions", color: color.faint }]);
@@ -947,10 +961,29 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
             );
           }
         }
+        if (v.perModel?.length) {
+          out.push(BLANK);
+          out.push([{ text: "  this session, by model", color: color.faint }]);
+          for (const m of v.perModel) {
+            const usd = m.usd >= 0.005 ? "$" + m.usd.toFixed(2) : "<$0.01";
+            out.push(clipSpans([
+              { text: "    " + (m.model.length > 24 ? m.model.slice(0, 23) + "…" : m.model.padEnd(24)), color: color.dim },
+              { text: usd.padStart(7), color: m.usd >= 0.005 ? color.text : color.faint },
+              { text: "  " + m.turns + " turn" + (m.turns === 1 ? "" : "s"), color: color.faint },
+            ], width));
+          }
+        }
         out.push(BLANK);
         const totalLine: Line = [{ text: "  total API spend ", color: color.dim }, { text: v.totalApiSpend, color: color.text }];
         if (v.sessionUSD) totalLine.push({ text: "   ·   this session " + v.sessionUSD, color: color.faint });
         out.push(clipSpans(totalLine, width));
+        if (v.savings?.includes("saved")) out.push(clipSpans([{ text: "  " + v.savings + " · ~ vs always using the priciest model", color: color.faint }], width));
+        if (v.auxToday != null && v.auxToday > 0)
+          out.push(clipSpans([
+            { text: "  aux calls today (classifier · titles · commit messages) ", color: color.faint },
+            { text: v.auxToday < 0.01 ? "<$0.01" : "$" + v.auxToday.toFixed(2), color: color.dim },
+          ], width));
+        if (v.policy) out.push(clipSpans([{ text: "  " + v.policy, color: color.faint }], width));
         if (v.hasEstimate) out.push([{ text: "  ~ estimated (provider didn't report an exact cost)", color: color.faint }]);
         break;
       }

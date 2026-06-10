@@ -29,6 +29,7 @@ function ComposerImpl({
   width,
   vim = "off",
   bashMode = false,
+  mode = "normal",
   policy,
   branch,
   provider,
@@ -45,6 +46,7 @@ function ComposerImpl({
   width: number;
   vim?: "off" | "insert" | "normal";
   bashMode?: boolean; // sticky bash mode (entered with `!`); pink `!` prompt, esc exits
+  mode?: "normal" | "auto-accept" | "plan"; // input mode (shift+tab) — colors the edges + a footer badge, no transcript noise
   policy?: string; // routing policy shown on the footer line (e.g. "auto-route"); never a bare model name
   branch?: string | null; // current git branch, shown after the policy
   provider?: string | null; // footer-right: the live provider (dim)
@@ -59,7 +61,10 @@ function ComposerImpl({
   // command. A distinct pink accent + `!` prompt so it never reads as chat/command.
   const shellMode = bashMode || value.startsWith("!");
   const accent = shellMode ? color.shell : color.accent;
-  const edge = shellMode ? color.shell : color.faint;
+  // The MODE wears the box: plan = ok-green edges (read-only, safe), auto-accept
+  // = warn-amber (writes apply unasked). Shell pink wins (it's about THIS line).
+  const modeColor = mode === "plan" ? color.ok : mode === "auto-accept" ? color.warn : null;
+  const edge = shellMode ? color.shell : modeColor ?? color.faint;
   const promptGlyph = bashMode ? "!" : glyph.prompt;
   // Columns inside the two ┃ edges; each row is padded to this so the element
   // layer reads as one solid surface, not text-shaped patches.
@@ -109,6 +114,10 @@ function ComposerImpl({
     ? { text: "NORMAL", c: color.accent }
     : vim === "insert"
     ? { text: "INSERT", c: color.dim }
+    : mode === "plan"
+    ? { text: "plan", c: color.ok }
+    : mode === "auto-accept"
+    ? { text: "auto-accept", c: color.warn }
     : null;
   const hint = busy
     ? value !== ""
