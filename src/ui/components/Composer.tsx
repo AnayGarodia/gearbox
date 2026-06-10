@@ -135,6 +135,10 @@ function ComposerImpl({
         borderLeftColor={edge}
         borderRightColor={edge}
       >
+        {/* vertical padding: the editor is a place, not a slit — two element-bg
+            breathing rows (row contract: composer block = marginTop + pad +
+            input rows + pad + footer hint · App.tsx footer estimate). */}
+        <Box width={innerW}>{bgPad(0)}</Box>
         {value === "" ? (
           // Empty composer: idle placeholder. While busy, the cue is "type to queue".
           <Box width={innerW}>
@@ -160,6 +164,7 @@ function ComposerImpl({
             ))}
           </Box>
         )}
+        <Box width={innerW}>{bgPad(0)}</Box>
       </Box>
       {/* THE footer hint line (exactly one row · see the row-count contract above). */}
       <Box width={width} paddingX={1} justifyContent="space-between">

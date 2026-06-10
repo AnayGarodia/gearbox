@@ -47,7 +47,25 @@ const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidt
   if (line.length === 0) {
     return <Text>{" ".repeat(lineWidth)}</Text>;
   }
-  const range = selectedRangeForLine(normalized(selection), absLine);
+  let range = selectedRangeForLine(normalized(selection), absLine);
+  // Clamp the selection band to the line's INK: the centering margin and the
+  // telemetry-margin padding are baked-in spaces, and painting them produced
+  // ragged full-width bands. The band starts at the first ink column and stops
+  // after the last (a span counts as ink if it has any non-space text or its
+  // own background).
+  if (range) {
+    let pos = 0, first = -1, last = -1;
+    for (const s of line) {
+      const ink = s.bg != null || /\S/.test(s.text);
+      if (ink) { if (first < 0) { const lead = s.bg != null ? 0 : (s.text.match(/^\s*/)?.[0].length ?? 0); first = pos + lead; } last = pos + s.text.length - (s.bg != null ? 0 : (s.text.match(/\s*$/)?.[0].length ?? 0)); }
+      pos += s.text.length;
+    }
+    if (first < 0) range = null;
+    else {
+      const a = Math.max(range[0], first), b = Math.min(range[1], last);
+      range = b > a ? [a, b] : null;
+    }
+  }
   let pos = 0;
   const lineLen = line.reduce((n, s) => n + s.text.length, 0);
   const trailing = Math.max(0, lineWidth - lineLen);

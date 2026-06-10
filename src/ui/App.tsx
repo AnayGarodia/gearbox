@@ -748,6 +748,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // The shared page column's left offset (Broadsheet "one page"): footer surfaces
   // are indented by this, so the composer mouse hit-test must subtract it.
   const pageLeftRef = useRef(0);
+  const pageWRef = useRef(80); // the page column width (meter/composer) for mouse hit math
 
   const setPerm = (p: PermRequest | null) => {
     permRef.current = p;
@@ -1033,8 +1034,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (homeScreenRef.current) return null; // home screen: the composer floats mid-screen, not at the bottom
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      const firstInputRow = rows - 3 - lineCount; // below the input: footer hint, then the meter (marginTop + row = bottom 2 rows)
-      if (y < firstInputRow || y > rows - 4) return null;
+      const firstInputRow = rows - 4 - lineCount; // below the input: pad row, footer hint, then the meter (marginTop + row)
+      if (y < firstInputRow || y > rows - 5) return null;
       const lineIdx = y - firstInputRow;
       // 1 border + space + prompt + space, SGR coords are 1-based — plus the page
       // column's left offset (the composer sits in the centered page column).
@@ -1049,13 +1050,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // Home screen: the composer lives mid-screen, so the status bar is the
         // very last row (marginTop + bar, nothing below it).
         if (y !== rows || !model) return null;
-        const { modelZone } = statusBarLayout({ model, costText, ctxPct, width: w });
-        const col = x - 1;
+        const { modelZone } = statusBarLayout({ model, costText, ctxPct, width: pageWRef.current });
+        const col = x - 1 - pageLeftRef.current; // the meter lives in the page column now
         return col >= modelZone[0] && col < modelZone[1] ? "model" : null;
       }
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      return statusBarHit({ x, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, ctxPct, width: w });
+      return statusBarHit({ x: x - pageLeftRef.current, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, ctxPct, width: pageWRef.current });
     };
     const viewportTop = 4; // masthead (marginTop + masthead row + rule = 3 rows); viewport begins on row 4.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
@@ -5245,7 +5246,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // (≤92 cols) and centered — a transcript that reads like a document, not a
   // log dump spanning an ultrawide. The margin is baked into the lines (not a
   // Box offset) so mouse-selection column math stays 1:1 with the screen.
-  const CONTENT_CAP = 92;
+  const CONTENT_CAP = Math.max(92, Math.floor((width - 3) * 0.8));
   const lineWidth = Math.max(Math.min(width - 3, CONTENT_CAP), 20);
   const marginCols = Math.max(0, Math.floor((width - 3 - lineWidth) / 2));
   // The shared PAGE column (Broadsheet "one page"): every footer surface sits in
@@ -5254,6 +5255,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // the footer components carry themselves (paddingX={1}).
   const pageLeft = marginCols ? marginCols + 1 : 0;
   const pageW = lineWidth + 2;
+  pageWRef.current = pageW;
   pageLeftRef.current = fullscreen ? pageLeft : 0;
   // History recede: while a turn runs or a consent is pending, settled items
   // render in receded ink so the now-row / consent line is the only bright thing.
@@ -5293,7 +5295,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
   if (perm) footer += 5; // consent block: marginTop + title + command + options + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
-  else if (!panel && !homeScreen) footer += 3; // composer (marginTop + input + footer hint; no lift — the meter sits below · Composer.tsx row contract)
+  else if (!panel && !homeScreen) footer += 5; // composer (marginTop + pad + input + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
   if (busy || linger) footer += 2; // one-line working strip (+ marginTop) — the meter's ctx gauge carries low-context now (no extra notice row)
   if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
@@ -5581,7 +5583,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* The meter is the page's BOTTOM EDGE — composer above it, one quiet rule
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
           assumes y === termRows; change in lockstep. */}
-      <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} cwd={process.cwd()} branch={branch} />
+      <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
+        <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={process.cwd()} branch={branch} />
+      </Box>
     </>
   );
 
