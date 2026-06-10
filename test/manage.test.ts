@@ -1,3 +1,6 @@
+// ARM attempts are disabled here: these tests exercise the data-plane paths;
+// the ARM control plane has its own suite (test/azure-arm.test.ts).
+process.env.GEARBOX_DISABLE_AZ = "1";
 import { test, expect, beforeEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -168,7 +171,7 @@ test("createDeployment: Foundry inference endpoint returns helpful portal error"
   };
   const r = await createDeployment(inferenceAcc, "my-dep", "gpt-4o", "Standard");
   expect(r.ok).toBe(false);
-  expect(r.note).toContain("Azure AI Foundry portal");
+  expect(r.note).toMatch(/ARM management is disabled|az login/);
   expect(r.note).toContain("ai.azure.com");
 });
 
@@ -185,7 +188,7 @@ test("deleteDeployment: Foundry inference endpoint returns helpful portal error"
   };
   const r = await deleteDeployment(inferenceAcc, "my-dep");
   expect(r.ok).toBe(false);
-  expect(r.note).toContain("Azure AI Foundry portal");
+  expect(r.note).toMatch(/ARM management is disabled|az login/);
 });
 
 test("terminalLink: wraps url in OSC 8 sequence", () => {
@@ -308,7 +311,7 @@ test("deleteDeployment: generic route-404 on every api-version is an honest fail
   const acc = addResult.account!;
   const r = await deleteDeployment(acc, "my-dep", makeFetch(404, { error: { code: "404", message: "Resource not found" } }));
   expect(r.ok).toBe(false);
-  expect(r.note).toContain("doesn't expose deployment management");
+  expect(r.note).toContain("no deployment management");
 });
 
 // ── The v0.2.93 deploy 404: management routes live on the AUTHORING api-version ──
@@ -347,7 +350,7 @@ test("createDeployment: 404 on every version reports the portal path, not a raw 
   const acc = addResult.account!;
   const r = await createDeployment(acc, "my-dep", "gpt-4o", "Standard", makeFetch(404, { error: { code: "404", message: "Resource not found" } }));
   expect(r.ok).toBe(false);
-  expect(r.note).toContain("doesn't expose deployment management");
+  expect(r.note).toContain("no deployment management");
 });
 
 test("createDeployment: a Standard deploy sends the legacy authoring body (lowercase scale_type)", async () => {

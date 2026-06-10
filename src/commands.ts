@@ -374,8 +374,14 @@ export function resolveModelSwitch(query: string): SwitchResult {
   if (!q) return { ok: false, message: "usage: /model <name>" };
 
   const MODELS = modelRegistry();
-  const matches = MODELS.filter((m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
+  let matches = MODELS.filter((m) => m.label.toLowerCase().includes(q) || m.id.toLowerCase().includes(q));
   if (matches.length === 0) return { ok: false, message: `no model matching "${query}" · /model to list` };
+  // The models.dev overlay (routable:false) must never make a fuzzy query
+  // ambiguous against curated/discovered models — "haiku" stays the curated
+  // haiku even with five catalog Haikus around. Overlay entries only compete
+  // when nothing first-class matched (so an exact catalog id still pins).
+  const firstClass = matches.filter((m) => m.routable !== false);
+  if (firstClass.length > 0) matches = firstClass;
 
   const exacts = matches.filter((m) => m.label.toLowerCase() === q || m.id.toLowerCase() === q);
   const available = matches.filter((m) => providerAvailable(m.provider));

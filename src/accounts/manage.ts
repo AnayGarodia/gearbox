@@ -14,6 +14,7 @@
 // OSC 8 clickable portal links: wrapped with terminalLink() so terminals that support
 // them (iTerm2, Ghostty, WezTerm, kitty) make the URL clickable. Degrades gracefully.
 import { resolveCreds } from "./resolve.ts";
+import { armCreateDeployment, armDeleteDeployment } from "./azure-arm.ts";
 import { withTimeout } from "./health.ts";
 import type { Account } from "./types.ts";
 
@@ -21,6 +22,9 @@ const AZURE_AUTHORING_API_VERSION = "2023-03-15-preview"; // list + create + del
 const AZURE_LIST_API_VERSION = AZURE_AUTHORING_API_VERSION;
 const AZURE_WRITE_API_VERSION_DEFAULT = "2024-08-01-preview"; // fallback attempt only
 const MANAGE_TIMEOUT_MS = 15_000;
+// Writes may walk the ARM control plane (subscriptions → accounts → PUT) on
+// the first call — give them room; the ref is disk-cached afterwards.
+const MANAGE_WRITE_TIMEOUT_MS = 45_000;
 
 const AZURE_PROVIDERS = new Set(["azure", "azure-foundry"]);
 
@@ -32,6 +36,11 @@ function isAzureAccount(account: Account): boolean {
  *  The plain URL is the fallback text (always readable). */
 export function terminalLink(url: string): string {
   return `\x1b]8;;${url}\x1b\\${url}\x1b]8;;\x1b\\`;
+}
+
+/** The bare host of an endpoint URL ("https://x.y/z" → "x.y"). */
+function hostOf(url: string): string | null {
+  try { return new URL(url).host || null; } catch { return null; }
 }
 
 /** Build the management base URL for an account (Azure or Foundry). */
@@ -243,7 +252,12 @@ export async function createDeployment(
       } else {
         const rawBase = creds.baseURL ?? account.baseUrl ?? "";
         if (isFoundryInferenceEndpoint(rawBase)) {
-          return { ok: false, note: "deployment creation requires the Azure AI Foundry portal — inference endpoint API keys don't have management permissions\n  open: https://ai.azure.com" };
+          // The inference endpoint has no management surface at all — go
+          // straight to the ARM control plane (az CLI token).
+          const host = hostOf(rawBase);
+          if (!host) return { ok: false, note: "no endpoint configured" };
+          const arm = await armCreateDeployment(host, deploymentName, modelId, capacityType, fetchImpl);
+          return arm.ok ? arm : { ok: false, note: `${arm.note}\n  or create it in the portal: ${terminalLink("https://ai.azure.com")}` };
         }
         const base = foundryManagementBase(rawBase);
         if (!base) return { ok: false, note: "no endpoint configured" };
@@ -290,17 +304,22 @@ export async function createDeployment(
           return { ok: false, note: `deploy failed (HTTP ${r.status}): ${text.slice(0, 200)}${portalBase ? "\n  manage at: " + portalBase : ""}` };
         }
       }
-      const portalBase = creds.azure ? terminalLink(`https://portal.azure.com/#resource/${creds.azure.resourceName}`) : "";
-      return {
-        ok: false,
-        note: `deploy failed (HTTP ${last.status}): ${last.text.slice(0, 200)}\n  this key's endpoint doesn't expose deployment management — create it in the portal instead${portalBase ? "\n  manage at: " + portalBase : "\n  open: https://ai.azure.com"}`,
-      };
+      // The data plane has no management routes here (Foundry-era accounts):
+      // deployment creation is an ARM CONTROL-PLANE operation — exactly what
+      // the portal calls. Do it for real via the user's az login.
+      const host = creds.azure?.resourceName ? `${creds.azure.resourceName}.openai.azure.com` : hostOf(creds.baseURL ?? account.baseUrl ?? "");
+      if (host) {
+        const arm = await armCreateDeployment(host, deploymentName, modelId, capacityType, fetchImpl);
+        if (arm.ok) return arm;
+        return { ok: false, note: `the data plane on this endpoint has no deployment management (HTTP ${last.status}); tried the ARM control plane:\n  ${arm.note}` };
+      }
+      return { ok: false, note: `deploy failed (HTTP ${last.status}): ${last.text.slice(0, 200)}` };
     } catch (e: any) {
       return { ok: false, note: e?.message ?? "deploy failed" };
     }
   };
 
-  return withTimeout(inner(), MANAGE_TIMEOUT_MS, { ok: false, note: "timed out — check Azure portal for status" });
+  return withTimeout(inner(), MANAGE_WRITE_TIMEOUT_MS, { ok: false, note: "timed out — check Azure portal for status" });
 }
 
 /**
@@ -330,7 +349,10 @@ export async function deleteDeployment(
       } else {
         const rawBase = creds.baseURL ?? account.baseUrl ?? "";
         if (isFoundryInferenceEndpoint(rawBase)) {
-          return { ok: false, note: "deployment deletion requires the Azure AI Foundry portal — inference endpoint API keys don't have management permissions\n  open: https://ai.azure.com" };
+          const host = hostOf(rawBase);
+          if (!host) return { ok: false, note: "no endpoint configured" };
+          const arm = await armDeleteDeployment(host, deploymentId, fetchImpl);
+          return arm.ok ? arm : { ok: false, note: `${arm.note}\n  or delete it in the portal: ${terminalLink("https://ai.azure.com")}` };
         }
         const base = foundryManagementBase(rawBase);
         if (!base) return { ok: false, note: "no endpoint configured" };
@@ -364,15 +386,17 @@ export async function deleteDeployment(
         }
         return { ok: false, note: `delete failed (HTTP ${r.status}): ${text.slice(0, 200)}${portalBase ? "\n  manage at: " + portalBase : ""}` };
       }
-      const portalBase = creds.azure ? terminalLink(`https://portal.azure.com/#resource/${creds.azure.resourceName}`) : "";
-      return {
-        ok: false,
-        note: `delete failed (HTTP ${last.status}): ${last.text.slice(0, 200)}\n  this key's endpoint doesn't expose deployment management — delete it in the portal instead${portalBase ? "\n  manage at: " + portalBase : "\n  open: https://ai.azure.com"}`,
-      };
+      const host = creds.azure?.resourceName ? `${creds.azure.resourceName}.openai.azure.com` : hostOf(creds.baseURL ?? account.baseUrl ?? "");
+      if (host) {
+        const arm = await armDeleteDeployment(host, deploymentId, fetchImpl);
+        if (arm.ok) return arm;
+        return { ok: false, note: `the data plane on this endpoint has no deployment management (HTTP ${last.status}); tried the ARM control plane:\n  ${arm.note}` };
+      }
+      return { ok: false, note: `delete failed (HTTP ${last.status}): ${last.text.slice(0, 200)}` };
     } catch (e: any) {
       return { ok: false, note: e?.message ?? "delete failed" };
     }
   };
 
-  return withTimeout(inner(), MANAGE_TIMEOUT_MS, { ok: false, note: "timed out — check Azure portal for status" });
+  return withTimeout(inner(), MANAGE_WRITE_TIMEOUT_MS, { ok: false, note: "timed out — check Azure portal for status" });
 }
