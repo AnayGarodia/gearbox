@@ -1623,7 +1623,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const updatePhase = (id: number, state: "running" | "ok" | "err", label: string, detail?: string) => {
     setItems((prev) => prev.map((it) => (it.id === id && it.kind === "phase" ? { ...it, state, label, detail } : it)));
   };
-  const echo = (text: string) => push({ kind: "user", id: idRef.current++, text });
+  const turnNoRef = useRef(0); // numbered sections: real prompts only (command echoes stay small)
+  const echo = (text: string, numbered = false) => push({ kind: "user", id: idRef.current++, text, turnNo: numbered ? ++turnNoRef.current : undefined });
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
 
   const handleAddResult = async (account: Account, initialMessage: string) => {
@@ -2276,7 +2277,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Everything pushed from here on belongs to this turn; at settle we collapse
       // that slice (drop spinners, fold repeated checks) into a durable record.
       const turnStartId = idRef.current;
-      echo(displayPrompt);
+      echo(displayPrompt, true);
       lastPromptRef.current = displayPrompt;
       // Pre-flight hard spend cap (/cap): refuse the turn before any model call if
       // a configured ceiling is reached. Guards auto-fix re-entry and runaway spend

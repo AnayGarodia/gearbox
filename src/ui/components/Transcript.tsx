@@ -301,34 +301,24 @@ function NoticeText({ text }: { text: string }) {
 // Long lines are wrapped HERE (not by Ink) so every continuation row keeps the
 // band's prefix + padding — Ink's default wrap would drop the background on
 // the spill rows.
-function UserLine({ text, width }: { text: string; width: number }) {
-  const bodyW = Math.max(1, width - 5); // spine prefix (3) + right margin (2)
-  const lines = text.split("\n").flatMap((line) => {
-    if (line.length <= bodyW) return [line];
-    // Chunk over CODE POINTS — slicing UTF-16 units would split an emoji's
-    // surrogate pair across rows and render garbage.
-    const chars = [...line];
-    const out: string[] = [];
-    for (let i = 0; i < chars.length; i += bodyW) out.push(chars.slice(i, i + bodyW).join(""));
-    return out;
-  });
-  // Same card as the fullscreen path (lines.ts): blue spine running the full
-  // block height (padding rows included), panel bg, plain text ink.
-  const row = (line: string, key: number) => {
-    const used = 3 + line.length;
+function UserLine({ text, width, turnNo }: { text: string; width: number; turnNo?: number }) {
+  // Ledger heading for real turns; one quiet ❯ line for command echoes.
+  if (turnNo == null) {
     return (
-      <Text key={key}>
-        <Text color={color.user} backgroundColor={color.userBg}>{glyph.userBar + "  "}</Text>
-        <Text color={color.text} backgroundColor={color.userBg}>{line}</Text>
-        <Text backgroundColor={color.userBg}>{" ".repeat(Math.max(0, width - used - 2))}</Text>
-      </Text>
+      <Box marginTop={1}>
+        <Text color={color.faint}>{"  " + glyph.prompt + " "}</Text>
+        <Text color={color.dim}>{text.split("\n")[0]}</Text>
+      </Box>
     );
-  };
+  }
+  const idx = String(turnNo).padStart(2, "0");
   return (
     <Box marginTop={1} flexDirection="column">
-      {lines.length > 1 ? row("", -1) : null}
-      {lines.map((line, i) => row(line, i))}
-      {lines.length > 1 ? row("", lines.length) : null}
+      {turnNo > 1 ? <Text color={color.faint} dimColor>{glyph.rule.repeat(Math.max(8, width - 2))}</Text> : null}
+      <Box marginTop={turnNo > 1 ? 1 : 0}>
+        <Text color={color.user}>{idx + "  "}</Text>
+        <Text color={color.text} bold>{text}</Text>
+      </Box>
     </Box>
   );
 }
@@ -608,7 +598,7 @@ function ScorecardCard({ card }: { card: Scorecard }) {
 function Row({ item, width, expandAll = false }: { item: Item; width: number; expandAll?: boolean }) {
   switch (item.kind) {
     case "user":
-      return <UserLine text={item.text} width={width} />;
+      return <UserLine text={item.text} width={width} turnNo={item.turnNo} />;
     case "assistant":
       return <AssistantLine text={item.text} width={width} />;
     case "tool":

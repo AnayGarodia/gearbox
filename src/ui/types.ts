@@ -39,7 +39,7 @@ export interface AccountView {
 
 // One transcript item as the UI sees it. Built from the AgentEvent stream.
 export type Item =
-  | { kind: "user"; id: number; text: string }
+  | { kind: "user"; id: number; text: string; turnNo?: number } // turnNo: real turns get a numbered heading; command echoes stay small
   | { kind: "assistant"; id: number; text: string; done: boolean }
   | {
       kind: "tool";

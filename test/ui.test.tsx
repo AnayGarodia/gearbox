@@ -30,7 +30,7 @@ test("banner shows brand + active account (model lives in the status bar, not he
 
 test("transcript renders user, assistant, tools, error with the right glyphs", () => {
   const items: Item[] = [
-    { kind: "user", id: 1, text: "fix the auth bug" },
+    { kind: "user", id: 1, text: "fix the auth bug", turnNo: 1 },
     { kind: "assistant", id: 2, text: "On it.", done: true },
     { kind: "tool", id: 3, callId: "a", name: "read_file", arg: "auth.ts", status: "ok", summary: "42 lines" },
     { kind: "tool", id: 4, callId: "b", name: "run_shell", arg: "bun test", status: "err", summary: "2 failing" },
@@ -45,7 +45,7 @@ test("transcript renders user, assistant, tools, error with the right glyphs", (
   expect(f).toContain("42 lines");
   expect(f).toContain("shell");
   expect(f).toContain("rate limited");
-  expect(f).toContain("▌"); // user prompt band
+  expect(f).toContain("01"); // numbered turn heading (the ledger section index)
   expect(f).toContain("∟"); // tool call stub marker (corner glyph)
   expect(f).toContain("⎿"); // tool result connector
   expect(f).toContain("▎"); // error lane: a single red left bar (was a ▲ marker)

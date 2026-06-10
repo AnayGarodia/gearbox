@@ -540,21 +540,23 @@ export function staticItemLines(it: Item, width: number): Line[] {
   if (hit && hit.width === width && hit.epoch === themeEpoch) return hit.lines;
   const lines: Line[] = [];
   if (it.kind === "user") {
-    // The opencode-style user card: a blue spine running the block's full height
-    // (padding rows included), panel background, 2-col inner padding. The
-    // assistant's reply renders bare on the canvas — that quiet asymmetry is
-    // what makes the dialogue scannable.
-    const row = (l: Line): Line =>
-      padBg([
-        { text: glyph.userBar + "  ", color: color.user, bg: color.userBg },
-        ...l.map((s) => ({ ...s, bg: s.bg ?? color.userBg })),
-      ], width, color.userBg);
-    const wrapped = wrapSpans(proseSpans(it.text, { color: color.text, bg: color.userBg }), Math.max(width - 5, 1));
-    // Breathing room only when there's something to breathe around: a one-line
-    // message is a single spine row (a 3-row slab for "hi" read as dead space).
-    if (wrapped.length > 1) lines.push(row([]));
-    for (const l of wrapped) lines.push(row(l));
-    if (wrapped.length > 1) lines.push(row([]));
+    if (it.turnNo != null) {
+      // The ledger heading: turns are numbered SECTIONS, not bubbles. A faint
+      // hairline separates turns (skipped on the first), then the index in the
+      // brand ink and the prompt set bold — no box, no background slab.
+      if (it.turnNo > 1) {
+        lines.push([{ text: glyph.rule.repeat(width), color: color.faint, dim: true }]);
+        lines.push(BLANK);
+      }
+      const idx = String(it.turnNo).padStart(2, "0");
+      const wrapped = wrapSpans(proseSpans(it.text, { color: color.text, bold: true }), Math.max(width - 4, 1));
+      wrapped.forEach((l, i) =>
+        lines.push([{ text: i === 0 ? idx + "  " : "    ", color: color.user }, ...l]),
+      );
+    } else {
+      // A command echo, not a turn: one small quiet line.
+      lines.push(clipSpans([{ text: "  " + glyph.prompt + " ", color: color.faint }, { text: it.text, color: color.dim }], width));
+    }
   } else if (it.kind === "assistant" && it.text) {
     lines.push(...indent(markdownToLines(it.text, Math.max(width - 2, 1)), 2));
   }
@@ -726,23 +728,28 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
         break;
       }
       case "summary": {
-        const bits: string[] = [];
-        if (it.changed.length) bits.push(`${it.changed.length} file${it.changed.length === 1 ? "" : "s"}`);
-        if (it.checks.length) bits.push(`${it.checks.length} check${it.checks.length === 1 ? "" : "s"}`);
-        if (it.failures.length) bits.push(`${it.failures.length} failed`);
-        // Which verification tier the turn cleared: tests > types > none.
+        // The RECEIPT line: the settled turn's outcome in one quiet row —
+        // verdict (bold), the files it touched, and the proof tier. The routed
+        // line above it carries model + cost in the margin; together they are
+        // the turn's closing statement.
+        const verdict = it.failures.length
+          ? { text: `${it.failures.length} failed`, color: color.warn, bold: true }
+          : { text: "done", color: color.text, bold: true };
         const proof =
-          it.tier === "tests" ? { text: " · tests green", color: color.ok }
-          : it.tier === "types" ? { text: " · types/build pass", color: color.ok }
-          : it.tier === "none" ? { text: " · unverified", color: color.faint }
+          it.tier === "tests" ? { text: "tests ✓", color: color.ok }
+          : it.tier === "types" ? { text: "types ✓", color: color.ok }
+          : it.tier === "none" ? { text: "unverified", color: color.faint }
           : null;
-        out.push(clipSpans([
+        const body: Span[] = [
           { text: "  " + (it.failures.length ? glyph.err + " " : glyph.check + " "), color: it.failures.length ? color.warn : color.ok },
-          { text: "turn summary", color: color.text },
-          ...(bits.length ? [{ text: " · " + bits.join(" · "), color: color.faint }] : []),
-          ...(proof ? [proof] : []),
-        ], width));
-        if (it.changed.length) out.push(clipSpans([{ text: "    changed ", color: color.faint }, { text: it.changed.slice(0, 4).join(", ") + (it.changed.length > 4 ? ` +${it.changed.length - 4}` : ""), color: color.path }], width));
+          verdict,
+        ];
+        if (it.changed.length) {
+          body.push({ text: " · ", color: color.faint });
+          body.push({ text: it.changed.slice(0, 3).map(relPath).join(", ") + (it.changed.length > 3 ? ` +${it.changed.length - 3}` : ""), color: color.path });
+        }
+        if (it.checks.length && !proof) body.push({ text: ` · ${it.checks.length} check${it.checks.length === 1 ? "" : "s"}`, color: color.faint });
+        out.push(marginLine(body, proof ? [proof] : [], width));
         if (it.next) out.push(clipSpans([{ text: "    next ", color: color.dim }, { text: it.next, color: color.accent }], width));
         break;
       }
