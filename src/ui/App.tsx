@@ -5578,7 +5578,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         {quickPickerJsx}
         {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: estimateCost(sessionRef.current.turns), sessionTurns: sessionRef.current.turns.length })} width={pageW} /> : null}
       </Box>
-      {homeScreen ? null : <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>}
+      {/* The command/file palette sits in the page column, aligned with the composer above it. */}
+      {homeScreen ? null : <Box height={PALETTE_ROWS} flexDirection="column" marginLeft={pageLeft} width={pageW} flexShrink={0}>{paletteAt(pageW - 2)}</Box>}
       {fsComposerJsx}
       {/* The meter is the page's BOTTOM EDGE — composer above it, one quiet rule
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
