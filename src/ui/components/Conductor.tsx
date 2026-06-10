@@ -7,12 +7,14 @@
 // per-root seams: permission prompts route to the owning tab
 // (registerPermissionHandler), turn checkpoints snapshot the owning tree
 // (registerPreMutationHook), and every turn captures its tab's root for tools,
-// context, and session persistence. The strip costs no screen row — it rides
-// the status bar as a chip (⌃T 1●·2·3; red when a hidden tab needs input).
+// context, and session persistence. The tab bar costs no screen row — it rides
+// the masthead next to the wordmark as CLICKABLE cells (click a tab to switch,
+// click + for a new session; ⚠ = a hidden tab waits on a permission prompt).
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Box } from "ink";
 import { basename, join } from "node:path";
 import { App, type AppProps, type SessionStatus, type TabControl } from "../App.tsx";
+import type { TabRow } from "../tabbar.ts";
 import type { ModelSelector } from "../../model/selector.ts";
 import { repoRoot, worktreeAdd } from "../../git/ops.ts";
 
@@ -31,14 +33,15 @@ interface TabState {
   status: SessionStatus;
 }
 
-/** Pure: the status-bar chip for a tab set. null when a single tab (no chrome). */
-export function tabsChip(tabs: { status: SessionStatus }[], activeIdx: number): { text: string; alert: boolean } | null {
-  if (tabs.length < 2) return null;
-  const cells = tabs.map((t, i) => {
-    const mark = t.status.needsInput ? "⚠" : t.status.busy ? "●" : "";
-    return i === activeIdx ? `[${i + 1}${mark}]` : `${i + 1}${mark}`;
-  });
-  return { text: `⌃T ${cells.join("·")}`, alert: tabs.some((t, i) => i !== activeIdx && t.status.needsInput) };
+/** Pure: the masthead tab-bar rows for a tab set (always shown, even with one
+ *  tab — the + cell is how parallel sessions are discovered). */
+export function tabRowsOf(tabs: { dir: string; status: SessionStatus }[], activeIdx: number): TabRow[] {
+  return tabs.map((t, i) => ({
+    title: t.status.title || basename(t.dir),
+    active: i === activeIdx,
+    busy: t.status.busy,
+    needsInput: t.status.needsInput,
+  }));
 }
 
 /** Pure: a filesystem/branch-safe tab slug. */
@@ -142,7 +145,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     return cb;
   };
 
-  const chip = tabsChip(tabs, activeIdx);
+  const rows = tabRowsOf(tabs, activeIdx);
   return (
     <>
       {tabs.map((t, i) => (
@@ -155,7 +158,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
             active={i === activeIdx}
             onStatus={statusCb(t.id)}
             tabs={control}
-            tabsLabel={i === activeIdx ? chip : null}
+            tabRows={rows}
           />
         </Box>
       ))}

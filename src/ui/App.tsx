@@ -18,7 +18,8 @@ import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
 import { buildProvidersView } from "./providers-view.ts";
 import { ProvidersView } from "./components/ProvidersView.tsx";
-import { Masthead } from "./components/Masthead.tsx";
+import { Masthead, MASTHEAD_ROW, TABBAR_LEFT } from "./components/Masthead.tsx";
+import { tabBarSegments, tabBarHit, type TabRow } from "./tabbar.ts";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
 import { setPermissionHandler, registerPermissionHandler, registerPreMutationHook, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
@@ -399,11 +400,11 @@ export interface AppProps {
   active?: boolean;
   onStatus?: (s: SessionStatus) => void;
   tabs?: TabControl;
-  /** conductor strip chip rendered in the status bar (the strip costs no row) */
-  tabsLabel?: { text: string; alert: boolean } | null;
+  /** conductor session tabs, rendered as the CLICKABLE masthead tab bar */
+  tabRows?: TabRow[] | null;
 }
 
-export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabsLabel }: AppProps) {
+export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows }: AppProps) {
   const { exit } = useApp();
   // The instance's workspace, FIXED at mount: per-turn root capture, the
   // session-save slug, and permission routing key off this — never off the
@@ -411,6 +412,12 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const rootRef = useRef(rootProp ?? process.cwd());
   const activeRef = useRef(active);
   activeRef.current = active;
+  // Live mirrors for the raw mouse handler (registered once; reading props
+  // through refs avoids re-subscribing the stdin listener per status change).
+  const tabRowsRef = useRef(tabRows);
+  tabRowsRef.current = tabRows;
+  const tabsCtlRef = useRef(tabs);
+  tabsCtlRef.current = tabs;
   const { stdin, isRawModeSupported, setRawMode } = useStdin();
   const { columns, rows } = useTerminalSize();
   const online = useOnline(20_000, true); // background reachability → "⚠ offline"
@@ -419,6 +426,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Chrome (title bar, rules, composer, status) spans the full terminal width;
   // long prose wraps at a readable cap inside it (see Transcript).
   const width = columns;
+  const widthLiveRef = useRef(width);
+  widthLiveRef.current = width;
   // 2× ghost is 40 cols × 20 rows; 1× mini is 20 × 10. Gate so neither overflows
   // a short/narrow terminal (wordmark-only when tiny).
   const splashSize =
@@ -1128,6 +1137,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         else {
           const isDrag = (b & 32) === 32;
           const isPrimary = (b & 3) === 0;
+          // Masthead tab-bar clicks: switch sessions / + creates one. Allowed
+          // while busy — switching away from a running turn is the point of
+          // parallel sessions. Hit-test = the SAME pure layout the Masthead
+          // rendered from, so click targets match the pixels exactly.
+          if (fullscreen && isPrimary && !isDrag && !up && y === MASTHEAD_ROW && tabsCtlRef.current && tabRowsRef.current?.length) {
+            const segs = tabBarSegments(tabRowsRef.current, TABBAR_LEFT, widthLiveRef.current - 1);
+            const act = tabBarHit(segs, x - 1);
+            if (act) {
+              if (act.type === "new") tabsCtlRef.current.create();
+              else tabsCtlRef.current.switchTo(act.n);
+              continue;
+            }
+          }
           // Status-bar click pickers (fullscreen only). A primary press on the
           // model or effort label toggles its floating picker; a press anywhere
           // else closes an open one before normal click handling resumes.
@@ -4314,7 +4336,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
           assumes y === termRows; change in lockstep. */}
       <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
-        <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} epoch={themeEpochState} tabsLabel={tabsLabel} />
+        <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} epoch={themeEpochState} />
       </Box>
     </>
   );
@@ -4340,7 +4362,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
-        <Masthead account={bannerAccount} width={width} epoch={themeEpochState} />
+        <Masthead account={bannerAccount} width={width} epoch={themeEpochState} tabRows={tabRows} />
         {/* flexGrow pins the footer (and the composer with it) to the bottom row,
             so however the footer height is estimated, the input bar is always at
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}
