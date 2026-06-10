@@ -14,10 +14,14 @@ import { StateGhost, STATE_GHOST_ROWS, type MascotState, type GhostLook } from "
 // state, so the composer below never shifts).
 //
 // ROW-COUNT CONTRACT (keep in lockstep with App.tsx's footer estimate):
-//   wide  (width ≥ WORKING_GHOST_MIN_W): marginTop + STATE_GHOST_ROWS = 6 rows
-//   narrow: marginTop + 1 verb row = 2 rows (the ghost would crowd a tiny frame)
+//   full  (width ≥ WORKING_GHOST_MIN_W and rows ≥ WORKING_GHOST_MIN_H):
+//         marginTop + STATE_GHOST_ROWS = 6 rows — Boo + verb + action + trail
+//   compact: marginTop + 1 verb row = 2 rows (a 5-row ghost would eat a small
+//         frame's transcript — the coding area outranks the mascot)
 export const WORKING_GHOST_MIN_W = 60;
-export const workingRows = (width: number): number => (width >= WORKING_GHOST_MIN_W ? 1 + STATE_GHOST_ROWS : 2);
+export const WORKING_GHOST_MIN_H = 32;
+export const workingRows = (width: number, rows: number): number =>
+  width >= WORKING_GHOST_MIN_W && rows >= WORKING_GHOST_MIN_H ? 1 + STATE_GHOST_ROWS : 2;
 
 export function Working({
   state,
@@ -25,14 +29,20 @@ export function Working({
   elapsed,
   linger,
   width,
+  rows = 999,
   skin = "base",
+  action,
+  trail,
 }: {
   state: MascotState;
   verb: string;
   elapsed: number;
   linger?: boolean; // post-turn celebrate/error beat · show a label, not the timer
   width: number;
+  rows?: number; // terminal height — small frames drop the ghost (workingRows)
   skin?: GhostLook; // /ghost wardrobe — Boo works in the outfit you gave him
+  action?: string | null; // current step (tool + target + ticking elapsed), beside Boo
+  trail?: string | null; // recent steps/checks, beside Boo
 }) {
   const label = linger ? (state === "error" ? "something broke" : "done") : verb;
   // The verb glows (shimmer.ts) while live; the linger label sits still in its
@@ -54,8 +64,8 @@ export function Working({
     <Text color={color.faint}> </Text>
   );
 
-  if (width < WORKING_GHOST_MIN_W) {
-    // Narrow frame: the one-line now-row (a 5-row ghost would crowd it).
+  if (workingRows(width, rows) === 2) {
+    // Compact frame: the one-line now-row (a 5-row ghost would crowd it).
     return (
       <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
         {labelJsx}
@@ -63,16 +73,25 @@ export function Working({
       </Box>
     );
   }
+  // Side column beside the head: verb + figures, then the live activity (the
+  // current step and a short trail) — the "what is it doing NOW" rail folded
+  // into rows Boo already occupies, so it costs no extra height.
+  const room = Math.max(12, width - 2 - 20 - 2); // padding + ghost cols + gap
   return (
     <Box width={width} paddingX={1} marginTop={1}>
       <StateGhost state={state} skin={skin} />
-      {/* The text column rides beside the head, centered on its height; the
-          figures right-align inside it so they land at the page's right edge. */}
       <Box flexDirection="column" flexGrow={1} height={STATE_GHOST_ROWS} justifyContent="center" marginLeft={2}>
         <Box justifyContent="space-between">
           {labelJsx}
           {figures}
         </Box>
+        {!linger && action ? (
+          <Text wrap="truncate-end">
+            <Text color={color.accentDim}>{"▸ "}</Text>
+            <Text color={color.dim}>{action.slice(0, room)}</Text>
+          </Text>
+        ) : null}
+        {!linger && trail ? <Text color={color.faint} wrap="truncate-end">{"  " + trail.slice(0, room)}</Text> : null}
       </Box>
     </Box>
   );
