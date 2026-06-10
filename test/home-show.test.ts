@@ -6,15 +6,31 @@ import { FACES, PALETTES, ACCESSORIES, PERSONAS } from "../src/ui/ghost/engine.t
 const PERIOD = 40;
 const ON = 19;
 
-test("homeShow: calm first cycle, then a bit per cycle that always ends", () => {
+test("homeShow: calm first cycle, then a bit every cycle (chaining or resting)", () => {
   // The whole first period is plain — the app never lands mid-costume.
   for (let t = 0; t < PERIOD; t++) expect(homeShow(t)).toBeNull();
-  // Cycle 1 plays a bit for the ON window, then goes calm again.
-  expect(homeShow(PERIOD)).not.toBeNull();
-  expect(homeShow(PERIOD + ON - 1)).not.toBeNull();
-  expect(homeShow(PERIOD + ON)).toBeNull();
-  expect(homeShow(2 * PERIOD - 1)).toBeNull();
-  expect(homeShow(2 * PERIOD)).not.toBeNull();
+  // From cycle 1 on, every cycle OPENS with a bit.
+  for (let c = 1; c <= 20; c++) expect(homeShow(c * PERIOD)).not.toBeNull();
+});
+
+test("bits chain costume-to-costume; only some cycles rest back to plain Boo", () => {
+  let chains = 0;
+  let rests = 0;
+  for (let c = 1; c <= 100; c++) {
+    const tail = homeShow(c * PERIOD + ON); // after the ON window
+    if (tail) {
+      chains++;
+      // a chaining cycle holds ITS OWN bit to the period's end…
+      expect(homeShow(c * PERIOD + PERIOD - 1)).toEqual(homeShow(c * PERIOD));
+      // …and the next cycle starts a different-seeded bit immediately
+      expect(homeShow((c + 1) * PERIOD)).not.toBeNull();
+    } else {
+      rests++;
+      expect(homeShow(c * PERIOD + PERIOD - 1)).toBeNull(); // calm until the period turns
+    }
+  }
+  expect(chains).toBeGreaterThan(40); // most cycles morph straight to the next look
+  expect(rests).toBeGreaterThan(15); // but plain Boo still shows up regularly
 });
 
 test("homeShow is deterministic (same tick → same bit, seeded PRNG not Math.random)", () => {

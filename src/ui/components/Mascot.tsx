@@ -159,12 +159,18 @@ function mulberry32(seed: number): () => number {
 }
 
 const SHOW_PERIOD = 40; // ticks (~10s at 240ms)
-const SHOW_ON = 19; // ticks the bit plays (~4.5s)
+const SHOW_ON = 19; // ticks the bit plays before a REST cycle's calm (~4.5s)
 export function homeShow(tick: number): { patch: Partial<GhostCfg>; overlay?: OverlayKind } | null {
-  if (tick < SHOW_PERIOD || tick % SHOW_PERIOD >= SHOW_ON) return null;
+  if (tick < SHOW_PERIOD) return null; // the first period is plain — never land mid-costume
   const cycle = Math.floor(tick / SHOW_PERIOD);
   const r = mulberry32(Math.imul(cycle, 0x9e3779b9) ^ 0xb00);
   const pick = <T,>(arr: T[]): T => arr[Math.floor(r() * arr.length)]!;
+  // Bits CHAIN: most cycles morph straight into the next costume (the bit fills
+  // the whole period); ~35% rest — the bit ends at SHOW_ON and Boo returns to
+  // his plain self for the remainder. Drawn FIRST so the combo picks below stay
+  // aligned with the same seeded stream regardless of where in the bit we are.
+  const rests = r() < 0.35;
+  if (rests && tick % SHOW_PERIOD >= SHOW_ON) return null;
   const costume = r();
   if (costume < 0.45) {
     // Persona bits play AS DESIGNED: each costume carries its own palette,
