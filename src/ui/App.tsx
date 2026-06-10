@@ -1824,8 +1824,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const defaultRunner: Runner = useCallback(
     async ({ prompt, messages, onEvent, selector: sel, signal, escalate = 0 }) => {
       // /ask (and auto-detected meta-questions): answer from the bundled Gearbox
-      // docs via a cheap routed model, NO tools · runs before routing/pin so it
-      // works even when /model is pinned to something broken. Read-and-clear.
+      // docs, NO tools. The session's pin is honored (the pinned model answers);
+      // fresh routing is the fallback when the pin can't serve. Read-and-clear.
       const isAsk = askModeRef.current;
       askModeRef.current = false;
       // Wire truth is per-turn: clear the previous turn's served-model id so a
@@ -1838,13 +1838,30 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           onEvent({ type: "error", message: "Gearbox docs aren't bundled with this install · can't answer from them." });
           return { messages, usage: { inputTokens: 0, outputTokens: 0 } };
         }
-        const choice = new RoutingSelector().select({ prompt, kind: "search" });
+        // Honor the session's pin: a /model-pinned model answers its own
+        // meta-questions. Routing around the pin here surprised users (a pinned
+        // Azure model's "what model are you" ran on a claude seat) AND
+        // misattributed the provenance line. Fresh routing is only the fallback
+        // when the pinned selector can't produce a choice.
+        let choice: ModelChoice;
+        try {
+          choice = sel.select({ prompt, kind: "search" });
+        } catch {
+          choice = new RoutingSelector().select({ prompt, kind: "search" });
+        }
         // On a subscription (no in-loop API), run the grounded answer THROUGH the
         // CLI seat instead of refusing — prepend the docs so it stays grounded and
         // tell the binary not to use tools. (vi)
         const askCli = activeCliRef.current ?? (choice.backend?.kind === "cli" ? { binary: choice.backend.binary, id: choice.backend.account.id, label: choice.model.label, profile: choice.backend.profile, sdkId: choice.model.sdkId } : null);
         if (askCli) {
           const askPrompt = `${buildAskSystem(docs)}\n\nAnswer the following question about Gearbox using ONLY the reference above. Do not use any tools.\n\nQuestion: ${prompt}`;
+          // Keep the per-turn provenance truthful: the routing line reads
+          // routedRef after the turn, so a stale pick from an EARLIER turn here
+          // reported the wrong model + a phantom wire mismatch. An explicit
+          // subscription pin renders via activeCliModelRef (routedRef stays
+          // null, like the pin branch below); a routed seat records its pick.
+          routedRef.current = activeCliRef.current ? null : { model: choice.model, reason: choice.reason };
+          if (!activeCliRef.current) setLastPick({ model: choice.model, reason: choice.reason });
           usedAccountRef.current = (askCli as any).id;
           cliMetaRef.current = null;
           const r = await runCliBackend({ binary: (askCli as any).binary, profile: (askCli as any).profile, modelId: (askCli as any).sdkId ?? activeCliModelRef.current, accountId: (askCli as any).id, efforts: [], label: (askCli as any).label, pinned: true, deferTerminal: false, showProvenance: true, prompt: askPrompt, messages: [], onEvent, signal });

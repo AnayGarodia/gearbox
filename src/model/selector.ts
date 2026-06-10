@@ -103,6 +103,12 @@ export class FixedSelector implements ModelSelector {
         "No model available. Set a key: ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY / DEEPSEEK_API_KEY",
       );
     }
+    // pickDefaultModel silently falls back to the first available model when
+    // the pinned id can't be served (key removed, model un-discovered). Saying
+    // "pinned" about a model the user did NOT pin is a lie — name the swap.
+    if (this.preferredId && model.id !== this.preferredId) {
+      return { model, reason: `pinned ${this.preferredId} unavailable → ${model.id} · /model auto to route per task` };
+    }
     return { model, reason: "pinned · /model auto to route per task" };
   }
 }
