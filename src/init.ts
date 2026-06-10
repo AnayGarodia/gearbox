@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
 import { detectVerificationCommands } from "./verify.ts";
@@ -88,7 +88,10 @@ export function writeProjectGuide(cwd = process.cwd()): { path: string; summary:
   const path = join(cwd, "GEARBOX.md");
   const before = existsSync(path) ? readFileSync(path, "utf8") : "";
   const after = buildProjectGuide(cwd);
-  writeFileSync(path, after, "utf8");
+  // Temp-write + rename (atomic in the same dir) so a crash can't tear GEARBOX.md.
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, after, "utf8");
+  renameSync(tmp, path);
   const diff = computeDiff(before, after);
   return { path, summary: `wrote GEARBOX.md (${diffStat(diff)})`, diff };
 }

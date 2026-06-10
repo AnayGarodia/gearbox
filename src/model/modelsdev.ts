@@ -39,7 +39,7 @@
 // the network and disk paths (fetchModelsDev, load/saveCachedCatalog,
 // syncModelsDev) never throw — every failure degrades to null / stale cache /
 // empty, matching the "a missing signal is neutral" routing principle.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -267,7 +267,11 @@ export function saveCachedCatalog(entries: ModelsDevEntry[]): void {
   try {
     mkdirSync(home(), { recursive: true });
     const record: CachedCatalog = { fetchedAt: Date.now(), entries };
-    writeFileSync(cachePath(), JSON.stringify(record));
+    // Temp-write + rename (atomic in the same dir) — a torn write would leave a
+    // corrupt cache that loadCachedCatalog silently discards every boot.
+    const tmp = `${cachePath()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(record));
+    renameSync(tmp, cachePath());
   } catch {
     // best-effort cache; never let a disk failure break the caller
   }

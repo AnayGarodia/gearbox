@@ -121,3 +121,36 @@ test("vim normal: hjwbx movement + edits", () => {
   // ⏎ still submits from normal mode
   expect(applyKey({ value: "x", cursor: 1 }, "", K({ return: true }), { normal: true }).type).toBe("submit");
 })
+
+// ── extendUnitSelection: word/line-wise drag after a double/triple click ──────
+import { extendUnitSelection } from "../src/ui/input.ts";
+
+test("word drag forward hulls whole words on both sides", () => {
+  const v = "alpha beta gamma";
+  // double-clicked "alpha" (0..5), dragged into the middle of "gamma" (off 13)
+  const e = extendUnitSelection(v, { start: 0, end: 5 }, 13, "word");
+  expect([e.selectionAnchor, e.cursor]).toEqual([0, 16]); // alpha..gamma, whole words
+});
+
+test("word drag backward keeps the anchor word's end and extends to the word start", () => {
+  const v = "alpha beta gamma";
+  // double-clicked "gamma" (11..16), dragged back into "alpha" (off 2)
+  const e = extendUnitSelection(v, { start: 11, end: 16 }, 2, "word");
+  expect([e.cursor, e.selectionAnchor]).toEqual([0, 16]);
+});
+
+test("word drag within the anchor word keeps the original selection (trackpad micro-motion)", () => {
+  const v = "alpha beta";
+  const e = extendUnitSelection(v, { start: 0, end: 5 }, 3, "word");
+  expect([e.selectionAnchor, e.cursor]).toEqual([0, 5]);
+});
+
+test("line drag hulls whole lines", () => {
+  const v = "one\ntwo\nthree";
+  // triple-clicked line "two" (4..7), dragged down into "three" (off 9)
+  const down = extendUnitSelection(v, { start: 4, end: 7 }, 9, "line");
+  expect([down.selectionAnchor, down.cursor]).toEqual([4, 13]);
+  // dragged up into "one" (off 1)
+  const up = extendUnitSelection(v, { start: 4, end: 7 }, 1, "line");
+  expect([up.cursor, up.selectionAnchor]).toEqual([0, 7]);
+});

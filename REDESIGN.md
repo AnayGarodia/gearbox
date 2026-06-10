@@ -14,10 +14,10 @@ the best form for knowing it. Surfaces are derived from moments:
 |---|---|---|
 | Idle / home | Am I set up? Who answers? What can I do? | Boo (+ shows) · one readiness line (`N accounts ready · pin`) · the centered composer |
 | Composing | Who handles this, what it costs | Composer footer: live pick `provider · model` beside the cursor |
-| Working | Progress? Doing what now? How to stop? | One now-row (shimmer verb left, `Ns · esc` right); **history recedes** to faint ink |
+| Working | Progress? Doing what now? How to stop? | Boo's head-crop ghost (face = agent state) + shimmer verb, `Ns · esc` right; **history recedes** to faint ink. Narrow frames drop the ghost |
 | Reviewing | What changed? Proven? Cost? | The receipt: verdict · files · proof tier; margin carries model · $ · time; ⌃O reopens detail |
 | Deciding | What am I approving, options | The consent line: verbatim command, single-key options — the only bright element while pending |
-| Auditing | Where did money go? Why this model? | Per-turn margin figures · the meter (ctx gauge · session $) · tabs for depth |
+| Auditing | Where did money go? Why this model? | Per-turn margin figures · the meter (ctx gauge · session $) · /cost and /why for depth |
 
 ## The three signature ideas
 
@@ -46,8 +46,10 @@ Boo appears exactly twice: the home screen (with the persona shows and the
 
 - **One page.** A single centered column holds everything in fullscreen —
   transcript, now-row, queued chips, toasts, consent, composer. Full-width is
-  reserved for two chrome rows: the masthead (wordmark · tabs · account) and
-  the meter (cwd:branch · model · ctx gauge · $).
+  reserved for two chrome rows: the masthead (wordmark · account) and the
+  meter (cwd:branch · model · ctx gauge · $). There are no tabs: every fact a
+  tab once held already has a home (per-turn margin figures, /why, /account,
+  /cost) — a second dashboard for the same fact is a contract violation.
 - **Hierarchy is ink, not noise.** Three ink levels (text/dim/faint) + one
   accent + ok/warn/err. Bold marks identity. Backgrounds only on interactive
   surfaces. Attention is directed by *receding* what isn't this moment's
@@ -65,11 +67,10 @@ Boo appears exactly twice: the home screen (with the persona shows and the
 
 | Contract | Value | Sites |
 |---|---|---|
-| HEADER (masthead + rule) | 3 | App.tsx HEADER · Masthead (TabStrip.tsx) |
-| Tab click row | 2 | App mouse handler · tabStripHit |
-| Composer block | 4 (marginTop + input + footer + marginBottom) | Composer.tsx · App footer estimate |
+| HEADER (masthead + rule) | 3 | App.tsx HEADER · Masthead (Masthead.tsx) |
+| Composer block | 5 (marginTop + pad + input + pad + footer hint) | Composer.tsx · App footer estimate |
 | Consent (permission) footer | 5 | PermissionPrompt.tsx · App `if (perm) footer +=` |
-| statusBarHit chrome | 3 | StatusBar.tsx · App |
+| Meter row | bottom row of the frame (y = termRows) | StatusBar.tsx statusBarHit · App |
 | Content cap | 92 cols (76 prose + 16 margin) | App lineWidth · lines.ts MARGIN_W |
 
 ## Invariants (tested; never weaken)

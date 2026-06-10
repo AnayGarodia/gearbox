@@ -69,7 +69,8 @@ export function provenTier(passedIntents: (string | undefined)[]): ProofTier {
   return "none";
 }
 
-function summarize(output: string): string {
+/** One-line failure summary from check output: the first error-looking line, clipped. */
+export function summarize(output: string): string {
   const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);
   const fail = lines.find((l) => /\b(error|failed|failures?|exception|panic)\b/i.test(l));
   return (fail ?? lines[0] ?? "(no output)").slice(0, 160);
@@ -120,8 +121,10 @@ export function buildFixPrompt(failures: string[]): string {
     "",
     list,
     "",
-    "Fix the cause of these failures and make the checks pass. Only change what is",
-    "needed; do not revert unrelated work.",
+    "Diagnose before editing: read the failing output, find the root cause, and fix",
+    "THAT — don't pattern-match a guess or weaken/delete the failing check. Only",
+    "change what is needed; do not revert unrelated work. If a failure is",
+    "pre-existing and unrelated to your change, say so instead of chasing it.",
   ].join("\n");
 }
 

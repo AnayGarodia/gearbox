@@ -67,8 +67,34 @@ test("subscription-only: a CLI failure surfaces as a failed report, not a throw"
   expect(result).toContain("session expired");
 });
 
-test("with an API key present, delegation stays in-loop (CLI runner untouched)", async () => {
+// Corrected behavior: a seat's tool support is "unknown" (the vendor binary owns
+// its own tools), and unknown now PASSES the requirements filter — so the ~free
+// seat wins even when a metered API key is configured (seat-first routing, the
+// same rule as main turns). Previously unknown-as-missing silently excluded
+// every seat from requires:["tools"] selects.
+test("with an API key AND a free seat, the seat still wins (seat-first routing)", async () => {
   process.env.ANTHROPIC_API_KEY = "sk-test";
+  let cliCalled = false;
+  const fakeCli = async (o: any) => {
+    cliCalled = true;
+    return {
+      messages: [...o.messages, { role: "user", content: o.prompt }, { role: "assistant", content: "seat report: done" }],
+      usage: { inputTokens: 1, outputTokens: 1 },
+    } as any;
+  };
+  const tools = makeDelegateTools({ onEvent: () => {}, run: inLoopRunner, runCli: fakeCli as any });
+  const result = await (tools.delegate as any).execute({ task: "refactor the parser in src/p.ts", kind: "code" }, {});
+  expect(result).toContain("seat report: done");
+  expect(cliCalled).toBe(true);
+});
+
+test("API key only (no enabled seat): delegation stays in-loop (CLI runner untouched)", async () => {
+  process.env.ANTHROPIC_API_KEY = "sk-test";
+  // Disable the seat the suite's beforeEach added — this case is key-only.
+  putAccount({
+    id: "claude-max", label: "Claude Max", provider: "claude-cli", exec: "cli",
+    auth: { kind: "cli", binary: "claude" }, enabled: false, addedAt: 0,
+  });
   let cliCalled = false;
   const fakeCli = async () => { cliCalled = true; return { messages: [], usage: { inputTokens: 0, outputTokens: 0 } } as any; };
   const tools = makeDelegateTools({ onEvent: () => {}, run: inLoopRunner, runCli: fakeCli as any });

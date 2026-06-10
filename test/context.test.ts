@@ -408,6 +408,31 @@ test("buildContext skips retrieval for files read in the kept window", () => {
   expect(recentlyReadPaths([history], process.cwd()).size).toBe(1);
 });
 
+// ── recentlyRead is judged AFTER trimming: a dropped turn's read can't suppress retrieval ──
+test("a read in a turn the budget DROPPED no longer suppresses retrieval", () => {
+  const tiny: ModelSpec = { ...sonnet, contextWindow: 40_000 }; // 8k input floor
+  const query = "how does the agent stream events";
+  const top = retrieveFiles(query, process.cwd(), 6, 12_000)[0];
+  expect(top).toBeTruthy();
+  // Turn 1 reads the top retrieval hit…
+  const history: ModelMessage[] = [
+    { role: "user", content: "read that file" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "rr2", toolName: "read_file", input: { path: top!.file } }] as any },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "rr2", toolName: "read_file", output: { type: "text", value: "current contents" } }] as any },
+  ];
+  // …then enough filler turns follow that the budget trim must drop turn 1.
+  const filler = "filler words about nothing in particular ".repeat(400); // ~5k tokens/turn
+  for (let i = 0; i < 8; i++) {
+    history.push({ role: "user", content: `${filler} filler ${i}` });
+    history.push({ role: "assistant", content: `ack ${i}` });
+  }
+  const { messages } = buildContext({ history, userText: query, model: tiny, recentTurns: 99 });
+  // The read turn was trimmed away, so its file is NOT in-context anymore —
+  // retrieval must re-inject it (the pre-trim filter wrongly skipped it).
+  expect(messages.some((m) => JSON.stringify((m as any).content).includes('"rr2"'))).toBe(false);
+  expect(userMsgText(messages[messages.length - 1]!)).toContain(`=== ${top!.file} ===`);
+});
+
 // ── model-free compaction fallback ──
 test("elideHistory shrinks tokens mechanically, keeps recent turns whole", () => {
   const history = [...toolTurn(1), ...toolTurn(2), ...toolTurn(3), ...toolTurn(4)];

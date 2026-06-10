@@ -55,6 +55,17 @@ export function modelScopedKey(accountKey: string, modelId: string): string {
 
 export const DEFAULT_COOLDOWN_MS = 5 * 60_000;
 
+// An auth-dead account (expired/invalid credentials) does not heal on its own
+// the way a rate window does — 5 minutes later it is exactly as dead. Park it
+// long enough that routing stops re-trying it every few turns; a successful
+// /account login (or any recorded success) should clear it explicitly.
+export const AUTH_COOLDOWN_MS = 24 * 60 * 60_000;
+
+/** The park duration for a classified failure: auth gets the long park. */
+export function cooldownMsFor(kind: FailureKind): number {
+  return kind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS;
+}
+
 const cooldowns = new Map<string, { until: number; reason: string }>();
 
 /** Park an account (or `env:<provider>` key) until `now + ms`. */

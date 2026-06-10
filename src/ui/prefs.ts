@@ -3,7 +3,7 @@
 // writes are best-effort — a missing/corrupt file just yields defaults.
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 
 export interface Prefs {
   effort?: "fast" | "balanced" | "max";
@@ -38,7 +38,10 @@ export function loadPrefs(): Prefs {
 export function savePrefs(p: Prefs): void {
   try {
     mkdirSync(dirname(file()), { recursive: true });
-    writeFileSync(file(), JSON.stringify(p, null, 2));
+    // Temp-write + rename so a crash mid-write can't tear prefs.json.
+    const tmp = `${file()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(p, null, 2));
+    renameSync(tmp, file());
   } catch {
     /* best-effort */
   }

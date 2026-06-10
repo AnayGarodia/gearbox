@@ -72,3 +72,28 @@ test("no policy prop means no policy line (e.g. during onboarding)", () => {
   ).lastFrame() ?? "";
   expect(out).not.toContain("auto-route");
 });
+
+test("plan / auto-accept wear the composer: a footer badge, no transcript line needed", () => {
+  const plan = render(
+    <Composer value="" cursor={0} placeholder="ask anything" busy={false} width={80} mode="plan" />,
+  ).lastFrame() ?? "";
+  expect(plan).toContain("plan");
+  const auto = render(
+    <Composer value="" cursor={0} placeholder="ask anything" busy={false} width={80} mode="auto-accept" />,
+  ).lastFrame() ?? "";
+  expect(auto).toContain("auto-accept");
+  const normal = render(
+    <Composer value="" cursor={0} placeholder="ask anything" busy={false} width={80} mode="normal" />,
+  ).lastFrame() ?? "";
+  expect(normal).not.toContain("plan");
+  expect(normal).not.toContain("auto-accept");
+});
+
+test("bash mode beats the mode badge (it's about THIS line)", () => {
+  const out = render(
+    <Composer value="" cursor={0} placeholder="" busy={false} width={80} bashMode={true} mode="plan" />,
+  ).lastFrame() ?? "";
+  expect(out).toContain("! bash");
+  // the footer badge slot is single-occupancy; plan shows via the edges only
+  expect(out).not.toContain("plan");
+});

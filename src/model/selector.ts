@@ -49,6 +49,12 @@ export interface Task {
   // candidates (done > fast > cheap when waiting). Omit for background work
   // (delegated sub-tasks, compaction) where latency is free and cheapest wins.
   interactive?: boolean;
+  // Cache locality: the (account, model) currently loaded — i.e. what served the
+  // previous turn — so the scorer can charge cold candidates a switch penalty and
+  // a near-tie sticks with the warm model instead of ping-ponging. Shape matches
+  // ScoreInput.warm (src/model/scoring.ts). When omitted, RoutingSelector falls
+  // back to its own last returned pick, so callers get stickiness for free.
+  warm?: { accountId: string; modelId: string };
 }
 
 export interface ModelChoice {
@@ -61,7 +67,7 @@ export interface ModelChoice {
 // the user see exactly why each model was or was not chosen. The router populates
 // this from scored candidates; the UI renders it in the tab panel.
 export interface ScorecardEntry {
-  /** Measured per-repo prior, when ≥4 verified outcomes exist ("measured here: 7/9 ✓ (−0.04)"). */
+  /** Measured per-repo prior, when ≥8 verified outcomes exist ("measured here: 7/9 ✓ (−0.04)"). */
   priorNote?: string;
   label: string;
   backend: "api" | "seat";
@@ -70,6 +76,8 @@ export interface ScorecardEntry {
   estCostPerMtok: number;
   balanceText?: string; // "$12.50" or "$12 est" or undefined when not applicable
   headroomText?: string; // subscription "84% left" or "throttling" for near-limit metered keys
+  accountLabel?: string; // account slug/label serving this candidate ("claude-max"); undefined = bare env key
+  headroomPct?: number; // subscription window headroom 0–100, when known
   score: number;
   chosen: boolean;
   verdict: string;

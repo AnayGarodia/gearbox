@@ -1,8 +1,10 @@
 import { test, expect } from "bun:test";
-import { wrapSpans, itemsToLines } from "../src/ui/lines.ts";
+import { wrapSpans, itemsToLines, clipSpans } from "../src/ui/lines.ts";
+import { displayWidth } from "../src/ui/width.ts";
 import type { Item } from "../src/ui/types.ts";
 
-const lineLen = (line: { text: string }[]) => line.reduce((n, s) => n + s.text.length, 0);
+// Width = display COLUMNS (emoji/CJK count 2), the unit the terminal cares about.
+const lineLen = (line: { text: string }[]) => line.reduce((n, s) => n + displayWidth(s.text), 0);
 
 test("wrapSpans never exceeds the width and keeps all words", () => {
   const text = "the quick brown fox jumps over the lazy dog again and again";
@@ -138,6 +140,54 @@ test("a long-running tool shows a live ticking elapsed (the 'it's alive' signal)
   const text = itemsToLines(items, 110).map((l) => l.map((s) => s.text).join("")).join("\n");
   expect(text).toContain("agent"); // friendlyTool(Agent)
   expect(text).toMatch(/1m \d+s/); // ~84s shown as 1m 2Ns
+});
+
+test("clipSpans clips by display columns and never splits a surrogate pair", () => {
+  const clipped = clipSpans([{ text: "🎉🎉🎉" }], 5); // 6 columns of emoji, 5 allowed
+  const text = clipped.map((s) => s.text).join("");
+  expect(text).toBe("🎉🎉"); // the half-fitting third emoji is dropped whole
+  expect(lineLen(clipped)).toBeLessThanOrEqual(5);
+  // no lone surrogate produced by the cut
+  expect(/[\uD800-\uDFFF]/.test(text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ""))).toBe(false);
+});
+
+test("wrapSpans measures wide chars as 2 columns (the ≤width invariant in display columns)", () => {
+  const lines = wrapSpans([{ text: "漢字テストの長い行がここで折り返されるはず" }], 10);
+  expect(lines.length).toBeGreaterThanOrEqual(4); // ~42 columns over 10-col lines
+  for (const l of lines) expect(lineLen(l)).toBeLessThanOrEqual(10);
+});
+
+test("itemsToLines keeps the width invariant in display columns for emoji/CJK content", () => {
+  const W = 40;
+  const items: Item[] = [
+    { kind: "user", id: 1, text: "请把整个鉴权子系统重构一下，并且详细解释每一步 🚀🚀🚀" },
+    { kind: "assistant", id: 2, text: "好的 🎉 这是**很长的**解释，带一个代码块：\n\n```\nconst 名前がとても長い識別子テスト変数 = \"🎉🎉🎉🎉🎉🎉🎉🎉\"\n```\n\n完了。", done: true },
+    { kind: "tool", id: 3, callId: "a", name: "run_shell", arg: "echo 漢字テスト🎉漢字テスト🎉漢字テスト🎉漢字テスト🎉", status: "ok", summary: "出力 🎉 漢字テスト漢字テスト漢字テスト漢字テスト漢字" },
+    { kind: "notice", id: 4, text: "複数行の\n通知テキスト 🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉" },
+    { kind: "error", id: 5, text: "限流了 🛑 请稍后再试 限流了请稍后再试限流了请稍后再试限流了请稍后再试" },
+  ];
+  const lines = itemsToLines(items, W);
+  expect(lines.length).toBeGreaterThan(0);
+  for (const l of lines) expect(lineLen(l)).toBeLessThanOrEqual(W);
+  // and no line ever ends up with a lone surrogate (a half emoji)
+  for (const l of lines) {
+    const text = l.map((s) => s.text).join("");
+    expect(/[\uD800-\uDFFF]/.test(text.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, ""))).toBe(false);
+  }
+});
+
+test("a diff with emoji content still paints full-width rows within the width", () => {
+  const W = 60;
+  const lines = itemsToLines([
+    {
+      kind: "tool", id: 1, callId: "a", name: "edit_file", arg: "src/emoji.ts", status: "ok", summary: "updated",
+      diff: [
+        { sign: "-", text: "const msg = \"plain\";" },
+        { sign: "+", text: "const msg = \"🎉 done 漢字テスト 🎉 celebration time 🎉\";" },
+      ],
+    },
+  ], W, true);
+  for (const l of lines) expect(lineLen(l)).toBeLessThanOrEqual(W);
 });
 
 test("a tool whose summary just repeats its name omits the redundant result line", () => {

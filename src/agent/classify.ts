@@ -44,6 +44,15 @@ const SYSTEM = [
   "- A request to change, write, or fix code is 'code' even when phrased as a question.",
   "- If two categories fit and differ in weight, pick the heavier one — correctness beats cost when you're unsure.",
   "",
+  "Examples:",
+  "- 'tl;dr this error log' → summarize",
+  "- 'is this function pure? yes or no' → classify",
+  "- 'where is the retry logic defined?' → search",
+  "- 'what does this regex match?' → chat",
+  "- 'why is this throwing undefined?' → code (debugging needs the code path traced)",
+  "- 'add a --json flag to the export command' → code",
+  "- 'how should we split this service before adding multi-tenancy?' → plan",
+  "",
   "Output ONLY the category word. No punctuation, no explanation.",
 ].join("\n");
 

@@ -219,7 +219,9 @@ export function appendHistory(prompt: string): void {
     if (h[h.length - 1] === p) return;
     h.push(p);
     while (h.length > 500) h.shift();
-    writeFileSync(histFile(), JSON.stringify(h));
+    // Temp-write + rename so a crash mid-write can't tear history.json.
+    writeFileSync(`${histFile()}.tmp`, JSON.stringify(h));
+    renameSync(`${histFile()}.tmp`, histFile());
   } catch {
     /* best-effort */
   }

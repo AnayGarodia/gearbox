@@ -8,7 +8,7 @@
 // NOT protection against a local attacker who can read your home dir.
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { Account, AccountsFile } from "./types.ts";
@@ -96,7 +96,11 @@ function masterKey(): Buffer {
   ensure();
   if (existsSync(keyFile())) return Buffer.from(readFileSync(keyFile(), "utf8").trim(), "base64");
   const k = randomBytes(32);
-  writeFileSync(keyFile(), k.toString("base64"), { mode: 0o600 });
+  // Temp-write + rename (atomic in the same dir) — a torn key write would
+  // permanently lock out every stored secret. Same pattern as writeEnc().
+  const tmp = `${keyFile()}.tmp`;
+  writeFileSync(tmp, k.toString("base64"), { mode: 0o600 });
+  renameSync(tmp, keyFile());
   return k;
 }
 
@@ -127,7 +131,11 @@ function readEnc(): Record<string, string> {
 }
 function writeEnc(m: Record<string, string>): void {
   ensure();
-  writeFileSync(encFile(), JSON.stringify(m), { mode: 0o600 });
+  // Temp-write + rename (atomic in the same dir) — a torn write here would
+  // brick every stored API key. Same pattern as usage.ts save().
+  const tmp = `${encFile()}.tmp`;
+  writeFileSync(tmp, JSON.stringify(m), { mode: 0o600 });
+  renameSync(tmp, encFile());
 }
 function fileSet(ref: string, v: string): void {
   const m = readEnc();
@@ -160,7 +168,11 @@ export function loadAccounts(): AccountsFile {
 export function saveAccounts(f: AccountsFile): void {
   try {
     ensure();
-    writeFileSync(accountsFile(), JSON.stringify(f, null, 2), { mode: 0o600 });
+    // Temp-write + rename: accounts.json is rewritten after every turn (markUsed),
+    // so a crash mid-write must never tear the whole registry.
+    const tmp = `${accountsFile()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(f, null, 2), { mode: 0o600 });
+    renameSync(tmp, accountsFile());
   } catch {
     /* best-effort, like session save */
   }

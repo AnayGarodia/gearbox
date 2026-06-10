@@ -163,7 +163,10 @@ export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boole
   if ((key.meta || key.ctrl) && key.rightArrow) return move(s, wordRight(s.value, s.cursor), key.shift);
   if (key.leftArrow) return move(s, Math.max(0, s.cursor - 1), key.shift);
   if (key.rightArrow) return move(s, Math.min(s.value.length, s.cursor + 1), key.shift);
-  if ((key.meta || key.ctrl) && input === "a") return at(s.value, s.value.length, 0); // select all
+  // ⌃A/⌘A select all — a DELIBERATE break from readline's line-start (the
+  // composer's fastest clear: select all, delete). ⌃U already covers
+  // kill-to-line-start. /keys documents this.
+  if ((key.meta || key.ctrl) && input === "a") return at(s.value, s.value.length, 0);
   if (key.ctrl && input === "e") return move(s, lineEndOf(s.value, s.cursor), key.shift); // line end (readline)
   // readline kill bindings: ⌃U to line start, ⌃K to line end, ⌃W / ⌥⌫ word back.
   if (key.ctrl && input === "u") return { type: "edit", state: { value: s.value.slice(0, lineStart) + s.value.slice(s.cursor), cursor: lineStart } };
@@ -312,4 +315,26 @@ export function applyMouse(s: Edit, click: MouseClick): KeyAction {
       selectionAnchor: undefined,
     },
   };
+}
+
+/**
+ * Extend a word/line selection during a drag that began with a double or
+ * triple click: the selection becomes the hull of the anchor range (the
+ * word/line originally clicked) and the word/line under the drag point —
+ * whole units stay selected on both sides, like every native text field.
+ * The cursor rides the moving end so a later shift-click still extends
+ * sensibly. Pure.
+ */
+export function extendUnitSelection(
+  value: string,
+  anchor: { start: number; end: number },
+  offset: number,
+  mode: "word" | "line",
+): Edit {
+  const start = mode === "line" ? lineStartAt(value, offset) : wordStartAt(value, offset);
+  const end = mode === "line" ? lineEndAt(value, offset) : wordEndAt(value, offset);
+  // Dragging forward: anchor start stays, cursor extends to the unit's end.
+  // Dragging backward: anchor end stays, cursor extends to the unit's start.
+  if (end >= anchor.end) return { value, cursor: Math.max(end, anchor.end), selectionAnchor: Math.min(start, anchor.start) };
+  return { value, cursor: Math.min(start, anchor.start), selectionAnchor: Math.max(end, anchor.end) };
 }

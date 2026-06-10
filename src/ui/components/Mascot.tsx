@@ -131,25 +131,61 @@ export interface AnimSpec {
 }
 
 // ── The home idle show ────────────────────────────────────────────────────────
-// Every ~24s on the home screen Boo plays a short bit — skates by, dons the
-// wizard hat, throws a party — then returns to himself. Deterministic in the
-// tick (pure, tested): cycle N picks show N, ~4.5s on, the rest calm. The first
-// cycle stays plain so the app never lands mid-costume.
-export const HOME_SHOWS: { patch: Partial<GhostCfg>; overlay?: OverlayKind }[] = [
-  { patch: { persona: "skater", face: "happy" } },
-  { patch: { persona: "wizard", face: "joy" }, overlay: "sparkle" },
-  { patch: { accessory: "party", face: "joy" }, overlay: "confetti" },
-  { patch: { accessory: "headphones", face: "happy" } },
-  { patch: { persona: "pirate", face: "wink" } },
-  { patch: { persona: "astronaut", face: "surprised" }, overlay: "sparkle" },
-  { patch: { face: "love" }, overlay: "hearts" },
-  { patch: { persona: "ninja", face: "cool" } },
-];
-const SHOW_PERIOD = 100; // ticks (~24s at 240ms)
+// Every ~10s on the home screen Boo plays a short random bit drawn from the FULL
+// design-gallery catalog — an expression + (sometimes) a palette + (sometimes) a
+// persona costume or accessory + (sometimes) an overlay — then returns to
+// himself. "Random" to the eye but PURE in the tick: a tiny seeded PRNG keyed by
+// the cycle number, so the same tick always renders the same frame (tested,
+// resumable, GEARBOX_NO_MOTION still freezes everything). The first cycle stays
+// plain so the app never lands mid-costume. Pools are the upbeat subset: no
+// sad/angry/crying on the welcome mat.
+const FACE_POOL = ["happy", "joy", "surprised", "wink", "cool", "love", "dizzy"];
+const PERSONA_POOL = ["wizard", "skater", "ninja", "chef", "pirate", "astronaut", "graduate", "superhero", "cowboy"];
+const ACCESSORY_POOL = ["party", "flag", "shades", "crown", "headphones"];
+const PALETTE_POOL = ["fire", "ice", "golden", "mint", "pink", "void", "slate", "ember"];
+const OVERLAY_POOL: OverlayKind[] = ["sparkle", "confetti", "hearts"];
+
+// mulberry32 — the standard tiny deterministic PRNG; one 32-bit seed in, a
+// stream of [0,1) floats out. Pure (no Math.random: shows must replay).
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const SHOW_PERIOD = 40; // ticks (~10s at 240ms)
 const SHOW_ON = 19; // ticks the bit plays (~4.5s)
 export function homeShow(tick: number): { patch: Partial<GhostCfg>; overlay?: OverlayKind } | null {
   if (tick < SHOW_PERIOD || tick % SHOW_PERIOD >= SHOW_ON) return null;
-  return HOME_SHOWS[(Math.floor(tick / SHOW_PERIOD) - 1) % HOME_SHOWS.length]!;
+  const cycle = Math.floor(tick / SHOW_PERIOD);
+  const r = mulberry32(Math.imul(cycle, 0x9e3779b9) ^ 0xb00);
+  const pick = <T,>(arr: T[]): T => arr[Math.floor(r() * arr.length)]!;
+  const costume = r();
+  if (costume < 0.45) {
+    // Persona bits play AS DESIGNED: each costume carries its own palette,
+    // face, and (for the wizard) sparkle — the gallery pairs them deliberately
+    // (ninja = slate+angry, wizard = void+happy+stars). Random mashups under a
+    // costume read as bugs, not variety.
+    const name = pick(PERSONA_POOL);
+    const per = PERSONAS[name]!;
+    const patch: Partial<GhostCfg> = { persona: name, palette: per.palette, face: per.face };
+    return name === "wizard" ? { patch, overlay: "sparkle" } : { patch };
+  }
+  const patch: Partial<GhostCfg> = {};
+  if (costume < 0.8) patch.accessory = pick(ACCESSORY_POOL);
+  else if (r() < 0.7) patch.palette = pick(PALETTE_POOL); // plain bit: usually a recolor
+  // Face after the costume: shades hide the eyes, so heart-eyes (love) can't
+  // show under them — and cool's own sunglasses double up. Pick a face that reads.
+  const faces = patch.accessory === "shades" ? FACE_POOL.filter((f) => f !== "love" && f !== "cool") : FACE_POOL;
+  patch.face = pick(faces);
+  // Hearts always accompany the love face; otherwise an occasional flourish.
+  const overlay = patch.face === "love" ? ("hearts" as OverlayKind) : r() < 0.3 ? pick(OVERLAY_POOL) : undefined;
+  return overlay ? { patch, overlay } : { patch };
 }
 
 /** A live ghost: applies the anim spec to the cfg per frame and renders it. The
@@ -255,7 +291,10 @@ export function MascotSplash({ skin = "base", size = "big", wordmark = true, tag
           // The baked PNG set covers skins only — a persona look falls back to base.
           <KittyGhost variant={GHOSTS[skin] ? skin : "base"} size={size} />
         ) : (
-          <AnimatedGhost cfg={cfg} scale={size === "big" ? 2 : 1} anim={{ blink: !mood, show: !mood, overlay: mood?.overlay }} />
+          /* Always 1×: the half-block fold gives 2px of vertical resolution per
+             cell row, so the sprite reads crisp. 2× turned every pixel into a
+             solid fg=bg cell — a blown-up, chunky Boo that read as broken. */
+          <AnimatedGhost cfg={cfg} scale={1} anim={{ blink: !mood, show: !mood, overlay: mood?.overlay }} />
         )
       ) : null}
       {wordmark ? (

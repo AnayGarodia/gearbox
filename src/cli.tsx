@@ -256,21 +256,31 @@ async function runCliOnboarding(): Promise<boolean> {
       const existing = listAccounts();
       if (existing.length) break;
 
+      // Numbers are assigned SEQUENTIALLY over the options actually shown (the
+      // import row appears only when creds are detected; the subscription rows
+      // only when the vendor CLI is installed) — so the menu always starts at 1.
+      // `acts` maps the typed number back to a stable action id.
       const options: string[] = [];
+      const acts: string[] = [];
+      const opt = (action: string, label: string, desc: string) => {
+        acts.push(action);
+        options.push(optionLine(String(acts.length), label, desc));
+      };
       if (env.length || cloud.length) {
         const names = [...env.map((c) => c.envVar), ...cloud.map((c) => `${c.label} (${c.source})`)];
-        options.push(optionLine("1", "Import detected credentials", names.join(", ")));
+        opt("import", "Import detected credentials", names.join(", "));
       }
-      options.push(optionLine("2", "Paste API key", "auto-detects common key prefixes"));
-      options.push(optionLine("3", "Choose provider + key", "Anthropic, OpenAI, Gemini, OpenRouter, Groq, ..."));
-      options.push(optionLine("4", "Azure endpoint + key", "Azure OpenAI or Azure AI Foundry"));
-      if (which("claude")) options.push(optionLine("5", "Claude subscription", "uses the official claude CLI; no token extraction"));
-      if (which("codex")) options.push(optionLine("6", "ChatGPT subscription", "uses the official codex CLI; no token extraction"));
+      opt("paste", "Paste API key", "auto-detects common key prefixes");
+      opt("provider", "Choose provider + key", "Anthropic, OpenAI, Gemini, OpenRouter, Groq, ...");
+      opt("azure", "Azure endpoint + key", "Azure OpenAI or Azure AI Foundry");
+      if (which("claude")) opt("claude", "Claude subscription", "uses the official claude CLI; no token extraction");
+      if (which("codex")) opt("codex", "ChatGPT subscription", "uses the official codex CLI; no token extraction");
       options.push(optionLine("p", "Show provider catalog", "all API-key providers Gearbox knows how to add"));
       options.push(optionLine("q", "Quit setup", "Gearbox will not open the coding app yet"));
       box("Choose how Gearbox should connect", options);
       console.log("");
       const choice = (await ask("Selection: ")).toLowerCase();
+      const action = acts[Number(choice) - 1] ?? "";
 
       if (choice === "q" || choice === "quit" || choice === "skip") {
         console.log("");
@@ -285,19 +295,19 @@ async function runCliOnboarding(): Promise<boolean> {
         console.log("");
         continue;
       }
-      if (choice === "1" && (env.length || cloud.length)) {
+      if (action === "import") {
         for (const c of env) await importEnvCred(c);
         for (const c of cloud) await importCloudCred(c);
         console.log(ok(`Imported ${env.length + cloud.length} credential${env.length + cloud.length === 1 ? "" : "s"}.`));
         break;
       }
-      if (choice === "2") {
-        console.log(dim("Paste is visible in most terminals. Use option 3 if you want to be explicit about the provider."));
+      if (action === "paste") {
+        console.log(dim("Paste is visible in most terminals. Use the provider + key option if you want to be explicit."));
         const key = await ask("Paste API key: ");
         if (!key) continue;
         const detected = detectProviderByKey(key);
         if (!detected) {
-          console.log(warn("Could not detect the provider from that key. Use option 3."));
+          console.log(warn("Could not detect the provider from that key. Use the provider + key option."));
           continue;
         }
         const res = await addByPastedKey(key);
@@ -308,7 +318,7 @@ async function runCliOnboarding(): Promise<boolean> {
         }
         continue;
       }
-      if (choice === "3") {
+      if (action === "provider") {
         console.log("");
         console.log(bold("Provider catalog"));
         console.log(providerRows());
@@ -324,7 +334,7 @@ async function runCliOnboarding(): Promise<boolean> {
         }
         continue;
       }
-      if (choice === "4") {
+      if (action === "azure") {
         console.log(dim("Use a resource name like my-openai-resource, or a full Foundry endpoint URL."));
         const endpoint = await ask("Azure resource name or endpoint: ");
         const key = await ask("API key: ");
@@ -339,11 +349,11 @@ async function runCliOnboarding(): Promise<boolean> {
         }
         continue;
       }
-      if (choice === "5" && which("claude")) {
+      if (action === "claude") {
         if (await addSubscription("claude-cli")) break;
         continue;
       }
-      if (choice === "6" && which("codex")) {
+      if (action === "codex") {
         if (await addSubscription("codex-cli")) break;
         continue;
       }
@@ -485,6 +495,10 @@ if (pIdx >= 0) {
       const r = await runCliTask({
         binary: choice.backend.binary, profile: choice.backend.profile, prompt, messages: [],
         onEvent: (e) => { if (e.type === "text") out += e.text; }, deferTerminal: true, autoApprove: yolo,
+        // The in-loop path enforces read-only via the toolset (plan: !yolo); a
+        // vendor CLI owns its own tools, so the equivalent must ride its flags
+        // (claude --permission-mode plan / codex --sandbox read-only).
+        readOnly: !yolo,
       });
       if (r.failure) { console.error(r.failure.message); process.exit(1); }
       console.log(jsonOut ? JSON.stringify({ text: out.trim(), model: choice.model.id, usage: r.usage }) : out.trim());

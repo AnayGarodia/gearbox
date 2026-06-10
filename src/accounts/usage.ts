@@ -78,7 +78,11 @@ function save(f: UsageFile): void {
 }
 
 /** Add a turn's usage to an account's running total. `costUSD` should be the
- *  provider's real figure when available, else a caller-computed estimate. */
+ *  provider's real figure when available, else a caller-computed estimate.
+ *  Race-free by construction: the whole load → mutate → save sequence is
+ *  synchronous (readFileSync/writeFileSync, no awaits), so on Bun's single
+ *  thread no other task can interleave mid-update — concurrent delegate
+ *  completions serialize naturally. Keep it that way (no async in here). */
 export function recordUsage(opts: {
   accountId: string;
   inputTokens: number;
@@ -246,6 +250,15 @@ export interface UsageView {
   totalApiSpend: string;
   sessionUSD?: string;
   hasEstimate: boolean;
+  // The money story (formerly the cost tab) — attached by the /cost command so
+  // the one card answers "where did money go" completely. All optional: the
+  // pinned /usage strip path never computes them.
+  daily?: { day: string; usd: number }[]; // last-7-days ledger spend, oldest → newest
+  forecast?: string | null; // "≈N turns left today …" (needs /cap daily)
+  auxToday?: number; // classifier/title/commit-message spend today
+  perModel?: { model: string; usd: number; turns: number }[]; // this session
+  savings?: string; // savingsLine() text
+  policy?: string; // formatPolicyString() text
 }
 
 export type AcctInfo = {

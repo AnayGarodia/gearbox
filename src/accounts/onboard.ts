@@ -9,6 +9,7 @@ import { catalogProvider, CATALOG } from "./catalog.ts";
 import { normalizeProviderId } from "./onboarding.ts";
 import { sniffCredential, type CredentialGuess } from "./sniff.ts";
 import { resolveCreds } from "./resolve.ts";
+import { HEALTH_CHECK_TIMEOUT_MS } from "./health.ts";
 import { subscriptionEnv } from "../agent/cli-backend.ts";
 import { which, spawnProc, readStream } from "../proc.ts";
 import type { Account } from "./types.ts";
@@ -329,17 +330,21 @@ export async function testAccount(a: Account): Promise<{ ok: boolean; message: s
   // Cloud providers use non-apiKey auth — don't gate on apiKey presence.
   const isCloud = a.auth.kind === "aws" || a.auth.kind === "azure" || a.auth.kind === "vertex";
   if (!creds.apiKey && !isCloud && a.auth.kind !== "cli") return { ok: false, message: "no key stored" };
+  // Every probe is timeout-bounded — testAccount is called from the UI thread
+  // (App.tsx / cli.tsx) and a hung endpoint must never block it forever.
+  const signal = () => AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS);
   try {
     if (a.provider === "anthropic") {
       const r = await fetch("https://api.anthropic.com/v1/messages/count_tokens", {
         method: "POST",
         headers: { "x-api-key": creds.apiKey ?? "", "anthropic-version": "2023-06-01", "content-type": "application/json" },
         body: JSON.stringify({ model: "claude-haiku-4-5", messages: [{ role: "user", content: "hi" }] }),
+        signal: signal(),
       });
       return r.ok ? { ok: true, message: "credential works" } : { ok: false, message: await errMessage(r) };
     }
     if (a.provider === "google") {
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${creds.apiKey ?? ""}`);
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${creds.apiKey ?? ""}`, { signal: signal() });
       return r.ok ? { ok: true, message: "credential works" } : { ok: false, message: await errMessage(r) };
     }
     // Azure OpenAI: list deployments using the resource endpoint + api-key header.
@@ -348,7 +353,7 @@ export async function testAccount(a: Account): Promise<{ ok: boolean; message: s
       if (!resourceName || !apiKey) return { ok: false, message: "azure: resourceName and apiKey are required" };
       const r = await fetch(
         `https://${resourceName}.openai.azure.com/openai/models?api-version=${apiVersion}`,
-        { headers: { "api-key": apiKey } },
+        { headers: { "api-key": apiKey }, signal: signal() },
       );
       return r.ok ? { ok: true, message: "credential works" } : { ok: false, message: await errMessage(r) };
     }
@@ -379,14 +384,18 @@ export async function testAccount(a: Account): Promise<{ ok: boolean; message: s
         method: "POST",
         headers: { Authorization: `Bearer ${creds.apiKey ?? ""}`, "Content-Type": "application/json", ...(creds.headers ?? {}) },
         body: JSON.stringify({ model: probeModel, messages: [{ role: "user", content: "ok" }], max_tokens: 1 }),
+        signal: signal(),
       });
       return pr.ok ? { ok: true, message: "credential works" } : { ok: false, message: `${await errMessage(pr)} from ${base}/chat/completions` };
     }
     const r = await fetch(`${base.replace(/\/$/, "")}/models`, {
       headers: { Authorization: `Bearer ${creds.apiKey ?? ""}`, ...(creds.headers ?? {}) },
+      signal: signal(),
     });
     return r.ok ? { ok: true, message: "credential works" } : { ok: false, message: `${await errMessage(r)} from ${base}/models` };
   } catch (e: any) {
+    if (e?.name === "TimeoutError" || e?.name === "AbortError")
+      return { ok: false, message: `request timed out after ${HEALTH_CHECK_TIMEOUT_MS / 1000}s` };
     return { ok: false, message: e?.message ?? "request failed" };
   }
 }

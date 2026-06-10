@@ -10,7 +10,7 @@ import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type GhostLook, type MascotState } from "./components/Mascot.tsx";
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
-import { Working } from "./components/Working.tsx";
+import { Working, workingRows } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
 import { itemsToLines, relPath, friendlyTool, fmtElapsed, type Line } from "./lines.ts";
 import { collapseTurn, collapseDelegateGroups } from "./collapse.ts";
@@ -18,8 +18,7 @@ import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
 import { buildProvidersView } from "./providers-view.ts";
 import { ProvidersView } from "./components/ProvidersView.tsx";
-import { Masthead, tabStripHit, TABS, type AppTab } from "./components/TabStrip.tsx";
-import { CostView, RoutingView } from "./components/TabViews.tsx";
+import { Masthead } from "./components/Masthead.tsx";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
@@ -29,10 +28,10 @@ import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
 import { FixedSelector, type ModelSelector, type ModelChoice, type Backend } from "../model/selector.ts";
-import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS } from "../model/cooldown.ts";
+import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS, AUTH_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
-import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loadRoutingPreferences, type PreferenceKind } from "../model/preferences.ts";
+import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, hasPricing, modelRegistry, providerAvailable, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
@@ -72,8 +71,8 @@ import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
-import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
-import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
+import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, reloadMcpConnections, removeMcpServer, shellSplit } from "../mcp.ts";
+import { applyKey, applyMouse, extendUnitSelection, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { clipboardImageToFile } from "./clipboard-image.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
@@ -115,7 +114,7 @@ const KEYS_HELP = [
   "keyboard shortcuts",
   "  ⏎ send · ⌃J newline · esc interrupt · ⌃C twice to quit",
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
-  "  ⌃A / ⌃E line start / end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
+  "  ⌃A select all · ⌃E line end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
   "  ⌃Y copy last reply · ⌃V paste image from clipboard · shift+tab cycle mode",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
@@ -519,9 +518,12 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // turn. The routing line cross-checks this against what we requested.
   const servedModelRef = useRef<string | null>(null);
   // Last turn's non-history context overhead (system/memory/repomap/retrieval),
-  // so auto-compact triggers on the full context, not history alone. 0 until an
-  // in-loop turn has built a context (CLI turns don't run buildContext).
-  const ctxOverheadRef = useRef(0);
+  // so auto-compact triggers on the full context, not history alone. Starts at
+  // a conservative estimate, not 0: a session RESUMED near the window would
+  // otherwise run its whole first turn with overhead=0 and miss the auto-compact
+  // that should have fired before it (overflow instead of a graceful compact).
+  // The first in-loop turn replaces it with the measured value.
+  const ctxOverheadRef = useRef(12_000);
   const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
@@ -538,6 +540,13 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const pasteCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedSelectionRef = useRef("");
   const mouseAnchorRef = useRef<number | null>(null);
+  // Word/line-wise drag extension after a double/triple click on the composer:
+  // the anchor unit (the word/line first selected) that the drag hulls against.
+  const composerUnitDragRef = useRef<{ mode: "word" | "line"; start: number; end: number } | null>(null);
+  // Home-screen composer mouse geometry (the composer floats mid-screen there).
+  // Computed in render scope beside homeJsx — the one place that knows the
+  // centered layout's heights — and read by the raw mouse handler.
+  const homeGeomRef = useRef<{ firstInputRow: number; left: number } | null>(null);
   const transcriptMouseAnchorRef = useRef<{ line: number; col: number } | null>(null);
   const transcriptRangeAnchorRef = useRef<{ line: number; col: number } | null>(null);
   // In-progress transcript drag granularity: `char` tracks the raw point; `word`/`line`
@@ -584,13 +593,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     quickPickerIndexRef.current = n;
     setQuickPickerIndexState(n);
   };
-  // Top tab strip (fullscreen only): active tab switches between the transcript and the
-  // read-only Routing/Providers/Cost views. tabRef mirrors state for the raw mouse handler.
-  const [tab, setTabState] = useState<AppTab>("session");
-  const tabRef = useRef<AppTab>("session");
-  const setTab = (t: AppTab) => { tabRef.current = t; setTabState(t); };
   const setupRequiredRef = useRef(false); // mirrors setupRequired for the raw mouse handler
-  const cycleTab = () => setTab(TABS[(TABS.indexOf(tabRef.current) + 1) % TABS.length]!);
   // Dismissable command panel (fullscreen only): big info dumps and interactive
   // account/model lists render here instead of in the transcript. Esc closes.
   const [panel, setPanelState] = useState<PanelState | null>(null);
@@ -1040,18 +1043,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // off), so the terminal handles selection/scrollback natively — don't attach here.
   useEffect(() => {
     if (!stdin || !fullscreen || process.env.GEARBOX_MOUSE === "0") return;
-    const composerOffset = (x: number, y: number): number | null => {
-      if (busyRef.current || permRef.current) return null;
-      if (homeScreenRef.current) return null; // home screen: the composer floats mid-screen, not at the bottom
+    // The composer's mouse geometry — the ONE place that knows which terminal
+    // rows hold input text. Bottom-up (Composer.tsx row contract, lift=true,
+    // PTY-verified): meter(rows) · meter marginTop(rows-1) · composer
+    // marginBottom(rows-2) · footer hint(rows-3) · pad(rows-4) · input rows
+    // (rows-5 … rows-4-lineCount) · pad · marginTop. Keep in lockstep with
+    // Composer.tsx and the footer estimate.
+    const composerPoint = (x: number, y: number): { line: number; col: number; off: number } | null => {
+      if (permRef.current) return null; // the consent line replaces the composer
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      const firstInputRow = rows - 4 - lineCount; // below the input: pad row, footer hint, then the meter (marginTop + row)
-      if (y < firstInputRow || y > rows - 5) return null;
-      const lineIdx = y - firstInputRow;
-      // 1 border + space + prompt + space, SGR coords are 1-based — plus the page
-      // column's left offset (the composer sits in the centered page column).
-      const col = Math.max(0, x - 5 - pageLeftRef.current);
-      return offsetAt(value, lineIdx, col);
+      // Home screen: the composer floats mid-screen — its geometry is computed
+      // in render scope (where the layout values live) and published via ref.
+      const home = homeScreenRef.current ? homeGeomRef.current : null;
+      const firstInputRow = home ? home.firstInputRow : rows - 4 - lineCount;
+      const lastInputRow = home ? home.firstInputRow + lineCount - 1 : rows - 5;
+      const left = home ? home.left : pageLeftRef.current;
+      if (home == null && homeScreenRef.current) return null;
+      if (y < firstInputRow || y > lastInputRow) return null;
+      const line = y - firstInputRow;
+      // 1 border + space + prompt + space, SGR coords are 1-based — plus the
+      // column's left offset (page column in-session, centered box on home).
+      const col = Math.max(0, x - 5 - left);
+      return { line, col, off: offsetAt(value, line, col) };
     };
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
@@ -1098,13 +1112,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Status-bar click pickers (fullscreen only). A primary press on the
           // model or effort label toggles its floating picker; a press anywhere
           // else closes an open one before normal click handling resumes.
-          // Masthead tab click (row 2: marginTop is row 1, the masthead row 2).
-          // Works even while busy — switching the view never touches the running
-          // turn. Keep the row in lockstep with the Masthead row contract.
-          if (fullscreen && !setupRequiredRef.current && isPrimary && !isDrag && !up) {
-            const t = tabStripHit(x, y, 2);
-            if (t) { setTab(t); continue; }
-          }
           if (fullscreen && isPrimary && !isDrag && !up && !busyRef.current && !permRef.current) {
             const zone = statusBarZoneAt(x, y);
             if (zone) {
@@ -1113,7 +1120,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             }
             if (quickPickerRef.current) setQuickPicker(null);
           }
-          const off = composerOffset(x, y);
+          const cp = composerPoint(x, y);
+          const off = cp?.off ?? null;
           const point = transcriptPoint(x, y);
           if (isPrimary && isDrag && transcriptMouseAnchorRef.current && !point) {
             const bottom = viewportTop + transcriptHeightLiveRef.current - 1;
@@ -1151,18 +1159,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               }
             }
             mouseAnchorRef.current = null;
-          } else if (off != null && isPrimary && !isDrag) {
+            composerUnitDragRef.current = null;
+          } else if (cp != null && isPrimary && !isDrag) {
             // Composer click: track timing for double/triple-click detection.
-            // SGR x is 1-based. The 0-based text col subtracts 5 (1 border + 1 pad
-            // + "❯ " prompt + space) — must match composerOffset above, or a single
-            // click lands the cursor one column right of where you clicked and the
-            // drag anchor (set from `off`) disagrees with it. Re-derive the line
-            // index from y so applyMouse gets the correct col/line.
+            // line/col come from composerPoint — the ONE composer geometry — so
+            // the click, the drag anchor (off), and applyMouse always agree.
             const value = editRef.current.value;
-            const lineCount = Math.max(1, value.split("\n").length);
-            const firstInputRow = rows - lineCount;
-            const lineIdx = y - firstInputRow;
-            const col = Math.max(0, x - 5 - pageLeftRef.current); // must match composerOffset above
+            const { line: lineIdx, col } = cp;
             const shift = (b & 4) !== 0;
             const now = Date.now();
             const prev = lastComposerClickRef.current;
@@ -1172,19 +1175,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             }
             lastComposerClickRef.current = { time: now, x, y, count: clickCount };
             const click: MouseClick = { line: lineIdx, col, count: clickCount, shift };
-            mouseAnchorRef.current = off;
+            mouseAnchorRef.current = cp.off;
             transcriptMouseAnchorRef.current = null;
             transcriptDragRef.current = null;
             setTranscriptSel(null);
             const action = applyMouse({ value, cursor: editRef.current.cursor, selectionAnchor: editRef.current.selectionAnchor }, click);
             if (action.type === "edit") setEdit(action.state);
-            else setEdit({ value, cursor: off });
+            else setEdit({ value, cursor: cp.off });
+            // Double/triple click selected a word/line — remember that unit so a
+            // drag extends the selection word-/line-wise (hulling whole units).
+            composerUnitDragRef.current =
+              !shift && clickCount >= 2 && action.type === "edit" && action.state.selectionAnchor != null
+                ? { mode: clickCount >= 3 ? "line" : "word", start: Math.min(action.state.selectionAnchor, action.state.cursor), end: Math.max(action.state.selectionAnchor, action.state.cursor) }
+                : null;
           } else if (off != null && isDrag && mouseAnchorRef.current != null) {
-            // Extend selection from anchor, but only for single-click drags.
-            // Double/triple-click sets word/line selection; a drag event immediately
-            // after (common on trackpads with micro-motion) must not clobber it.
-            const lastCount = lastComposerClickRef.current?.count ?? 1;
-            if (lastCount === 1) {
+            // Drag inside the composer. After a double/triple click the drag
+            // extends word-/line-wise (the hull of the anchor unit and the unit
+            // under the pointer — micro-motion on a trackpad just re-selects the
+            // same word, so it can't clobber the click selection). A plain drag
+            // extends character-wise from the press anchor.
+            const unit = composerUnitDragRef.current;
+            if (unit) {
+              setEdit(extendUnitSelection(editRef.current.value, unit, off, unit.mode));
+            } else if ((lastComposerClickRef.current?.count ?? 1) === 1) {
               setEdit({ value: editRef.current.value, cursor: off, selectionAnchor: mouseAnchorRef.current });
             }
           } else if (point && isPrimary && !isDrag) {
@@ -1684,7 +1697,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (mspec) notice(`this account can: ${capabilitySummary(mspec)}`);
   };
 
-  const pushUsage = (view: UsageView) => push({ kind: "usage", id: idRef.current++, view });
   const pushAccounts = (view: AccountView) => push({ kind: "accounts", id: idRef.current++, view });
 
   const normalizeAccountRef = (s: string) =>
@@ -1984,7 +1996,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Run ONE attempt of a chosen backend (terminal events deferred so the loop
       // owns the final outcome). Returns the produced ledger + a cooldown key so a
       // failure can park that account and re-route around it.
-      type Attempt = { messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string; producedOutput?: boolean }; cooldownKey: string };
+      type Attempt = { messages: ModelMessage[]; usage: Usage; failure?: { message: string; producedOutput?: boolean }; cooldownKey: string };
       const runAttempt = async (choice: ModelChoice): Promise<Attempt> => {
         servedModelRef.current = null; // each attempt re-establishes its own wire truth (failover hops must not inherit)
         if (choice.backend?.kind === "cli") {
@@ -2097,12 +2109,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const explicitModelId = directiveId || (sel instanceof FixedSelector ? choice.model.id : undefined);
       // Tokens a FAILED attempt already burned must still be counted (C-A) — they
       // hit the wire. Accumulate across hops so cost/ledger aren't under-counted.
-      const prior = { inputTokens: 0, outputTokens: 0 };
+      const prior: Usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheCreationInputTokens: 0 };
       for (let hop = 0; ; hop++) {
         const a = await runAttempt(choice);
-        const total = { inputTokens: prior.inputTokens + a.usage.inputTokens, outputTokens: prior.outputTokens + a.usage.outputTokens };
+        // Cache read/write tokens ride along (they bill too) — dropping them on a
+        // hop under-counted every failed attempt's real cost in the ledger.
+        const total: Usage = {
+          inputTokens: prior.inputTokens + a.usage.inputTokens,
+          outputTokens: prior.outputTokens + a.usage.outputTokens,
+          cachedInputTokens: (prior.cachedInputTokens ?? 0) + (a.usage.cachedInputTokens ?? 0),
+          cacheCreationInputTokens: (prior.cacheCreationInputTokens ?? 0) + (a.usage.cacheCreationInputTokens ?? 0),
+        };
         if (!a.failure) { emitTerminal(false, undefined, total); return { messages: a.messages, usage: total }; }
         prior.inputTokens = total.inputTokens; prior.outputTokens = total.outputTokens; // this attempt burned tokens too
+        prior.cachedInputTokens = total.cachedInputTokens; prior.cacheCreationInputTokens = total.cacheCreationInputTokens;
         // Failover-able failure classes: exhausted (rate/quota/credit — recovers on
         // its own) and auth (expired/invalid — dead until re-login, but a sibling
         // account can serve). A failure AFTER output streamed never hops: the user
@@ -2121,7 +2141,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Even when this turn can't hop (output already streamed / hop cap),
           // park the failed account so the NEXT turn routes around it instead
           // of marching straight back into the same wall.
-          if (failKind !== "other") markExhausted(parkedKey, DEFAULT_COOLDOWN_MS, a.failure.message);
+          // Auth-dead accounts park for hours, not minutes — a 5-minute park just
+          // meant the router marched back into the same dead account all day.
+          if (failKind !== "other") markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
           // "Deployment doesn't exist" on Azure/Foundry: prune that model id from
           // the account so it never shows up again. User can redeploy + /account refresh to restore.
           if (isNotDeployedError(a.failure.message) && !a.cooldownKey.startsWith("env:")) {
@@ -2131,9 +2153,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               notice(`${choice.model.label} isn't deployed on ${acc.slug ?? acc.id} — removed from your model list.\nDeploy it in your Azure portal, then /account refresh to restore it.`);
             }
           }
-          emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior };
+          // A turn that died before ANY output must not commit its dangling user
+          // message — the next turn would append another user message and every
+          // provider 400s on consecutive user roles, poisoning the whole session.
+          // Output streamed → keep the partial (user → partial assistant is legal).
+          emitTerminal(true, a.failure.message, prior);
+          return { messages: a.failure.producedOutput ? a.messages : messages, usage: prior };
         }
-        markExhausted(parkedKey, DEFAULT_COOLDOWN_MS, a.failure.message);
+        markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
         try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
@@ -2141,7 +2168,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
         // is a legitimate hop now that parks can be model-scoped.
         const nextEffectiveKey = next && nextAcct ? (scope === "account" ? nextAcct : modelScopedKey(nextAcct, next.model.id)) : null;
-        if (!next || nextEffectiveKey === parkedKey) { emitTerminal(true, a.failure.message, prior); return { messages: a.messages, usage: prior }; }
+        if (!next || nextEffectiveKey === parkedKey) {
+          emitTerminal(true, a.failure.message, prior);
+          // Same no-dangling rule as the no-hop bail above.
+          return { messages: a.failure.producedOutput ? a.messages : messages, usage: prior };
+        }
         onEvent({ type: "phase", label: "failover", detail: `${choice.model.label} ${shortFailure(a.failure.message)} → ${next.model.label}, continuing`, state: "running" });
         // Remember what we fell back FROM so the post-turn routing line can flag the
         // provider fallback (a real "surprising" signal) in amber.
@@ -2162,23 +2193,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const compactNow = useCallback(
     async (keepRecent: number, signal?: AbortSignal): Promise<string> => {
       // Apply a successful compaction (either path) and report real numbers.
-      const apply = (res: { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number }, how: string): string => {
+      const apply = (res: { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number; how: string }, how: string): string => {
         msgRef.current = res.messages;
         // The status bar's ctx% reads lastInput from the LAST call — after
         // compaction that's stale (it kept showing the pre-compaction size).
-        // Reset it to the new history estimate so the bar reflects reality now.
-        setLastInput(res.after);
+        // Reset to history + the non-history overhead (system/memory/repomap/
+        // retrieval) — history alone showed a falsely roomy bar after /compact.
+        setLastInput(res.after + ctxOverheadRef.current);
         const saved = res.before - res.after;
         const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
-        return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""}${how} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
+        // res.how carries the truth per rung (summarized/elided/truncated) —
+        // summarizedTurns is 0 on the tool-result-truncation rung.
+        return `${res.how}${how} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
       };
       // The model-free fallback: mechanical elision (tool output distilled to
       // one line per call). /compact must ALWAYS be able to shrink the history,
       // even on a subscription-only session with no API-key summarizer.
       const mechanical = (why: string): string => {
         const res = elideHistory(msgRef.current, keepRecent);
-        if (!res) return `${why} · nothing left to compact mechanically`;
-        return apply(res, ` mechanically (${why})`);
+        // null now genuinely means nothing-to-shrink at ANY rung of the ladder.
+        if (!res) return `${why} · history is already minimal — nothing to compact`;
+        return apply(res, ` (${why})`);
       };
       let model, creds;
       try {
@@ -2199,21 +2234,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       } catch (e: any) {
         return mechanical(`summarizer failed on ${model.label}: ${e?.message ?? "error"}`);
       }
-      if (!res) return "nothing old enough to compact yet";
+      if (!res) return "history is already minimal — nothing to compact";
       return apply(res, "");
     },
     [],
   );
 
-  const MODE_NOTE: Record<"normal" | "auto-accept" | "plan", string> = {
-    normal: "normal mode · I'll ask before writes, edits, and shell",
-    "auto-accept": "auto-accept edits · file writes/edits apply without asking (shell still gated)",
-    plan: "plan mode · read-only; I'll propose a plan before changing anything",
-  };
+  // Mode changes are SILENT in the transcript (cycling shift+tab used to spam a
+  // notice line per press): the composer wears the mode — colored edges + a
+  // footer badge (plan green · auto-accept amber) — and that's the whole story.
   const setModeTo = (next: "normal" | "auto-accept" | "plan") => {
     modeRef.current = next;
     setMode(next);
-    notice(MODE_NOTE[next]);
   };
   // Shift+Tab cycles normal → auto-accept → plan → normal (Claude Code style).
   const cycleMode = () => {
@@ -2591,7 +2623,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // router can vary the model later without changing this shape).
         // The model that actually ran this turn (set by defaultRunner). Falls
         // back to a fresh select only if a custom runner bypassed defaultRunner.
-        let modelId = activeCliRef.current?.id ?? routedRef.current?.model.id;
+        // Prefer the routed MODEL id — activeCliRef.id is the account slug, which
+        // used to land in ledger.jsonl/cost-tab as the "model" for subscription turns.
+        let modelId = routedRef.current?.model.id ?? activeCliRef.current?.id;
         if (!modelId) {
           try {
             modelId = selectorRef.current.select({ prompt: lastPromptRef.current ?? "" }).model.id;
@@ -2703,7 +2737,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const historyTokens = estimateHistoryTokens(msgRef.current, modelId);
             if (shouldAutoCompact(historyTokens, ctxOverheadRef.current, answeringWindow)) {
               setVerb("Compacting context");
-              notice(await compactNow(4, ac.signal));
+              const msg = await compactNow(4, ac.signal);
+              // Only narrate when compaction actually changed something — the old
+              // "nothing old enough" notice repeated after every turn once the
+              // trigger latched, nagging without acting.
+              if (!msg.includes("nothing to compact")) notice(msg);
             }
           } catch {
             /* compaction is best-effort; never fail the turn over it */
@@ -3445,6 +3483,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             try { process.chdir(found.dir); } catch (e: any) { notice(`couldn't enter ${found.dir}: ${e?.message ?? e}`); return; }
             invalidateGitBranch();
             resetRetrievalIndex();
+            // The MCP connection set is cwd-rooted (.gearbox/mcp.json, .mcp.json):
+            // without a reload the new tree's project servers are silently ignored.
+            reloadMcpConnections();
             undoStackRef.current = [];
             cliSessionRef.current = undefined;
             // Tree-rooted drafts must not survive the move: a /commit draft
@@ -4221,9 +4262,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         case "cost":
         case "usage": {
-          // Fullscreen: /cost toggles the persistent usage strip (stays on, doesn't
-          // capture input). Inline keeps the one-shot card.
-          if (fullscreen) {
+          // Two distinct questions, two surfaces: /usage (fullscreen) toggles the
+          // live limits strip ("how close am I to a wall right now"); /cost is the
+          // deep money-story card ("where did money go") — daily bars, per-model,
+          // per-account, savings — as a panel in fullscreen, a card inline.
+          if (fullscreen && name === "usage") {
             const on = !statusPinned;
             setStatusPinned(on);
             // Refresh real 5h/7d % on open (the live strip re-renders, so the async
@@ -4250,6 +4293,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return { name: id, kind: "api" as const }; // a model id or env-derived label
           };
           const session = estimateCost(sessionRef.current.turns);
+          // The money story (formerly the cost tab): attach the 7-day shape,
+          // forecast, per-model session breakdown, savings, aux spend, and the
+          // policy line to the card so one surface answers it completely.
+          const attachStory = (v: UsageView): UsageView => {
+            const turns = sessionRef.current.turns;
+            v.daily = readDailySpend(7);
+            v.forecast = turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: session, sessionTurns: turns.length });
+            v.auxToday = readAuxSpendToday();
+            const byModel = new Map<string, { usd: number; turns: number }>();
+            for (const t of turns) {
+              const cur = byModel.get(t.model) ?? { usd: 0, turns: 0 };
+              cur.usd += estimateCost([t]); cur.turns += 1;
+              byModel.set(t.model, cur);
+            }
+            v.perModel = [...byModel.entries()].map(([model, m]) => ({ model, ...m })).sort((a, b) => b.usd - a.usd).slice(0, 6);
+            v.savings = savingsLine(session, estimateSavings(turns, premiumRate(modelRegistry()), (t) => estimateCost([t])));
+            v.policy = formatPolicyString({ mode: selectorKind, pinnedModel: model?.label, subscriptionLabel: activeCli?.label, prefer: globalPreference()?.prefer, caps: capsRef.current });
+            return v;
+          };
           // Providers that expose a remaining balance (OpenRouter, Vercel). For
           // the rest the card shows spend, synchronously.
           const withBalance = accounts.filter((a) => a.exec !== "cli" && balanceExposed(a.provider));
@@ -4257,7 +4319,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             // No live fetch needed → show the complete card. (Pushing then
             // mutating wouldn't work: a finished card commits to <Static>, which
             // never re-renders · the inline default.)
-            const it: Item = { kind: "usage", id: idRef.current++, view: buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id)) };
+            const it: Item = { kind: "usage", id: idRef.current++, view: attachStory(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id))) };
             if (openInfoPanel("cost", it)) return;
             echo(text);
             push(it);
@@ -4270,7 +4332,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               const bal = await fetchBalance(a);
               if (bal?.remainingUSD != null) recordBalance(a.id, bal);
             }
-            pushUsage(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id))); // push ONCE, with balances in
+            const it: Item = { kind: "usage", id: idRef.current++, view: attachStory(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id))) };
+            if (!openInfoPanel("cost", it)) push(it); // ONCE, with balances in
           })();
           return;
         }
@@ -4415,7 +4478,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         notice("↳ answering from Gearbox's own docs · rephrase as a task, or /help, to run it as a normal turn");
         askModeRef.current = true;
       }
-      setTab("session"); // a new prompt belongs to the live conversation
       void runTurn(text);
     },
     [handleCommand, runTurn, setupRequired, onboardingState],
@@ -4428,7 +4490,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (busy || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
     const next = queueRef.current.shift();
     setQueued([...queueRef.current]);
-    if (next) { setTab("session"); void runTurn(next); } // surface the response, not a tab
+    if (next) void runTurn(next);
   }, [busy, runTurn]);
 
   // Rewind the last user turn back into the composer for editing, dropping that
@@ -5139,11 +5201,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (!busyRef.current) cycleMode();
       return;
     }
-    // ⌃T cycles the top tabs (Session · Routing · Providers · Cost), fullscreen only.
-    if (key.ctrl && (input === "t" || input === "\x14")) {
-      if (fullscreen) cycleTab();
-      return;
-    }
     if (key.tab) {
       if (!busyRef.current) {
         const m = currentMention(editRef.current.value, editRef.current.cursor);
@@ -5339,7 +5396,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // The opencode home screen: a fresh fullscreen session centers the wordmark +
   // key commands + the composer mid-screen; the footer keeps only the status bar.
   // The first submitted prompt creates an item → the layout flips to the chat view.
-  const homeScreen = fullscreen && welcome && !setupRequired && tab === "session" && !panel && !perm;
+  const homeScreen = fullscreen && welcome && !setupRequired && !panel && !perm;
   homeScreenRef.current = homeScreen;
 
   // Sleepy idle: 90s with no typing on the home screen → Boo dozes off (rising
@@ -5360,9 +5417,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (perm) footer += 5; // consent block: marginTop + title + command + options + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
   else if (!panel && !homeScreen) footer += 5; // composer (marginTop + pad + input + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
-  if (busy || linger) footer += 2; // one-line working strip (+ marginTop) — the meter's ctx gauge carries low-context now (no extra notice row)
+  if (busy || linger) footer += workingRows(pageW); // Boo working block (marginTop + the head-crop ghost; 2 on narrow frames) — Working.tsx row contract
   if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
-  if (mode !== "normal") footer += 2;
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
   footer += toasts.length;
@@ -5400,7 +5456,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [stripView, tokens], // eslint-disable-line react-hooks/exhaustive-deps
   );
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
-  const HEADER = 3; // Masthead (marginTop + wordmark·tabs·account row + rule) — the tabs live IN the masthead row now (keep in lockstep with tabStripHit's row 2 and viewportTop 4)
+  const HEADER = 3; // Masthead (marginTop + wordmark·account row + rule) — keep in lockstep with viewportTop 4
   // Keep the whole frame STRICTLY under `rows`. Ink redraws with a full
   // clearTerminal (\x1b[2J\x1b[3J\x1b[H — the 3J wipes SCROLLBACK) the moment the
   // output height reaches the terminal height; under-filling by one row keeps it on
@@ -5538,7 +5594,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // panel and let esc (the panel-close key) silently DENY the unseen request.
   const composerPlaceholder = setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything";
   const composerAt = (w: number, lift: boolean) => (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
   );
   // Inline keeps full width; fullscreen renders these inside the page column
   // (fsComposerJsx below) so the consent line / composer share the transcript's
@@ -5585,6 +5641,30 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     selectorKind === "subscription" ? (activeCli?.label ?? "subscription") :
     selectorKind === "fixed" ? (model?.label ? `${model.label} pinned` : "pinned") :
     "auto-routing";
+  // The home composer's mouse geometry: the centered group's row heights, added
+  // up. Splash height is fixed by AnimatedGhost's constant-height contract
+  // (always 1× now: marginTop + 11-row ghost block + wordmark/tagline = 15 ·
+  // "none" = wordmark+tagline = 3). PTY-verified; keep in lockstep with homeJsx
+  // below and MascotSplash.
+  {
+    const homeLineCount = Math.max(1, edit.value.split("\n").length);
+    const splashH = homeRoom >= 4 ? (homeSplashSize === "none" ? 3 : 15) : 0;
+    const readinessH = homeRoom >= 8 ? 2 : 0;
+    const commandsH = showHomeCommands ? 1 + HOME_COMMANDS.length : 0;
+    const groupH = splashH + readinessH + commandsH + 4 + homeLineCount + PALETTE_ROWS; // composer block (lift=false) = 4 + N
+    // The REAL centered region is one row taller than transcriptHeight (which
+    // carries a deliberate -1 over-estimate so the frame never exceeds rows).
+    // Math.round, not floor: Yoga rounds the centering offset to the nearest
+    // row with .5 going UP (an odd leftover puts the extra row on TOP) —
+    // PTY-verified at 160x60 (free=15 → topPad 8).
+    const topPad = Math.max(0, Math.round((transcriptHeight + 1 - groupH) / 2));
+    homeGeomRef.current = homeScreen
+      ? {
+          firstInputRow: 6 + topPad + splashH + readinessH + commandsH, // header(3) + topPad + content + composer marginTop + pad + 1
+          left: Math.floor((width - homeW) / 2),
+        }
+      : null;
+  }
   const homeJsx = homeScreen ? (
     <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center">
       {homeRoom >= 4 ? <MascotSplash skin={ghostSkin} size={homeSplashSize} tagline={`v${pkg.version} · one terminal · every model`} mood={ghostMood} /> : null}
@@ -5619,20 +5699,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const footerJsx = (
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
-        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} /> : null}
+        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} skin={ghostSkin} /> : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (
               <Text key={i} color={color.faint}>↳ queued: {q.length > 60 ? q.slice(0, 57) + "…" : q}</Text>
             ))}
-          </Box>
-        ) : null}
-        {mode !== "normal" ? (
-          <Box paddingX={1} marginTop={1}>
-            <Text wrap="truncate-end">
-              <Text color={color.accent}>{glyph.notice} {mode === "plan" ? "plan mode" : "auto-accept edits"}</Text>
-              <Text color={color.faint}> · {mode === "plan" ? "read-only" : "writes apply without asking; shell still gated"} · shift+tab to cycle</Text>
-            </Text>
           </Box>
         ) : null}
         {search ? (
@@ -5675,7 +5747,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} /> : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} skin={ghostSkin} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (
@@ -5688,47 +5760,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     </>
   );
 
-  // Tab views (fullscreen only): every value is real — session spend + the honest
-  // savings estimate (tokens × the priciest model's price − actual), the policy
-  // string (only what the engine honours), per-account spend, the last routed pick,
-  // and remembered per-kind preferences. Computed ONLY when a non-session tab is
-  // shown (it reads usage.json / routing-preferences.json — off the session hot path).
-  let tabView: React.ReactNode = null;
-  if (fullscreen && tab !== "session") {
-    const tabPolicy = formatPolicyString({ mode: selectorKind, pinnedModel: model?.label, subscriptionLabel: activeCli?.label, prefer: globalPreference()?.prefer, caps: capsRef.current });
-    if (tab === "cost") {
-      const tabSavings = savingsLine(estimateCost(sessionRef.current.turns), estimateSavings(sessionRef.current.turns, premiumRate(modelRegistry()), (t) => estimateCost([t])));
-      const tabSpendRows = loadUsage().slice(0, 6).filter((u) => u.spentUSD > 0).map((u) => ({ label: getAccount(u.accountId)?.label ?? u.accountId, spent: `$${u.spentUSD.toFixed(2)} spent` }));
-      const tabDaily = readDailySpend(7);
-      const sessionTurnsArr = sessionRef.current.turns;
-      const byModel = new Map<string, { usd: number; turns: number }>();
-      for (const t of sessionTurnsArr) {
-        const cur = byModel.get(t.model) ?? { usd: 0, turns: 0 };
-        cur.usd += estimateCost([t]); cur.turns += 1;
-        byModel.set(t.model, cur);
-      }
-      const tabPerModel = [...byModel.entries()].map(([model, v]) => ({ model, ...v })).sort((a, b) => b.usd - a.usd).slice(0, 6);
-      const tabForecast = turnsLeftForecast({
-        dailyCapUSD: capsRef.current.daily,
-        spentTodayUSD: totalSpentToday(),
-        sessionUSD: estimateCost(sessionTurnsArr),
-        sessionTurns: sessionTurnsArr.length,
-      });
-      tabView = <CostView width={width - 2} savingsText={tabSavings} policyText={tabPolicy} spendRows={tabSpendRows} dailyBars={tabDaily} forecastText={tabForecast} perModel={tabPerModel} auxToday={readAuxSpendToday()} />;
-    } else if (tab === "providers") {
-      tabView = <Box paddingX={1}><ProvidersView width={width - 2} rows={buildProvidersView(listAccounts(), accountUsage, Date.now())} title="providers" /></Box>;
-    } else if (tab === "routing") {
-      const tabLastPick = lastPick ? `${lastPick.model.provider} · ${lastPick.model.label} · ${lastPick.reason}` : null;
-      const tabKindPrefs = Object.entries(loadRoutingPreferences().byKind).map(([kind, p]) => ({ kind, model: p?.modelId ?? "" })).filter((p) => p.model);
-      const tabRecent = sessionRef.current.turns.slice(-12).map((t) => ({ model: t.model, usd: estimateCost([t]) }));
-      tabView = <RoutingView width={width - 2} policyText={tabPolicy} lastPick={tabLastPick} kindPrefs={tabKindPrefs} recentTurns={tabRecent} />;
-    }
-  }
-
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
-        <Masthead active={tab} account={bannerAccount} width={width} showTabs={!setupRequired} epoch={themeEpochState} />
+        <Masthead account={bannerAccount} width={width} epoch={themeEpochState} />
         {/* flexGrow pins the footer (and the composer with it) to the bottom row,
             so however the footer height is estimated, the input bar is always at
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}
@@ -5736,8 +5771,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           <Box paddingX={1} flexGrow={1}>
             <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} sessions={panelSessions} currentModelId={panelCurrentModel} staticLines={panelStaticLines} wizardSpec={panelWizardSpec} accountDetail={panelAccountDetail} />
           </Box>
-        ) : tab !== "session" && !setupRequired ? (
-          <Box flexGrow={1}>{tabView}</Box>
         ) : homeScreen ? (
           homeJsx
         ) : welcome ? (

@@ -26,9 +26,11 @@
  *
  * Output cap
  * ----------
- * All tool output is clipped at CAP (60 000 characters). This keeps any single
- * tool result from flooding the model context window and riding in the
- * conversation history across many turns.
+ * All tool output is capped at ingestion via capToolOutput (truncate.ts):
+ * 2 000 lines / 50 000 bytes by default (400 lines for search/glob), head for
+ * reads, tail for shell. The FULL output spills to ~/.gearbox/tool-outputs/
+ * and the truncation notice names the spill path and the recovery move, so a
+ * single tool result can never flood the model context window.
  *
  * Read-only mode
  * --------------
@@ -45,8 +47,8 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readFile, writeFile, readdir, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { resolve, relative, isAbsolute } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
 import { applyEdit } from "./edit.ts";
 import { updateRetrievalFile } from "./context/retrieve.ts";
@@ -59,9 +61,9 @@ import type { OnEvent } from "./agent/events.ts";
 import { fetchUrlText } from "./fetch.ts";
 import { webSearch, formatSearchResults } from "./websearch.ts";
 import { mcpTools } from "./mcp.ts";
-
-/** Maximum characters a single tool call may return. Prevents context flooding. */
-const CAP = 60_000;
+import { capToolOutput } from "./truncate.ts";
+import { summarize } from "./verify.ts";
+import { invalidateFileListCache } from "./ui/files.ts";
 
 /** Message thrown when the user declines a permission prompt. */
 const DENIED = "Permission denied by the user — they declined this action.";
@@ -84,16 +86,46 @@ const IGNORE = /(^|\/)(node_modules|\.git|dist|build|\.next|coverage)(\/|$)/;
  * sub-agent running in an isolated worktree cannot reach files in another tree.
  */
 function makeSafe(root: string) {
+  // Realpath the root once: the root itself may sit behind a symlink (e.g.
+  // /tmp on macOS is /private/tmp), and the containment compare below must be
+  // realpath vs realpath or every legitimate path would fail.
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    realRoot = root;
+  }
   return (path: string): string => {
     const abs = isAbsolute(path) ? path : resolve(root, path);
     const rel = relative(root, abs);
     if (rel.startsWith("..")) throw new Error(`path escapes workspace: ${path}`);
+    // The lexical check passed; now defeat symlink escapes: a link inside the
+    // workspace pointing outside it resolves outside realRoot and is refused.
+    if (relative(realRoot, realResolve(abs)).startsWith("..")) throw new Error(`path escapes workspace: ${path}`);
     return abs;
   };
 }
 
-/** Clip a string to CAP characters, appending a notice when truncated. */
-const clip = (s: string) => (s.length > CAP ? s.slice(0, CAP) + `\n… [clipped ${s.length - CAP} chars]` : s);
+/**
+ * Resolve the REAL filesystem path of `abs`, tolerating paths that don't exist
+ * yet (write_file creating a new file): walk up to the nearest existing
+ * ancestor, realpath that, and re-join the not-yet-existing tail segments.
+ */
+function realResolve(abs: string): string {
+  let base = abs;
+  const tail: string[] = [];
+  while (!existsSync(base)) {
+    const parent = dirname(base);
+    if (parent === base) return abs; // hit the fs root without finding anything
+    tail.unshift(basename(base));
+    base = parent;
+  }
+  try {
+    return join(realpathSync(base), ...tail);
+  } catch {
+    return abs;
+  }
+}
 
 /**
  * Default maximum lines returned by a bare read_file call.
@@ -125,11 +157,76 @@ async function readRanged(abs: string, displayPath: string, offset?: number, lim
   const count = limit ?? Math.min(total - start, READ_LINE_CAP);
   const end = Math.min(total, start + count);
   const body = lines.slice(start, end).join("\n");
+  // Byte discipline on top of the line cap: a 2000-line file of very long lines
+  // can still flood context. When the byte cap bites, the full slice spills to
+  // disk and the truncation notice carries the recovery move, so skip our footer.
+  const capped = capToolOutput("read-file", body, { maxLines: READ_LINE_CAP, direction: "head" });
+  if (capped !== body) return capped;
   const shownAll = start === 0 && end === total;
   const footer = shownAll
     ? ""
     : `\n\n… showing lines ${start + 1}-${end} of ${total}. Pass offset/limit to read another range.`;
-  return clip(body + footer);
+  return body + footer;
+}
+
+/**
+ * Snapshot `git status --porcelain` as path → XY status. Returns null when not
+ * a git repo / git unavailable / any error — callers treat null as "skip".
+ */
+function gitStatusSnapshot(root: string): Map<string, string> | null {
+  try {
+    if (!which("git")) return null;
+    const p = spawnSyncProc(["git", "status", "--porcelain"], { cwd: root, stdout: "pipe", stderr: "pipe" });
+    if (p.exitCode !== 0) return null;
+    const map = new Map<string, string>();
+    for (const line of p.stdout.toString().split("\n")) {
+      if (line.length < 4) continue;
+      let path = line.slice(3);
+      const arrow = path.indexOf(" -> "); // rename: keep the destination
+      if (arrow >= 0) path = path.slice(arrow + 4);
+      if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
+      map.set(path, line.slice(0, 2));
+    }
+    return map;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After a shell command, emit synthetic file-change events for paths the
+ * command mutated, so /undo can revert shell-side writes too (not just
+ * write_file/edit_file).
+ *
+ * Semantics (conservative — never guess a before-state):
+ *   - created (?? after, absent before)  → before "" / existed false (undo deletes)
+ *   - modified/deleted, CLEAN before     → before = `git show :<path>` (index
+ *     content == pre-command content precisely because the file was clean)
+ *   - already dirty before the command   → skipped (pre-command content unknowable)
+ *
+ * Entirely best-effort: any git failure or non-repo root is silent.
+ */
+function emitShellFileChanges(onEvent: OnEvent | undefined, root: string, before: Map<string, string> | null): void {
+  if (!onEvent || !before) return;
+  try {
+    const after = gitStatusSnapshot(root);
+    if (!after) return;
+    let emitted = 0;
+    for (const [path, status] of after) {
+      if (before.has(path)) continue; // dirty pre-command — don't guess
+      if (path.endsWith("/")) continue; // untracked directory entry, not a file
+      if (++emitted > 100) break; // sanity cap: a generator run shouldn't flood undo
+      if (status === "??") {
+        onEvent({ type: "file-change", path, before: "", existed: false }); // /undo deletes it
+        continue;
+      }
+      const show = spawnSyncProc(["git", "show", `:${path}`], { cwd: root, stdout: "pipe", stderr: "pipe" });
+      if (show.exitCode !== 0) continue;
+      onEvent({ type: "file-change", path, before: show.stdout.toString(), existed: true });
+    }
+  } catch {
+    /* best-effort — must never fail the tool */
+  }
 }
 
 /**
@@ -205,6 +302,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
       onEvent?.({ type: "file-change", path: relative(root, abs), before, existed: exists }); // for /undo + /diff
       await writeFile(abs, content, "utf8");
       updateRetrievalFile(relative(root, abs), content, root); // keep retrieval fresh
+      invalidateFileListCache(); // new files must show up in @mentions / the repo map
       const diff = computeDiff(before, content);
       return { summary: `wrote ${path} (${diffStat(diff)})`, diff };
     },
@@ -270,7 +368,8 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     inputSchema: z.object({ url: z.string().url() }),
     execute: async ({ url }) => {
       const page = await fetchUrlText(url);
-      return clip([`URL: ${page.url}`, page.title ? `Title: ${page.title}` : "", "", page.text].filter(Boolean).join("\n"));
+      const text = [`URL: ${page.url}`, page.title ? `Title: ${page.title}` : "", "", page.text].filter(Boolean).join("\n");
+      return capToolOutput("fetch-url", text, { direction: "head" });
     },
   }),
 
@@ -319,7 +418,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
           { stdout: "pipe", stderr: "pipe" },
         );
         const out = p.stdout.toString();
-        if (out.trim()) return clip(out.replaceAll(abs + "/", "").replaceAll(root + "/", ""));
+        if (out.trim()) return capToolOutput("search", out.replaceAll(abs + "/", "").replaceAll(root + "/", ""), { maxLines: 400, direction: "head" });
         return p.exitCode === 1 ? "no matches" : p.stderr.toString().trim() || "no matches";
       }
       // Fallback: walk + match (best-effort; ripgrep is far better).
@@ -343,7 +442,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
           /* skip binaries / unreadable */
         }
       }
-      return hits.length ? clip(hits.join("\n")) : "no matches";
+      return hits.length ? capToolOutput("search", hits.join("\n"), { maxLines: 400, direction: "head" }) : "no matches";
     },
   }),
 
@@ -369,7 +468,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
         matches.push(m);
         if (matches.length >= 300) break;
       }
-      return matches.length ? clip(matches.sort().join("\n")) : "no files match";
+      return matches.length ? capToolOutput("glob", matches.sort().join("\n"), { maxLines: 400, direction: "head" }) : "no files match";
     },
   }),
 
@@ -432,14 +531,18 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     execute: async ({ command }) => {
       if (!(await requestPermission({ kind: "shell", title: "Run a shell command", detail: command }))) throw new Error(DENIED);
       const id = `run_shell:${command}`;
+      const statusBefore = gitStatusSnapshot(root); // null = not a repo / git failed → skip
       const r = await runShellStream(command, {
         cwd: root, // sub-agents in a fan-out run shell in their own worktree
         onChunk: (c) => onEvent?.({ type: "tool-output", id, name: "run_shell", arg: command, stream: c.stream, text: c.text }),
       });
+      emitShellFileChanges(onEvent, root, statusBefore); // /undo coverage for shell-side mutations
       if (/\b(bun|npm|pnpm|yarn)\s+(test|run\s+typecheck|typecheck|build)\b|\b(tsc|pytest|cargo\s+test|go\s+test)\b/.test(command)) {
-        onEvent?.({ type: "verification", command, ok: r.ok, summary: r.ok ? "passed" : "failed" });
+        // The auto-fix loop needs the actual failure line, not the word "failed".
+        onEvent?.({ type: "verification", command, ok: r.ok, summary: r.ok ? "passed" : summarize(r.output) });
       }
-      return r.output;
+      // Tail truncation: the END of build/test output is what matters.
+      return capToolOutput("run-shell", r.output, { direction: "tail" });
     },
   }),
   remember: tool({
@@ -449,8 +552,9 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
       fact: z.string().describe("One sentence, self-contained (a future session has no other context)."),
     }),
     execute: async ({ fact }) => {
+      // No manual tool-end here: run.ts emits it from the SDK tool-result, and
+      // remember is not in SELF_RENDERING — a manual emit would double-render.
       const ok = appendFact(fact, root);
-      onEvent?.({ type: "tool-end", id: `remember-${Date.now()}`, ok, summary: ok ? fact.slice(0, 64) : "couldn't write memory" });
       return ok ? "remembered" : "couldn't write the memory file";
     },
   }),

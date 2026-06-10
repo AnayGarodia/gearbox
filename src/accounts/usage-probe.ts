@@ -17,7 +17,7 @@
 // Everything degrades to `null` on any failure; callers fall back to the near-limit
 // data the `-p`/exec stream already provides. Verified on macOS (claude 2.1.168,
 // codex 0.x); see the probe validation in the feature's plan.
-import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { spawnProc, which, type Proc } from "../proc.ts";
@@ -68,8 +68,10 @@ export function parseCodexRateLimits(rl: any, observedAt?: number): ProbeSnapsho
   return out;
 }
 
-function windowType(windowMinutes: number | undefined, slot: "primary" | "secondary"): string {
-  if (windowMinutes != null) return windowMinutes <= 24 * 60 ? "five_hour" : "seven_day";
+export function windowType(windowMinutes: number | undefined, slot: "primary" | "secondary"): string {
+  // ≈300 min is the 5-hour window; anything longer (1440-min daily, 10080-min
+  // weekly) is NOT — bucket it with seven_day rather than mislabel it 5-hour.
+  if (windowMinutes != null) return windowMinutes <= 8 * 60 ? "five_hour" : "seven_day";
   return slot === "primary" ? "five_hour" : "seven_day";
 }
 
@@ -156,7 +158,11 @@ function ensureOnboarded(configDir: string, cwd: string): void {
   if (changed) {
     try {
       mkdirSync(configDir, { recursive: true });
-      writeFileSync(f, JSON.stringify(d, null, 2));
+      // Temp-write + rename in the same dir (same filesystem → atomic) — a torn
+      // write here would corrupt the vendor CLI's own config file.
+      const tmp = `${f}.tmp`;
+      writeFileSync(tmp, JSON.stringify(d, null, 2));
+      renameSync(tmp, f);
     } catch {
       /* best-effort */
     }

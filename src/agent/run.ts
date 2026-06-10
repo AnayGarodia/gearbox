@@ -27,6 +27,8 @@ import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import { reasoningOptions, type Effort } from "../model/reasoning.ts";
 import { withPromptCaching } from "../model/caching.ts";
+import { sanitizeWithMap } from "../context/sanitize.ts";
+import { classifyProviderError, retryDelayMs, MAX_INLINE_RETRY_DELAY_MS } from "./errors.ts";
 import { makeDelegateTools, type SubAgentRunner } from "./delegate.ts";
 import { createToolset } from "../tools.ts";
 import { config } from "../config.ts";
@@ -209,6 +211,54 @@ const resultSummary = (out: any): string => {
   return lines > 1 ? `${truncWord(first, 56)} · ${lines} lines` : truncWord(first, 64);
 };
 
+// Loop detection: a model can wedge itself repeating the EXACT same failing
+// tool call forever (same name, identical JSON input). Wrap every tool's
+// execute so the 3rd and 4th consecutive identical call short-circuit with an
+// error result the model can read, and the 5th ends the turn (via onStop →
+// stopWhen). Any different call resets the counter. Interception happens here,
+// at the toolset boundary, so tools.ts stays untouched.
+export const LOOP_BLOCK_MESSAGE =
+  "Loop detected: this exact tool call was already made twice with the same result. Try a different approach.";
+export const LOOP_STOP_MESSAGE = "stopped: repeated identical tool calls";
+
+export function guardToolLoops<T extends Record<string, any>>(tools: T, onStop: () => void): T {
+  let lastKey = "";
+  let count = 0;
+  const out: Record<string, any> = {};
+  for (const [name, t] of Object.entries(tools)) {
+    const exec = (t as any)?.execute;
+    if (typeof exec !== "function") { out[name] = t; continue; }
+    out[name] = {
+      ...(t as object),
+      execute: async (input: any, callOpts: any) => {
+        let key = name;
+        try { key = name + " " + JSON.stringify(input ?? null); } catch { /* unserializable input: key by name only */ }
+        count = key === lastKey ? count + 1 : 1;
+        lastKey = key;
+        if (count >= 5) { onStop(); return LOOP_STOP_MESSAGE; }
+        if (count >= 3) return LOOP_BLOCK_MESSAGE;
+        return exec(input, callOpts);
+      },
+    };
+  }
+  return out as T;
+}
+
+// Sleep that wakes immediately on abort, so a user interrupt during a retry
+// backoff never leaves the turn hanging out the rest of the delay.
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const t = setTimeout(done, ms);
+    function done() {
+      clearTimeout(t);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done);
+  });
+}
+
 export async function runTask(opts: {
   model: ModelSpec;
   messages: ModelMessage[];
@@ -253,10 +303,9 @@ export async function runTask(opts: {
     errored = true;
     failureMessage = cleanError(err);
     failureRaw = err;
-    // When the caller drives failover (deferTerminal true), stay silent and
-    // hand back the `failure` descriptor. Emitting a red error line here would
-    // be wrong if the next account in the pool succeeds.
-    if (!opts.deferTerminal) onEvent({ type: "error", message: unavailableModelHint(failureMessage, model) });
+    // Recording only — the error EVENT is emitted after the retry loop settles
+    // (a transient failure that a retry recovers from should never paint a red
+    // line), and only when the caller isn't driving failover (deferTerminal).
   };
 
   onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
@@ -273,31 +322,52 @@ export async function runTask(opts: {
     return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
   };
   const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground }) : undefined;
-  const activeTools = await createToolset(onEvent, { readOnly: Boolean(plan), extraTools, root: opts.root });
+  // Loop guard: the 3rd/4th consecutive identical tool call is blocked with a
+  // readable error result; the 5th flips loopStop, which stopWhen reads to end
+  // the turn (reported below as a structured failure).
+  let loopStop = false;
+  const activeTools = guardToolLoops(
+    await createToolset(onEvent, { readOnly: Boolean(plan), extraTools, root: opts.root }),
+    () => { loopStop = true; },
+  );
+
+  // Repair the outgoing history at the READ seam (sanitize.ts): merge dangling
+  // user messages, pair every tool-call with a result, strip cross-provider
+  // residue. Runs BEFORE withPromptCaching so the cache breakpoints it adds
+  // survive; the cacheBreak index is re-mapped through the sanitizer's index
+  // map since merges/drops can shift positions.
+  const sane = sanitizeWithMap(messages);
+  let cacheBreak = opts.cacheBreak;
+  if (cacheBreak !== undefined) {
+    let adj = -1;
+    for (let i = 0; i < sane.sourceIndex.length; i++) if (sane.sourceIndex[i]! <= cacheBreak) adj = i;
+    cacheBreak = adj;
+  }
 
   // Mark the stable prefix for prompt caching. Providers with explicit cache
   // breakpoints (Anthropic) reuse it at roughly 10% cost; auto-caching providers
   // (OpenAI/DeepSeek/Gemini) ignore the markers harmlessly.
-  const cached = withPromptCaching(model, opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM), messages, opts.cacheBreak);
-  const result = opts._stream
-    ? null
-    : streamText({
-        model: resolveModel(model, opts.creds),
-        system: cached.system,
-        messages: cached.messages,
-        // allowSystemInMessages: our own system prompt is moved into the
-        // messages array so a cache marker can ride on it. The SDK warning
-        // this suppresses targets untrusted injected content, not our own
-        // system block.
-        allowSystemInMessages: true,
-        tools: activeTools,
-        stopWhen: stepCountIs(config.maxSteps),
-        abortSignal: signal,
-        maxRetries: opts.maxRetries,
-        onError: ({ error }) => emitErr(error),
-        ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
-      });
-  const parts: AsyncIterable<any> = opts._stream ?? (result!.fullStream as AsyncIterable<any>);
+  const cached = withPromptCaching(model, opts.system ?? (plan ? SYSTEM + PLAN_ADDENDUM : SYSTEM), sane.messages, cacheBreak);
+  const startStream = () =>
+    opts._stream
+      ? null
+      : streamText({
+          model: resolveModel(model, opts.creds),
+          system: cached.system,
+          messages: cached.messages,
+          // allowSystemInMessages: our own system prompt is moved into the
+          // messages array so a cache marker can ride on it. The SDK warning
+          // this suppresses targets untrusted injected content, not our own
+          // system block.
+          allowSystemInMessages: true,
+          tools: activeTools,
+          stopWhen: [stepCountIs(config.maxSteps), () => loopStop],
+          abortSignal: signal,
+          maxRetries: opts.maxRetries,
+          onError: ({ error }) => emitErr(error),
+          ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
+        });
+  let result: ReturnType<typeof streamText> | null = null;
 
   const names = new Map<string, string>();
   // Per-tool-call streaming state: the head label (path/command) is read in
@@ -346,7 +416,7 @@ export async function runTask(opts: {
     lastPaint = now;
     await new Promise((r) => setTimeout(r, 0));
   };
-  try {
+  const consume = async (parts: AsyncIterable<any>) => {
     for await (const part of parts) {
       switch (part.type) {
         case "text-delta": {
@@ -457,10 +527,49 @@ export async function runTask(opts: {
         }
       }
     }
-  } catch (e: any) {
-    // On a user interrupt the App shows its own "interrupted" notice, so stay
-    // quiet. Any other thrown error is a real failure and should be reported.
-    if (!signal?.aborted) emitErr(e);
+  };
+
+  // Pre-output retry loop: a retryable failure (rate / 5xx / network) that
+  // happened before ANYTHING streamed is retried in place — honoring the
+  // provider's Retry-After when given, else exponential backoff with jitter.
+  // Non-retryable classes (auth/quota/overflow/abort) and post-output failures
+  // return the structured failure unchanged so the App-level hop-loop keeps
+  // owning account failover. The test seam (_stream) is single-shot.
+  const MAX_STREAM_RETRIES = 2;
+  for (let attempt = 0; ; attempt++) {
+    result = startStream();
+    try {
+      await consume(opts._stream ?? (result!.fullStream as AsyncIterable<any>));
+    } catch (e: any) {
+      // On a user interrupt the App shows its own "interrupted" notice, so stay
+      // quiet. Any other thrown error is a real failure and should be reported.
+      if (!signal?.aborted) emitErr(e);
+    }
+    if (!errored || producedOutput || opts._stream || signal?.aborted || attempt >= MAX_STREAM_RETRIES) break;
+    const cls = classifyProviderError(failureRaw);
+    if (!cls.retryable) break;
+    // A long Retry-After is better spent hopping to another account.
+    if ((cls.retryAfterMs ?? 0) > MAX_INLINE_RETRY_DELAY_MS) break;
+    const delay = retryDelayMs(cls, attempt);
+    onEvent({ type: "phase", label: `retrying (${cls.kind})`, detail: `attempt ${attempt + 1}/${MAX_STREAM_RETRIES} · waiting ${Math.max(1, Math.round(delay / 1000))}s`, state: "running" });
+    await abortableDelay(delay, signal);
+    if (signal?.aborted) break;
+    errored = false;
+    failureMessage = undefined;
+    failureRaw = undefined;
+  }
+
+  // The loop guard ended the turn: report it as a structured failure so the
+  // caller (and the user) see exactly why the turn stopped.
+  if (loopStop && !errored) {
+    errored = true;
+    failureMessage = LOOP_STOP_MESSAGE;
+    failureRaw = new Error(LOOP_STOP_MESSAGE);
+  }
+  // The deferred error line (recorded by emitErr): only now that retries have
+  // settled is a red line definitely warranted.
+  if (errored && !opts.deferTerminal && !signal?.aborted) {
+    onEvent({ type: "error", message: unavailableModelHint(failureMessage ?? cleanError(failureRaw), model) });
   }
 
   let next = messages;
@@ -557,6 +666,11 @@ export async function runCompletion(opts: {
         if (t) { text += t; onEvent({ type: "text", text: t }); await yieldPaint(); }
       } else if (part.type === "error") {
         emitErr(part.error);
+      } else if (part.type === "finish-step") {
+        // Anthropic reports cache WRITE tokens per step, not on the final
+        // finish event — same accumulation as runTask, or /ask under-bills.
+        const cc = (part as any).providerMetadata?.anthropic?.cacheCreationInputTokens;
+        if (typeof cc === "number" && cc > 0) usage.cacheCreationInputTokens = (usage.cacheCreationInputTokens ?? 0) + cc;
       } else if (part.type === "finish") {
         const u = part.totalUsage ?? part.usage ?? {};
         usage.inputTokens = u.inputTokens ?? u.promptTokens ?? 0;
