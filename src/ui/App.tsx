@@ -97,6 +97,7 @@ import { checkFileDiagnostics, formatDiagnostics, shutdownAllLsp } from "../lsp/
 import { loadPlugins, emitHook, installPluginLogger } from "../plugins.ts";
 import { loadAgents, agentInvocation, type AgentDef } from "../agents.ts";
 import { recordTurnOutcome } from "../model/priors.ts";
+import { armDeviceLogin } from "../accounts/azure-arm.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -2804,6 +2805,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (a && a.exec === "cli") {
           const nick = accountName(a).match(/\((.*)\)/)?.[1];
           signInCli(`${a.provider.replace(/-cli$/, "")}${nick ? ` ${nick}` : ""}`.trim());
+          return;
+        }
+        if (a && (a.provider === "azure" || a.provider === "azure-foundry")) {
+          // Azure accounts CAN sign in: gearbox's own device-code flow issues
+          // the management token that deployment create/delete needs — no
+          // Azure CLI required. The key stays for inference; this adds ARM.
+          notice("starting Azure sign-in (for deployment management)…");
+          void armDeviceLogin((info) => {
+            notice(`azure sign-in · open ${info.url} and enter code  ${info.userCode}  (expires in ~${info.expiresInMin} min)`);
+          }).then((r) => {
+            if (r.ok) toast("azure management sign-in complete", "ok");
+            else notice(r.note ?? "azure sign-in failed");
+          });
           return;
         }
         if (a && a.exec !== "cli") {

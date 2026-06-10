@@ -105,3 +105,83 @@ test("a missing az CLI fails with the install/login fix, not a stack trace", asy
   expect(r.ok).toBe(false);
   expect(r.note).toContain("az login");
 });
+
+// ── the token ladder (device sign-in / az / service principal) ────────────────
+import { armAccessToken, armDeviceLogin, armLogout, hasArmLogin } from "../src/accounts/azure-arm.ts";
+
+// Keep ladder tests off the real keychain and the real az binary.
+process.env.GEARBOX_SECRET_STORE = "file";
+
+const noAzExec = ((_cmd: string[]) => ({ stdout: Buffer.alloc(0), stderr: Buffer.from("az: not found"), exitCode: 1 })) as any;
+
+function fakeAuth(opts: { pendingPolls?: number } = {}) {
+  let polls = 0;
+  const calls: { url: string; body: string }[] = [];
+  const f = (async (url: any, init?: any) => {
+    const u = String(url);
+    const body = String(init?.body ?? "");
+    calls.push({ url: u, body });
+    if (u.includes("/devicecode")) {
+      return new Response(JSON.stringify({ device_code: "dev-1", user_code: "ABCD-1234", verification_uri: "https://microsoft.com/devicelogin", interval: 0, expires_in: 900 }), { status: 200 });
+    }
+    if (u.includes("/token") && body.includes("device_code")) {
+      polls++;
+      if (polls <= (opts.pendingPolls ?? 1)) return new Response(JSON.stringify({ error: "authorization_pending" }), { status: 400 });
+      return new Response(JSON.stringify({ access_token: "ACCESS-1", refresh_token: "REFRESH-1", expires_in: 3600 }), { status: 200 });
+    }
+    if (u.includes("/token") && body.includes("refresh_token")) {
+      return new Response(JSON.stringify({ access_token: "ACCESS-2", refresh_token: "REFRESH-2", expires_in: 3600 }), { status: 200 });
+    }
+    if (u.includes("/token") && body.includes("client_credentials")) {
+      return new Response(JSON.stringify({ access_token: "SP-TOKEN", expires_in: 3600 }), { status: 200 });
+    }
+    return new Response("{}", { status: 404 });
+  }) as any;
+  return { fetch: f, calls };
+}
+
+test("device sign-in: shows the code, polls past pending, stores the refresh token", async () => {
+  await armLogout();
+  const auth = fakeAuth({ pendingPolls: 2 });
+  let shown: any = null;
+  const r = await armDeviceLogin((info) => { shown = info; }, auth.fetch, async () => {});
+  expect(r.ok).toBe(true);
+  expect(shown.userCode).toBe("ABCD-1234");
+  expect(shown.url).toContain("devicelogin");
+  expect(await hasArmLogin()).toBe(true);
+});
+
+test("with a stored sign-in, the ladder works with NO az at all (and rotates the token)", async () => {
+  const auth = fakeAuth();
+  await armDeviceLogin(() => {}, auth.fetch, async () => {}); // sign in fresh (beforeEach wiped the home)
+  clearArmCaches(); // drop the access token the login primed — force the refresh path
+  const t = await armAccessToken(auth.fetch, noAzExec);
+  expect("token" in t && t.token).toBe("ACCESS-2");
+  const refreshCall = auth.calls.find((c) => c.body.includes("refresh_token"));
+  expect(refreshCall).toBeTruthy();
+  expect(auth.calls.some((c) => c.body.includes("client_credentials"))).toBe(false);
+  await armLogout();
+  expect(await hasArmLogin()).toBe(false);
+});
+
+test("service-principal env vars are the CI rung; without anything the error names all three fixes", async () => {
+  await armLogout();
+  clearArmCaches();
+  process.env.AZURE_TENANT_ID = "t-1";
+  process.env.AZURE_CLIENT_ID = "c-1";
+  process.env.AZURE_CLIENT_SECRET = "s-1";
+  const auth = fakeAuth();
+  const t = await armAccessToken(auth.fetch, noAzExec);
+  expect("token" in t && t.token).toBe("SP-TOKEN");
+  delete process.env.AZURE_TENANT_ID;
+  delete process.env.AZURE_CLIENT_ID;
+  delete process.env.AZURE_CLIENT_SECRET;
+  clearArmCaches();
+  const none = await armAccessToken(auth.fetch, noAzExec);
+  expect("error" in none).toBe(true);
+  if ("error" in none) {
+    expect(none.error).toContain("/account login");
+    expect(none.error).toContain("az login");
+    expect(none.error).toContain("AZURE_CLIENT_SECRET");
+  }
+});
