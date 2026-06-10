@@ -5535,7 +5535,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
         {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} /> : null}
-        {busy ? <ActivityRail items={items} width={pageW} /> : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (

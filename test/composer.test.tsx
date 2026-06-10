@@ -56,7 +56,7 @@ test("busy with an empty composer shows the working hint on the footer line", ()
   const out = render(
     <Composer value="" cursor={0} placeholder="ask anything" busy={true} width={80} />,
   ).lastFrame() ?? "";
-  expect(out).toContain("working ⋯ esc interrupt");
+  expect(out).toContain("type to queue"); // esc/elapsed live in the now-row — said once
 });
 
 test("a pinned policy shows the model as the policy, not a second model name", () => {

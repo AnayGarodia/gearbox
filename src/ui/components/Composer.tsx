@@ -113,7 +113,7 @@ function ComposerImpl({
   const hint = busy
     ? value !== ""
       ? "⏎ queues · sends when the current turn finishes"
-      : "working ⋯ esc interrupt"
+      : "type to queue" // the now-row above already carries elapsed + esc — say it once
     : shellMode
     ? "⏎ runs in your shell"
     : "⏎ send";
@@ -141,9 +141,9 @@ function ComposerImpl({
             <Text backgroundColor={color.elementBg}>
               <Text color={busy ? color.faint : accent} bold>{" " + promptGlyph + " "}</Text>
               {!busy ? <Text inverse> </Text> : null}
-              <Text color={color.faint}>{busy ? "type to queue · esc interrupt" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder}</Text>
+              <Text color={color.faint}>{busy ? "type to queue" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder}</Text>
             </Text>
-            {bgPad(3 + (busy ? 0 : 1) + (busy ? "type to queue · esc interrupt" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder).length)}
+            {bgPad(3 + (busy ? 0 : 1) + (busy ? "type to queue" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder).length)}
           </Box>
         ) : (
           // Non-empty: render the live editable input WITH the cursor, even while
