@@ -8,7 +8,7 @@
 // recorded), and (c) notifies an optional subscriber so the UI and the
 // session's TurnMeta record derive from the SAME event instead of being
 // assembled in parallel (TRIAGE R2: "no single source of truth").
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, fstatSync, mkdirSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { recordUsage } from "./usage.ts";
@@ -76,16 +76,41 @@ export function setSpendListener(fn: ((ev: SpendEvent) => void) | null): void {
   listener = fn;
 }
 
+/** How many bytes of ledger tail to read. ~80 bytes/event × 20k lines fits
+ *  comfortably; the cap keeps the synchronous read O(constant) however large
+ *  the append-only log grows. */
+const TAIL_BYTES = 2 * 1024 * 1024;
+
+/** Read only the tail of the ledger (last TAIL_BYTES), returning whole lines
+ *  newest-last, capped at the historical 20k-line window. When the read didn't
+ *  start at offset 0 the first line is (potentially) partial — drop it. Small
+ *  files read in full, so behavior there is identical to a whole-file read. */
+function readLedgerTailLines(): string[] {
+  const fd = openSync(join(home(), "ledger.jsonl"), "r");
+  try {
+    const size = fstatSync(fd).size;
+    const start = Math.max(0, size - TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    readSync(fd, buf, 0, buf.length, start);
+    let text = buf.toString("utf8");
+    if (start > 0) {
+      const nl = text.indexOf("\n");
+      text = nl === -1 ? "" : text.slice(nl + 1);
+    }
+    const lines = text.split("\n");
+    return lines.slice(Math.max(0, lines.length - 20_000));
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** Per-day spend totals from the append-only event log (newest last) — the
  *  cost tab's daily bars. Reads the tail only (a long-lived log can't slow a
  *  tab switch); days with no events are zero-filled so the bars line up. */
 export function readDailySpend(days = 7, now = Date.now()): { day: string; usd: number }[] {
   const byDay = new Map<string, number>();
   try {
-    const raw = readFileSync(join(home(), "ledger.jsonl"), "utf8");
-    const lines = raw.split("\n");
-    const tail = lines.slice(Math.max(0, lines.length - 20_000));
-    for (const line of tail) {
+    for (const line of readLedgerTailLines()) {
       if (!line) continue;
       try {
         const ev = JSON.parse(line);
@@ -109,8 +134,7 @@ export function readAuxSpendToday(now = Date.now()): number {
   const today = new Date(now).toISOString().slice(0, 10);
   let sum = 0;
   try {
-    const lines = readFileSync(join(home(), "ledger.jsonl"), "utf8").split("\n");
-    for (const line of lines.slice(Math.max(0, lines.length - 20_000))) {
+    for (const line of readLedgerTailLines()) {
       if (!line) continue;
       try {
         const ev = JSON.parse(line);

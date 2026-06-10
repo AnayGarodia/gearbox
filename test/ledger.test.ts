@@ -86,7 +86,7 @@ test("a torn usage.json is preserved as .corrupt, not silently discarded", () =>
   expect(accountUsage("acct-1")!.turns).toBe(1);
 });
 
-import { readAuxSpendToday } from "../src/accounts/ledger.ts";
+import { readAuxSpendToday, readDailySpend } from "../src/accounts/ledger.ts";
 
 test("aux spend (classifier/titles) hits the ledger and is reportable — no invisible dollars", () => {
   const seen: any[] = [];
@@ -95,4 +95,60 @@ test("aux spend (classifier/titles) hits the ledger and is reportable — no inv
   setSpendListener(null);
   expect(seen[0]?.source).toBe("aux");
   expect(readAuxSpendToday()).toBeGreaterThan(0);
+});
+
+// Mirrors TAIL_BYTES in src/accounts/ledger.ts — the constant-size tail window
+// the daily/aux readers pull instead of reading the whole append-only log.
+const TAIL_BYTES = 2 * 1024 * 1024;
+
+test("tail-read: a ledger far larger than the tail window still totals the recent events exactly", () => {
+  const now = Date.UTC(2026, 5, 10, 12, 0, 0); // a fixed "today"
+  const oldAt = now - 86_400_000; // yesterday
+  const today = new Date(now).toISOString().slice(0, 10);
+  const yesterday = new Date(oldAt).toISOString().slice(0, 10);
+
+  // > 2× the tail window of old events, then a small set of recent ones.
+  const oldLine = JSON.stringify({ at: oldAt, costUSD: 0.001, source: "turn" }) + "\n";
+  const oldCount = Math.ceil((2.5 * TAIL_BYTES) / oldLine.length);
+  const recent = Array.from({ length: 500 }, () => JSON.stringify({ at: now, costUSD: 0.01, source: "turn" }) + "\n").join("");
+  const aux = Array.from({ length: 3 }, () => JSON.stringify({ at: now, costUSD: 0.002, source: "aux" }) + "\n").join("");
+  writeFileSync(join(home, "ledger.jsonl"), oldLine.repeat(oldCount) + recent + aux);
+
+  const byDay = new Map(readDailySpend(7, now).map((d) => [d.day, d.usd]));
+  // Everything written inside the window (the newest events) is counted exactly.
+  expect(byDay.get(today)).toBeCloseTo(500 * 0.01 + 3 * 0.002, 6);
+  // Older events are window-limited (tail bytes + the 20k-line cap), never the
+  // whole multi-MB file: some counted, strictly fewer than all of them.
+  const yUsd = byDay.get(yesterday)!;
+  expect(yUsd).toBeGreaterThan(0);
+  expect(yUsd).toBeLessThan(oldCount * 0.001 - 1e-9);
+  // Aux reader shares the same tail helper.
+  expect(readAuxSpendToday(now)).toBeCloseTo(3 * 0.002, 6);
+});
+
+test("tail-read: a byte boundary that splits a line drops the partial first line cleanly", () => {
+  const now = Date.UTC(2026, 5, 10, 12, 0, 0);
+  const fillerAt = now - 2 * 86_400_000; // two days ago — outside the byte window
+  const fillerDay = new Date(fillerAt).toISOString().slice(0, 10);
+  const today = new Date(now).toISOString().slice(0, 10);
+
+  // Tail-window events: N whole lines that must all be counted.
+  const tailLines = Array.from({ length: 100 }, () => JSON.stringify({ at: now, costUSD: 0.01, source: "turn" }) + "\n").join("");
+  // The victim: padded so the suffix (victim + tail lines) is exactly
+  // TAIL_BYTES + 10 bytes → the read boundary lands 10 bytes INTO this line.
+  const victimBase = { at: now, costUSD: 999, source: "turn", pad: "" };
+  const baseLen = (JSON.stringify(victimBase) + "\n").length;
+  const padLen = TAIL_BYTES + 10 - tailLines.length - baseLen;
+  const victim = JSON.stringify({ ...victimBase, pad: "x".repeat(padLen) }) + "\n";
+  expect(victim.length + tailLines.length).toBe(TAIL_BYTES + 10);
+  // Some filler before it so the read doesn't start at offset 0.
+  const filler = (JSON.stringify({ at: fillerAt, costUSD: 5, source: "turn" }) + "\n").repeat(50);
+  writeFileSync(join(home, "ledger.jsonl"), filler + victim + tailLines);
+
+  const byDay = new Map(readDailySpend(7, now).map((d) => [d.day, d.usd]));
+  // The split victim ($999) is dropped, never half-parsed into garbage; every
+  // whole line inside the window is counted exactly.
+  expect(byDay.get(today)).toBeCloseTo(100 * 0.01, 6);
+  // The filler sits entirely before the byte window → not counted.
+  expect(byDay.get(fillerDay)).toBe(0);
 });

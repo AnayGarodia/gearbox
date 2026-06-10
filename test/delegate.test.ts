@@ -60,10 +60,24 @@ test("surfaces a sub-agent failure instead of throwing", async () => {
 
 test("falls back gracefully when no in-loop model is available", async () => {
   delete process.env.ANTHROPIC_API_KEY; // no provider keys → router has nothing
-  // (other provider keys could exist in the env; this test only asserts no throw + a string result)
-  let ran = false;
-  const t = makeTool(async () => { ran = true; return { text: "x", usage: { inputTokens: 0, outputTokens: 0 } }; });
-  const result = await (t as any).execute({ task: "anything", kind: "code" }, {});
-  expect(typeof result).toBe("string"); // never throws — returns a message the model can act on
-  if (!ran) expect(result.toLowerCase()).toContain("delegation"); // failed/skipped message when nothing routable
+  // Hermetic: point GEARBOX_HOME at an empty temp dir so the router can't see
+  // the developer's REAL accounts — a stored CLI seat made this test spawn a
+  // live `claude` auth probe whose 5s timeout races bun's 5s test timeout.
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const origHome = process.env.GEARBOX_HOME;
+  const home = mkdtempSync(join(tmpdir(), "gearbox-delegate-"));
+  process.env.GEARBOX_HOME = home;
+  try {
+    let ran = false;
+    const t = makeTool(async () => { ran = true; return { text: "x", usage: { inputTokens: 0, outputTokens: 0 } }; });
+    const result = await (t as any).execute({ task: "anything", kind: "code" }, {});
+    expect(typeof result).toBe("string"); // never throws — returns a message the model can act on
+    if (!ran) expect(result.toLowerCase()).toContain("delegation"); // failed/skipped message when nothing routable
+  } finally {
+    if (origHome === undefined) delete process.env.GEARBOX_HOME;
+    else process.env.GEARBOX_HOME = origHome;
+    rmSync(home, { recursive: true, force: true });
+  }
 });

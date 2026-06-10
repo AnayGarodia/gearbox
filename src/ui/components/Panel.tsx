@@ -4,7 +4,7 @@ import { color, glyph, THEMES } from "../theme.ts";
 import { Viewport } from "./Viewport.tsx";
 import { ShimmerText } from "./Shimmer.tsx";
 import { itemsToLines, type Line } from "../lines.ts";
-import { panelBodyHeight, windowStart, filterModelRows, clampIndex, truncate, fieldWindow, type PanelState, type PanelModelRow, type PanelSessionRow, type AccountDetailViewData } from "../panel.ts";
+import { panelBodyHeight, windowStart, filterModelRows, clampIndex, truncate, fieldWindow, diffFileRow, type PanelState, type PanelModelRow, type PanelSessionRow, type AccountDetailViewData } from "../panel.ts";
 import { filterAddSpecs, type AddSpec } from "../../accounts/add-spec.ts";
 import { ListRow, HintLine, Field } from "./ui.tsx";
 import { GHOST_LOOKS } from "./Mascot.tsx";
@@ -281,6 +281,44 @@ export function Panel({
       </Box>
     );
     hint = "↑↓ preview live · ⏎ keep · esc revert";
+  } else if (panel.kind === "diff") {
+    // File list on top (windowed, ≤1/3 of the body), the selected file's unified
+    // diff beneath. +/- lines tinted; the file list and the pane scroll separately.
+    if (!panel.files.length) {
+      body = (
+        <Box paddingX={1}>
+          <Text color={color.faint}>no changes in this scope</Text>
+        </Box>
+      );
+      hint = "esc close";
+    } else {
+      const listH = Math.max(1, Math.min(panel.files.length, Math.floor(bodyH / 3)));
+      const diffH = Math.max(1, bodyH - listH - 1);
+      const idx = clampIndex(panel.index, panel.files.length);
+      const start = windowStart(idx, panel.files.length, listH);
+      const slice = panel.files.slice(start, start + listH);
+      const diffLines = panel.diff === null ? null : panel.diff.split("\n");
+      const visible = diffLines ? diffLines.slice(panel.scroll, panel.scroll + diffH) : [];
+      const tint = (l: string): string =>
+        l.startsWith("+") ? color.ok : l.startsWith("-") ? color.err : l.startsWith("@@") ? color.accent : color.dim;
+      body = (
+        <Box flexDirection="column" paddingX={1}>
+          {slice.map((f, i) => (
+            <ListRow key={f.path} selected={start + i === idx} label={diffFileRow(f, Math.max(16, innerW - 4))} />
+          ))}
+          <Text color={color.faint}>{"─".repeat(Math.max(4, innerW - 2))}</Text>
+          {diffLines === null ? (
+            <Text color={color.faint}>loading…</Text>
+          ) : (
+            visible.map((l, i) => (
+              <Text key={panel.scroll + i} color={tint(l)}>{truncate(l, Math.max(8, innerW - 2))}</Text>
+            ))
+          )}
+        </Box>
+      );
+      const scrollable = diffLines !== null && diffLines.length > diffH;
+      hint = `↑↓ file${scrollable ? " · PgUp PgDn scroll diff" : ""} · esc close`;
+    }
   } else if (panel.kind === "git-confirm") {
     const fw = fieldWindow(panel.subject.value, panel.subject.cursor, Math.max(8, innerW - 4));
     // Budget with the RENDERED file rows (≤6 + "+N more"), not the raw staged

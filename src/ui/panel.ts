@@ -8,6 +8,7 @@ import type { Item } from "./types.ts";
 import type { Edit } from "./input.ts";
 import type { AddSpec } from "../accounts/add-spec.ts";
 import type { AzureDeploymentInfo } from "../accounts/manage.ts";
+import type { DiffFileEntry } from "../git/ops.ts";
 
 export interface PanelModelRow {
   id: string;
@@ -58,6 +59,16 @@ export type PanelState =
       stat: string; // diffstat summary line(s)
       submitting: boolean;
       error?: string;
+    }
+  // full diff view: changed-file list (↑↓) + the selected file's unified diff
+  | {
+      kind: "diff";
+      title: string;
+      files: DiffFileEntry[];
+      baseline: string | null; // checkpoint sha the diff is measured against (null = HEAD)
+      index: number; // selected file in the list
+      diff: string | null; // selected file's unified diff (null = loading; App fills it)
+      scroll: number; // scroll offset inside the diff pane
     }
   // account detail + Azure management: browse deployments, deploy, delete
   | {
@@ -222,6 +233,51 @@ export function wizardBack(p: WizardPanel, spec?: AddSpec): WizardPanel {
   const prevKey = spec?.fields[prevIndex]?.key;
   const prevVal = prevKey ? ph.filled[prevKey] ?? "" : "";
   return { ...p, wizardPhase: { ...ph, fieldIndex: prevIndex, fieldEdit: { value: prevVal, cursor: prevVal.length }, fieldError: null } };
+}
+
+// ── Diff panel reducers (pure; tested in test/diff-panel.test.ts) ─────────────
+// The full-change view: a file list with +/- counts on top, the selected file's
+// unified diff beneath. ↑↓ moves the selection (the App loads the diff text
+// lazily and calls diffSetText), PgUp/PgDn or j/k scroll the diff pane.
+
+export type DiffPanel = Extract<PanelState, { kind: "diff" }>;
+
+export function diffOpen(files: DiffFileEntry[], baseline: string | null, scopeLabel: string): DiffPanel {
+  const adds = files.reduce((s, f) => s + f.additions, 0);
+  const dels = files.reduce((s, f) => s + f.deletions, 0);
+  const title = files.length
+    ? `changes · ${files.length} file${files.length === 1 ? "" : "s"} · +${adds} −${dels} · ${scopeLabel}`
+    : `changes · none · ${scopeLabel}`;
+  return { kind: "diff", title, files, baseline, index: 0, diff: null, scroll: 0 };
+}
+
+/** Move the file selection; the loaded diff is invalidated (App reloads it). */
+export function diffMove(p: DiffPanel, delta: number): DiffPanel {
+  if (!p.files.length) return p;
+  const index = clamp(p.index + delta, 0, p.files.length - 1);
+  return index === p.index ? p : { ...p, index, diff: null, scroll: 0 };
+}
+
+/** Deliver the lazily-loaded diff text for the CURRENT selection. */
+export function diffSetText(p: DiffPanel, text: string): DiffPanel {
+  return { ...p, diff: text, scroll: 0 };
+}
+
+/** Scroll the diff pane, clamped to the text's line count minus the view. */
+export function diffScroll(p: DiffPanel, delta: number, viewH: number): DiffPanel {
+  const lines = p.diff ? p.diff.split("\n").length : 0;
+  const max = Math.max(0, lines - Math.max(1, viewH));
+  return { ...p, scroll: clamp(p.scroll + delta, 0, max) };
+}
+
+/** One file-list row: `path  +a −d  [status]`, sized to `w` columns. */
+export function diffFileRow(f: DiffFileEntry, w: number): string {
+  const counts = f.binary ? "binary" : `+${f.additions} −${f.deletions}`;
+  const tag = f.status === "modified" ? "" : `  ${f.status}`;
+  const right = `${counts}${tag}`;
+  const path = truncate(f.path, Math.max(8, w - right.length - 2));
+  const pad = Math.max(1, w - path.length - right.length);
+  return `${path}${" ".repeat(pad)}${right}`;
 }
 
 // ── Git confirm reducers (pure; tested in test/git-confirm-panel.test.ts) ────

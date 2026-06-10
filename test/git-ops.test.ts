@@ -149,3 +149,72 @@ test("checkpoints work inside a linked worktree (where .git is a file)", () => {
     worktreeRemove(dir, repo);
   }
 });
+
+// ── turn checkpoints + diff-view data ─────────────────────────────────────────
+
+test("turnCheckpointSave + pruneTurnCheckpoints keep the newest, spare user checkpoints", async () => {
+  const { turnCheckpointSave, pruneTurnCheckpoints, turnCheckpointName } = await import("../src/git/ops.ts");
+  checkpointSave("mine", repo);
+  for (const n of [1, 2, 3, 4]) {
+    writeFileSync(join(repo, "a.txt"), `turn ${n}\n`);
+    expect(turnCheckpointSave(n, repo).ok).toBe(true);
+  }
+  pruneTurnCheckpoints(2, repo);
+  const names = checkpointList(repo).map((c) => c.name);
+  expect(names).toContain("mine");
+  expect(names).toContain(turnCheckpointName(3));
+  expect(names).toContain(turnCheckpointName(4));
+  expect(names).not.toContain(turnCheckpointName(1));
+  expect(names).not.toContain(turnCheckpointName(2));
+});
+
+test("a turn checkpoint restores shell-style deletes and renames (the /undo gap)", async () => {
+  const { turnCheckpointSave, checkpointRestore: restore, turnCheckpointName } = await import("../src/git/ops.ts");
+  writeFileSync(join(repo, "keep.txt"), "keep\n");
+  stageAll(repo); commit("seed", repo);
+  expect(turnCheckpointSave(7, repo).ok).toBe(true);
+  // Simulate a shell turn: delete one file, "rename" another, add a third.
+  rmSync(join(repo, "keep.txt"));
+  writeFileSync(join(repo, "renamed.txt"), "hello\n");
+  rmSync(join(repo, "a.txt"));
+  writeFileSync(join(repo, "junk.txt"), "junk\n");
+  expect(restore(turnCheckpointName(7), repo).ok).toBe(true);
+  expect(readFileSync(join(repo, "keep.txt"), "utf8")).toBe("keep\n");
+  expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("hello\n");
+  expect(existsSync(join(repo, "renamed.txt"))).toBe(false);
+  expect(existsSync(join(repo, "junk.txt"))).toBe(false);
+});
+
+test("diffFilesSince reports modified / added / deleted with counts vs a checkpoint", async () => {
+  const { diffFilesSince, turnCheckpointSave } = await import("../src/git/ops.ts");
+  writeFileSync(join(repo, "gone.txt"), "bye\n");
+  stageAll(repo); commit("seed2", repo);
+  turnCheckpointSave(9, repo);
+  const sha = checkpointList(repo).find((c) => c.name === "__turn-9__")!.sha;
+  writeFileSync(join(repo, "a.txt"), "hello\nworld\n"); // modified +1
+  writeFileSync(join(repo, "fresh.txt"), "one\ntwo\n"); // untracked new
+  rmSync(join(repo, "gone.txt")); // deleted
+  const files = diffFilesSince(sha, repo);
+  const byPath = Object.fromEntries(files.map((f) => [f.path, f]));
+  expect(byPath["a.txt"]!.status).toBe("modified");
+  expect(byPath["a.txt"]!.additions).toBe(1);
+  expect(byPath["fresh.txt"]!.status).toBe("added");
+  expect(byPath["fresh.txt"]!.additions).toBe(2);
+  expect(byPath["gone.txt"]!.status).toBe("deleted");
+  expect(byPath["gone.txt"]!.deletions).toBe(1);
+});
+
+test("diffFilesSince vs HEAD includes untracked files; fileDiffSince renders both", async () => {
+  const { diffFilesSince, fileDiffSince } = await import("../src/git/ops.ts");
+  writeFileSync(join(repo, "a.txt"), "hello\nplus\n");
+  writeFileSync(join(repo, "newby.txt"), "n1\nn2\nn3\n");
+  const files = diffFilesSince(null, repo);
+  const byPath = Object.fromEntries(files.map((f) => [f.path, f]));
+  expect(byPath["a.txt"]!.status).toBe("modified");
+  expect(byPath["newby.txt"]!.status).toBe("added");
+  expect(byPath["newby.txt"]!.additions).toBe(3);
+  expect(fileDiffSince(null, "a.txt", repo)).toContain("+plus");
+  const fresh = fileDiffSince(null, "newby.txt", repo);
+  expect(fresh).toContain("+n1");
+  expect(fresh).toContain("+n3");
+});

@@ -3,7 +3,7 @@
 // text (commit messages, PR titles/bodies) must never ride a shell string, so
 // there is no injection surface. Pure-ish (no UI imports); App wires thin.
 import { spawnSyncProc, spawnProc, which } from "../proc.ts";
-import { rmSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 
 export interface GitResult {
@@ -325,6 +325,104 @@ export function checkpointRestore(name: string, cwd = process.cwd()): GitResult 
 export function checkpointDelete(name: string, cwd = process.cwd()): GitResult {
   return git(["update-ref", "-d", `${CHECKPOINT_PREFIX}${name}`], cwd);
 }
+
+// ── turn checkpoints: the /undo substrate for shell-side mutations ────────────
+// undo.ts's per-file snapshots only see write/edit tool changes; a `run_shell`
+// rename or delete is invisible to them. A whole-tree checkpoint taken lazily at
+// a turn's FIRST mutation makes /undo total: restoring it puts the tree back to
+// turn start regardless of how the turn mutated it.
+
+const TURN_CHECKPOINT = /^__turn-\d+__$/;
+export const turnCheckpointName = (turnId: number): string => `__turn-${turnId}__`;
+
+export function turnCheckpointSave(turnId: number, cwd = process.cwd()): GitResult {
+  return checkpointSave(turnCheckpointName(turnId), cwd);
+}
+
+/** Drop all but the newest `keep` turn checkpoints (named __turn-N__; user
+ *  checkpoints are never touched). Best-effort. */
+export function pruneTurnCheckpoints(keep: number, cwd = process.cwd()): void {
+  const turns = checkpointList(cwd)
+    .filter((c) => TURN_CHECKPOINT.test(c.name))
+    .sort((a, b) => (parseInt(b.name.slice(7), 10) || 0) - (parseInt(a.name.slice(7), 10) || 0));
+  for (const c of turns.slice(Math.max(0, keep))) checkpointDelete(c.name, cwd);
+}
+
+// ── diff-view data: changed files + per-file diffs vs a baseline ──────────────
+
+export interface DiffFileEntry {
+  path: string;
+  additions: number;
+  deletions: number;
+  status: "modified" | "added" | "deleted";
+  binary: boolean;
+}
+
+/** Changed files in the working tree vs `sha` (a checkpoint baseline), or vs
+ *  HEAD when sha is null — `git diff --numstat` for tracked changes plus
+ *  untracked files counted as pure additions (a checkpoint tree INCLUDES
+ *  formerly-untracked files, so vs a checkpoint they surface via numstat;
+ *  vs HEAD they only exist in status). */
+export function diffFilesSince(sha: string | null, cwd = process.cwd()): DiffFileEntry[] {
+  const root = repoRoot(cwd);
+  if (!root) return [];
+  const base = sha ?? "HEAD";
+  const out = new Map<string, DiffFileEntry>();
+  const num = git(["diff", "--numstat", "--no-renames", "-z", base, "--", "."], root);
+  if (num.ok && num.out) {
+    // -z numstat records: "adds\tdels\tpath\0" (path NUL-terminated, no quoting).
+    for (const rec of num.out.split("\0").filter(Boolean)) {
+      const m = rec.match(/^(\d+|-)\t(\d+|-)\t([\s\S]+)$/);
+      if (!m) continue;
+      const binary = m[1] === "-";
+      const additions = binary ? 0 : parseInt(m[1]!, 10);
+      const deletions = binary ? 0 : parseInt(m[2]!, 10);
+      const path = m[3]!;
+      // Status from existence: absent in base → added; gone from disk → deleted.
+      const inBase = git(["cat-file", "-e", `${base}:${path}`], root).ok;
+      const onDisk = existsSync(join(root, path));
+      out.set(path, { path, additions, deletions, binary, status: !inBase ? "added" : !onDisk ? "deleted" : "modified" });
+    }
+  }
+  // Untracked files (new since base AND never committed) — vs HEAD they don't
+  // appear in numstat at all; vs a checkpoint they do (the checkpoint added
+  // them), so this only fills the HEAD-baseline gap and dedupes by path.
+  const untracked = git(["ls-files", "--others", "--exclude-standard", "-z"], root);
+  if (untracked.ok && untracked.out) {
+    for (const path of untracked.out.split("\0").filter(Boolean)) {
+      if (out.has(path)) continue;
+      const lines = countFileLines(root, path);
+      out.set(path, { path, additions: lines ?? 0, deletions: 0, binary: lines == null, status: "added" });
+    }
+  }
+  return [...out.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Unified diff for ONE file: working tree vs `sha` (or HEAD when null).
+ *  Untracked files diff against /dev/null so new content still renders. */
+export function fileDiffSince(sha: string | null, path: string, cwd = process.cwd()): string {
+  const root = repoRoot(cwd);
+  if (!root) return "";
+  const base = sha ?? "HEAD";
+  const inBase = git(["cat-file", "-e", `${base}:${path}`], root).ok;
+  if (!inBase) {
+    // New file: --no-index exits 1 when files differ, so trust output over ok.
+    const r = git(["diff", "--no-index", "--", "/dev/null", path], root);
+    return r.out;
+  }
+  return git(["diff", "--no-renames", base, "--", path], root).out;
+}
+
+const countFileLines = (root: string, path: string): number | null => {
+  try {
+    const buf = readFileSync(join(root, path));
+    if (buf.includes(0)) return null; // binary
+    const s = buf.toString("utf8");
+    return s ? s.split("\n").length - (s.endsWith("\n") ? 1 : 0) : 0;
+  } catch {
+    return null;
+  }
+};
 
 // ── gh (GitHub CLI) with graceful fallback ────────────────────────────────────
 
