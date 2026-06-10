@@ -485,6 +485,10 @@ if (pIdx >= 0) {
       const r = await runCliTask({
         binary: choice.backend.binary, profile: choice.backend.profile, prompt, messages: [],
         onEvent: (e) => { if (e.type === "text") out += e.text; }, deferTerminal: true, autoApprove: yolo,
+        // The in-loop path enforces read-only via the toolset (plan: !yolo); a
+        // vendor CLI owns its own tools, so the equivalent must ride its flags
+        // (claude --permission-mode plan / codex --sandbox read-only).
+        readOnly: !yolo,
       });
       if (r.failure) { console.error(r.failure.message); process.exit(1); }
       console.log(jsonOut ? JSON.stringify({ text: out.trim(), model: choice.model.id, usage: r.usage }) : out.trim());

@@ -163,7 +163,10 @@ export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boole
   if ((key.meta || key.ctrl) && key.rightArrow) return move(s, wordRight(s.value, s.cursor), key.shift);
   if (key.leftArrow) return move(s, Math.max(0, s.cursor - 1), key.shift);
   if (key.rightArrow) return move(s, Math.min(s.value.length, s.cursor + 1), key.shift);
-  if ((key.meta || key.ctrl) && input === "a") return at(s.value, s.value.length, 0); // select all
+  // ⌃A/⌘A select all — a DELIBERATE break from readline's line-start (the
+  // composer's fastest clear: select all, delete). ⌃U already covers
+  // kill-to-line-start. /keys documents this.
+  if ((key.meta || key.ctrl) && input === "a") return at(s.value, s.value.length, 0);
   if (key.ctrl && input === "e") return move(s, lineEndOf(s.value, s.cursor), key.shift); // line end (readline)
   // readline kill bindings: ⌃U to line start, ⌃K to line end, ⌃W / ⌥⌫ word back.
   if (key.ctrl && input === "u") return { type: "edit", state: { value: s.value.slice(0, lineStart) + s.value.slice(s.cursor), cursor: lineStart } };

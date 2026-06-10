@@ -126,9 +126,24 @@ export function spillOutput(name: string, full: string): string | null {
  * spill the full text to disk and weave the spill path into the notice.
  */
 export function capToolOutput(name: string, text: string, opts: Omit<TruncateOpts, "spillPath"> = {}): string {
-  const probe = truncateOutput(text, opts);
-  if (!probe.truncated) return text;
-  return truncateOutput(text, { ...opts, spillPath: spillOutput(name, text) }).text;
+  const r = truncateOutput(text, opts);
+  if (!r.truncated) return text;
+  const spill = spillOutput(name, text);
+  if (!spill) return r.text;
+  // Single truncation pass: splice the spill path into the already-built notice
+  // exactly where truncateOutput would have woven it (right after the counts).
+  const insert = ` Full output: ${spill}.`;
+  if ((opts.direction ?? "head") === "tail") {
+    // Tail notice is the FIRST line, so the first " lines." belongs to it.
+    const at = r.text.indexOf(" lines.");
+    if (at !== -1) return r.text.slice(0, at + 7) + insert + r.text.slice(at + 7);
+  } else {
+    // Head notice is appended LAST; find its marker, then the "." after the counts.
+    const mark = r.text.lastIndexOf("\n[truncated: showing lines 1-");
+    const at = mark === -1 ? -1 : r.text.indexOf(".", mark);
+    if (at !== -1) return r.text.slice(0, at + 1) + insert + r.text.slice(at + 1);
+  }
+  return r.text;
 }
 
 // ── Differentiating truncation ──────────────────────────────────────────────

@@ -18,13 +18,13 @@ import { countTokens } from "../model/tokens.ts";
 // Injectable so tests can compact without a live model call.
 export type Summarizer = (transcript: string) => Promise<string>;
 
-const SUMMARY_SYSTEM = `You compress a coding-session transcript into durable notes for an AI agent that will continue the work. Preserve, as terse bullet points:
-- the user's goals and any decisions made
+const SUMMARY_SYSTEM = `You compress a coding-session transcript into durable notes for an AI agent that will continue the work with NO other memory of it. Preserve, as terse bullet points:
+- the user's goals, constraints, and any decisions made (with the why, when stated)
 - files created/edited and what changed in each
-- commands/tests run and their outcomes
-- facts learned about the codebase
-- open threads / what's left to do
-Drop chit-chat and raw file dumps. Be specific (names, paths, signatures). Output only the notes.`;
+- commands/tests run and their outcomes (pass/fail, key error lines)
+- facts learned about the codebase (paths, function names, gotchas)
+- open threads / what's left to do, and the current in-progress step if any
+Rules: copy identifiers, file paths, and commands EXACTLY — never paraphrase a name. Record only what the transcript shows; do not infer or invent. Drop chit-chat and raw file dumps. The notes MUST be much shorter than the transcript; if in doubt, cut prose, never facts. Output only the notes.`;
 
 /** A Summarizer backed by a real model (chosen by the caller via the selector).
  *  Pass the model's account creds so compaction works for STORED API accounts,
@@ -109,7 +109,12 @@ export function truncateToolResults(messages: ModelMessage[], maxTokensPerResult
       if (typeof raw !== "string" || countTokens(raw, modelId) <= maxTokensPerResult) return p;
       changed = true;
       truncated++;
-      const capped = raw.slice(0, maxTokensPerResult * 4) + TRUNCATION_MARKER; // ~4 chars/token estimate
+      // Start from the ~4 chars/token estimate, then verify with a real count —
+      // CJK/base64-dense content runs 2-4x tokens per char and would otherwise
+      // stay over budget after "truncation".
+      let body = raw.slice(0, maxTokensPerResult * 4);
+      while (body.length > 256 && countTokens(body, modelId) > maxTokensPerResult) body = body.slice(0, Math.floor(body.length / 2));
+      const capped = body + TRUNCATION_MARKER;
       return { ...p, output: typeof p.output === "string" ? capped : { ...p.output, value: capped } };
     });
     return changed ? ({ ...(m as any), content: kept } as ModelMessage) : m;
@@ -233,5 +238,9 @@ export async function compactHistory(opts: {
   ];
   const before = estimateHistoryTokens(history);
   const after = estimateHistoryTokens(messages);
+  // A verbose summarizer can EXPAND the history ("compress" prompts sometimes
+  // grow it). Never return a result that frees nothing — fall through to the
+  // mechanical rungs, which carry their own after < before checks.
+  if (after >= before) return elideHistory(history, opts.keepRecent);
   return { messages, summarizedTurns: old.length, before, after, how: `summarized ${old.length} turn${old.length > 1 ? "s" : ""}` };
 }

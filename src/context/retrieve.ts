@@ -178,7 +178,7 @@ export function updateRetrievalFile(file: string, content: string | null, cwd = 
     for (const m of content.matchAll(DEF_RE)) defs.push(m[1]!.toLowerCase());
     idx.fileDefs.set(file, defs);
     for (const t of new Set(lc.match(/[a-z]{3,}/g) ?? [])) idx.df.set(t, (idx.df.get(t) ?? 0) + 1);
-    if (!idx.files.includes(file)) idx.files.push(file);
+    idx.files.push(file); // removal above already stripped any prior entry
   }
   idx.n = idx.files.length;
 }
@@ -216,7 +216,7 @@ function countOcc(haystack: string, needle: string): number {
  * BM25 score, filtering out files with score 0.
  *
  * For each query term and each file the scorer accumulates:
- *   - BM25 body score: idf * (tf * k1) / (tf + k1), with k1 = 2.2. Higher k1
+ *   - BM25 body score: idf * (tf * (k1+1)) / (tf + k1), with k1 = 1.2. Higher k1
  *     gives more weight to repeated term occurrences before saturation kicks in.
  *   - Path boost: +4*idf when the term appears in the file path (case-folded).
  *     Ensures a query for "builder" surfaces "src/context/builder.ts" even if
@@ -242,7 +242,7 @@ export function rankFiles(query: string, cwd = process.cwd()): { file: string; s
     let s = 0;
     for (const t of qt) {
       const tf = countOcc(lc, t);
-      if (tf) s += idf(idx, t) * (tf * 2.2) / (tf + 1.2); // BM25 tf saturation (k1 = 2.2)
+      if (tf) s += idf(idx, t) * (tf * 2.2) / (tf + 1.2); // BM25 tf saturation: tf*(k1+1)/(tf+k1), k1 = 1.2
       if (fl.includes(t)) s += 4 * idf(idx, t); // path match: rewards files named after the query
       if (defs.some((d) => d.includes(t))) s += 3 * idf(idx, t); // symbol match: rewards defining files
     }

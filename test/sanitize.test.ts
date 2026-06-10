@@ -125,6 +125,19 @@ test("idempotent: sanitizing twice equals sanitizing once", () => {
   expect(twice).toEqual(once);
 });
 
+test("a string-content tool message answering an open call is normalized, not dropped", () => {
+  const msgs: ModelMessage[] = [
+    user("do it"),
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "s1", toolName: "run_shell", input: { command: "ls" } }] } as any,
+    { role: "tool", content: "file-a\nfile-b" } as any, // OpenAI-compat shape: bare string result
+  ];
+  const out = sanitizeForProvider(msgs);
+  expect(out).toHaveLength(3);
+  const toolMsg: any = out[2];
+  expect(toolMsg.role).toBe("tool");
+  expect(toolMsg.content).toEqual([{ type: "tool-result", toolCallId: "s1", toolName: "run_shell", output: { type: "text", value: "file-a\nfile-b" } }]);
+});
+
 test("never throws on garbage shapes — passes the salvageable through", () => {
   const garbage: any[] = [null, 42, { content: "no role" }, { role: "user", content: "real" }, { role: "tool", content: "not-an-array" }];
   const out = sanitizeForProvider(garbage as ModelMessage[]);

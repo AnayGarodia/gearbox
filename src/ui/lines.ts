@@ -16,6 +16,7 @@ import { retryPhrase } from "./collapse.ts";
 import { scorecardRows } from "../commands.ts";
 import { PROSE_RE, proseTokenStyle } from "./prose.ts";
 import { editorUrl, pathish } from "./links.ts";
+import { displayWidth, sliceWidth } from "./width.ts";
 
 import { limitColor } from "./severity.ts";
 // Limit window value: a utilization bar when a percentage is known, else a status word.
@@ -40,21 +41,26 @@ export type Span = { text: string; color?: string; bold?: boolean; italic?: bool
 export type Line = Span[];
 export const BLANK: Line = [];
 
-/** Truncate a list of spans to `width` columns total (no wrapping). */
+/** Truncate a list of spans to `width` columns total (no wrapping). Column
+ *  math is display-width aware (emoji/CJK = 2 cells) and never splits a
+ *  surrogate pair. */
 export function clipSpans(spans: Span[], width: number): Line {
   const out: Line = [];
   let len = 0;
   for (const s of spans) {
     if (len >= width) break;
-    const t = s.text.slice(0, width - len);
+    const { text: t, width: w } = sliceWidth(s.text, width - len);
     if (t) out.push({ ...s, text: t });
-    len += t.length;
+    len += w;
+    // Truncated mid-span (e.g. a wide char didn't fit in the last cell) — stop
+    // here rather than letting a later span fill the gap out of order.
+    if (t.length < s.text.length) break;
   }
   return out;
 }
 
 function lineWidth(line: Line): number {
-  return line.reduce((n, s) => n + s.text.length, 0);
+  return line.reduce((n, s) => n + displayWidth(s.text), 0);
 }
 
 function padBg(line: Line, width: number, bg: string): Line {
@@ -100,7 +106,7 @@ function codeBlockLines(code: string, lang: string, width: number): Line[] {
     24,
     Math.min(
       width,
-      Math.max(40, ...lines.map((l) => lineNoWidth + 3 + l.length), lang ? lang.length + 2 : 0),
+      Math.max(40, ...lines.map((l) => lineNoWidth + 3 + displayWidth(l)), lang ? lang.length + 2 : 0),
     ),
   );
   const out: Line[] = [];
@@ -213,23 +219,31 @@ export function wrapSpans(spans: Span[], width: number): Line[] {
   let len = 0;
   const pushWord = (text: string, s: Style) => {
     let w = text;
-    while (w.length > width) {
+    let wW = displayWidth(w);
+    while (wW > width) {
       // hard-break a word longer than the line
       if (len > 0) {
         lines.push(line);
         line = [];
         len = 0;
       }
-      lines.push([{ text: w.slice(0, width), ...s }]);
-      w = w.slice(width);
+      let cut = sliceWidth(w, width);
+      if (!cut.text) {
+        // a single wide char on a 1-col line: force one code point so we make progress
+        const cp = String.fromCodePoint(w.codePointAt(0)!);
+        cut = { text: cp, width: displayWidth(cp) };
+      }
+      lines.push([{ text: cut.text, ...s }]);
+      w = w.slice(cut.text.length);
+      wW -= cut.width;
     }
-    if (len + w.length > width && len > 0) {
+    if (len + wW > width && len > 0) {
       lines.push(line);
       line = [];
       len = 0;
     }
     line.push({ text: w, ...s });
-    len += w.length;
+    len += wW;
   };
   for (const sp of spans) {
     // split into words + whitespace, carrying style
@@ -363,7 +377,7 @@ function blockLines(tok: any, width: number): Line[] {
       if (!ncols) return [];
       const cellSpans = (c: any, base: Style): Span[] =>
         c?.tokens?.length ? inlineSpans(c.tokens, base) : [{ text: String(c?.text ?? ""), ...base }];
-      const spanW = (s: Span[]) => s.reduce((n, sp) => n + sp.text.length, 0);
+      const spanW = (s: Span[]) => s.reduce((n, sp) => n + displayWidth(sp.text), 0);
       const head = Array.from({ length: ncols }, (_, ci) => cellSpans(header[ci], { bold: true, color: color.text }));
       const body = rows.map((r) => Array.from({ length: ncols }, (_, ci) => cellSpans(r[ci], { color: color.text })));
 
@@ -529,7 +543,7 @@ function streamLines(stream: string, count: number, width: number, expand = fals
   const shown = all.slice(-TAIL);
   const out: Line[] = [];
   if (count > shown.length) out.push([{ text: `… writing ${count} lines${expand ? "" : " · ⌃O to expand"}`, color: color.faint }]);
-  for (const l of shown) out.push([{ text: `+ ${l}`.slice(0, width), color: color.ok }]);
+  for (const l of shown) out.push([{ text: sliceWidth(`+ ${l}`, width).text, color: color.ok }]);
   return indent(out, 3);
 }
 
@@ -687,7 +701,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
           // File-tool heads are clickable: OSC 8 → the configured editor
           // (vscode:// by default; /config editor changes or disables it).
           const link = !isShell && pathish(shownArg) ? editorUrl(shownArg) : undefined;
-          head.push({ text: " " + shownArg.slice(0, Math.max(width - headUsed - 1, 0)), color: isShell ? color.text : color.path, bold: true, link });
+          head.push({ text: " " + sliceWidth(shownArg, Math.max(width - headUsed - 1, 0)).text, color: isShell ? color.text : color.path, bold: true, link });
         }
         if (it.status === "running") {
           // No "working" badge here (it shows once at the bottom) — just the ticking
@@ -748,7 +762,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
             const tail = expand ? 14 : 5;
             const shown = outTail.split("\n").filter(Boolean).slice(-tail);
             if (outCount > shown.length) out.push(...indent([[{ text: `… ${outCount} lines${expand ? "" : " · ⌃O to expand"}`, color: color.faint }]], 3));
-            out.push(...indent(shown.map((l) => [{ text: `│ ${l}`.slice(0, Math.max(width - 5, 1)), color: color.dim }]), 3));
+            out.push(...indent(shown.map((l) => [{ text: sliceWidth(`│ ${l}`, Math.max(width - 5, 1)).text, color: color.dim }]), 3));
           } else {
             out.push(...streamLines(outTail, outCount, Math.max(width - 5, 1), expand));
           }
@@ -756,7 +770,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         // Summary as a separate line only for tools that have extra output (shell,
         // write/edit with diff, preview). Simple reads/searches already put it inline.
         if (!inlineSummary && it.status !== "running" && it.summary && !redundantSummary && !(isShell && outTail)) {
-          out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: it.summary.slice(0, Math.max(width - 5, 1)), color: it.status === "err" ? color.err : color.dim }]);
+          out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: sliceWidth(it.summary, Math.max(width - 5, 1)).text, color: it.status === "err" ? color.err : color.dim }]);
         }
         if (it.diff?.length) out.push(...diffLines(it.diff, width, expand));
         // LSP diagnostics for the file this tool touched (attached by the
@@ -967,7 +981,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
           for (const m of v.perModel) {
             const usd = m.usd >= 0.005 ? "$" + m.usd.toFixed(2) : "<$0.01";
             out.push(clipSpans([
-              { text: "    " + (m.model.length > 24 ? m.model.slice(0, 23) + "…" : m.model.padEnd(24)), color: color.dim },
+              { text: "    " + (displayWidth(m.model) > 24 ? sliceWidth(m.model, 23).text + "…" : m.model + " ".repeat(24 - displayWidth(m.model))), color: color.dim },
               { text: usd.padStart(7), color: m.usd >= 0.005 ? color.text : color.faint },
               { text: "  " + m.turns + " turn" + (m.turns === 1 ? "" : "s"), color: color.faint },
             ], width));

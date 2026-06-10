@@ -116,12 +116,6 @@ function hasKnownQuality(c: Candidate): boolean {
   return !!pr && (pr.quality.sweBenchVerified != null || pr.quality.intelligenceIndex != null);
 }
 
-// Returns true when a candidate meets the quality bar for this task.
-// CLI seats (subscription) with unknown quality clear unconditionally.
-// All API candidates and CLI seats with known quality must meet quality >= bar.
-const clearsBar = (bar: number) => (c: Candidate): boolean =>
-  c.backend?.kind === "cli" ? !hasKnownQuality(c) || qualityOf(c) >= bar : qualityOf(c) >= bar;
-
 function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {
   const cost = profileFor(c.canonicalId ?? c.spec.id)?.cost ?? c.spec.cost;
   // Unknown cost sorts last. The sentinel 1e6 matches prior POSITIVE_INFINITY behaviour.
@@ -321,13 +315,16 @@ export class RoutingSelector implements ModelSelector {
       ? preferred.spec.id
       : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), ...flags }).candidate.id;
 
-    const clearsForBar = clearsBar(p.bar);
+    // Mirror prepare()'s prior-adjusted predicate so the scorecard verdict
+    // matches what the router actually did (seat with unknown quality clears;
+    // a model whose measured per-repo prior sinks it below the bar shows
+    // "below bar" here too, exactly as select() excluded it).
+    const adjQuality = (c: Candidate): number => qualityOf(c) + (priorFor(p.kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
+    const clearsAdj = (c: Candidate): boolean =>
+      c.backend?.kind === "cli" ? !hasKnownQuality(c) || adjQuality(c) >= p.bar : adjQuality(c) >= p.bar;
     for (const c of p.pool) {
       const s = scored.get(c.spec.id)!;
-      // Use the same clearsBar rule as select() so the scorecard verdict
-      // matches what the router actually did (seat with unknown quality clears,
-      // known-weak seat does not).
-      const clears = clearsForBar(c);
+      const clears = clearsAdj(c);
       const chosen = c.spec.id === winnerId;
       const pl = priorLine(p.kind, c.canonicalId ?? c.spec.id);
       entries.push({

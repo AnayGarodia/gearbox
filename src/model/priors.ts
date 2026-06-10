@@ -81,7 +81,7 @@ function cached(): PriorsFile {
 }
 
 export function recordTurnOutcome(opts: { kind: string; modelId: string; outcome: Outcome; repo?: string }): void {
-  const f = load();
+  const f = cached();
   const repo = opts.repo ?? repoSlug();
   const byKind = (f.repos[repo] ??= {});
   const byModel = (byKind[opts.kind] ??= {});

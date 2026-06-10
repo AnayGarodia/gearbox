@@ -308,6 +308,8 @@ describe("cache + sync", () => {
     const entries = parseModelsDev(FIXTURE);
     saveCachedCatalog(entries);
     expect(existsSync(join(dir, "models-dev.json"))).toBe(true);
+    // atomic write: the temp file must not be left behind after the rename
+    expect(existsSync(join(dir, "models-dev.json.tmp"))).toBe(false);
     const cached = loadCachedCatalog();
     expect(cached).not.toBeNull();
     expect(cached!.entries).toEqual(entries);

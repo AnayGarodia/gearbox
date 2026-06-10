@@ -146,11 +146,20 @@ function sanitizeInner(messages: ModelMessage[]): SanitizeResult {
       // Keep only results that answer an open call; orphans (no preceding
       // call — e.g. the call's assistant message was compacted away) are the
       // exact shape providers reject, so they are dropped.
-      const parts = Array.isArray(content) ? (content as AnyPart[]) : [];
+      // Some OpenAI-compat endpoints send `role:"tool", content:"result text"`
+      // (a bare string). Normalize it to a tool-result answering the oldest
+      // open call instead of dropping a real result on the floor.
+      let parts = Array.isArray(content) ? (content as AnyPart[]) : [];
+      let normalized = false;
+      if (!parts.length && typeof content === "string" && content && pending.size) {
+        const [toolCallId, toolName] = pending.entries().next().value as [string, string];
+        parts = [{ type: "tool-result", toolCallId, toolName, output: { type: "text", value: content } }];
+        normalized = true;
+      }
       const kept = parts.filter((p) => p?.type === "tool-result" && typeof p.toolCallId === "string" && pending.has(p.toolCallId as string));
       for (const p of kept) pending.delete(p.toolCallId as string);
       if (!kept.length) continue;
-      out.push((kept.length === parts.length ? m : { ...(m as object), content: kept }) as ModelMessage);
+      out.push((!normalized && kept.length === parts.length ? m : { ...(m as object), content: kept }) as ModelMessage);
       src.push(i);
       continue;
     }

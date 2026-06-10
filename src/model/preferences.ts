@@ -49,7 +49,14 @@ function empty(): PreferenceFile {
   return { version: 1, byKind: {} };
 }
 
-export function loadRoutingPreferences(): PreferenceFile {
+// 10s TTL read cache (same pattern as priors.ts): this file is read twice per
+// routing decision (preferenceFor + globalPreference); any write refreshes it.
+// Keyed by the resolved path so a GEARBOX_HOME change (tests) never serves
+// another home's data.
+let cache: { f: PreferenceFile; at: number; path: string } | null = null;
+const TTL = 10_000;
+
+function load(): PreferenceFile {
   try {
     const f = JSON.parse(readFileSync(file(), "utf8"));
     if (f?.byKind) return { version: 1, byKind: f.byKind, global: f.global, budgets: f.budgets };
@@ -57,6 +64,13 @@ export function loadRoutingPreferences(): PreferenceFile {
     /* none yet */
   }
   return empty();
+}
+
+export function loadRoutingPreferences(): PreferenceFile {
+  const now = Date.now();
+  const path = file();
+  if (!cache || cache.path !== path || now - cache.at > TTL) cache = { f: load(), at: now, path };
+  return cache.f;
 }
 
 export function loadBudgets(): Record<string, BudgetConfig> {
@@ -98,6 +112,7 @@ function save(prefs: PreferenceFile): void {
   } catch {
     /* best-effort */
   }
+  cache = { f: prefs, at: Date.now(), path: file() };
 }
 
 export function preferenceFor(kind: PreferenceKind): RoutingPreference | undefined {

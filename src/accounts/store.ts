@@ -96,7 +96,11 @@ function masterKey(): Buffer {
   ensure();
   if (existsSync(keyFile())) return Buffer.from(readFileSync(keyFile(), "utf8").trim(), "base64");
   const k = randomBytes(32);
-  writeFileSync(keyFile(), k.toString("base64"), { mode: 0o600 });
+  // Temp-write + rename (atomic in the same dir) — a torn key write would
+  // permanently lock out every stored secret. Same pattern as writeEnc().
+  const tmp = `${keyFile()}.tmp`;
+  writeFileSync(tmp, k.toString("base64"), { mode: 0o600 });
+  renameSync(tmp, keyFile());
   return k;
 }
 

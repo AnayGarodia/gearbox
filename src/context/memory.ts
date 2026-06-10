@@ -24,15 +24,30 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { countTokens } from "../model/tokens.ts";
 
 // Candidates for the project doc, in priority order. The first file that
 // exists and is non-empty is used; the rest are ignored.
 const DOC_CANDIDATES = ["GEARBOX.md", "CLAUDE.md", "AGENTS.md", "CONVENTIONS.md"];
 
-// Character caps for each layer. Applied before token counting so memory
-// never consumes a disproportionate share of the context window.
+// Caps for each layer: a cheap character pre-slice, then a TOKEN ceiling.
+// The char cap alone under-counted dense docs (a code-heavy CLAUDE.md runs
+// far more tokens per char than prose), letting memory quietly eat 2-3k
+// tokens of the cached prefix.
 const DOC_CAP = 8_000; // chars
 const FACTS_CAP = 6_000; // chars
+const DOC_TOKEN_CAP = 2_000;
+const FACTS_TOKEN_CAP = 1_500;
+
+/** Shrink text (from the given end) until it fits the token ceiling. */
+function fitTokens(text: string, maxTokens: number, keep: "head" | "tail"): string {
+  let t = text;
+  while (t.length > 256 && countTokens(t) > maxTokens) {
+    const next = Math.floor(t.length * 0.75);
+    t = keep === "head" ? t.slice(0, next) : t.slice(t.length - next);
+  }
+  return t;
+}
 
 // Resolve the Gearbox home directory. Overridable in tests via GEARBOX_HOME.
 const home = () => process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
@@ -61,7 +76,7 @@ export function loadProjectDoc(cwd = process.cwd()): { name: string; text: strin
     const p = join(cwd, name);
     if (!existsSync(p)) continue;
     try {
-      const text = readFileSync(p, "utf8").slice(0, DOC_CAP);
+      const text = fitTokens(readFileSync(p, "utf8").slice(0, DOC_CAP), DOC_TOKEN_CAP, "head");
       if (text.trim()) return { name, text };
     } catch {
       // Unreadable file (permissions, encoding, etc.): try the next candidate.
@@ -82,7 +97,7 @@ export function loadFacts(cwd = process.cwd()): string {
   try {
     const text = readFileSync(factsFile(cwd), "utf8");
     // Keep the tail so recent facts take priority over old ones when truncating.
-    return text.length > FACTS_CAP ? text.slice(text.length - FACTS_CAP) : text;
+    return fitTokens(text.length > FACTS_CAP ? text.slice(text.length - FACTS_CAP) : text, FACTS_TOKEN_CAP, "tail");
   } catch {
     return "";
   }

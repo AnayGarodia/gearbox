@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
+import { displayWidth } from "../width.ts";
 import type { Line } from "../lines.ts";
 
 export type ViewSelection = { startLine: number; startCol: number; endLine: number; endCol: number };
@@ -40,14 +41,14 @@ function selectedRangeForLine(sel: ViewSelection | null, absLine: number): [numb
 // items via the WeakMap cache), so a re-render that didn't change a row's content
 // (streaming the tail, a status tick, a paste landing) skips re-rendering every
 // other row — a big cut in Ink reconciliation on a tall transcript.
-const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidth }: { line: Line; absLine: number; selection?: ViewSelection | null; lineWidth: number }) {
+const LineRow = React.memo(function LineRow({ line, range: rangeProp, lineWidth }: { line: Line; range: [number, number] | null; lineWidth: number }) {
   // No canvas color — let the terminal's own background show through. Only spans
   // with an explicit semantic bg (code block / your message / diff) are painted;
   // empty rows and trailing space stay transparent.
   if (line.length === 0) {
     return <Text>{" ".repeat(lineWidth)}</Text>;
   }
-  let range = selectedRangeForLine(normalized(selection), absLine);
+  let range = rangeProp;
   // Clamp the selection band to the line's INK: the centering margin and the
   // telemetry-margin padding are baked-in spaces, and painting them produced
   // ragged full-width bands. The band starts at the first ink column and stops
@@ -67,7 +68,7 @@ const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidt
     }
   }
   let pos = 0;
-  const lineLen = line.reduce((n, s) => n + s.text.length, 0);
+  const lineLen = line.reduce((n, s) => n + displayWidth(s.text), 0);
   const trailing = Math.max(0, lineWidth - lineLen);
   // Extend a colored band (code/user/diff) to full width via the last span's bg;
   // a plain text line's last span has no bg, so the trailing stays transparent.
@@ -105,7 +106,13 @@ const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidt
       {trailing > 0 ? <Text backgroundColor={tailBg}>{" ".repeat(trailing)}</Text> : null}
     </Text>
   );
-}, (a, b) => a.line === b.line && a.absLine === b.absLine && a.lineWidth === b.lineWidth && a.selection === b.selection);
+}, (a, b) =>
+  a.line === b.line && a.lineWidth === b.lineWidth &&
+  // Compare the selection RANGE by value: the parent derives a per-row range, so
+  // during a drag only rows whose own band changed re-render — passing the whole
+  // selection object re-rendered EVERY visible row per drag frame (it's a fresh
+  // object each mouse event).
+  (a.range === b.range || (a.range != null && b.range != null && a.range[0] === b.range[0] && a.range[1] === b.range[1])));
 
 // One shared empty line for bottom padding — a fresh [] per render would break
 // LineRow's reference-equality memo on every blank row.
@@ -119,6 +126,7 @@ export function Viewport({ lines, scrollTop, height, width, selection }: { lines
   const visible = lines.slice(scrollTop, scrollTop + height);
   const padded: Line[] = visible.slice();
   while (padded.length < height) padded.push(EMPTY_LINE);
+  const sel = normalized(selection);
 
   const total = lines.length;
   const hasBar = total > height;
@@ -136,7 +144,7 @@ export function Viewport({ lines, scrollTop, height, width, selection }: { lines
             LineRow's memo bails) instead of re-rendering the whole viewport.
             This is the difference between smooth and laggy wheel scrolling. */}
         {padded.map((l, i) => (
-          <LineRow key={scrollTop + i} line={l} absLine={scrollTop + i} selection={selection} lineWidth={width - 1} />
+          <LineRow key={scrollTop + i} line={l} range={selectedRangeForLine(sel, scrollTop + i)} lineWidth={width - 1} />
         ))}
       </Box>
       <Box flexDirection="column" width={1}>

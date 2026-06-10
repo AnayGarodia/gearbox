@@ -26,7 +26,7 @@
  * At least one file is always included even if it alone exceeds the budget.
  */
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { listProjectFiles } from "../ui/files.ts";
 import { countTokens } from "../model/tokens.ts";
 
@@ -54,6 +54,20 @@ const IMPORT = /(?:from\s*['"]([^'"]+)['"])|(?:require\(\s*['"]([^'"]+)['"]\s*\)
  * the file at src/model/router.ts when computing its in-degree.
  */
 const moduleName = (spec: string): string => (spec.split("/").pop() ?? spec).replace(CODE, "").replace(/\.[^.]+$/, "");
+
+/**
+ * In-degree key for a RELATIVE import: the imported file's repo-relative path
+ * with the extension stripped. Basename-only keys conflated every `router.ts`
+ * in the repo into one counter, inflating all of them; path keys keep each
+ * file's score its own. Bare specifiers (packages, python modules) have no
+ * path to resolve and fall back to the basename key.
+ */
+const pathKey = (relFile: string): string => relFile.replace(/\\/g, "/").replace(CODE, "").replace(/\.[^.]+$/, "");
+const importKey = (spec: string, fromFile: string, cwd: string): string => {
+  if (!spec.startsWith(".")) return moduleName(spec);
+  const abs = resolve(cwd, dirname(fromFile), spec);
+  return pathKey(relative(cwd, abs));
+};
 
 /**
  * Build and return the repo map string, capped to `budget` tokens.
@@ -98,7 +112,7 @@ export function repoMap(cwd = process.cwd(), budget = 4000, modelId?: string): s
     const imports = new Set<string>();
     for (const m of src.matchAll(IMPORT)) {
       const spec = m[1] ?? m[2] ?? m[3] ?? m[4];
-      if (spec) imports.add(moduleName(spec));
+      if (spec) imports.add(importKey(spec, f, cwd));
     }
     parsed.push({ file: f, sigs, imports });
   }
@@ -108,9 +122,9 @@ export function repoMap(cwd = process.cwd(), budget = 4000, modelId?: string): s
   const inDegree = new Map<string, number>();
   for (const p of parsed) for (const name of p.imports) inDegree.set(name, (inDegree.get(name) ?? 0) + 1);
 
-  // scoreOf maps a file path to its in-degree using the same normalisation as
-  // moduleName, so "src/model/router.ts" looks up "router" in the map.
-  const scoreOf = (file: string): number => inDegree.get(moduleName(file)) ?? 0;
+  // scoreOf prefers the file's PATH key (relative imports resolve to it) and
+  // adds the basename key's count (bare/python-style specifiers land there).
+  const scoreOf = (file: string): number => (inDegree.get(pathKey(file)) ?? 0) + (inDegree.get(moduleName(file)) ?? 0);
 
   // Sort: src/ first, then by descending in-degree, then alphabetically.
   parsed.sort(

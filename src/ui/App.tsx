@@ -71,7 +71,7 @@ import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
-import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
+import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, reloadMcpConnections, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, extendUnitSelection, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { clipboardImageToFile } from "./clipboard-image.ts";
@@ -114,7 +114,7 @@ const KEYS_HELP = [
   "keyboard shortcuts",
   "  ⏎ send · ⌃J newline · esc interrupt · ⌃C twice to quit",
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
-  "  ⌃A / ⌃E line start / end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
+  "  ⌃A select all · ⌃E line end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
   "  ⌃Y copy last reply · ⌃V paste image from clipboard · shift+tab cycle mode",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
@@ -507,9 +507,12 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // turn. The routing line cross-checks this against what we requested.
   const servedModelRef = useRef<string | null>(null);
   // Last turn's non-history context overhead (system/memory/repomap/retrieval),
-  // so auto-compact triggers on the full context, not history alone. 0 until an
-  // in-loop turn has built a context (CLI turns don't run buildContext).
-  const ctxOverheadRef = useRef(0);
+  // so auto-compact triggers on the full context, not history alone. Starts at
+  // a conservative estimate, not 0: a session RESUMED near the window would
+  // otherwise run its whole first turn with overhead=0 and miss the auto-compact
+  // that should have fired before it (overflow instead of a graceful compact).
+  // The first in-loop turn replaces it with the measured value.
+  const ctxOverheadRef = useRef(12_000);
   const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
@@ -3441,6 +3444,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             try { process.chdir(found.dir); } catch (e: any) { notice(`couldn't enter ${found.dir}: ${e?.message ?? e}`); return; }
             invalidateGitBranch();
             resetRetrievalIndex();
+            // The MCP connection set is cwd-rooted (.gearbox/mcp.json, .mcp.json):
+            // without a reload the new tree's project servers are silently ignored.
+            reloadMcpConnections();
             undoStackRef.current = [];
             cliSessionRef.current = undefined;
             // Tree-rooted drafts must not survive the move: a /commit draft

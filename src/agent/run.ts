@@ -666,6 +666,11 @@ export async function runCompletion(opts: {
         if (t) { text += t; onEvent({ type: "text", text: t }); await yieldPaint(); }
       } else if (part.type === "error") {
         emitErr(part.error);
+      } else if (part.type === "finish-step") {
+        // Anthropic reports cache WRITE tokens per step, not on the final
+        // finish event — same accumulation as runTask, or /ask under-bills.
+        const cc = (part as any).providerMetadata?.anthropic?.cacheCreationInputTokens;
+        if (typeof cc === "number" && cc > 0) usage.cacheCreationInputTokens = (usage.cacheCreationInputTokens ?? 0) + cc;
       } else if (part.type === "finish") {
         const u = part.totalUsage ?? part.usage ?? {};
         usage.inputTokens = u.inputTokens ?? u.promptTokens ?? 0;

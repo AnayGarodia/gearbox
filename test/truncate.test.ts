@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, utimesSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { differentiatingSlice, longestCommonPrefixLen, truncateOutput, spillOutput, gcSpills } from "../src/truncate.ts";
+import { capToolOutput, differentiatingSlice, longestCommonPrefixLen, truncateOutput, spillOutput, gcSpills } from "../src/truncate.ts";
 
 // ── truncateOutput ───────────────────────────────────────────────────────────
 
@@ -67,6 +67,28 @@ test("spillPath is woven into the notice", () => {
   expect(r.text).toContain("Full output: /tmp/spill.txt.");
   const tail = truncateOutput(numbered(50), { maxLines: 10, direction: "tail", spillPath: "/tmp/spill.txt" });
   expect(tail.text).toContain("Full output: /tmp/spill.txt.");
+});
+
+test("capToolOutput matches the truncateOutput(spillPath) text exactly, both directions", () => {
+  const home = mkdtempSync(join(tmpdir(), "gearbox-cap-"));
+  const prev = process.env.GEARBOX_HOME;
+  process.env.GEARBOX_HOME = home;
+  try {
+    const text = numbered(50);
+    for (const direction of ["head", "tail"] as const) {
+      const capped = capToolOutput("cap-test", text, { maxLines: 10, direction });
+      const m = capped.match(/Full output: (\S+\.txt)\./);
+      expect(m).toBeTruthy(); // spill path woven into the notice
+      expect(readFileSync(m![1]!, "utf8")).toBe(text); // full text spilled
+      // The spliced notice is byte-for-byte what the two-pass version produced.
+      expect(capped).toBe(truncateOutput(text, { maxLines: 10, direction, spillPath: m![1]! }).text);
+    }
+    // Under the caps: returned untouched, no spill.
+    expect(capToolOutput("cap-test", "small")).toBe("small");
+  } finally {
+    if (prev === undefined) delete process.env.GEARBOX_HOME;
+    else process.env.GEARBOX_HOME = prev;
+  }
 });
 
 // ── spillOutput / gcSpills ───────────────────────────────────────────────────

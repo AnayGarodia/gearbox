@@ -235,7 +235,7 @@ function cliModelArg(binary: string, modelId?: string): string | undefined {
   return modelId;
 }
 
-export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; modelId?: string; effort?: string } = {}): string[] {
+export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; readOnly?: boolean; modelId?: string; effort?: string } = {}): string[] {
   const model = cliModelArg(binary, opts.modelId);
   if (binary.includes("codex")) {
     // Auth still comes from CODEX_HOME, but user config can contain hooks/MCP
@@ -244,7 +244,8 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
     const flags: string[] = ["--json", "--skip-git-repo-check", "--ignore-user-config"];
     if (model) flags.push("--model", model);
     if (opts.effort) flags.push("-c", `model_reasoning_effort="${opts.effort}"`);
-    if (opts.autoApprove) flags.push("--dangerously-bypass-approvals-and-sandbox");
+    if (opts.readOnly) flags.push("--sandbox", "read-only", "-c", `approval_policy="never"`);
+    else if (opts.autoApprove) flags.push("--dangerously-bypass-approvals-and-sandbox");
     else flags.push("--sandbox", "workspace-write", "-c", `approval_policy="never"`);
     // `resume` is a subcommand that must immediately follow `exec`
     // (codex exec resume <SESSION_ID> [OPTS] [PROMPT]) — it was appended AFTER the
@@ -256,7 +257,7 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
   // claude
   const args = ["-p", prompt, "--output-format", "stream-json", "--verbose"];
   if (model) args.push("--model", model);
-  args.push("--permission-mode", opts.autoApprove ? "bypassPermissions" : "acceptEdits");
+  args.push("--permission-mode", opts.readOnly ? "plan" : opts.autoApprove ? "bypassPermissions" : "acceptEdits");
   if (opts.sessionId) args.push("--resume", opts.sessionId);
   return args;
 }
@@ -319,6 +320,7 @@ export async function runCliTask(opts: {
   signal?: AbortSignal;
   sessionId?: string;
   autoApprove?: boolean;
+  readOnly?: boolean; // headless one-shot without --yolo: plan mode / read-only sandbox
   modelId?: string;
   effort?: string;
   cwd?: string;
@@ -328,7 +330,7 @@ export async function runCliTask(opts: {
   deferTerminal?: boolean; // suppress terminal error/done + return `failure` instead (caller drives failover)
 }): Promise<CliResult> {
   const { binary, prompt, messages, onEvent, signal } = opts;
-  const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove, modelId: opts.modelId, effort: opts.effort });
+  const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove, readOnly: opts.readOnly, modelId: opts.modelId, effort: opts.effort });
   const state = newState();
   let failureMessage: string | undefined;
   const fail = (message: string) => {

@@ -47,8 +47,8 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readFile, writeFile, readdir, stat } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { resolve, relative, isAbsolute } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
 import { applyEdit } from "./edit.ts";
 import { updateRetrievalFile } from "./context/retrieve.ts";
@@ -86,12 +86,45 @@ const IGNORE = /(^|\/)(node_modules|\.git|dist|build|\.next|coverage)(\/|$)/;
  * sub-agent running in an isolated worktree cannot reach files in another tree.
  */
 function makeSafe(root: string) {
+  // Realpath the root once: the root itself may sit behind a symlink (e.g.
+  // /tmp on macOS is /private/tmp), and the containment compare below must be
+  // realpath vs realpath or every legitimate path would fail.
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(root);
+  } catch {
+    realRoot = root;
+  }
   return (path: string): string => {
     const abs = isAbsolute(path) ? path : resolve(root, path);
     const rel = relative(root, abs);
     if (rel.startsWith("..")) throw new Error(`path escapes workspace: ${path}`);
+    // The lexical check passed; now defeat symlink escapes: a link inside the
+    // workspace pointing outside it resolves outside realRoot and is refused.
+    if (relative(realRoot, realResolve(abs)).startsWith("..")) throw new Error(`path escapes workspace: ${path}`);
     return abs;
   };
+}
+
+/**
+ * Resolve the REAL filesystem path of `abs`, tolerating paths that don't exist
+ * yet (write_file creating a new file): walk up to the nearest existing
+ * ancestor, realpath that, and re-join the not-yet-existing tail segments.
+ */
+function realResolve(abs: string): string {
+  let base = abs;
+  const tail: string[] = [];
+  while (!existsSync(base)) {
+    const parent = dirname(base);
+    if (parent === base) return abs; // hit the fs root without finding anything
+    tail.unshift(basename(base));
+    base = parent;
+  }
+  try {
+    return join(realpathSync(base), ...tail);
+  } catch {
+    return abs;
+  }
 }
 
 /**
@@ -519,8 +552,9 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
       fact: z.string().describe("One sentence, self-contained (a future session has no other context)."),
     }),
     execute: async ({ fact }) => {
+      // No manual tool-end here: run.ts emits it from the SDK tool-result, and
+      // remember is not in SELF_RENDERING — a manual emit would double-render.
       const ok = appendFact(fact, root);
-      onEvent?.({ type: "tool-end", id: `remember-${Date.now()}`, ok, summary: ok ? fact.slice(0, 64) : "couldn't write memory" });
       return ok ? "remembered" : "couldn't write the memory file";
     },
   }),

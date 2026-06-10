@@ -24,10 +24,7 @@ export interface ModelCapabilities {
 }
 
 function providerSource(spec: ModelSpec): CapabilitySource {
-  if (spec.capabilities?.source) return spec.capabilities.source;
-  const group = catalogProvider(spec.provider)?.group;
-  if (group === "gateway" || group === "openai-compat" || group === "local") return "seeded";
-  return "seeded";
+  return spec.capabilities?.source ?? "seeded";
 }
 
 function exactUsage(spec: ModelSpec): UsageSupport {
