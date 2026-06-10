@@ -44,6 +44,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/agents", usage: "/agents", desc: "list agents · run one with @<name> <task> (scout is built in) · add .gearbox/agents/*.md", group: "models" },
   // conversation
   { name: "/clear", usage: "/clear", desc: "start a fresh conversation", group: "chat" },
+  { name: "/tab", usage: "/tab [new [name]|<n>|close]", desc: "parallel sessions as tabs, one isolated worktree each · ⌃T cycles (fullscreen)", group: "chat" },
   { name: "/resume", usage: "/resume [n]", desc: "reopen a past conversation", group: "chat" },
   { name: "/retry", usage: "/retry", desc: "send your last message again", group: "chat" },
   { name: "/undo", usage: "/undo", desc: "revert the last turn's file changes (conversation unchanged)", group: "chat" },

@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { App } from "./ui/App.tsx";
+import { Conductor } from "./ui/components/Conductor.tsx";
 import { FixedSelector } from "./model/selector.ts";
 import { RoutingSelector } from "./model/router.ts";
 import { anyProviderAvailable } from "./config.ts";
@@ -773,7 +774,14 @@ if (fullscreen) process.stdout.write("\x1b[?1049h\x1b[2J\x1b[H");
 if (mouse) process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
 
 // exitOnCtrlC:false so the app can handle ⌃C itself (interrupt / clear / confirm-quit).
-const app = render(<App selector={selector} fullscreen={fullscreen} resumeId={resumeId} />, { exitOnCtrlC: false });
+// Fullscreen mounts the CONDUCTOR (parallel session tabs — /tab, ⌃T); inline
+// keeps the single bare App (no alt-screen to multiplex).
+const app = render(
+  fullscreen
+    ? <Conductor selector={selector} makeSelector={() => new RoutingSelector()} fullscreen resumeId={resumeId} />
+    : <App selector={selector} fullscreen={fullscreen} resumeId={resumeId} />,
+  { exitOnCtrlC: false },
+);
 // Force the process down right after teardown. Background work keeps the event
 // loop alive — un-unref'd probe/refresh intervals and, worst case, an in-flight
 // usage-probe SUBPROCESS whose kill-guard is `timeoutMs + 6000` (~15s) — so without

@@ -296,7 +296,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     execute: async ({ path, content }) => {
       const abs = safe(path);
       const exists = existsSync(abs);
-      if (!(await requestPermission({ kind: "write", title: exists ? "Overwrite a file" : "Create a file", detail: path })))
+      if (!(await requestPermission({ kind: "write", title: exists ? "Overwrite a file" : "Create a file", detail: path, root })))
         throw new Error(DENIED);
       const before = exists ? await readFile(abs, "utf8") : "";
       onEvent?.({ type: "file-change", path: relative(root, abs), before, existed: exists }); // for /undo + /diff
@@ -346,7 +346,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
           throw new Error(`"${find.split("\n")[0]?.trim()}…" matches ${r.matches} places in ${path} (ignoring whitespace); pass occurrence or replaceAll to disambiguate`);
         throw new Error(`only found ${r.matches} occurrence${r.matches === 1 ? "" : "s"} in ${path}; requested occurrence ${occurrence}`);
       }
-      if (!(await requestPermission({ kind: "edit", title: "Edit a file", detail: path }))) throw new Error(DENIED);
+      if (!(await requestPermission({ kind: "edit", title: "Edit a file", detail: path, root }))) throw new Error(DENIED);
       onEvent?.({ type: "file-change", path: relative(root, abs), before, existed: true }); // for /undo + /diff
       await writeFile(abs, r.after, "utf8");
       updateRetrievalFile(relative(root, abs), r.after, root); // keep retrieval fresh
@@ -529,7 +529,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     description: "Run a shell command in the workspace and return its output. Use for tests, builds, git.",
     inputSchema: z.object({ command: z.string() }),
     execute: async ({ command }) => {
-      if (!(await requestPermission({ kind: "shell", title: "Run a shell command", detail: command }))) throw new Error(DENIED);
+      if (!(await requestPermission({ kind: "shell", title: "Run a shell command", detail: command, root }))) throw new Error(DENIED);
       const id = `run_shell:${command}`;
       const statusBefore = gitStatusSnapshot(root); // null = not a repo / git failed → skip
       const r = await runShellStream(command, {

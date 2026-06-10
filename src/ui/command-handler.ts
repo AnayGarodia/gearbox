@@ -64,6 +64,7 @@ export const KEYS_HELP = [
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
   "  ⌃A select all · ⌃E line end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
   "  ⌃Y copy last reply · ⌃V paste image from clipboard · shift+tab cycle mode",
+  "  ⌃T next tab · /tab new [name] parallel session in its own worktree (fullscreen)",
   "  tab @file complete · PgUp/PgDn scroll transcript · type while busy to queue",
   "  / commands · @ files · ! shell · # memory · drag/paste image paths · ? this help",
   "  click the model label in the status bar to pick (fullscreen)",
@@ -155,6 +156,8 @@ export interface CommandCtx {
   panelSessionsRef: MutableRefObject<Session[]>;
   resumeListRef: MutableRefObject<Session[]>;
   routedRef: MutableRefObject<{ model: ModelSpec; reason: string } | null>;
+  /** conductor tab controls (fullscreen multi-session); absent inline / single-session */
+  tabs?: import("./App.tsx").TabControl;
   /** the kind the last auto-routed turn ran with + how it was determined (/why provenance) */
   routedKindRef: MutableRefObject<{ kind: import("../agent/classify.ts").TaskKind; source: string } | null>;
   runTurnRef: MutableRefObject<(prompt: string, attempt?: number) => Promise<void>>;
@@ -251,7 +254,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
     openInfoPanel, persist, probeAccountUsage, push, pushAccounts, pushPhase, refreshCliStatuses,
     resolveCliModel, resumableSessions, runInteractive, runTurn, sessionWhen, toast, togglePlan,
     updatePhase,
-    activeCli, fullscreen, model, onboardingState, selectorKind, statusPinned,
+    activeCli, fullscreen, model, onboardingState, selectorKind, statusPinned, tabs,
   } = ctx;
       const body = text.slice(1);
       const name = (body.split(/\s+/)[0] ?? "").toLowerCase();
@@ -625,6 +628,25 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             shown++;
           }
           if (!shown) notice("no net changes (files match their pre-session content)");
+          return;
+        }
+        case "tab": {
+          echo(text);
+          if (!tabs) { notice("tabs need fullscreen multi-session mode (run gearbox without --inline)"); return; }
+          const [sub, ...restWords] = arg.split(/\s+/).filter(Boolean);
+          const rest = restWords.join(" ");
+          if (!sub || sub === "list") {
+            const rows = tabs.list().map((t, i) => `${t.active ? "●" : " "} ${i + 1}  ${t.title}${t.status !== "idle" ? `  · ${t.status}` : ""}\n     ${t.dir}`);
+            notice(`tabs (⌃T next · /tab new [name] · /tab <n> · /tab close)\n${rows.join("\n")}`);
+            return;
+          }
+          if (sub === "new") { tabs.create(rest || undefined); return; }
+          if (sub === "close") { tabs.close(); return; }
+          if (sub === "next") { tabs.cycle(1); return; }
+          if (sub === "prev") { tabs.cycle(-1); return; }
+          const n = parseInt(sub, 10);
+          if (Number.isFinite(n) && n >= 1) { tabs.switchTo(n); return; }
+          notice("usage: /tab [list | new [name] | <n> | next | prev | close]");
           return;
         }
         case "undo": {

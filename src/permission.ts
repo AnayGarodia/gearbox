@@ -55,6 +55,10 @@ export interface PermRequest {
   title: string;
   /** The concrete subject of the action: a file path, or the shell command. */
   detail: string;
+  /** Workspace root the request originates from (set by the toolset). With
+   *  multiple sessions mounted (conductor tabs), this routes the prompt to the
+   *  tab that owns the workspace instead of whichever registered last. */
+  root?: string;
 }
 
 /**
@@ -83,6 +87,13 @@ let preMutation: ((req: PermRequest) => void) | null = null;
 export function setPreMutationHook(fn: ((req: PermRequest) => void) | null): void {
   preMutation = fn;
 }
+// Per-root pre-mutation hooks (conductor tabs): each session checkpoints ITS
+// tree. A request with a root runs that root's hook; otherwise the global one.
+const rootPreMutation = new Map<string, (req: PermRequest) => void>();
+export function registerPreMutationHook(root: string, fn: ((req: PermRequest) => void) | null): void {
+  if (fn) rootPreMutation.set(root, fn);
+  else rootPreMutation.delete(root);
+}
 
 /**
  * Install or remove the permission handler.
@@ -90,6 +101,16 @@ export function setPreMutationHook(fn: ((req: PermRequest) => void) | null): voi
  */
 export function setPermissionHandler(h: Handler | null): void {
   handler = h;
+}
+
+// Per-root handlers for multi-session (conductor tab) mode: each mounted
+// session registers under its workspace root, and a request carrying that root
+// is routed to it. Requests with no root (or an unknown one) fall back to the
+// single global handler.
+const rootHandlers = new Map<string, Handler>();
+export function registerPermissionHandler(root: string, h: Handler | null): void {
+  if (h) rootHandlers.set(root, h);
+  else rootHandlers.delete(root);
 }
 
 /**
@@ -127,7 +148,7 @@ export function resetPermissions(): void {
  * resulting decision is applied to the broker state before returning.
  */
 export async function requestPermission(req: PermRequest): Promise<boolean> {
-  try { preMutation?.(req); } catch { /* the checkpoint hook must never wedge the gate */ }
+  try { ((req.root ? rootPreMutation.get(req.root) : undefined) ?? preMutation)?.(req); } catch { /* the checkpoint hook must never wedge the gate */ }
   // Project rules (.gearbox/permissions.json) pre-decide first: an explicit
   // "deny" refuses even under yolo (the user wrote it down — "rm *": "deny"
   // must hold precisely when everything else is auto-approved), "allow" skips
@@ -137,14 +158,15 @@ export async function requestPermission(req: PermRequest): Promise<boolean> {
   if (yolo) return true;
   if (rule === "allow") return true;
   if (granted.has(req.kind) && rule !== "ask") return true;
-  if (!handler) return true;
+  const route = (req.root && rootHandlers.get(req.root)) || handler;
+  if (!route) return true;
   // A plugin can resolve the request programmatically (permission.ask hook).
   try {
     const hook = await emitHook("permission.ask", { kind: req.kind, title: req.title, detail: req.detail });
     if (hook?.decision === "allow") return true;
     if (hook?.decision === "deny") return false;
   } catch { /* a plugin must never wedge the gate */ }
-  const decision = await handler(req);
+  const decision = await route(req);
   if (decision === "all") {
     yolo = true;
     return true;
