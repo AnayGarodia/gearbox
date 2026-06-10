@@ -1,5 +1,6 @@
-// Pure logic for the Cost tab: the honest savings estimate and the routing policy
-// string. No I/O — fed real turns, the real model registry, and real prefs/caps.
+// Pure logic for the /cost money story: the honest savings estimate and the
+// routing policy string. No I/O — fed real turns, the real model registry, and
+// real prefs/caps.
 
 export interface SavingsTurn {
   model: string;

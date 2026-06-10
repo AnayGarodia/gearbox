@@ -18,8 +18,7 @@ import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
 import { buildProvidersView } from "./providers-view.ts";
 import { ProvidersView } from "./components/ProvidersView.tsx";
-import { Masthead, tabStripHit, TABS, type AppTab } from "./components/TabStrip.tsx";
-import { CostView, RoutingView } from "./components/TabViews.tsx";
+import { Masthead } from "./components/Masthead.tsx";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
@@ -32,7 +31,7 @@ import { FixedSelector, type ModelSelector, type ModelChoice } from "../model/se
 import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
-import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loadRoutingPreferences, type PreferenceKind } from "../model/preferences.ts";
+import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, hasPricing, modelRegistry, providerAvailable, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
@@ -573,13 +572,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     quickPickerIndexRef.current = n;
     setQuickPickerIndexState(n);
   };
-  // Top tab strip (fullscreen only): active tab switches between the transcript and the
-  // read-only Routing/Providers/Cost views. tabRef mirrors state for the raw mouse handler.
-  const [tab, setTabState] = useState<AppTab>("session");
-  const tabRef = useRef<AppTab>("session");
-  const setTab = (t: AppTab) => { tabRef.current = t; setTabState(t); };
   const setupRequiredRef = useRef(false); // mirrors setupRequired for the raw mouse handler
-  const cycleTab = () => setTab(TABS[(TABS.indexOf(tabRef.current) + 1) % TABS.length]!);
   // Dismissable command panel (fullscreen only): big info dumps and interactive
   // account/model lists render here instead of in the transcript. Esc closes.
   const [panel, setPanelState] = useState<PanelState | null>(null);
@@ -1087,13 +1080,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Status-bar click pickers (fullscreen only). A primary press on the
           // model or effort label toggles its floating picker; a press anywhere
           // else closes an open one before normal click handling resumes.
-          // Masthead tab click (row 2: marginTop is row 1, the masthead row 2).
-          // Works even while busy — switching the view never touches the running
-          // turn. Keep the row in lockstep with the Masthead row contract.
-          if (fullscreen && !setupRequiredRef.current && isPrimary && !isDrag && !up) {
-            const t = tabStripHit(x, y, 2);
-            if (t) { setTab(t); continue; }
-          }
           if (fullscreen && isPrimary && !isDrag && !up && !busyRef.current && !permRef.current) {
             const zone = statusBarZoneAt(x, y);
             if (zone) {
@@ -1658,7 +1644,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (mspec) notice(`this account can: ${capabilitySummary(mspec)}`);
   };
 
-  const pushUsage = (view: UsageView) => push({ kind: "usage", id: idRef.current++, view });
   const pushAccounts = (view: AccountView) => push({ kind: "accounts", id: idRef.current++, view });
 
   const normalizeAccountRef = (s: string) =>
@@ -4177,9 +4162,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         case "cost":
         case "usage": {
-          // Fullscreen: /cost toggles the persistent usage strip (stays on, doesn't
-          // capture input). Inline keeps the one-shot card.
-          if (fullscreen) {
+          // Two distinct questions, two surfaces: /usage (fullscreen) toggles the
+          // live limits strip ("how close am I to a wall right now"); /cost is the
+          // deep money-story card ("where did money go") — daily bars, per-model,
+          // per-account, savings — as a panel in fullscreen, a card inline.
+          if (fullscreen && name === "usage") {
             const on = !statusPinned;
             setStatusPinned(on);
             // Refresh real 5h/7d % on open (the live strip re-renders, so the async
@@ -4206,6 +4193,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return { name: id, kind: "api" as const }; // a model id or env-derived label
           };
           const session = estimateCost(sessionRef.current.turns);
+          // The money story (formerly the cost tab): attach the 7-day shape,
+          // forecast, per-model session breakdown, savings, aux spend, and the
+          // policy line to the card so one surface answers it completely.
+          const attachStory = (v: UsageView): UsageView => {
+            const turns = sessionRef.current.turns;
+            v.daily = readDailySpend(7);
+            v.forecast = turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: session, sessionTurns: turns.length });
+            v.auxToday = readAuxSpendToday();
+            const byModel = new Map<string, { usd: number; turns: number }>();
+            for (const t of turns) {
+              const cur = byModel.get(t.model) ?? { usd: 0, turns: 0 };
+              cur.usd += estimateCost([t]); cur.turns += 1;
+              byModel.set(t.model, cur);
+            }
+            v.perModel = [...byModel.entries()].map(([model, m]) => ({ model, ...m })).sort((a, b) => b.usd - a.usd).slice(0, 6);
+            v.savings = savingsLine(session, estimateSavings(turns, premiumRate(modelRegistry()), (t) => estimateCost([t])));
+            v.policy = formatPolicyString({ mode: selectorKind, pinnedModel: model?.label, subscriptionLabel: activeCli?.label, prefer: globalPreference()?.prefer, caps: capsRef.current });
+            return v;
+          };
           // Providers that expose a remaining balance (OpenRouter, Vercel). For
           // the rest the card shows spend, synchronously.
           const withBalance = accounts.filter((a) => a.exec !== "cli" && balanceExposed(a.provider));
@@ -4213,7 +4219,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             // No live fetch needed → show the complete card. (Pushing then
             // mutating wouldn't work: a finished card commits to <Static>, which
             // never re-renders · the inline default.)
-            const it: Item = { kind: "usage", id: idRef.current++, view: buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id)) };
+            const it: Item = { kind: "usage", id: idRef.current++, view: attachStory(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id))) };
             if (openInfoPanel("cost", it)) return;
             echo(text);
             push(it);
@@ -4226,7 +4232,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               const bal = await fetchBalance(a);
               if (bal?.remainingUSD != null) recordBalance(a.id, bal);
             }
-            pushUsage(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id))); // push ONCE, with balances in
+            const it: Item = { kind: "usage", id: idRef.current++, view: attachStory(buildUsageView(session, resolve, Date.now(), accounts.map((a) => a.id))) };
+            if (!openInfoPanel("cost", it)) push(it); // ONCE, with balances in
           })();
           return;
         }
@@ -4371,7 +4378,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         notice("↳ answering from Gearbox's own docs · rephrase as a task, or /help, to run it as a normal turn");
         askModeRef.current = true;
       }
-      setTab("session"); // a new prompt belongs to the live conversation
       void runTurn(text);
     },
     [handleCommand, runTurn, setupRequired, onboardingState],
@@ -4384,7 +4390,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (busy || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
     const next = queueRef.current.shift();
     setQueued([...queueRef.current]);
-    if (next) { setTab("session"); void runTurn(next); } // surface the response, not a tab
+    if (next) void runTurn(next);
   }, [busy, runTurn]);
 
   // Rewind the last user turn back into the composer for editing, dropping that
@@ -5095,11 +5101,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (!busyRef.current) cycleMode();
       return;
     }
-    // ⌃T cycles the top tabs (Session · Routing · Providers · Cost), fullscreen only.
-    if (key.ctrl && (input === "t" || input === "\x14")) {
-      if (fullscreen) cycleTab();
-      return;
-    }
     if (key.tab) {
       if (!busyRef.current) {
         const m = currentMention(editRef.current.value, editRef.current.cursor);
@@ -5295,7 +5296,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // The opencode home screen: a fresh fullscreen session centers the wordmark +
   // key commands + the composer mid-screen; the footer keeps only the status bar.
   // The first submitted prompt creates an item → the layout flips to the chat view.
-  const homeScreen = fullscreen && welcome && !setupRequired && tab === "session" && !panel && !perm;
+  const homeScreen = fullscreen && welcome && !setupRequired && !panel && !perm;
   homeScreenRef.current = homeScreen;
 
   // Sleepy idle: 90s with no typing on the home screen → Boo dozes off (rising
@@ -5356,7 +5357,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [stripView, tokens], // eslint-disable-line react-hooks/exhaustive-deps
   );
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
-  const HEADER = 3; // Masthead (marginTop + wordmark·tabs·account row + rule) — the tabs live IN the masthead row now (keep in lockstep with tabStripHit's row 2 and viewportTop 4)
+  const HEADER = 3; // Masthead (marginTop + wordmark·account row + rule) — keep in lockstep with viewportTop 4
   // Keep the whole frame STRICTLY under `rows`. Ink redraws with a full
   // clearTerminal (\x1b[2J\x1b[3J\x1b[H — the 3J wipes SCROLLBACK) the moment the
   // output height reaches the terminal height; under-filling by one row keeps it on
@@ -5644,47 +5645,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     </>
   );
 
-  // Tab views (fullscreen only): every value is real — session spend + the honest
-  // savings estimate (tokens × the priciest model's price − actual), the policy
-  // string (only what the engine honours), per-account spend, the last routed pick,
-  // and remembered per-kind preferences. Computed ONLY when a non-session tab is
-  // shown (it reads usage.json / routing-preferences.json — off the session hot path).
-  let tabView: React.ReactNode = null;
-  if (fullscreen && tab !== "session") {
-    const tabPolicy = formatPolicyString({ mode: selectorKind, pinnedModel: model?.label, subscriptionLabel: activeCli?.label, prefer: globalPreference()?.prefer, caps: capsRef.current });
-    if (tab === "cost") {
-      const tabSavings = savingsLine(estimateCost(sessionRef.current.turns), estimateSavings(sessionRef.current.turns, premiumRate(modelRegistry()), (t) => estimateCost([t])));
-      const tabSpendRows = loadUsage().slice(0, 6).filter((u) => u.spentUSD > 0).map((u) => ({ label: getAccount(u.accountId)?.label ?? u.accountId, spent: `$${u.spentUSD.toFixed(2)} spent` }));
-      const tabDaily = readDailySpend(7);
-      const sessionTurnsArr = sessionRef.current.turns;
-      const byModel = new Map<string, { usd: number; turns: number }>();
-      for (const t of sessionTurnsArr) {
-        const cur = byModel.get(t.model) ?? { usd: 0, turns: 0 };
-        cur.usd += estimateCost([t]); cur.turns += 1;
-        byModel.set(t.model, cur);
-      }
-      const tabPerModel = [...byModel.entries()].map(([model, v]) => ({ model, ...v })).sort((a, b) => b.usd - a.usd).slice(0, 6);
-      const tabForecast = turnsLeftForecast({
-        dailyCapUSD: capsRef.current.daily,
-        spentTodayUSD: totalSpentToday(),
-        sessionUSD: estimateCost(sessionTurnsArr),
-        sessionTurns: sessionTurnsArr.length,
-      });
-      tabView = <CostView width={width - 2} savingsText={tabSavings} policyText={tabPolicy} spendRows={tabSpendRows} dailyBars={tabDaily} forecastText={tabForecast} perModel={tabPerModel} auxToday={readAuxSpendToday()} />;
-    } else if (tab === "providers") {
-      tabView = <Box paddingX={1}><ProvidersView width={width - 2} rows={buildProvidersView(listAccounts(), accountUsage, Date.now())} title="providers" /></Box>;
-    } else if (tab === "routing") {
-      const tabLastPick = lastPick ? `${lastPick.model.provider} · ${lastPick.model.label} · ${lastPick.reason}` : null;
-      const tabKindPrefs = Object.entries(loadRoutingPreferences().byKind).map(([kind, p]) => ({ kind, model: p?.modelId ?? "" })).filter((p) => p.model);
-      const tabRecent = sessionRef.current.turns.slice(-12).map((t) => ({ model: t.model, usd: estimateCost([t]) }));
-      tabView = <RoutingView width={width - 2} policyText={tabPolicy} lastPick={tabLastPick} kindPrefs={tabKindPrefs} recentTurns={tabRecent} />;
-    }
-  }
-
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
-        <Masthead active={tab} account={bannerAccount} width={width} showTabs={!setupRequired} epoch={themeEpochState} />
+        <Masthead account={bannerAccount} width={width} epoch={themeEpochState} />
         {/* flexGrow pins the footer (and the composer with it) to the bottom row,
             so however the footer height is estimated, the input bar is always at
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}
@@ -5692,8 +5656,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           <Box paddingX={1} flexGrow={1}>
             <Panel panel={panel} width={panelW} height={transcriptHeight} accounts={panelAccountView} models={panelModels} sessions={panelSessions} currentModelId={panelCurrentModel} staticLines={panelStaticLines} wizardSpec={panelWizardSpec} accountDetail={panelAccountDetail} />
           </Box>
-        ) : tab !== "session" && !setupRequired ? (
-          <Box flexGrow={1}>{tabView}</Box>
         ) : homeScreen ? (
           homeJsx
         ) : welcome ? (

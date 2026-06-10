@@ -94,12 +94,12 @@ src/
     useTerminalSize.ts  reactive width on resize (everything reflows)
     git.ts           current branch for the status line
     App.tsx          the Ink app: state, useInput dispatch, commands, turns (the hop-loop failover lives here)
-    components/      Banner, Transcript, Composer, CommandPalette, FilePalette, StatusBar, StatusStrip, TabStrip, TabViews, PermissionPrompt, Panel, Markdown, Mascot, ProvidersView, Viewport, Working
+    components/      Banner, Transcript, Composer, CommandPalette, FilePalette, StatusBar, StatusStrip, Masthead, PermissionPrompt, Panel, Markdown, Mascot, ProvidersView, Viewport, Working
     panel.ts         dismissable command-panel model + pure helpers (clamp/window/filter/truncate/fieldWindow) + wizard & account-detail state machines; tested
     prefs.ts         ~/.gearbox/prefs.json (theme, vim, notify, inline, verify, caps, pins)
     lines.ts         the virtualized line buffer: items → styled Lines (markdown, wrap, diffs); ≤width invariant tested
     collapse.ts      collapse a settled turn's live trace into durable facts
-    cost-tab.ts      pure savings math for the cost tab
+    cost-tab.ts      pure savings/policy/forecast math for the /cost money story
 test/                pure-logic + render tests (ink-testing-library); no keys
 DESIGN.md            full product vision (routing, requirements, UX)
 experiments/         prototypes that validated the architecture

@@ -129,6 +129,44 @@ test("usage card groups by type: subscription limit bar + API-key spend (both pa
   expect(text).toContain("$12.40 left");
 });
 
+test("the /cost money story renders on the usage card: daily shape, per-model, savings, policy", () => {
+  const view = {
+    subscriptions: [],
+    apiKeys: [{ id: "a", name: "Anthropic", turns: 3, tok: "10k/2k", spend: "$0.24 spent", spendPos: true }],
+    labelPad: 10,
+    spendPad: 11,
+    totalApiSpend: "$0.24",
+    sessionUSD: "$0.10",
+    hasEstimate: false,
+    daily: [
+      { day: "2026-06-05", usd: 0 },
+      { day: "2026-06-06", usd: 1.2 },
+      { day: "2026-06-07", usd: 0.3 },
+    ],
+    forecast: "≈12 turns left today at this burn rate",
+    auxToday: 0.004,
+    perModel: [{ model: "deepseek-v4", usd: 0.08, turns: 2 }, { model: "haiku", usd: 0.002, turns: 1 }],
+    savings: "session $0.10 spent · ~$0.31 saved vs always-premium",
+    policy: "policy: cheapest model passing the quality bar",
+  };
+  const item: Item = { kind: "usage", id: 1, view };
+  const text = itemsToLines([item], 120).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(text).toContain("7-day spend");
+  expect(text).toContain("peak $1.20");
+  expect(text).toContain("≈12 turns left today");
+  expect(text).toContain("this session, by model");
+  expect(text).toContain("deepseek-v4");
+  expect(text).toContain("<$0.01"); // sub-cent model spend never claims $0.00
+  expect(text).toContain("~$0.31 saved");
+  expect(text).toContain("aux calls today");
+  expect(text).toContain("cheapest model passing the quality bar");
+  // A bare /usage view (no story fields) stays the lean limits card.
+  const lean: Item = { kind: "usage", id: 2, view: { ...view, daily: undefined, forecast: undefined, auxToday: undefined, perModel: undefined, savings: undefined, policy: undefined } };
+  const leanText = itemsToLines([lean], 120).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(leanText).not.toContain("7-day spend");
+  expect(leanText).not.toContain("by model");
+});
+
 test("accounts card renders grouped rows with name aliases", () => {
   const item: Item = {
     kind: "accounts",
