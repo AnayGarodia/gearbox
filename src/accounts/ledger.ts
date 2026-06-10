@@ -18,7 +18,7 @@ import type { TurnMeta } from "../session.ts";
 export interface SpendEvent {
   accountId: string;
   model: string;
-  source: "turn" | "delegate";
+  source: "turn" | "delegate" | "aux"; // aux = classifier/titles/commit-gen — small helper calls outside the turn
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
@@ -97,6 +97,24 @@ export function readDailySpend(days = 7, now = Date.now()): { day: string; usd: 
     out.push({ day, usd: byDay.get(day) ?? 0 });
   }
   return out;
+}
+
+/** Today's spend on AUX calls (classifier/titles/commit-gen) — the cost tab
+ *  shows it so no dollar is invisible. Tail-read like readDailySpend. */
+export function readAuxSpendToday(now = Date.now()): number {
+  const today = new Date(now).toISOString().slice(0, 10);
+  let sum = 0;
+  try {
+    const lines = readFileSync(join(home(), "ledger.jsonl"), "utf8").split("\n");
+    for (const line of lines.slice(Math.max(0, lines.length - 20_000))) {
+      if (!line) continue;
+      try {
+        const ev = JSON.parse(line);
+        if (ev?.source === "aux" && typeof ev.costUSD === "number" && new Date(ev.at).toISOString().slice(0, 10) === today) sum += ev.costUSD;
+      } catch { /* torn line */ }
+    }
+  } catch { /* no log */ }
+  return sum;
 }
 
 /** THE spend writer. Everything that costs money calls this — nothing else

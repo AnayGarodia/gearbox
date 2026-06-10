@@ -52,7 +52,7 @@ import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
-import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend } from "../accounts/ledger.ts";
+import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend, readAuxSpendToday } from "../accounts/ledger.ts";
 import * as gitOps from "../git/ops.ts";
 import { invalidateGitBranch } from "./git.ts";
 import { gitConfirmOpen, gitConfirmEdit, gitConfirmSetSubmitting, gitConfirmError, gitConfirmReady, gitConfirmMessage, type GitConfirmPanel } from "./panel.ts";
@@ -2676,7 +2676,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // setups) so callers fall back to a heuristic the user can edit.
   const generateGitText = useCallback(async (system: string, prompt: string): Promise<string | null> => {
     try {
-      const choice = new RoutingSelector().select({ prompt, kind: "summarize" });
+      // Honor the ACTIVE selector: a pinned model means the user chose where
+      // their money goes — titles and commit messages must not quietly route
+      // to a different paid provider (they were billing Anthropic while the
+      // user had pinned DeepSeek). Auto-routing keeps picking the cheapest.
+      const choice = selectorRef.current.select({ prompt, kind: "summarize" });
       if (choice.backend?.kind === "cli") return null;
       const acct = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
       const creds = acct ? await resolveCreds(acct) : undefined;
@@ -2684,7 +2688,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Spend truth: this runs outside a turn, so it records its own event.
       recordSpend({
         accountId: acct?.id ?? `env:${choice.model.provider}`,
-        model: choice.model.id, source: "turn",
+        model: choice.model.id, source: "aux",
         inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
         ...resolveTurnCost({ modelId: choice.model.id, isSub: false, usage: r.usage }),
         at: Date.now(),
@@ -5349,7 +5353,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         sessionUSD: estimateCost(sessionTurnsArr),
         sessionTurns: sessionTurnsArr.length,
       });
-      tabView = <CostView width={width - 2} savingsText={tabSavings} policyText={tabPolicy} spendRows={tabSpendRows} dailyBars={tabDaily} forecastText={tabForecast} perModel={tabPerModel} />;
+      tabView = <CostView width={width - 2} savingsText={tabSavings} policyText={tabPolicy} spendRows={tabSpendRows} dailyBars={tabDaily} forecastText={tabForecast} perModel={tabPerModel} auxToday={readAuxSpendToday()} />;
     } else if (tab === "providers") {
       tabView = <Box paddingX={1}><ProvidersView width={width - 2} rows={buildProvidersView(listAccounts(), accountUsage, Date.now())} title="providers" /></Box>;
     } else if (tab === "routing") {

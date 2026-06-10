@@ -11,6 +11,7 @@ import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { runCompletion } from "./run.ts";
+import { recordSpend, resolveTurnCost } from "../accounts/ledger.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
 import { classify as keywordClassify, confidentKeywordKind } from "../model/router.ts";
 import { profileFor } from "../model/profiles.ts";
@@ -109,6 +110,18 @@ export async function classifyTask(prompt: string, signal?: AbortSignal): Promis
     try {
       const r = await runCompletion({ model: pick.model, system: SYSTEM, prompt: key.slice(0, 4000), onEvent: () => {}, signal: ctrl.signal, creds });
       text = r.text ?? "";
+      // SPEND TRUTH: this is a real billed call — it must hit the ledger like
+      // every other dollar. It was invisible before (charges on a provider the
+      // user never saw a line for).
+      try {
+        recordSpend({
+          accountId: pick.account?.id ?? `env:${pick.model.provider}`,
+          model: pick.model.id, source: "aux",
+          inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
+          ...resolveTurnCost({ modelId: pick.model.id, isSub: false, usage: r.usage }),
+          at: Date.now(),
+        });
+      } catch { /* never break classification over bookkeeping */ }
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);

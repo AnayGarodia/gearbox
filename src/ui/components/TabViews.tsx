@@ -14,6 +14,7 @@ export function CostView({
   dailyBars,
   forecastText,
   perModel,
+  auxToday,
 }: {
   width: number;
   savingsText: string;
@@ -22,6 +23,7 @@ export function CostView({
   dailyBars?: Array<{ day: string; usd: number }>;
   forecastText?: string | null;
   perModel?: Array<{ model: string; usd: number; turns: number }>;
+  auxToday?: number;
 }) {
   const maxDay = Math.max(...(dailyBars ?? []).map((d) => d.usd), 0);
   return (
@@ -38,6 +40,12 @@ export function CostView({
       ) : null}
       {forecastText ? (
         <Box marginTop={1}><Text color={color.warn}>{forecastText}</Text></Box>
+      ) : null}
+      {auxToday != null && auxToday > 0 ? (
+        <Box marginTop={1}>
+          <Text color={color.faint}>aux calls today (task classifier · titles · commit messages)  </Text>
+          <Text color={color.dim}>{auxToday < 0.01 ? "<$0.01" : `$${auxToday.toFixed(2)}`}</Text>
+        </Box>
       ) : null}
       <Box marginTop={1}>
         <Text color={color.text}>{savingsText}</Text>

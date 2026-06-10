@@ -75,3 +75,14 @@ test("a torn usage.json is preserved as .corrupt, not silently discarded", () =>
   expect(existsSync(join(home, "usage.json.corrupt"))).toBe(true);
   expect(accountUsage("acct-1")!.turns).toBe(1);
 });
+
+import { readAuxSpendToday } from "../src/accounts/ledger.ts";
+
+test("aux spend (classifier/titles) hits the ledger and is reportable — no invisible dollars", () => {
+  const seen: any[] = [];
+  setSpendListener((ev) => seen.push(ev));
+  recordSpend({ accountId: "acct-1", model: "claude-haiku-4-5", source: "aux", inputTokens: 900, outputTokens: 4, costUSD: 0.0011, estimated: true, at: Date.now() });
+  setSpendListener(null);
+  expect(seen[0]?.source).toBe("aux");
+  expect(readAuxSpendToday()).toBeGreaterThan(0);
+});
