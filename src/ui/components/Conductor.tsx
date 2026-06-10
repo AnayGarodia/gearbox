@@ -13,6 +13,7 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
 import { Box } from "ink";
 import { basename, join } from "node:path";
+import { existsSync } from "node:fs";
 import { App, type AppProps, type SessionStatus, type TabControl } from "../App.tsx";
 import type { TabRow } from "../tabbar.ts";
 import type { ModelSelector } from "../../model/selector.ts";
@@ -54,10 +55,17 @@ let nextTabId = 2; // tab 1 is the launch session
 
 export function Conductor({ selector, makeSelector, fullscreen, resumeId }: ConductorProps) {
   const idleStatus = (dir: string): SessionStatus => ({ busy: false, needsInput: false, title: basename(dir) });
-  const [tabs, setTabs] = useState<TabState[]>(() => [
-    { id: 1, dir: process.cwd(), selector, resumeId, status: idleStatus(process.cwd()) },
-  ]);
-  const [activeIdx, setActiveIdx] = useState(0);
+  // ONE state object for {tabs, active}: a tab create/switch/close must be a
+  // SINGLE setState. Two separate states rendered an intermediate frame when
+  // called from the raw mouse handler (no React event batching there), and
+  // that extra frame scrolled the alt screen by one row — permanently shifting
+  // the whole UI off its mouse maps.
+  const [tabState, setTabState] = useState<{ tabs: TabState[]; active: number }>(() => ({
+    tabs: [{ id: 1, dir: process.cwd(), selector, resumeId, status: idleStatus(process.cwd()) }],
+    active: 0,
+  }));
+  const tabs = tabState.tabs;
+  const activeIdx = tabState.active;
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
   const activeIdxRef = useRef(activeIdx);
@@ -73,7 +81,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     // The process-global cwd follows the active tab (status line, !cmd, git
     // suite). Background turns are immune: they captured their root at start.
     try { process.chdir(list[idx]!.dir); } catch { /* dir vanished: stay put visually anyway */ }
-    setActiveIdx(idx);
+    setTabState((s) => ({ ...s, active: idx }));
   }, []);
 
   const create = useCallback((name?: string) => {
@@ -88,13 +96,17 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
       const wtDir = join(root, ".gearbox", "tabs", slug);
       const r = worktreeAdd(wtDir, `tab/${slug}`, root);
       if (r.ok) dir = wtDir;
+      // Closing a tab never deletes its worktree, so a reused name finds the
+      // dir already on disk and `worktree add` refuses — REATTACH to it rather
+      // than silently falling back to a same-dir tab (which would share files
+      // with tab 1 when the user explicitly asked for isolation).
+      else if (existsSync(join(wtDir, ".git"))) dir = wtDir;
       // Not a repo / worktree failed → same-dir tab (sessions share files; the
       // permission/checkpoint seams still key on the shared root correctly).
     }
     const tab: TabState = { id, dir, selector: makeSelector(), status: idleStatus(dir) };
-    setTabs((t) => [...t, tab]);
     try { process.chdir(dir); } catch { /* keep going; the App pins its own root */ }
-    setActiveIdx(tabsRef.current.length); // the new tab lands at the end
+    setTabState((s) => ({ tabs: [...s.tabs, tab], active: s.tabs.length })); // the new tab lands at the end
   }, [makeSelector]);
 
   const close = useCallback(() => {
@@ -107,8 +119,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     const next = list.filter((_, i) => i !== idx);
     const nextIdx = Math.min(idx, next.length - 1);
     try { process.chdir(next[nextIdx]!.dir); } catch { /* best-effort */ }
-    setTabs(next);
-    setActiveIdx(nextIdx);
+    setTabState({ tabs: next, active: nextIdx });
   }, []);
 
   const cycle = useCallback((delta: number) => {
@@ -133,8 +144,8 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
       })),
   }), [create, close, switchTo, cycle]);
 
-  const onStatusFor = useCallback((id: number) => (s: SessionStatus) => {
-    setTabs((t) => t.map((tab) => (tab.id === id ? { ...tab, status: s } : tab)));
+  const onStatusFor = useCallback((id: number) => (st: SessionStatus) => {
+    setTabState((s) => ({ ...s, tabs: s.tabs.map((tab) => (tab.id === id ? { ...tab, status: st } : tab)) }));
   }, []);
   // Stable per-tab callbacks (a fresh closure per render would re-fire App's
   // onStatus effect every frame).
