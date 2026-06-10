@@ -44,7 +44,19 @@ try {
   $ExtractDir = Join-Path $Temp "extract"
 
   Write-Host "-> Downloading $PackageName@$ResolvedVersion"
-  Invoke-WebRequest -Uri $TarballUrl -OutFile $Archive -UseBasicParsing
+  # Right after a publish the tarball can 404 for a short window (CDN
+  # replication lag). Retry over ~30s before giving up.
+  $Attempt = 0
+  while ($true) {
+    try {
+      Invoke-WebRequest -Uri $TarballUrl -OutFile $Archive -UseBasicParsing
+      break
+    } catch {
+      $Attempt++
+      if ($Attempt -ge 6) { throw }
+      Start-Sleep -Seconds 5
+    }
+  }
   New-Item -ItemType Directory -Force -Path $ExtractDir, $TargetDir, $BinDir | Out-Null
   tar -xzf $Archive -C $ExtractDir
 
