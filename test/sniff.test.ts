@@ -59,3 +59,12 @@ test("unknown bearer → unknown, low confidence", () => {
   expect(g.kind).toBe("unknown");
   expect(g.confidence).toBe("low");
 });
+
+// A credentials block can name aws_access_key_id without a recognizable
+// AKIA/ASIA value — the empty id must be reported missing, not silently
+// accepted into a broken bedrock account.
+test("aws block with unextractable access key id lists it missing", () => {
+  const g = sniffCredential("aws_access_key_id = REDACTED\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\nregion = us-east-1");
+  expect(g.kind).toBe("aws");
+  expect(g.missing).toContain("accessKeyId");
+});

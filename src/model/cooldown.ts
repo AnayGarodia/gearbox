@@ -20,7 +20,9 @@ export function classifyFailure(message: string): FailureKind {
   if (exhausted) return "exhausted";
   const auth =
     /\b401\b/.test(m) ||
-    /invalid[ _-]?(api[ _-]?key|x-api-key|key|credential|token)|api key (?:not valid|invalid|expired)|unauthorized|authentication[ _-]?(error|failed)|token (?:has )?expired|expired (?:key|token|credentials?)|not logged in|re-?authenticat|session (?:has )?(?:ended|expired)/.test(m);
+    // "invalid subscription key" = Azure's classic 401 body ("Access denied due
+    // to invalid subscription key or wrong API endpoint") — a dead credential.
+    /invalid[ _-]?(api[ _-]?key|x-api-key|key|credential|token)|invalid subscription key|api key (?:not valid|invalid|expired)|unauthorized|authentication[ _-]?(error|failed)|token (?:has )?expired|expired (?:key|token|credentials?)|not logged in|re-?authenticat|session (?:has )?(?:ended|expired)/.test(m);
   return auth ? "auth" : "other";
 }
 

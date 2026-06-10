@@ -214,12 +214,18 @@ function accountModelSpecs(): ModelSpec[] {
       // provider's seeds are dropped.
       if (CURATED.some((m) => m.provider === account.provider && m.sdkId === sdkId)) continue;
       const id = `${account.provider}/${sdkId}`;
+      // Discovery exposes no pricing — fall back to the canonical family's list
+      // rate when the deployment name unambiguously matches one (DeepSeek-V4-Pro,
+      // my-gpt-5.5, …) so cost estimates and routing aren't blind. No match →
+      // cost stays undefined and the UI keeps the honest "$ unknown".
+      const cost = canonicalPricingFor(sdkId);
       out.push({
         id,
         provider: account.provider,
         sdkId,
         label: sdkId,
         contextWindow: 128_000,
+        ...(cost ? { cost } : {}),
         capabilities: { source: "api-discovered", tools: "unknown", images: "unknown", jsonSchema: "unknown", usage: "partial" },
       });
     }
@@ -344,6 +350,19 @@ export interface SubscriptionSeat {
   profile?: string;
 }
 
+/** True when a vendor CLI binary can actually serve a model id. A seat must
+ *  NEVER be minted for a model its binary can't run: `claude --model gpt-5.5`
+ *  (or codex handed a claude id) fails at turn time, after routing already
+ *  committed to the seat. The namespaces are vendor-stable: claude serves only
+ *  claude-* ids; codex serves OpenAI ids (gpt-*, o-series, codex-*). Unknown
+ *  binaries pass (no namespace knowledge — don't block a future vendor). Pure. */
+export function binaryServesModel(binary: string, sdkId: string): boolean {
+  const id = sdkId.toLowerCase();
+  if (binary.includes("claude")) return id.startsWith("claude");
+  if (binary.includes("codex")) return /^(gpt-|o\d|codex)/.test(id);
+  return true;
+}
+
 export function subscriptionSeats(): SubscriptionSeat[] {
   const out: SubscriptionSeat[] = [];
   for (const a of listAccounts()) {
@@ -360,6 +379,9 @@ export function subscriptionSeats(): SubscriptionSeat[] {
     const sdkIds = [...new Set([...(a.models ?? []), ...catalogModels])];
     for (const sdkId of sdkIds) {
       if (!sdkId) continue;
+      // Guard: a polluted snapshot (account.models carrying a foreign id) must
+      // not become a seat the binary can't serve.
+      if (!binaryServesModel(binary, sdkId)) continue;
       const canon = CURATED.find((c) => c.sdkId === sdkId && NATIVE.has(c.provider));
       const spec: ModelSpec = {
         ...(canon ?? { contextWindow: 200_000 }),
@@ -472,8 +494,60 @@ export function findModel(idOrLabel: string): ModelSpec | undefined {
 function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | undefined {
   const spec = modelRegistry().find((m) => m.id === id);
   // spec cost -> profile by id -> profile by the bare sdkId (so a gateway model like
-  // "openrouter/claude-opus-4-8" still prices off the canonical profile, not $0).
-  return spec?.cost ?? profileFor(id)?.cost ?? (spec ? profileFor(spec.sdkId)?.cost : undefined);
+  // "openrouter/claude-opus-4-8" still prices off the canonical profile, not $0)
+  // -> canonical-family fallback (a discovered Azure deployment named after a
+  // known family, e.g. "DeepSeek-V4-Pro", prices off that family's list rate).
+  return (
+    spec?.cost ??
+    profileFor(id)?.cost ??
+    (spec ? profileFor(spec.sdkId)?.cost : undefined) ??
+    canonicalPricingFor(spec?.sdkId ?? id)
+  );
+}
+
+// ── pricing fallback for discovered deployments ──────────────────────────────
+// Azure/Foundry deployments and gateway ids carry NO price data from discovery,
+// so cost showed "$ unknown" even when the deployment obviously serves a known
+// model (the user names it "DeepSeek-V4-Pro" or "my-gpt-5.5"). Map a discovered
+// name to its canonical family's list price when the match is unambiguous; stay
+// honestly unknown otherwise.
+
+// Tier/size modifiers that change a family's price (a "-mini"/"-lite" variant is
+// NOT the base model): when the unmatched remainder carries one, refuse the match
+// rather than bill-estimate the wrong tier.
+const TIER_MODIFIER = /(^|-)(mini|nano|micro|lite|small|tiny|air|turbo|ultra|flash)($|-)/;
+
+/** Lowercase, dash-normalize, and strip a trailing date stamp ("-20251001",
+ *  "-2025-10-01") so deployment names compare against canonical ids. Pure. */
+function normalizeModelName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/_/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
+}
+
+/** Best-effort canonical pricing for a discovered model/deployment id. Exact
+ *  (normalized) family match first; then a boundary-anchored containment match
+ *  ("team-gpt-5.5-eastus2" → gpt-5.5), longest family first so "gpt-5.5-pro"
+ *  beats "gpt-5.5". Returns undefined when nothing matches — callers keep the
+ *  honest "$ unknown". Pure; fixture-tested. */
+export function canonicalPricingFor(sdkId: string): { inUSDPerMtok: number; outUSDPerMtok: number } | undefined {
+  const name = normalizeModelName(sdkId);
+  if (!name) return undefined;
+  const families = CURATED.filter((m) => NATIVE.has(m.provider) && m.cost)
+    .sort((a, b) => b.id.length - a.id.length || a.id.localeCompare(b.id));
+  for (const f of families) {
+    const key = normalizeModelName(f.id);
+    if (name === key) return f.cost;
+    const esc = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(?:^|[-/.:])${esc}(?:$|[-/.:])`).test(name)) {
+      // The remainder around the family must not be a different price tier.
+      const rest = name.replace(new RegExp(esc), "");
+      if (!TIER_MODIFIER.test(rest)) return f.cost;
+    }
+  }
+  return undefined;
 }
 
 /**

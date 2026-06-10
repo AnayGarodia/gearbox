@@ -25,3 +25,19 @@ test("network / 500 / unknown → real-error (not credential-class)", () => {
   expect(classifyError("anthropic", { statusCode: 503, message: "upstream error" })).toBe("real-error");
   expect(classifyError("anthropic", { message: "fetch failed" })).toBe("real-error");
 });
+
+// Regression: testAccount/errMessage failures carry the status only in TEXT
+// ("HTTP 401", "… (HTTP 429) from <url>"). A non-JSON 401/429 body used to
+// classify as real-error and never reach the credential-failover path.
+test("HTTP status carried only in the message text still classifies", () => {
+  expect(classifyError("azure", { message: "HTTP 401" })).toBe("invalid");
+  expect(classifyError("azure", { message: "HTTP 401 from https://r.openai.azure.com/openai/models" })).toBe("invalid");
+  expect(classifyError("openai", { message: "HTTP 429 from https://api.openai.com/v1/models" })).toBe("rate-limited");
+  expect(classifyError("deepseek", { message: "HTTP 402" })).toBe("no-credit");
+  expect(classifyError("azure", { message: "HTTP 500" })).toBe("real-error");
+});
+
+// Azure's classic 401 body names a "subscription key", not an "api key".
+test("Azure 'invalid subscription key' → invalid", () => {
+  expect(classifyError("azure", { message: "Access denied due to invalid subscription key or wrong API endpoint. Make sure to provide a valid key for an active subscription." })).toBe("invalid");
+});

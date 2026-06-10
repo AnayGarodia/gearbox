@@ -20,7 +20,13 @@ export function isNotDeployedError(message: string): boolean {
 }
 
 function statusOf(err: any): number | undefined {
-  return err?.statusCode ?? err?.status ?? err?.response?.status ?? err?.data?.error?.status;
+  const s = err?.statusCode ?? err?.status ?? err?.response?.status ?? err?.data?.error?.status;
+  if (typeof s === "number") return s;
+  // testAccount/errMessage failures carry the status only in TEXT ("HTTP 401",
+  // "… (HTTP 429) from <url>") — without this, a non-JSON 401/429 body
+  // classified as "real-error" and never reached the credential-failover path.
+  const m = textOf(err).match(/\bhttp[ _]?(\d{3})\b/);
+  return m ? Number(m[1]) : undefined;
 }
 function textOf(err: any): string {
   return String(err?.message ?? err?.error?.message ?? err?.responseBody ?? err?.error ?? err ?? "").toLowerCase();
@@ -55,7 +61,9 @@ export function classifyError(_provider: string, err: unknown): HealthState {
   // keys that were fine. real-error keeps it out of the credential-failover
   // class; the actionable hint lives in unavailableModelHint.
   if (isModelAccessDenied(err)) return "real-error";
-  if (status === 401 || status === 403 || /invalid.*(api.?key|x-api-key|credential|token)|incorrect api key|unauthorized|authentication.?fail|permission denied/.test(t)) return "invalid";
+  // "invalid subscription key" is Azure's classic 401 body ("Access denied due
+  // to invalid subscription key or wrong API endpoint") — the key itself is bad.
+  if (status === 401 || status === 403 || /invalid.*(api.?key|x-api-key|credential|token)|invalid subscription key|incorrect api key|unauthorized|authentication.?fail|permission denied/.test(t)) return "invalid";
   return "real-error";
 }
 

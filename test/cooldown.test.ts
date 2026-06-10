@@ -64,3 +64,10 @@ test("a model-scoped park leaves the account's other models live", () => {
   expect(coolingDown(modelScopedKey("acct-1", "gpt-5.5-mini"), 1000)).toBe(false); // sibling fine
   expect(coolingDown("acct-1", 1000)).toBe(false); // account itself not benched
 });
+
+// Azure's classic 401 body ("Access denied due to invalid subscription key…")
+// is a dead credential — the hop-loop must classify it auth (park the account),
+// not "other" (which would surface a raw error with no failover).
+test("classifyFailure: Azure invalid subscription key → auth", () => {
+  expect(classifyFailure("Access denied due to invalid subscription key or wrong API endpoint.")).toBe("auth");
+});

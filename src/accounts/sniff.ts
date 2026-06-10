@@ -64,6 +64,10 @@ export function sniffCredential(text: string): CredentialGuess {
     const secret = t.match(/aws_secret_access_key\s*=\s*([A-Za-z0-9/+=]+)/i)?.[1] ?? "";
     const region = t.match(/(?:aws_)?region\s*=\s*([a-z0-9-]+)/i)?.[1] ?? "";
     const missing: string[] = [];
+    // A credentials block can name the field without a recognizable AKIA/ASIA
+    // value (truncated paste, exotic key class) — an empty id silently produced
+    // a broken bedrock account because it was never listed as missing.
+    if (!id) missing.push("accessKeyId");
     if (!secret) missing.push("secretAccessKey");
     if (!region) missing.push("region");
     return {
