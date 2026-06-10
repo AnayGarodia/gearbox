@@ -17,14 +17,14 @@ export interface RateLike {
 // Parse a Go time.Duration string ("1s", "6m0s", "114h18m0s", "300ms") to seconds.
 export function parseGoDuration(s: string | undefined): number | undefined {
   if (!s) return undefined;
-  const re = /(\d+(?:\.\d+)?)(ms|h|m|s)/g;
+  const re = /(\d+(?:\.\d+)?)(ms|d|h|m|s)/g;
   let total = 0;
   let matched = false;
   let m: RegExpExecArray | null;
   while ((m = re.exec(s))) {
     matched = true;
     const n = Number(m[1]);
-    total += m[2] === "h" ? n * 3600 : m[2] === "m" ? n * 60 : m[2] === "ms" ? n / 1000 : n;
+    total += m[2] === "d" ? n * 86400 : m[2] === "h" ? n * 3600 : m[2] === "m" ? n * 60 : m[2] === "ms" ? n / 1000 : n;
   }
   return matched ? total : undefined;
 }
@@ -37,15 +37,19 @@ const num = (v: string | undefined): number | undefined => {
 const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 
 // Resolve a reset value to epoch seconds. Anthropic sends an RFC3339 timestamp,
-// OpenAI a Go-duration from now, Azure sometimes plain seconds.
+// OpenAI a Go-duration from now, Azure plain seconds. ORDER MATTERS: the bare-
+// number check must come FIRST — Date.parse("10") is Oct 2001 and "45" is the
+// year 2045, so Azure's documented plain-second resets ('10', '300') were being
+// turned into past timestamps (signal silently discarded) or 19-years-out
+// phantoms. A parsed date is also sanity-bounded to now±1y for the same reason.
 function resetSeconds(raw: string | undefined, now: number): number | undefined {
   if (!raw) return undefined;
-  const iso = Date.parse(raw);
-  if (!Number.isNaN(iso)) return Math.floor(iso / 1000);
+  if (/^\d+(?:\.\d+)?$/.test(raw.trim())) return Math.floor(now / 1000) + Math.round(Number(raw));
   const dur = parseGoDuration(raw);
   if (dur != null) return Math.floor(now / 1000) + Math.round(dur);
-  const secs = num(raw);
-  return secs != null ? Math.floor(now / 1000) + Math.round(secs) : undefined;
+  const iso = Date.parse(raw);
+  if (!Number.isNaN(iso) && Math.abs(iso - now) < 365 * 86400_000) return Math.floor(iso / 1000);
+  return undefined;
 }
 
 function window(limit: number | undefined, remaining: number | undefined, reset: string | undefined, type: string, now: number): RateLike | null {

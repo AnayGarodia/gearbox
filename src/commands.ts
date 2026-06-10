@@ -62,6 +62,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
   { name: "/usage", usage: "/usage", desc: "live usage: limits, spend & context (fullscreen: toggles a strip)", group: "accounts" },
+  { name: "/doctor", usage: "/doctor", desc: "live-check every account with one tiny real call · names the fix for each failure", group: "accounts" },
   { name: "/budget", usage: "/budget <provider> <amount> [monthly|total]", desc: "set a spend budget so routing can estimate remaining credit and preserve it", group: "accounts" },
   { name: "/cap", usage: "/cap <session|daily|monthly|total> <amount>", desc: "hard spend ceiling · turns refuse once reached (/cap off to clear)", group: "accounts" },
   // save & copy
@@ -73,7 +74,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/verify", usage: "/verify [off|auto|test]", desc: "checks after edits + auto-fix to green · /verify test writes a characterization test when none exist", group: "modes" },
   // settings
   { name: "/config", usage: "/config", desc: "view or change saved settings", group: "settings" },
-  { name: "/theme", usage: "/theme [light|dark]", desc: "switch the color palette · light for light terminals", group: "settings" },
+  { name: "/theme", usage: "/theme [name]", desc: "palette gallery with live preview · dark · light · gruvbox · catppuccin · solarized · contrast", group: "settings" },
   // other
   { name: "/init", usage: "/init", desc: "scan this repo and write a GEARBOX.md guide", group: "other" },
   { name: "/keys", usage: "/keys", desc: "keyboard shortcuts", group: "other" },

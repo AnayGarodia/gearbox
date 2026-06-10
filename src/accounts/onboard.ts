@@ -360,11 +360,23 @@ export async function testAccount(a: Account): Promise<{ ok: boolean; message: s
       return { ok: true, message: "credential fields present (Vertex connectivity verified on first use — run `gcloud auth application-default login` if not done)" };
     }
     // openai-compat / openai / gateways / local: list models on the endpoint.
+    // Providers WITHOUT a /models route (Perplexity) get a minimal 1-token chat
+    // probe instead — a valid pplx- key used to fail with a bare "HTTP 404".
     const base = creds.baseURL ?? "https://api.openai.com/v1";
+    const cat = catalogProvider(a.provider);
+    if (cat?.noModelsEndpoint) {
+      const probeModel = a.models?.[0] ?? cat.defaultModels?.[0];
+      const pr = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${creds.apiKey ?? ""}`, "Content-Type": "application/json", ...(creds.headers ?? {}) },
+        body: JSON.stringify({ model: probeModel, messages: [{ role: "user", content: "ok" }], max_tokens: 1 }),
+      });
+      return pr.ok ? { ok: true, message: "credential works" } : { ok: false, message: `${await errMessage(pr)} from ${base}/chat/completions` };
+    }
     const r = await fetch(`${base.replace(/\/$/, "")}/models`, {
       headers: { Authorization: `Bearer ${creds.apiKey ?? ""}`, ...(creds.headers ?? {}) },
     });
-    return r.ok ? { ok: true, message: "credential works" } : { ok: false, message: await errMessage(r) };
+    return r.ok ? { ok: true, message: "credential works" } : { ok: false, message: `${await errMessage(r)} from ${base}/models` };
   } catch (e: any) {
     return { ok: false, message: e?.message ?? "request failed" };
   }

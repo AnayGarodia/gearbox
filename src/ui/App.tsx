@@ -90,6 +90,7 @@ import { computeDiff, diffStat } from "../diff.ts";
 import { updateRetrievalFile, resetRetrievalIndex } from "../context/retrieve.ts";
 import { addToast, TOAST_TTL_MS, type Toast, type ToastKind } from "./toast.ts";
 import { editorNames, setEditorPref } from "./links.ts";
+import { liveCheckAll, formatDoctorRows } from "../accounts/doctor.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -2803,6 +2804,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                 `\n  /verify off  ·  /verify auto  ·  /verify test (write a characterization test)`,
             );
           }
+          return;
+        }
+        case "doctor": {
+          echo(text);
+          notice("live-checking every account (one ~8-token call each)…");
+          void liveCheckAll().then((rows) => {
+            const it: Item = { kind: "notice", id: idRef.current++, text: formatDoctorRows(rows) };
+            if (openInfoPanel("provider health", it)) return;
+            push(it);
+          });
           return;
         }
         case "cap": {

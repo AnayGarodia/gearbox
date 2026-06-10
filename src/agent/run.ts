@@ -175,6 +175,17 @@ const NATIVE_PROVIDERS = new Set(["anthropic", "openai", "google", "deepseek"]);
 const MODEL_NOT_SERVED = /does not exist|not found|no such model|model_not_found|unknown model|invalid model|deployment.*(does not exist|not)|resource not found/i;
 
 export function unavailableModelHint(message: string, model: ModelSpec): string {
+  // Bedrock's "you don't have access to the model" 403: valid credentials, the
+  // model just isn't ENABLED. Replacing the key (the old "invalid" hint) can't
+  // fix it; the console's Model access page can.
+  if (/don'?t have access to the model|access denied.*model/i.test(message)) {
+    return `"${model.sdkId}" isn't enabled on this AWS account/region. Enable it: Bedrock console → Model access (and check IAM allows bedrock:InvokeModel on inference profiles), or pick another model: /model. (${message})`;
+  }
+  // Vertex regional 404 for global-only models: discovery can't fix a location
+  // problem, so don't send the user to /account refresh.
+  if (/publisher model .{0,120} was not found/i.test(message)) {
+    return `this Gemini model is only served from the "global" Vertex location. Re-add the account with location global (/account add vertex <project> global), then retry. (${message})`;
+  }
   if (NATIVE_PROVIDERS.has(model.provider)) return message;
   if (MODEL_NOT_SERVED.test(message)) {
     return `"${model.sdkId}" isn't available on your ${model.provider} account. Run /account refresh to see what is, then /model <name>. (${message})`;

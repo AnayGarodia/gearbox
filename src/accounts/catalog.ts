@@ -31,6 +31,9 @@ export interface CatalogProvider {
   // discovery (src/accounts/discover.ts) fills the real set onto the account.
   discoverOnly?: boolean;
   notes?: string;
+  /** Provider has NO GET /models route (e.g. Perplexity) — probe with a
+   *  minimal chat call and keep the seeded model list instead of discovery. */
+  noModelsEndpoint?: boolean;
 }
 
 export const CATALOG: CatalogProvider[] = [
@@ -48,7 +51,7 @@ export const CATALOG: CatalogProvider[] = [
   { id: "fireworks", label: "Fireworks", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["FIREWORKS_API_KEY"], keyPrefix: ["fw_"], baseUrl: "https://api.fireworks.ai/inference/v1", signupUrl: "https://fireworks.ai/account/api-keys", defaultModels: ["accounts/fireworks/models/deepseek-v3"] },
   { id: "deepinfra", label: "DeepInfra", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["DEEPINFRA_API_KEY"], baseUrl: "https://api.deepinfra.com/v1/openai", signupUrl: "https://deepinfra.com/dash/api_keys" },
   { id: "cerebras", label: "Cerebras", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["CEREBRAS_API_KEY"], keyPrefix: ["csk-"], baseUrl: "https://api.cerebras.ai/v1", signupUrl: "https://cloud.cerebras.ai", defaultModels: ["qwen-3-coder-480b", "llama-3.3-70b"] },
-  { id: "perplexity", label: "Perplexity", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["PERPLEXITY_API_KEY"], keyPrefix: ["pplx-"], baseUrl: "https://api.perplexity.ai", signupUrl: "https://www.perplexity.ai/settings/api", defaultModels: ["sonar-pro", "sonar-reasoning-pro"] },
+  { id: "perplexity", label: "Perplexity", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["PERPLEXITY_API_KEY"], keyPrefix: ["pplx-"], baseUrl: "https://api.perplexity.ai", noModelsEndpoint: true, signupUrl: "https://www.perplexity.ai/settings/api", defaultModels: ["sonar-pro", "sonar-reasoning-pro"] },
   { id: "baseten", label: "Baseten", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["BASETEN_API_KEY"], baseUrl: "https://inference.baseten.co/v1", signupUrl: "https://app.baseten.co/settings/api_keys" },
   { id: "moonshot", label: "Moonshot (Kimi)", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["MOONSHOT_API_KEY"], baseUrl: "https://api.moonshot.ai/v1", signupUrl: "https://platform.moonshot.ai/console/api-keys", defaultModels: ["kimi-k2-0905-preview"] },
   { id: "zai", label: "Z.ai (GLM)", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["ZAI_API_KEY", "ZHIPU_API_KEY"], baseUrl: "https://api.z.ai/api/paas/v4", signupUrl: "https://z.ai/manage-apikey/apikey-list", defaultModels: ["glm-4.6", "glm-4.5-air"] },
@@ -56,7 +59,7 @@ export const CATALOG: CatalogProvider[] = [
   { id: "hyperbolic", label: "Hyperbolic", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["HYPERBOLIC_API_KEY"], baseUrl: "https://api.hyperbolic.xyz/v1", signupUrl: "https://app.hyperbolic.xyz/settings" },
   { id: "sambanova", label: "SambaNova", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["SAMBANOVA_API_KEY"], baseUrl: "https://api.sambanova.ai/v1", signupUrl: "https://cloud.sambanova.ai/apis" },
   { id: "novita", label: "Novita", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["NOVITA_API_KEY"], baseUrl: "https://api.novita.ai/v3/openai", signupUrl: "https://novita.ai/settings/key-management" },
-  { id: "minimax", label: "MiniMax", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["MINIMAX_API_KEY"], baseUrl: "https://api.minimax.chat/v1", signupUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key", defaultModels: ["MiniMax-Text-01", "MiniMax-M1"] },
+  { id: "minimax", label: "MiniMax", group: "openai-compat", exec: "in-loop", authKind: "openai-compat", envVars: ["MINIMAX_API_KEY"], baseUrl: "https://api.minimax.io/v1", signupUrl: "https://platform.minimaxi.com/user-center/basic-information/interface-key", defaultModels: ["MiniMax-Text-01", "MiniMax-M1"] },
 
   // ── gateways / aggregators (OpenAI-compatible; one key, many models) ──
   { id: "openrouter", label: "OpenRouter", group: "gateway", exec: "in-loop", authKind: "openai-compat", envVars: ["OPENROUTER_API_KEY"], keyPrefix: ["sk-or-"], baseUrl: "https://openrouter.ai/api/v1", signupUrl: "https://openrouter.ai/keys", notes: "Hundreds of models via one key. extraHeaders HTTP-Referer/X-Title recommended." },

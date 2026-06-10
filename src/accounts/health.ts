@@ -26,15 +26,35 @@ function textOf(err: any): string {
   return String(err?.message ?? err?.error?.message ?? err?.responseBody ?? err?.error ?? err ?? "").toLowerCase();
 }
 
+/** True for Bedrock's "model not enabled on this account/region" failure —
+ *  an HTTP 403 that is a MODEL-AVAILABILITY problem, not a credential one
+ *  (the fix is the Bedrock console's Model access page, never a new key). */
+export function isModelAccessDenied(err: unknown): boolean {
+  const t = textOf(err);
+  return /don'?t have access to the model|access denied.*model|model.*access denied/.test(t);
+}
+
 /** Map a provider error (HTTP/SDK/CLI) to a health state. Pure. */
 export function classifyError(_provider: string, err: unknown): HealthState {
   const status = statusOf(err);
   const t = textOf(err);
 
-  // Check no-credit before rate-limit/invalid: billing messages sometimes arrive on 429/403.
-  if (/credit balance|insufficient_quota|insufficient funds|billing|payment|quota exceeded/.test(t)) return "no-credit";
+  // A genuine RATE limit whose message happens to mention billing (Google's
+  // free-tier 429 says "check your plan and billing details") must classify as
+  // rate-limited BEFORE the billing check — "add credit" is the wrong fix for
+  // an RPM throttle, and waiting is the right one.
+  if (status === 429 && !/insufficient_quota/.test(t) && /exceeded your current quota|resource.?exhausted|requests per (?:minute|day)/.test(t)) return "rate-limited";
+  // No-credit before generic rate-limit/invalid: billing messages sometimes
+  // arrive on 429/403. DeepSeek's 402 is "Insufficient Balance", OpenRouter's
+  // is "Insufficient credits" — neither says "billing".
+  if (status === 402 || /credit balance|insufficient_quota|insufficient funds|insufficient (?:balance|credits?)|billing|payment|quota exceeded/.test(t)) return "no-credit";
   if (/not logged in|not signed in|re-?authenticate|token (?:has )?expired|expired|session expired|login required|refresh token/.test(t)) return "expired";
   if (status === 429 || /rate.?limit|too many requests|overloaded|capacity/.test(t)) return "rate-limited";
+  // Bedrock's "you don't have access to the model" 403: valid credentials, the
+  // model just isn't enabled — calling it "invalid key" sent users to replace
+  // keys that were fine. real-error keeps it out of the credential-failover
+  // class; the actionable hint lives in unavailableModelHint.
+  if (isModelAccessDenied(err)) return "real-error";
   if (status === 401 || status === 403 || /invalid.*(api.?key|x-api-key|credential|token)|incorrect api key|unauthorized|authentication.?fail|permission denied/.test(t)) return "invalid";
   return "real-error";
 }

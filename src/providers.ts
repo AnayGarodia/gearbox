@@ -351,9 +351,14 @@ const ENV_KEY: Record<NativeProviderId, string> = {
   deepseek: "DEEPSEEK_API_KEY",
 };
 
-/** Returns the primary env var name for a provider's API key. */
+/** Returns the env var name carrying a provider's API key — the first one of
+ *  the provider's documented names that is actually SET wins (Google's own
+ *  quickstarts export GEMINI_API_KEY, not GOOGLE_GENERATIVE_AI_API_KEY; zai
+ *  documents both ZAI_API_KEY and ZHIPU_API_KEY). Falls back to the primary
+ *  name so "which var should I set" messages stay deterministic. */
 function envVarFor(provider: string): string | undefined {
-  return ENV_KEY[provider as NativeProviderId] ?? catalogProvider(provider)?.envVars[0];
+  const names = [ENV_KEY[provider as NativeProviderId], ...(catalogProvider(provider)?.envVars ?? [])].filter(Boolean) as string[];
+  return names.find((v) => process.env[v]) ?? names[0];
 }
 
 /**
@@ -498,26 +503,46 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
       cfg.secretAccessKey = aws.secretAccessKey;
       if (aws.sessionToken) cfg.sessionToken = aws.sessionToken;
     }
-    return createAmazonBedrock(cfg)(spec.sdkId);
+    // Bedrock's current-gen models reject on-demand invocation by bare
+    // foundation-model id ("Retry your request with the ID … of an inference
+    // profile") — the callable id carries a geo prefix derived from the region
+    // (us. / eu. / apac.). Prefix here so the registry stays readable.
+    return createAmazonBedrock(cfg)(bedrockCallableId(spec.sdkId, aws?.region));
   }
   if (creds?.azure || authKind === "azure") {
     const az = creds?.azure ?? azureFromEnv();
-    return createAzure({ resourceName: az?.resourceName, apiKey: az?.apiKey ?? apiKey, apiVersion: az?.apiVersion })(spec.sdkId);
+    // The stored apiVersion is for the LEGACY deployments URL shape (and the
+    // management routes in manage.ts). @ai-sdk/azure v2 builds the new
+    // /openai/v1 surface, where dated versions like 2024-08-01-preview are
+    // invalid — passing one breaks every turn. Dated version → legacy URLs.
+    const dated = az?.apiVersion && /^\d{4}-\d{2}-\d{2}/.test(az.apiVersion);
+    return createAzure({
+      resourceName: az?.resourceName,
+      apiKey: az?.apiKey ?? apiKey,
+      ...(dated ? { apiVersion: az!.apiVersion, useDeploymentBasedUrls: true } : {}),
+    })(spec.sdkId);
   }
   if (creds?.vertex || authKind === "vertex") {
     const vx = creds?.vertex ?? vertexFromEnv();
+    // Gemini 3.x preview models are served ONLY from the `global` endpoint —
+    // a regional location 404s with "Publisher Model … was not found".
+    const location = /^gemini-3/.test(spec.sdkId) ? "global" : vx?.location;
     return createVertex({
       project: vx?.project,
-      location: vx?.location,
+      location,
       ...(vx?.credentials ? { googleAuthOptions: { credentials: vx.credentials } } : {}),
     })(spec.sdkId);
   }
 
   // OpenAI-wire path: any non-native provider routes through createOpenAI with
-  // its catalog baseUrl (account-supplied or default). One path covers ~25 providers.
+  // its catalog baseUrl (account-supplied or default). One path covers ~25
+  // providers. CRITICAL: use .chat() — calling the provider as a function in
+  // AI SDK 5 builds a Responses-API model that POSTs {baseURL}/responses, a
+  // route most OpenAI-compatible providers simply don't have (every turn used
+  // to 404/405). The Responses default is right only for openai itself.
   const baseURL = creds?.baseURL ?? (NATIVE.has(spec.provider) ? undefined : catalogProvider(spec.provider)?.baseUrl);
   if (baseURL) {
-    return createOpenAI({ baseURL, apiKey, headers: creds?.headers })(spec.sdkId);
+    return createOpenAI({ baseURL, apiKey, headers: creds?.headers }).chat(spec.sdkId);
   }
   switch (spec.provider) {
     case "anthropic":
@@ -529,7 +554,19 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
     case "deepseek":
       return apiKey ? createDeepSeek({ apiKey })(spec.sdkId) : deepseek(spec.sdkId);
     default:
-      // Unknown non-native provider with no baseUrl — fall back to OpenAI wire.
-      return createOpenAI({ apiKey, headers: creds?.headers })(spec.sdkId);
+      // Unknown non-native provider with no baseUrl — fall back to OpenAI wire
+      // (chat-completions, same reasoning as above).
+      return createOpenAI({ apiKey, headers: creds?.headers }).chat(spec.sdkId);
   }
+}
+
+/** Bedrock callable id: current-gen models are invocable only via a CROSS-
+ *  REGION INFERENCE PROFILE id — the foundation id with a geo prefix matched
+ *  to the account's region. Already-prefixed ids (us./eu./apac./global.) and
+ *  full ARNs pass through untouched. Pure; fixture-tested. */
+export function bedrockCallableId(sdkId: string, region?: string): string {
+  if (/^(us|eu|apac|global)\./.test(sdkId) || sdkId.startsWith("arn:")) return sdkId;
+  const r = region ?? "us-east-1";
+  const geo = r.startsWith("eu-") ? "eu" : r.startsWith("ap-") ? "apac" : "us";
+  return `${geo}.${sdkId}`;
 }

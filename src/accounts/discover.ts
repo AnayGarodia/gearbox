@@ -68,6 +68,9 @@ export function parseOpenAIModels(json: any): string[] {
 export async function discoverModels(account: Account, fetchImpl: typeof fetch = fetch): Promise<DiscoverResult> {
   // Native providers have a curated, guaranteed registry; cli runs via subprocess.
   if (NATIVE.has(account.provider) || account.exec === "cli") return { ok: true, models: [] };
+  // Providers with no /models route (catalog noModelsEndpoint, e.g. Perplexity):
+  // discovery would always 404 — the seeded defaultModels ARE the list.
+  if (catalogProvider(account.provider)?.noModelsEndpoint) return { ok: true, models: [] };
 
   try {
     const creds = await resolveCreds(account);

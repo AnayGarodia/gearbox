@@ -30,14 +30,20 @@ const PROVIDERS: Record<string, { url: string; parse: (j: any) => Balance | null
     },
   },
   // DeepSeek: { is_available, balance_infos: [{ currency, total_balance, … }] }.
-  // Amounts are STRINGS; prefer the USD entry, else the first row.
+  // Amounts are STRINGS; currency is "USD" or "CNY" — accounts topped up in RMB
+  // (DeepSeek's primary billing currency) report ONLY a CNY row. Treating that
+  // amount as dollars overstated the balance ~7x, so the scarcity term let a
+  // nearly-broke key keep winning routing. A coarse CNY→USD estimate beats
+  // both the 7x error and going blind (the project's standing rule).
   deepseek: {
     url: "https://api.deepseek.com/user/balance",
     parse: (j) => {
       const infos: any[] = Array.isArray(j?.balance_infos) ? j.balance_infos : [];
-      const pick = infos.find((b) => b?.currency === "USD") ?? infos[0];
-      const remaining = num(pick?.total_balance);
-      return remaining == null ? null : { remainingUSD: remaining };
+      const usd = num(infos.find((b) => b?.currency === "USD")?.total_balance);
+      if (usd != null) return { remainingUSD: usd };
+      const cny = num(infos.find((b) => b?.currency === "CNY")?.total_balance);
+      if (cny != null) return { remainingUSD: Math.round((cny / 7.2) * 100) / 100 };
+      return null;
     },
   },
 };

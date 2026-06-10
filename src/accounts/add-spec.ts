@@ -145,8 +145,8 @@ export const ADD_SPECS: AddSpec[] = [
       {
         key: "apiVersion",
         label: "API version (optional)",
-        placeholder: "2024-08-01-preview  —  blank for default",
-        hint: "Leave blank unless your deployment requires a specific preview version",
+        placeholder: "blank for the v1 API (recommended)",
+        hint: "Leave blank. A dated version (2024-08-01-preview) switches inference to the LEGACY deployments URLs — only for old setups that need it",
         required: false,
         validate: () => null,
       },
@@ -236,7 +236,7 @@ export const ADD_SPECS: AddSpec[] = [
       {
         key: "location",
         label: "Region (location)",
-        placeholder: "us-central1",
+        placeholder: "global  (required for Gemini 3.x; us-central1 etc. for older models)",
         hint: "The GCP region where you've enabled the Vertex AI API  (console.cloud.google.com → Vertex AI → Dashboard)",
         required: true,
         validate: required,

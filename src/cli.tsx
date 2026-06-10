@@ -480,11 +480,25 @@ if (args[0] === "mcp") {
 
 if (args[0] === "doctor") {
   const sub = args[1] ?? "models";
+  if (sub === "live" || args.includes("--live")) {
+    // One tiny REAL call per account — the matrix of what actually works
+    // right now, with the fix command on every failing row.
+    const { liveCheckAll, formatDoctorRows } = await import("./accounts/doctor.ts");
+    console.log("live-checking every account (one ~8-token call each)…\n");
+    const rows = await liveCheckAll((r) => {
+      const mark = r.ok ? paint("32", "✓") : paint("31", "✗");
+      console.log(`${mark} ${r.account.padEnd(20)} ${r.model.padEnd(24)} ${r.ok ? `ok${r.ms != null ? ` · ${r.ms}ms` : ""}` : `${r.state} · ${r.message ?? ""}`}`);
+      if (!r.ok && r.fix) console.log(`    ${paint("36", "fix:")} ${r.fix}`);
+    });
+    const okCount = rows.filter((r) => r.ok).length;
+    console.log(`\n${okCount}/${rows.length} working`);
+    process.exit(okCount === rows.length ? 0 : 1);
+  }
   if (sub === "models" || sub === "providers") {
     const { formatCapabilityMatrix } = await import("./model/capabilities.ts");
     console.log(formatCapabilityMatrix());
   } else {
-    console.log("gearbox doctor [models|providers]");
+    console.log("gearbox doctor [models|providers|live]");
   }
   process.exit(0);
 }

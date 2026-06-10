@@ -23,9 +23,11 @@ test("deepseek: picks the USD entry and parses the string total_balance", () => 
   expect(balanceExposed("deepseek")).toBe(true);
 });
 
-test("deepseek: falls back to the first entry when no USD currency", () => {
-  expect(parseBalance("deepseek", { balance_infos: [{ currency: "CNY", total_balance: "42.00" }] }))
-    .toEqual({ remainingUSD: 42 });
+test("deepseek: a CNY-only balance converts (coarsely) instead of masquerading as USD", () => {
+  // ¥42 reported as $42 overstated the balance ~7x and let a nearly-broke key
+  // keep winning cheapest-model routing. An estimate beats going blind.
+  const b = parseBalance("deepseek", { balance_infos: [{ currency: "CNY", total_balance: "42" }] });
+  expect(b?.remainingUSD).toBeCloseTo(42 / 7.2, 2);
 });
 
 test("returns null on unknown provider or unparseable body", () => {

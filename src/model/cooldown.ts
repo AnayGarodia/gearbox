@@ -16,7 +16,7 @@ export function classifyFailure(message: string): FailureKind {
   const m = (message || "").toLowerCase();
   const exhausted =
     /\b429\b|\b529\b|\b402\b/.test(m) ||
-    /rate.?limit|too many requests|insufficient_quota|quota|over(loaded|capacity)|throttl|resource.?exhausted|usage.?limit|billing|payment required|out of credit|credit balance/.test(m);
+    /rate.?limit|too many requests|insufficient_quota|insufficient (?:balance|credits?)|quota|over(loaded|capacity)|throttl|resource.?exhausted|usage.?limit|billing|payment required|out of credit|credit balance/.test(m);
   if (exhausted) return "exhausted";
   const auth =
     /\b401\b/.test(m) ||
@@ -33,9 +33,15 @@ export type CooldownScope = "account" | "model";
 
 export function cooldownScope(message: string): CooldownScope {
   const m = (message || "").toLowerCase();
+  // Rate-ness first: Google's free-tier 429 says "check your plan and BILLING
+  // details" — it's an RPM throttle on one model, not a drained wallet, and
+  // parking the whole account for it benched every Gemini model for 5 minutes.
+  // …except OpenAI's insufficient_quota, which is BILLING wearing a 429 and the
+  // same "exceeded your current quota" sentence — that one drains the account.
+  if (!/insufficient_quota/.test(m) && /\b429\b|rate.?limit|too many requests|exceeded your current quota|resource.?exhausted/.test(m)) return "model";
   const billing =
     /\b402\b/.test(m) ||
-    /billing|payment required|out of credit|credit balance|insufficient_quota|insufficient credit/.test(m);
+    /billing|payment required|out of credit|credit balance|insufficient_quota|insufficient (?:balance|credits?)/.test(m);
   return billing ? "account" : "model";
 }
 
