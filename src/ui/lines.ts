@@ -802,6 +802,7 @@ export function itemsToLines(items: Item[], width: number, expand = false): Line
                 { text: "  " + r.display.padStart(v.valuePad) + "  ", color: color.text },
                 { text: fill, color: color.accent },
                 { text: empty, color: color.faint },
+                ...(r.pct != null ? [{ text: " " + r.pct + "% of window", color: color.faint }] : []),
               ],
               width,
             ),

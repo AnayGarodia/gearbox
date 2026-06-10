@@ -62,7 +62,7 @@ import { probeUsage } from "../accounts/usage-probe.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
 import { repoMap } from "../context/repomap.ts";
-import { compactHistory, modelSummarizer, estimateHistoryTokens } from "../context/compact.ts";
+import { compactHistory, modelSummarizer, estimateHistoryTokens, elideHistory, shouldAutoCompact } from "../context/compact.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
@@ -489,6 +489,10 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // WIRE TRUTH: the model id the provider's response says served the last
   // turn. The routing line cross-checks this against what we requested.
   const servedModelRef = useRef<string | null>(null);
+  // Last turn's non-history context overhead (system/memory/repomap/retrieval),
+  // so auto-compact triggers on the full context, not history alone. 0 until an
+  // in-loop turn has built a context (CLI turns don't run buildContext).
+  const ctxOverheadRef = useRef(0);
   const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
@@ -1923,7 +1927,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        let { system, messages: ctx, cacheBreak } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        let { system, messages: ctx, cacheBreak, sections } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan });
+        // Remember this turn's non-history context overhead (system + memory +
+        // repomap + retrieval + git) so the auto-compact trigger can budget on
+        // the FULL context, not history alone.
+        ctxOverheadRef.current = sections.filter((s) => s.name !== "history" && s.name !== "user").reduce((a, s) => a + s.tokens, 0);
         if (agentDef) system = `${system}\n\n# ACTIVE AGENT: ${agentDef.name}\n${agentDef.system}`;
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = account ? await resolveCreds(account) : undefined;
@@ -2058,35 +2066,46 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // only the model's working context shrinks. Returns a status line for a notice.
   const compactNow = useCallback(
     async (keepRecent: number, signal?: AbortSignal): Promise<string> => {
+      // Apply a successful compaction (either path) and report real numbers.
+      const apply = (res: { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number }, how: string): string => {
+        msgRef.current = res.messages;
+        // The status bar's ctx% reads lastInput from the LAST call — after
+        // compaction that's stale (it kept showing the pre-compaction size).
+        // Reset it to the new history estimate so the bar reflects reality now.
+        setLastInput(res.after);
+        const saved = res.before - res.after;
+        const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
+        return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""}${how} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
+      };
+      // The model-free fallback: mechanical elision (tool output distilled to
+      // one line per call). /compact must ALWAYS be able to shrink the history,
+      // even on a subscription-only session with no API-key summarizer.
+      const mechanical = (why: string): string => {
+        const res = elideHistory(msgRef.current, keepRecent);
+        if (!res) return `${why} · nothing left to compact mechanically`;
+        return apply(res, ` mechanically (${why})`);
+      };
       let model, creds;
       try {
         const ch = selectorRef.current.select({ prompt: "", kind: "summarize" });
         // The summarizer runs in-loop (AI SDK), so a flat-rate seat can't host it.
-        // Skip cleanly instead of silently failing (S-A).
-        if (ch.backend?.kind === "cli") return "compaction needs an API-key model · skipped while on a subscription";
+        if (ch.backend?.kind === "cli") return mechanical("no API-key summarizer on a subscription");
         model = ch.model;
         // Resolve the model's account creds so compaction works for STORED API
         // accounts, not just an env key (it silently never compacted before).
         const acct = (ch.backend?.kind === "in-loop" && ch.backend.account) || defaultAccount(model.provider);
         creds = acct ? await resolveCreds(acct) : undefined;
       } catch {
-        return "no model available to compact with";
+        return mechanical("no model available");
       }
       let res;
       try {
         res = await compactHistory({ history: msgRef.current, summarize: modelSummarizer(model, creds, signal), keepRecent });
       } catch (e: any) {
-        return `compaction failed (${model.label}): ${e?.message ?? "summarizer error"} · history unchanged`;
+        return mechanical(`summarizer failed on ${model.label}: ${e?.message ?? "error"}`);
       }
       if (!res) return "nothing old enough to compact yet";
-      msgRef.current = res.messages;
-      // The status bar's ctx% reads lastInput from the LAST call — after
-      // compaction that's stale (it kept showing the pre-compaction size).
-      // Reset it to the new history estimate so the bar reflects reality now.
-      setLastInput(res.after);
-      const saved = res.before - res.after;
-      const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
-      return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
+      return apply(res, "");
     },
     [],
   );
@@ -2558,21 +2577,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // losing the gist. Best-effort and skipped on interrupt.
         if (!ac.signal.aborted) {
           try {
-            const cm = selectorRef.current.select({ prompt: "", kind: "summarize" }).model;
             // Trigger off the window of the model that ANSWERED (its window is what
             // overflows), not the summarizer's — a 1M summarizer never triggers a
             // 200k haiku turn; a 128k summarizer over-compacts a 1M model.
             const answeringWindow = activeCliRef.current
               ? (activeCliRef.current.binary?.includes("codex") ? (findModel(activeCliModelRef.current ?? "")?.contextWindow ?? 272_000) : 200_000)
-              : (findModel(modelId)?.contextWindow ?? cm.contextWindow);
-            const budget = Math.max(8000, answeringWindow - 32000);
-            // Conservative on purpose: the builder's per-turn elision already
-            // keeps normal sessions bounded (old tool output dropped every turn);
-            // compaction is the deeper safety net for genuinely long sessions, so
-            // it only fires when even the raw ledger nears the budget. Summarizing
-            // costs a model call, so we don't do it eagerly.
-            const COMPACT_AT = 0.6;
-            if (estimateHistoryTokens(msgRef.current, cm.id) > budget * COMPACT_AT) {
+              : (findModel(modelId)?.contextWindow ?? 200_000);
+            // Budget on the FULL context the next turn will send: history
+            // (tokenized with the answering model, not the summarizer) plus the
+            // non-history overhead buildContext reported (system + memory +
+            // repomap + retrieval). History alone under-counted by 10-20k, so
+            // compaction fired at the wrong point relative to the real window.
+            // The threshold lives in shouldAutoCompact (compact.ts) — still
+            // conservative: the builder's per-turn elision keeps normal sessions
+            // bounded; compaction is the deeper safety net.
+            const historyTokens = estimateHistoryTokens(msgRef.current, modelId);
+            if (shouldAutoCompact(historyTokens, ctxOverheadRef.current, answeringWindow)) {
               setVerb("Compacting context");
               notice(await compactNow(4, ac.signal));
             }

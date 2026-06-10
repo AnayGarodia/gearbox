@@ -33,6 +33,7 @@
  * BOTH the assistant's tool-call parts AND the paired tool-result messages
  * together, so the messages array always contains balanced tool ids.
  */
+import { resolve as resolvePath } from "node:path";
 import type { ModelMessage } from "ai";
 import type { ModelSpec } from "../providers.ts";
 import { countTokens } from "../model/tokens.ts";
@@ -107,6 +108,12 @@ const RECENT_TURNS = 3;
 // Rough overhead per message for role field and JSON/HTTP framing tokens.
 const PER_MESSAGE_OVERHEAD = 4;
 
+// Per-tool-result token caps for kept (non-elided) turns. The normal cap trims
+// pathological single outputs; the tight cap is the message-grained rescue pass
+// the budget loop tries before dropping whole turns.
+const RECENT_TOOL_RESULT_CAP = 3_000;
+const TIGHT_TOOL_RESULT_CAP = 1_500;
+
 export interface ContextSection {
   name: string;
   tokens: number;
@@ -170,24 +177,139 @@ export function groupTurns(history: ModelMessage[]): ModelMessage[][] {
   return turns;
 }
 
+// Distillation limits: how much of an elided turn's tool activity survives as
+// plain text. Generous enough to keep the trail, small enough to stay cheap.
+const DISTILL_MAX_LINES = 8;
+const DISTILL_RESULT_CHARS = 80;
+const DISTILL_ARG_CHARS = 60;
+
+/**
+ * Distill a turn's tool exchanges into one line per call:
+ *   `· edit_file src/x.ts → applied 3 hunks`
+ * so an elided turn keeps a readable trail of WHAT happened (which files were
+ * read/edited, what commands ran and their first-line outcome) instead of the
+ * old behavior of dropping the activity entirely — "Assistant: I edited it"
+ * with no record of what. Pure; returns "" when the turn used no tools.
+ */
+export function distillToolCalls(turn: ModelMessage[]): string {
+  // toolCallId → first line of its result, for the `→ outcome` tail.
+  const resultOf = new Map<string, string>();
+  for (const m of turn) {
+    if (m.role !== "tool") continue;
+    const c = (m as any).content;
+    if (!Array.isArray(c)) continue;
+    for (const p of c) {
+      if (p?.type === "tool-result" && p.toolCallId) {
+        const raw = typeof p.output === "string" ? p.output : (p.output?.value ?? p.result ?? "");
+        const first = String(typeof raw === "string" ? raw : JSON.stringify(raw)).trim().split("\n")[0] ?? "";
+        if (first) resultOf.set(p.toolCallId, first.slice(0, DISTILL_RESULT_CHARS));
+      }
+    }
+  }
+  const lines: string[] = [];
+  let extra = 0;
+  for (const m of turn) {
+    if (m.role !== "assistant" || !Array.isArray((m as any).content)) continue;
+    for (const p of (m as any).content) {
+      if (p?.type !== "tool-call") continue;
+      if (lines.length >= DISTILL_MAX_LINES) { extra++; continue; }
+      const input = p.input ?? p.args ?? {};
+      const arg = [input.path, input.file, input.command, input.query, input.pattern].find((x: any) => typeof x === "string" && x);
+      const head = `· ${p.toolName ?? "tool"}${arg ? ` ${String(arg).slice(0, DISTILL_ARG_CHARS)}` : ""}`;
+      const res = resultOf.get(p.toolCallId);
+      lines.push(res ? `${head} → ${res}` : head);
+    }
+  }
+  if (extra) lines.push(`· …and ${extra} more tool call${extra > 1 ? "s" : ""}`);
+  return lines.join("\n");
+}
+
 /**
  * Elide an old turn to save tokens while preserving context continuity.
- * Keeps the user message and any assistant prose (text parts), but drops all
+ * Keeps the user message and any assistant prose (text parts), drops all
  * tool-call parts from assistant messages and the corresponding tool-result
- * messages entirely. Dropping both sides together maintains balanced tool ids.
- * An assistant message that consisted solely of tool-calls is dropped outright.
+ * messages entirely (dropping both sides together maintains balanced tool
+ * ids), and appends a one-line-per-call DISTILLATION of the tool activity so
+ * the history stays informative about what actually happened.
  */
-function elideTurn(turn: ModelMessage[]): ModelMessage[] {
+export function elideTurn(turn: ModelMessage[]): ModelMessage[] {
   const out: ModelMessage[] = [];
+  let lastAssistantIdx = -1;
   for (const m of turn) {
     if (m.role === "tool") continue; // drop tool results (paired call also stripped below)
     if (m.role === "assistant" && Array.isArray((m as any).content)) {
       // Keep only plain text parts; strip tool-call parts.
       const kept = (m as any).content.filter((p: any) => typeof p === "string" || p?.type === "text");
-      if (kept.length) out.push({ ...(m as any), content: kept } as ModelMessage);
+      if (kept.length) {
+        out.push({ ...(m as any), content: kept } as ModelMessage);
+        lastAssistantIdx = out.length - 1;
+      }
       // If the assistant message was purely tool-calls, it is dropped entirely.
     } else {
       out.push(m);
+      if (m.role === "assistant") lastAssistantIdx = out.length - 1;
+    }
+  }
+  const distilled = distillToolCalls(turn);
+  if (distilled) {
+    const note = `[tools used this turn — full output elided]\n${distilled}`;
+    if (lastAssistantIdx >= 0) {
+      const m: any = out[lastAssistantIdx]!;
+      const content = Array.isArray(m.content)
+        ? [...m.content, { type: "text", text: note }]
+        : [{ type: "text", text: String(m.content ?? "") }, { type: "text", text: note }];
+      out[lastAssistantIdx] = { ...m, content } as ModelMessage;
+    } else {
+      // The turn's assistant output was tool-calls only: keep the trail as a
+      // standalone assistant message so the activity isn't lost entirely.
+      out.push({ role: "assistant", content: [{ type: "text", text: note }] } as ModelMessage);
+    }
+  }
+  return out;
+}
+
+/**
+ * Head-truncate any single oversized tool-result in a turn so one giant output
+ * (a long file read, a noisy test run) can't force the whole turn to be dropped
+ * by the budget loop. Only the result CONTENT shrinks — tool ids stay balanced.
+ * The marker tells the model to re-run the tool if it needs the tail. Pure.
+ */
+export function capToolResults(turn: ModelMessage[], maxTokens: number, modelId?: string): ModelMessage[] {
+  return turn.map((m) => {
+    if (m.role !== "tool" || !Array.isArray((m as any).content)) return m;
+    let changed = false;
+    const kept = (m as any).content.map((p: any) => {
+      if (p?.type !== "tool-result") return p;
+      const raw = typeof p.output === "string" ? p.output : p.output?.value;
+      if (typeof raw !== "string") return p;
+      const tokens = countTokens(raw, modelId);
+      if (tokens <= maxTokens) return p;
+      changed = true;
+      const head = raw.slice(0, maxTokens * 4); // ~4 chars/token estimate
+      const capped = `${head}\n…[tool output truncated: kept ~${Math.max(1, Math.round(maxTokens / 1000))}k of ~${Math.round(tokens / 1000)}k tokens — re-run the tool for the rest]`;
+      return { ...p, output: typeof p.output === "string" ? capped : { ...p.output, value: capped } };
+    });
+    return changed ? ({ ...(m as any), content: kept } as ModelMessage) : m;
+  });
+}
+
+/**
+ * Absolute paths of files read via read_file in the given turns — used to skip
+ * re-injecting their content through retrieval (the kept window already holds
+ * the full, fresher copy). Pure.
+ */
+export function recentlyReadPaths(turns: ModelMessage[][], cwd: string): Set<string> {
+  const out = new Set<string>();
+  for (const turn of turns) {
+    for (const m of turn) {
+      const c = (m as any).content;
+      if (m.role !== "assistant" || !Array.isArray(c)) continue;
+      for (const p of c) {
+        if (p?.type === "tool-call" && p.toolName === "read_file") {
+          const path = p.input?.path ?? p.args?.path;
+          if (typeof path === "string" && path) out.add(resolvePath(cwd, path));
+        }
+      }
     }
   }
   return out;
@@ -389,10 +511,21 @@ export function buildContext(opts: {
     sections.push({ name: "git", tokens: countTokens(git, modelId) });
   }
 
+  // Group history into turns up front: Step 3 needs it for elision, and the
+  // retrieval filter below needs the kept-verbatim window to avoid injecting a
+  // file whose full content already sits in a recent read_file result.
+  const turns = groupTurns(history);
+  const recent = opts.recentTurns ?? RECENT_TURNS;
+  const split = Math.max(0, turns.length - recent);
+
   // BM25 retrieval: top-k files scored against the current user prompt, packed
   // within 15% of the input budget. See retrieve.ts for scoring details.
   const retrieveBudget = Math.min(12_000, Math.floor(inputBudget * 0.15));
-  const hits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), []);
+  const recentlyRead = recentlyReadPaths(turns.slice(split), cwd);
+  const hits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), [])
+    // Don't inject a file the model JUST read — its full content is already in
+    // the kept window, so the retrieval copy is pure duplication.
+    .filter((h) => !recentlyRead.has(resolvePath(cwd, h.file)));
   if (hits.length) {
     const block = hits.map((h) => `=== ${h.file} ===\n${h.content}`).join("\n\n");
     volatileParts.push(`# RELEVANT FILES (retrieved for this task)\n${block}`);
@@ -416,22 +549,30 @@ export function buildContext(opts: {
   const userMsg: ModelMessage = { role: "user", content: userContent as any };
   const userTokens = msgTokens(userMsg, modelId);
 
-  // Split history into turns, then mark the boundary between "old" turns that
-  // will be elided and "recent" turns kept verbatim.
-  const turns = groupTurns(history);
-  const recent = opts.recentTurns ?? RECENT_TURNS;
-  const split = Math.max(0, turns.length - recent);
-
   // Apply elision to old turns: assistant text survives, tool exchanges are
-  // stripped. Recent turns are projected as-is (full tool IO).
-  const projected: ModelMessage[][] = turns.map((t, i) => (i < split ? elideTurn(t) : t));
+  // distilled to one line each. Recent turns keep full tool IO, except that any
+  // single oversized tool result (a giant file read) is head-capped — the very
+  // last turn stays whole, its results are freshest.
+  const projected: ModelMessage[][] = turns.map((t, i) =>
+    i < split ? elideTurn(t)
+    : i < turns.length - 1 ? capToolResults(t, RECENT_TOOL_RESULT_CAP, modelId)
+    : t,
+  );
 
-  // Trim the oldest whole turns until the projected history fits in the
-  // remaining budget. Each iteration drops exactly one complete turn so tool
-  // pairing is never broken across the trim boundary.
+  // Trim to fit the remaining budget. MESSAGE-grained first: when over budget,
+  // re-cap every recent turn's tool results (including the last) at a tighter
+  // limit — that usually rescues the window without losing whole turns. Only
+  // then fall back to dropping the oldest whole turns (which keeps tool
+  // pairing intact across the trim boundary).
   let historyBudget = inputBudget - systemTokens - userTokens;
   const turnCost = (t: ModelMessage[]) => t.reduce((s, m) => s + msgTokens(m, modelId), 0);
   let total = projected.reduce((s, t) => s + turnCost(t), 0);
+  if (total > historyBudget) {
+    for (let i = split; i < projected.length; i++) {
+      projected[i] = capToolResults(projected[i]!, TIGHT_TOOL_RESULT_CAP, modelId);
+    }
+    total = projected.reduce((s, t) => s + turnCost(t), 0);
+  }
   while (projected.length && total > historyBudget) {
     total -= turnCost(projected.shift()!);
   }

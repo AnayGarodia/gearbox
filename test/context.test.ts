@@ -4,11 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countTokens, baseTokens } from "../src/model/tokens.ts";
-import { buildContext, sanitizeToolPairs, dedupeFileReads } from "../src/context/builder.ts";
+import { buildContext, sanitizeToolPairs, dedupeFileReads, distillToolCalls, elideTurn, capToolResults, recentlyReadPaths } from "../src/context/builder.ts";
 import { repoMap } from "../src/context/repomap.ts";
 import { rankFiles, retrieveFiles, resetRetrievalIndex } from "../src/context/retrieve.ts";
 import { appendFact, loadFacts } from "../src/context/memory.ts";
-import { compactHistory, estimateHistoryTokens, type Summarizer } from "../src/context/compact.ts";
+import { compactHistory, estimateHistoryTokens, elideHistory, shouldAutoCompact, type Summarizer } from "../src/context/compact.ts";
 import { findModel, type ModelSpec } from "../src/providers.ts";
 
 const sonnet = findModel("sonnet-4.6")!;
@@ -287,6 +287,157 @@ test("compactHistory THROWS on summarizer failure (failure ≠ nothing-to-do)", 
   await expect(compactHistory({ history, summarize: boom, keepRecent: 1 })).rejects.toThrow("model down");
   // And genuinely nothing-to-do still returns null, not an error.
   expect(await compactHistory({ history: [...toolTurn(1)], summarize: boom, keepRecent: 4 })).toBeNull();
+});
+
+// ── distilling elision: the trail of WHAT happened survives old turns ──
+test("elided turns keep a one-line trail per tool call (distillation)", () => {
+  const history = [...toolTurn(1), ...toolTurn(2), ...toolTurn(3)];
+  const { messages } = buildContext({ history, userText: "next", model: sonnet, recentTurns: 0 });
+  const text = JSON.stringify(messages);
+  // tool ids stay balanced at zero (the exchange itself is gone)…
+  const { calls, results } = toolIds(messages);
+  expect(calls.size).toBe(0);
+  expect(results.size).toBe(0);
+  // …but the activity trail survives as plain text: tool name + primary arg + outcome head.
+  expect(text).toContain("read_file x.ts");
+  expect(text).toContain("[tools used this turn");
+});
+
+test("distillToolCalls caps at 8 lines and counts the overflow", () => {
+  const turn: ModelMessage[] = [{ role: "user", content: "go" }];
+  const calls: any[] = [];
+  const results: ModelMessage[] = [];
+  for (let i = 0; i < 11; i++) {
+    calls.push({ type: "tool-call", toolCallId: `c${i}`, toolName: "run_shell", input: { command: `cmd-${i}` } });
+    results.push({ role: "tool", content: [{ type: "tool-result", toolCallId: `c${i}`, toolName: "run_shell", output: { type: "text", value: `out-${i}\nmore` } }] as any });
+  }
+  turn.push({ role: "assistant", content: calls } as any, ...results);
+  const d = distillToolCalls(turn);
+  expect(d.split("\n").length).toBe(9); // 8 lines + the overflow counter
+  expect(d).toContain("…and 3 more tool calls");
+  expect(d).toContain("run_shell cmd-0 → out-0"); // outcome is the result's first line
+  // a tool-less turn distills to nothing
+  expect(distillToolCalls([{ role: "user", content: "hi" }, { role: "assistant", content: "yo" }])).toBe("");
+});
+
+test("elideTurn appends the trail even when the assistant was tool-calls only", () => {
+  const turn: ModelMessage[] = [
+    { role: "user", content: "edit it" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "e1", toolName: "edit_file", input: { path: "src/a.ts" } }] as any },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "e1", toolName: "edit_file", output: { type: "text", value: "applied 3 hunks" } }] as any },
+  ];
+  const out = elideTurn(turn);
+  const text = JSON.stringify(out);
+  expect(text).toContain("edit_file src/a.ts → applied 3 hunks");
+  const ids = toolIds(out);
+  expect(ids.calls.size).toBe(0);
+  expect(ids.results.size).toBe(0);
+});
+
+// ── message-grained capping: one giant tool output can't sink a whole turn ──
+test("capToolResults head-truncates an oversized result and keeps pairing", () => {
+  const big = "line of output ".repeat(4000); // far over 1k tokens
+  const turn: ModelMessage[] = [
+    { role: "user", content: "read it" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "r1", toolName: "read_file", input: { path: "big.ts" } }] as any },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "r1", toolName: "read_file", output: { type: "text", value: big } }] as any },
+  ];
+  const out = capToolResults(turn, 1000);
+  const text = JSON.stringify(out);
+  expect(text).toContain("tool output truncated");
+  expect(text.length).toBeLessThan(JSON.stringify(turn).length / 2);
+  const { calls, results } = toolIds(out);
+  expect([...calls].sort()).toEqual([...results].sort()); // ids untouched
+  // an already-small result passes through unchanged (same object)
+  const small = capToolResults([turn[0]!], 1000);
+  expect(small[0]).toBe(turn[0]!);
+});
+
+test("a recent turn with one giant tool result is capped, not dropped (turn survives)", () => {
+  const tiny: ModelSpec = { ...sonnet, contextWindow: 40_000 };
+  const big = "important context ".repeat(8000); // single ~20k+ token tool result
+  const history: ModelMessage[] = [
+    { role: "user", content: "the question that must survive" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "g1", toolName: "read_file", input: { path: "huge.ts" } }] as any },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "g1", toolName: "read_file", output: { type: "text", value: big } }] as any },
+    { role: "assistant", content: "noted" },
+    { role: "user", content: "and a second turn" },
+    { role: "assistant", content: "ok" },
+  ];
+  const { messages } = buildContext({ history, userText: "final", model: tiny, recentTurns: 5 });
+  // The whole-turn trim used to drop the oversized turn outright; the cap keeps it.
+  expect(messages.some((m) => m.role === "user" && String(m.content).includes("must survive"))).toBe(true);
+  const { calls, results } = toolIds(messages);
+  expect([...calls].sort()).toEqual([...results].sort());
+});
+
+// ── retrieval: the top hit is included head-truncated instead of vanishing ──
+test("retrieveFiles head-truncates the top hit when nothing fits the budget", () => {
+  const hits = retrieveFiles("how does the agent stream events", process.cwd(), 6, 250);
+  expect(hits.length).toBe(1);
+  expect(hits[0]!.content).toContain("[truncated — file continues");
+  expect(hits[0]!.tokens).toBeLessThanOrEqual(250);
+});
+
+// ── don't re-inject a file the model just read ──
+test("buildContext skips retrieval for files read in the kept window", () => {
+  const query = "how does the agent stream events";
+  const top = retrieveFiles(query, process.cwd(), 6, 12_000)[0];
+  expect(top).toBeTruthy();
+  const history: ModelMessage[] = [
+    { role: "user", content: "read that file" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "rr1", toolName: "read_file", input: { path: top!.file } }] as any },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "rr1", toolName: "read_file", output: { type: "text", value: "current contents" } }] as any },
+  ];
+  const { messages } = buildContext({ history, userText: query, model: sonnet, recentTurns: 3 });
+  const userText = userMsgText(messages[messages.length - 1]!);
+  expect(userText).not.toContain(`=== ${top!.file} ===`); // not re-injected
+  // …but an OLD (elided) read does not suppress retrieval
+  const { messages: m2 } = buildContext({ history, userText: query, model: sonnet, recentTurns: 0 });
+  expect(userMsgText(m2[m2.length - 1]!)).toContain(`=== ${top!.file} ===`);
+  // pure helper sanity
+  expect(recentlyReadPaths([history], process.cwd()).size).toBe(1);
+});
+
+// ── model-free compaction fallback ──
+test("elideHistory shrinks tokens mechanically, keeps recent turns whole", () => {
+  const history = [...toolTurn(1), ...toolTurn(2), ...toolTurn(3), ...toolTurn(4)];
+  const res = elideHistory(history, 1);
+  expect(res).not.toBeNull();
+  expect(res!.summarizedTurns).toBe(3);
+  expect(res!.after).toBeLessThan(res!.before);
+  const { calls, results } = toolIds(res!.messages);
+  expect([...calls].sort()).toEqual([...results].sort());
+  expect(calls.has("t4")).toBe(true); // recent kept whole
+  expect(calls.has("t1")).toBe(false); // old elided
+  expect(JSON.stringify(res!.messages)).toContain("read_file x.ts"); // distilled trail survives
+  // nothing old enough → null, not a fake success
+  expect(elideHistory([...toolTurn(1)], 4)).toBeNull();
+});
+
+test("elided history feeds buildContext into a valid send", () => {
+  const res = elideHistory([...toolTurn(1), ...toolTurn(2), ...toolTurn(3)], 1)!;
+  const { messages } = buildContext({ history: res.messages, userText: "next", model: sonnet });
+  expect(messages[messages.length - 1]!.role).toBe("user");
+  const { calls, results } = toolIds(messages);
+  expect([...calls].sort()).toEqual([...results].sort());
+});
+
+// ── auto-compact trigger: budgets on the FULL context, not history alone ──
+test("shouldAutoCompact accounts for the non-history overhead", () => {
+  const window = 200_000; // budget = 168k, threshold = 126k
+  expect(shouldAutoCompact(100_000, 0, window)).toBe(false); // history alone: under
+  expect(shouldAutoCompact(100_000, 30_000, window)).toBe(true); // +overhead: over
+  expect(shouldAutoCompact(127_000, 0, window)).toBe(true);
+  expect(shouldAutoCompact(0, 0, window)).toBe(false);
+});
+
+// ── cacheBreak after compaction: regression guard (verified not a bug) ──
+test("cacheBreak stays valid after compaction rewrites the history", async () => {
+  const res = await compactHistory({ history: [...toolTurn(1), ...toolTurn(2), ...toolTurn(3)], summarize: fakeSummary, keepRecent: 1 });
+  const { messages, cacheBreak } = buildContext({ history: res!.messages, userText: "next", model: sonnet });
+  expect(cacheBreak).toBe(messages.length - 2); // still the message before the user turn
+  expect(messages[cacheBreak]!.role).not.toBe("user"); // settled history, not the new prompt
 });
 
 test("estimateHistoryTokens grows with history", () => {

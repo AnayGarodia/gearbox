@@ -57,7 +57,17 @@ test("formatModelList marks current and lists available labels", () => {
   }
 });
 
-import { modelRank, compareModels, modelMarker } from "../src/commands.ts";
+import { modelRank, compareModels, modelMarker, buildContextView } from "../src/commands.ts";
+
+test("buildContextView reports each section's share of the window", () => {
+  const v = buildContextView([{ name: "system", tokens: 10_000 }, { name: "history", tokens: 240 }], 200_000, "/repo");
+  expect(v.rows[0]!.pct).toBe(5);
+  expect(v.rows[1]!.pct).toBe(0.1); // sub-1% keeps a decimal — doesn't read as zero
+  expect(v.windowPct).toBe(5);
+  // without a window, pct is absent (nothing to be a percentage OF)
+  const noWin = buildContextView([{ name: "system", tokens: 10_000 }]);
+  expect(noWin.rows[0]!.pct).toBeUndefined();
+});
 import type { ModelSpec } from "../src/providers.ts";
 
 test("modelRank/compareModels: curated → discovered → seeds → pin-only, quality desc, label ties", () => {

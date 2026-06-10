@@ -238,7 +238,11 @@ export function buildContextView(sections: { name: string; tokens: number }[], c
   const total = sections.reduce((s, x) => s + x.tokens, 0);
   const max = Math.max(1, ...sections.map((s) => s.tokens));
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-  const rows = sections.map((s) => ({ label: s.name, display: fmt(s.tokens), frac: s.tokens / max }));
+  // pct = share of the WINDOW (not of the largest section) so the user can see
+  // where the budget actually goes; sub-1% values keep a decimal so a tiny
+  // section doesn't read as zero.
+  const pctOf = (n: number) => (contextWindow ? Math.round(((n / contextWindow) * 100) * 10) / 10 : undefined);
+  const rows = sections.map((s) => ({ label: s.name, display: fmt(s.tokens), frac: s.tokens / max, pct: pctOf(s.tokens) }));
   const labelPad = Math.max("total".length, ...rows.map((r) => r.label.length));
   const valuePad = Math.max(fmt(total).length, ...rows.map((r) => r.display.length));
   return {
