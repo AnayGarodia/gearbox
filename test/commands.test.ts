@@ -106,3 +106,12 @@ test("modelDirectiveIn pins on an explicit model alias, ignores ordinary prose",
     if (prev === undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY = prev;
   }
 });
+
+import { closestCommand, editDistance } from "../src/commands.ts";
+
+test("slash typos suggest the real command (transpositions included)", () => {
+  expect(editDistance("accoutn", "account")).toBe(1); // one transposition
+  expect(closestCommand("accoutn")).toBe("/account");
+  expect(closestCommand("modle")).toBe("/model");
+  expect(closestCommand("zzzzzz")).toBeNull();
+});

@@ -11,8 +11,10 @@
 //   and must never be used as the primary for management routes; it survives only as
 //   a fallback attempt for gateway-fronted endpoints that re-expose the routes there.
 //
-// OSC 8 clickable portal links: wrapped with terminalLink() so terminals that support
-// them (iTerm2, Ghostty, WezTerm, kitty) make the URL clickable. Degrades gracefully.
+// Portal links are PLAIN URLs in notes: the transcript's notice renderer
+// linkifies them (OSC 8 via Ink <Transform>, post-layout). Raw ANSI inside
+// Ink text corrupts width math and renders as visible garbage ("39m…]8;;") —
+// the repo-wide rule. terminalLink() survives only for non-Ink stdout (CLI).
 import { resolveCreds } from "./resolve.ts";
 import { armCreateDeployment, armDeleteDeployment } from "./azure-arm.ts";
 import { withTimeout } from "./health.ts";
@@ -261,7 +263,7 @@ export async function createDeployment(
           const host = hostOf(rawBase);
           if (!host) return { ok: false, note: "no endpoint configured" };
           const arm = await armCreateDeployment(host, deploymentName, modelId, capacityType, fetchImpl);
-          return arm.ok ? arm : { ok: false, note: `${arm.note}\n  or create it in the portal: ${terminalLink("https://ai.azure.com")}` };
+          return arm.ok ? arm : { ok: false, note: `${arm.note}\n  or create it in the portal: ${"https://ai.azure.com"}` };
         }
         const base = foundryManagementBase(rawBase);
         if (!base) return { ok: false, note: "no endpoint configured" };
@@ -298,7 +300,7 @@ export async function createDeployment(
         const text = await r.text().catch(() => "");
         last = { status: r.status, text };
         const portalBase = creds.azure
-          ? terminalLink(`https://portal.azure.com/#resource/${creds.azure.resourceName}`)
+          ? `https://portal.azure.com/#resource/${creds.azure.resourceName}`
           : "";
         if (r.status === 401) {
           return { ok: false, note: `read-only key cannot deploy — Cognitive Services Contributor role required in Azure IAM${portalBase ? "\n  manage at: " + portalBase : ""}` };
@@ -356,7 +358,7 @@ export async function deleteDeployment(
           const host = hostOf(rawBase);
           if (!host) return { ok: false, note: "no endpoint configured" };
           const arm = await armDeleteDeployment(host, deploymentId, fetchImpl);
-          return arm.ok ? arm : { ok: false, note: `${arm.note}\n  or delete it in the portal: ${terminalLink("https://ai.azure.com")}` };
+          return arm.ok ? arm : { ok: false, note: `${arm.note}\n  or delete it in the portal: ${"https://ai.azure.com"}` };
         }
         const base = foundryManagementBase(rawBase);
         if (!base) return { ok: false, note: "no endpoint configured" };
@@ -379,7 +381,7 @@ export async function deleteDeployment(
         const text = await r.text().catch(() => "");
         last = { status: r.status, text };
         const portalBase = creds.azure
-          ? terminalLink(`https://portal.azure.com/#resource/${creds.azure.resourceName}`)
+          ? `https://portal.azure.com/#resource/${creds.azure.resourceName}`
           : "";
         if (r.status === 404) {
           if (/deploymentnotfound|deployment .*not found/i.test(text)) return { ok: true }; // genuinely already gone

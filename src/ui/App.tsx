@@ -47,7 +47,7 @@ import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCre
 import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, addVertexAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs, type AddResult } from "../accounts/onboard.ts";
 import { ADD_SPECS, specFor, filterAddSpecs, buildPaletteAddRows, buildAddGuidance, type AddSpec } from "../accounts/add-spec.ts";
 import { discoverModels } from "../accounts/discover.ts";
-import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDeployment, terminalLink, type AzureDeploymentInfo } from "../accounts/manage.ts";
+import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDeployment, type AzureDeploymentInfo } from "../accounts/manage.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
@@ -70,7 +70,7 @@ import { missingRequirements, capabilitySummary, type ModelRequirement } from ".
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor } from "../commands.ts";
+import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
@@ -4136,8 +4136,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         default: {
           echo(text);
           // Suggest the closest real command (typo-friendly), else point to /help.
-          const near = matchCommands(`/${name}`).filter((c) => c.name !== `/${name}`)[0];
-          notice(near ? `no /${name} command · did you mean ${near.name}?  (/help for all)` : `no /${name} command · type /help to see what's available`);
+          const near = matchCommands(`/${name}`).filter((c) => c.name !== `/${name}`)[0]?.name ?? closestCommand(name);
+          notice(near ? `no /${name} command · did you mean ${near}?  (/help for all)` : `no /${name} command · type /help to see what's available`);
           return;
         }
       }

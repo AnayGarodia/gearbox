@@ -407,3 +407,33 @@ export function resolveModelSwitch(query: string): SwitchResult {
   const m = available[0]!;
   return { ok: true, modelId: m.id, message: `model → ${m.label}` };
 }
+
+
+/** Damerau–Levenshtein distance (with adjacent transposition) — small inputs
+ *  only (command names). Powers the slash-command did-you-mean. */
+export function editDistance(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const d: number[][] = Array.from({ length: m + 1 }, (_, i) => Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      d[i]![j] = Math.min(d[i - 1]![j]! + 1, d[i]![j - 1]! + 1, d[i - 1]![j - 1]! + cost);
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        d[i]![j] = Math.min(d[i]![j]!, d[i - 2]![j - 2]! + 1);
+      }
+    }
+  }
+  return d[m]![n]!;
+}
+
+/** The closest command to a mistyped name (≤2 edits, transpositions count as
+ *  one), or null. The fuzzy palette matcher misses transpositions ("accoutn"
+ *  is not a subsequence of "account") — this catches what it can't. */
+export function closestCommand(name: string): string | null {
+  let best: { cmd: string; d: number } | null = null;
+  for (const c of COMMANDS) {
+    const d = editDistance(name.toLowerCase(), c.name.slice(1).toLowerCase());
+    if (d <= 2 && (!best || d < best.d)) best = { cmd: c.name, d };
+  }
+  return best?.cmd ?? null;
+}

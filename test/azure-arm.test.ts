@@ -48,7 +48,13 @@ function fakeArm(opts: { putStatus?: (body: any, attempt: number) => { status: n
     if (u.includes("/providers/Microsoft.CognitiveServices/accounts?")) {
       return new Response(JSON.stringify({ value: [{ id: ACCT_ID, name: "my-res", properties: { endpoint: "https://my-res.services.ai.azure.com/" } }] }), { status: 200 });
     }
-    if (u.includes("/models?")) return new Response(JSON.stringify({ value: [{ model: { name: "gpt-4o", version: "2024-11-20" } }] }), { status: 200 });
+    if (u.includes("/models?")) {
+      return new Response(JSON.stringify({ value: [
+        { model: { name: "gpt-4o", version: "2024-11-20", format: "OpenAI", skus: [{ name: "GlobalStandard", capacity: { default: 50 } }, { name: "Standard", capacity: { default: 10 } }] } },
+        { model: { name: "gpt-image-1", format: "OpenAI", skus: [{ name: "GlobalStandard", capacity: { default: 50 } }] } },
+        { model: { name: "gpt-oss-120b", format: "OpenAI-OSS", skus: [{ name: "GlobalStandard", capacity: { default: 10 } }] } },
+      ] }), { status: 200 });
+    }
     if (method === "PUT") {
       putAttempts++;
       const r = opts.putStatus?.(body, putAttempts) ?? { status: 201, body: "{}" };
@@ -68,25 +74,46 @@ test("armCreateDeployment finds the account, PUTs the ARM body, caches the ref",
   expect(put.url).toContain(`${ACCT_ID}/deployments/my-dep`);
   expect(put.url).toContain("management.azure.com");
   expect(put.body.sku).toEqual({ name: "GlobalStandard", capacity: 50 });
-  expect(put.body.properties.model).toEqual({ format: "OpenAI", name: "gpt-4o" });
+  expect(put.body.properties.model).toEqual({ format: "OpenAI", name: "gpt-4o", version: "2024-11-20" });
   // Second call: the subscription walk is skipped (ref disk-cached).
   const arm2 = fakeArm();
   await armCreateDeployment("my-res.services.ai.azure.com", "dep2", "gpt-4o", "Standard", arm2.fetch, fakeExec);
   expect(arm2.calls.some((c) => c.url.includes("/subscriptions?"))).toBe(false);
 });
 
-test("a 400 demanding a model version retries once with the looked-up version", async () => {
-  const arm = fakeArm({
-    putStatus: (body, attempt) =>
-      attempt === 1
-        ? { status: 400, body: JSON.stringify({ error: { code: "BadRequest", message: "The model version is required." } }) }
-        : { status: 201, body: "{}" },
-  });
+test("the catalog supplies format/version/sku on the FIRST put — no guess-and-400 loop", async () => {
+  const arm = fakeArm();
   const r = await armCreateDeployment("my-res.services.ai.azure.com", "my-dep", "gpt-4o", "Standard", arm.fetch, fakeExec);
   expect(r.ok).toBe(true);
   const puts = arm.calls.filter((c) => c.method === "PUT");
-  expect(puts).toHaveLength(2);
-  expect(puts[1]!.body.properties.model.version).toBe("2024-11-20");
+  expect(puts).toHaveLength(1);
+  expect(puts[0]!.body.properties.model.version).toBe("2024-11-20");
+  expect(puts[0]!.body.sku).toEqual({ name: "Standard", capacity: 10 });
+});
+
+test("non-OpenAI publishers deploy with THEIR catalog format (the gpt-oss/Kimi bug)", async () => {
+  const arm = fakeArm();
+  const r = await armCreateDeployment("my-res.services.ai.azure.com", "oss", "gpt-oss-120b", "GlobalStandard", arm.fetch, fakeExec);
+  expect(r.ok).toBe(true);
+  const put = arm.calls.find((c) => c.method === "PUT")!;
+  expect(put.body.properties.model.format).toBe("OpenAI-OSS"); // never the hardcoded "OpenAI"
+  expect(put.body.sku.capacity).toBe(10); // the catalog sku's default, not the global 50
+});
+
+test("a sku the catalog doesn't allow falls back to the catalog's own sku", async () => {
+  const arm = fakeArm();
+  const r = await armCreateDeployment("my-res.services.ai.azure.com", "oss2", "gpt-oss-120b", "ProvisionedManaged", arm.fetch, fakeExec);
+  expect(r.ok).toBe(true);
+  const put = arm.calls.find((c) => c.method === "PUT")!;
+  expect(put.body.sku.name).toBe("GlobalStandard");
+});
+
+test("a model outside the account's catalog fails fast with close matches — zero PUTs", async () => {
+  const arm = fakeArm();
+  const r = await armCreateDeployment("my-res.services.ai.azure.com", "x", "Kimi-K2.5", "GlobalStandard", arm.fetch, fakeExec);
+  expect(r.ok).toBe(false);
+  expect(r.note).toContain("can't deploy");
+  expect(arm.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
 });
 
 test("403 names the role; delete treats ARM 404 as gone", async () => {

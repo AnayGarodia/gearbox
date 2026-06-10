@@ -291,17 +291,64 @@ export async function findAccountForHost(endpointHost: string, fetchImpl: typeof
  *  Deliberately modest — a quota error from Azure names the real ceiling. */
 const DEFAULT_CAPACITY: Record<string, number> = { Standard: 10, GlobalStandard: 50, ProvisionedManaged: 1 };
 
-function deployBody(modelId: string, capacityType: string, version?: string, capacity?: number): string {
+function deployBody(modelId: string, skuName: string, format: string, version?: string, capacity?: number): string {
   return JSON.stringify({
-    sku: { name: capacityType, capacity: capacity ?? DEFAULT_CAPACITY[capacityType] ?? 10 },
-    properties: { model: { format: "OpenAI", name: modelId, ...(version ? { version } : {}) } },
+    sku: { name: skuName, capacity: capacity ?? DEFAULT_CAPACITY[skuName] ?? 10 },
+    properties: { model: { format, name: modelId, ...(version ? { version } : {}) } },
   });
 }
 
-async function armModelVersion(token: string, ref: ArmAccountRef, modelId: string, fetchImpl: typeof fetch): Promise<string | undefined> {
+/** One deployable model from the account's ARM catalog. The catalog is the
+ *  truth the deploy body must match: `format` is the PUBLISHER ("OpenAI",
+ *  "OpenAI-OSS", "Moonshot", "Meta", …) — hardcoding OpenAI made every
+ *  non-OpenAI deploy fail with "model 'Format:OpenAI,Name:…' of account
+ *  deployment is not supported"; `skus` are the only valid capacity types. */
+export interface ArmCatalogModel {
+  format: string;
+  name: string;
+  version?: string;
+  skus: { name: string; defaultCapacity?: number }[];
+}
+
+export function parseArmCatalog(json: any): ArmCatalogModel[] {
+  const out: ArmCatalogModel[] = [];
+  for (const item of json?.value ?? []) {
+    const m = item?.model ?? item;
+    if (typeof m?.name !== "string" || !m.name) continue;
+    const skus = (Array.isArray(m.skus) ? m.skus : [])
+      .filter((sk: any) => typeof sk?.name === "string")
+      .map((sk: any) => ({ name: sk.name as string, defaultCapacity: typeof sk?.capacity?.default === "number" ? sk.capacity.default : undefined }));
+    out.push({ format: typeof m.format === "string" && m.format ? m.format : "OpenAI", name: m.name, version: typeof m.version === "string" ? m.version : undefined, skus });
+  }
+  return out;
+}
+
+async function armCatalog(token: string, ref: ArmAccountRef, fetchImpl: typeof fetch): Promise<ArmCatalogModel[] | null> {
   const j = await armGet(token, `${ref.id}/models?api-version=${ARM_API}`, fetchImpl);
-  const match = (j?.value ?? []).find((m: any) => (m?.model?.name ?? m?.name) === modelId);
-  return match?.model?.version ?? match?.version ?? undefined;
+  return j ? parseArmCatalog(j) : null;
+}
+
+/** Resolve what the deploy body should say for `modelId` on this account:
+ *  the catalog entry's format/version, the requested sku when the catalog
+ *  allows it (else the catalog's first sku), and that sku's default capacity.
+ *  Catalog unavailable (rare perms) → optimistic OpenAI-format fallback.
+ *  Model not in the catalog → a named error listing close matches. */
+export function resolveDeploySpec(
+  catalog: ArmCatalogModel[] | null,
+  modelId: string,
+  requestedSku: string,
+): { format: string; version?: string; skuName: string; defaultCapacity?: number } | { error: string } {
+  if (!catalog) return { format: "OpenAI", skuName: requestedSku };
+  const m = catalog.find((c) => c.name.toLowerCase() === modelId.toLowerCase());
+  if (!m) {
+    const near = catalog
+      .filter((c) => c.name.toLowerCase().includes(modelId.toLowerCase().slice(0, 4)))
+      .slice(0, 3)
+      .map((c) => c.name);
+    return { error: `this account can't deploy "${modelId}" — it's not in its deployable catalog${near.length ? ` (close: ${near.join(", ")})` : ""}` };
+  }
+  const sku = m.skus.find((sk) => sk.name.toLowerCase() === requestedSku.toLowerCase()) ?? m.skus[0];
+  return { format: m.format, version: m.version, skuName: sku?.name ?? requestedSku, defaultCapacity: sku?.defaultCapacity };
 }
 
 /** Pull "available capacity N" out of Azure's quota-exceeded 400. Azure spells
@@ -338,23 +385,23 @@ export async function armCreateDeployment(
   const url = `${ARM}${ref.id}/deployments/${encodeURIComponent(deploymentName)}?api-version=${ARM_API}`;
   const headers = { Authorization: `Bearer ${t.token}`, "Content-Type": "application/json" };
 
-  let version: string | undefined;
-  let capacity: number | undefined; // default per sku until the quota error teaches us better
+  // The account's catalog decides the body: publisher format (OpenAI /
+  // OpenAI-OSS / Moonshot / …), version, and which skus are legal. One GET,
+  // correct first PUT — instead of guessing OpenAI and reading 400s.
+  const spec = resolveDeploySpec(await armCatalog(t.token, ref, fetchImpl), modelId, capacityType);
+  if ("error" in spec) return { ok: false, note: spec.error };
+  const version = spec.version;
+  let capacity: number | undefined = spec.defaultCapacity; // quota errors below can lower it further
   for (let attempt = 0; attempt < 3; attempt++) {
-    const r = await fetchImpl(url, { method: "PUT", headers, body: deployBody(modelId, capacityType, version, capacity) });
-    if (r.ok) return { ok: true, note: capacity != null ? `deployed at capacity ${capacity} (all this subscription's quota allows — request more in the portal to scale up)` : undefined };
+    const r = await fetchImpl(url, { method: "PUT", headers, body: deployBody(modelId, spec.skuName, spec.format, version, capacity) });
+    if (r.ok) return { ok: true, note: capacity != null && capacity !== spec.defaultCapacity ? `deployed at capacity ${capacity} (all this subscription's quota allows — request more in the portal to scale up)` : undefined };
     const text = await r.text().catch(() => "");
-    // Some models demand an explicit version — look it up and go around.
-    if (r.status === 400 && /version/i.test(text) && !version) {
-      version = await armModelVersion(t.token, ref, modelId, fetchImpl);
-      if (version) continue;
-    }
     // Quota 400: Azure names the capacity actually available. Asking for the
     // sku default (e.g. 50) when the subscription's limit is 2 should deploy
     // at 2, not fail — the user can raise quota later to scale up.
-    if (r.status === 400 && isQuotaError(text) && capacity == null) {
+    if (r.status === 400 && isQuotaError(text)) {
       const avail = availableCapacityIn(text);
-      if (avail != null && avail >= 1) {
+      if (avail != null && avail >= 1 && avail !== capacity) {
         capacity = avail;
         continue;
       }
