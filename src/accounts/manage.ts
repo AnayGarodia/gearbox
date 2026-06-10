@@ -54,11 +54,13 @@ function foundryManagementBase(baseUrl: string): string {
   return baseUrl.replace(/\/+$/, "").replace(/\/openai(?:\/v1)?$/i, "");
 }
 
-/** Returns true for Azure AI Foundry project inference endpoints (*.inference.ai.azure.com).
- *  These endpoints are read-only for deployments — PUT/DELETE require ARM API with AAD auth,
- *  not the data-plane API key that in-loop accounts carry. */
-function isFoundryInferenceEndpoint(baseUrl: string): boolean {
-  return /\.inference\.ai\.azure\.com/i.test(baseUrl);
+/** Returns true for Foundry-era endpoints (services.ai / cognitiveservices /
+ *  project inference hosts). NONE of them expose data-plane deployment writes
+ *  at any api-version — PUT/DELETE are ARM control-plane operations with AAD
+ *  auth, never the data-plane API key. (Reads — list deployments/models —
+ *  still work on the data plane and keep using it.) */
+function isFoundryStyleEndpoint(baseUrl: string): boolean {
+  return /\.inference\.ai\.azure\.com|\.services\.ai\.azure\.com|\.cognitiveservices\.azure\.com/i.test(baseUrl);
 }
 
 /** Pick the write api-version for an account (stored or default). */
@@ -251,9 +253,11 @@ export async function createDeployment(
         headers = { "api-key": apiKey, "Content-Type": "application/json" };
       } else {
         const rawBase = creds.baseURL ?? account.baseUrl ?? "";
-        if (isFoundryInferenceEndpoint(rawBase)) {
-          // The inference endpoint has no management surface at all — go
-          // straight to the ARM control plane (az CLI token).
+        if (isFoundryStyleEndpoint(rawBase)) {
+          // Foundry-era endpoints have NO data-plane management surface at any
+          // api-version — deployment writes are ARM control-plane operations.
+          // Going straight there saves two doomed calls and keeps Azure's real
+          // answer (quota, rights) front and center.
           const host = hostOf(rawBase);
           if (!host) return { ok: false, note: "no endpoint configured" };
           const arm = await armCreateDeployment(host, deploymentName, modelId, capacityType, fetchImpl);
@@ -311,7 +315,7 @@ export async function createDeployment(
       if (host) {
         const arm = await armCreateDeployment(host, deploymentName, modelId, capacityType, fetchImpl);
         if (arm.ok) return arm;
-        return { ok: false, note: `the data plane on this endpoint has no deployment management (HTTP ${last.status}); tried the ARM control plane:\n  ${arm.note}` };
+        return { ok: false, note: arm.note ?? `deploy failed (HTTP ${last.status})` };
       }
       return { ok: false, note: `deploy failed (HTTP ${last.status}): ${last.text.slice(0, 200)}` };
     } catch (e: any) {
@@ -348,7 +352,7 @@ export async function deleteDeployment(
         headers = { "api-key": apiKey };
       } else {
         const rawBase = creds.baseURL ?? account.baseUrl ?? "";
-        if (isFoundryInferenceEndpoint(rawBase)) {
+        if (isFoundryStyleEndpoint(rawBase)) {
           const host = hostOf(rawBase);
           if (!host) return { ok: false, note: "no endpoint configured" };
           const arm = await armDeleteDeployment(host, deploymentId, fetchImpl);
@@ -390,7 +394,7 @@ export async function deleteDeployment(
       if (host) {
         const arm = await armDeleteDeployment(host, deploymentId, fetchImpl);
         if (arm.ok) return arm;
-        return { ok: false, note: `the data plane on this endpoint has no deployment management (HTTP ${last.status}); tried the ARM control plane:\n  ${arm.note}` };
+        return { ok: false, note: arm.note ?? `deploy failed (HTTP ${last.status})` };
       }
       return { ok: false, note: `delete failed (HTTP ${last.status}): ${last.text.slice(0, 200)}` };
     } catch (e: any) {

@@ -112,7 +112,24 @@ test("listDeploymentDetails: Foundry account with /openai/v1 baseUrl does not do
   expect(capturedUrl).toContain("/openai/deployments");
 });
 
-test("createDeployment: Foundry account with /openai/v1 baseUrl does not double the path", async () => {
+test("createDeployment: services.ai host routes writes straight to ARM (no doomed data-plane PUTs)", async () => {
+  let dataPlaneCalls = 0;
+  const mockFetch: typeof fetch = (async (url: string | URL | Request) => {
+    if (!url.toString().includes("management.azure.com")) dataPlaneCalls++;
+    return new Response("{}", { status: 404 });
+  }) as typeof fetch;
+  const acc: import("../src/accounts/types.ts").Account = {
+    id: "foundry-arm-route-test", label: "Foundry", provider: "azure-foundry", exec: "in-loop",
+    auth: { kind: "openai-compat", ref: "foundry-arm-route-test:api-key" },
+    baseUrl: "https://my-foundry.services.ai.azure.com/openai/v1", enabled: true, addedAt: Date.now(),
+  };
+  const r = await createDeployment(acc, "my-dep", "gpt-4o", "Standard", mockFetch);
+  expect(r.ok).toBe(false);
+  expect(dataPlaneCalls).toBe(0); // no doomed data-plane writes
+  expect(r.note).toMatch(/ARM management is disabled|az login|\/account login/);
+});
+
+test("createDeployment: gateway baseUrl with /openai/v1 does not double the path", async () => {
   let capturedUrl = "";
   const mockFetch: typeof fetch = (async (url: string | URL | Request) => {
     capturedUrl = url.toString();
@@ -125,7 +142,7 @@ test("createDeployment: Foundry account with /openai/v1 baseUrl does not double 
     provider: "azure-foundry",
     exec: "in-loop",
     auth: { kind: "openai-compat", ref: "foundry-create-test:api-key" },
-    baseUrl: "https://my-foundry.services.ai.azure.com/openai/v1",
+    baseUrl: "https://my-gateway.example.com/openai/v1",
     enabled: true,
     addedAt: Date.now(),
   };
@@ -135,7 +152,7 @@ test("createDeployment: Foundry account with /openai/v1 baseUrl does not double 
   expect(capturedUrl).toContain("/openai/deployments/my-dep");
 });
 
-test("deleteDeployment: Foundry account with /openai/v1 baseUrl does not double the path", async () => {
+test("deleteDeployment: gateway baseUrl with /openai/v1 does not double the path", async () => {
   let capturedUrl = "";
   const mockFetch: typeof fetch = (async (url: string | URL | Request) => {
     capturedUrl = url.toString();
@@ -148,7 +165,7 @@ test("deleteDeployment: Foundry account with /openai/v1 baseUrl does not double 
     provider: "azure-foundry",
     exec: "in-loop",
     auth: { kind: "openai-compat", ref: "foundry-delete-test:api-key" },
-    baseUrl: "https://my-foundry.services.ai.azure.com/openai/v1",
+    baseUrl: "https://my-gateway.example.com/openai/v1",
     enabled: true,
     addedAt: Date.now(),
   };
@@ -311,7 +328,7 @@ test("deleteDeployment: generic route-404 on every api-version is an honest fail
   const acc = addResult.account!;
   const r = await deleteDeployment(acc, "my-dep", makeFetch(404, { error: { code: "404", message: "Resource not found" } }));
   expect(r.ok).toBe(false);
-  expect(r.note).toContain("no deployment management");
+  expect(r.note).toMatch(/ARM management is disabled|az login|\/account login/);
 });
 
 // ── The v0.2.93 deploy 404: management routes live on the AUTHORING api-version ──
@@ -350,7 +367,7 @@ test("createDeployment: 404 on every version reports the portal path, not a raw 
   const acc = addResult.account!;
   const r = await createDeployment(acc, "my-dep", "gpt-4o", "Standard", makeFetch(404, { error: { code: "404", message: "Resource not found" } }));
   expect(r.ok).toBe(false);
-  expect(r.note).toContain("no deployment management");
+  expect(r.note).toMatch(/ARM management is disabled|az login|\/account login/);
 });
 
 test("createDeployment: a Standard deploy sends the legacy authoring body (lowercase scale_type)", async () => {

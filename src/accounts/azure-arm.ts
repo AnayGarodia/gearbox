@@ -291,9 +291,9 @@ export async function findAccountForHost(endpointHost: string, fetchImpl: typeof
  *  Deliberately modest — a quota error from Azure names the real ceiling. */
 const DEFAULT_CAPACITY: Record<string, number> = { Standard: 10, GlobalStandard: 50, ProvisionedManaged: 1 };
 
-function deployBody(modelId: string, capacityType: string, version?: string): string {
+function deployBody(modelId: string, capacityType: string, version?: string, capacity?: number): string {
   return JSON.stringify({
-    sku: { name: capacityType, capacity: DEFAULT_CAPACITY[capacityType] ?? 10 },
+    sku: { name: capacityType, capacity: capacity ?? DEFAULT_CAPACITY[capacityType] ?? 10 },
     properties: { model: { format: "OpenAI", name: modelId, ...(version ? { version } : {}) } },
   });
 }
@@ -303,6 +303,25 @@ async function armModelVersion(token: string, ref: ArmAccountRef, modelId: strin
   const match = (j?.value ?? []).find((m: any) => (m?.model?.name ?? m?.name) === modelId);
   return match?.model?.version ?? match?.version ?? undefined;
 }
+
+/** Pull "available capacity N" out of Azure's quota-exceeded 400. Azure spells
+ *  out the arithmetic ("requires 50 … available capacity 2 … usage 0, limit
+ *  2"); the available number is exactly what a retry should request. */
+export function availableCapacityIn(text: string): number | null {
+  const m =
+    text.match(/available capacity (?:is )?(\d+)/i) ??
+    (() => {
+      // Fallback: derive limit − usage when "available" isn't spelled out.
+      const limit = text.match(/quota limit is (\d+)/i);
+      const usage = text.match(/quota usage is (\d+)/i);
+      return limit && usage ? ([, String(Math.max(0, Number(limit[1]) - Number(usage[1])))] as unknown as RegExpMatchArray) : null;
+    })();
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+const isQuotaError = (text: string) => /quota|capacity/i.test(text);
 
 export async function armCreateDeployment(
   endpointHost: string,
@@ -319,23 +338,36 @@ export async function armCreateDeployment(
   const url = `${ARM}${ref.id}/deployments/${encodeURIComponent(deploymentName)}?api-version=${ARM_API}`;
   const headers = { Authorization: `Bearer ${t.token}`, "Content-Type": "application/json" };
 
-  let r = await fetchImpl(url, { method: "PUT", headers, body: deployBody(modelId, capacityType) });
-  if (!r.ok) {
+  let version: string | undefined;
+  let capacity: number | undefined; // default per sku until the quota error teaches us better
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await fetchImpl(url, { method: "PUT", headers, body: deployBody(modelId, capacityType, version, capacity) });
+    if (r.ok) return { ok: true, note: capacity != null ? `deployed at capacity ${capacity} (all this subscription's quota allows — request more in the portal to scale up)` : undefined };
     const text = await r.text().catch(() => "");
-    // Some models demand an explicit version — look it up and retry once.
-    if (/version/i.test(text) && r.status === 400) {
-      const version = await armModelVersion(t.token, ref, modelId, fetchImpl);
-      if (version) {
-        r = await fetchImpl(url, { method: "PUT", headers, body: deployBody(modelId, capacityType, version) });
-        if (r.ok) return { ok: true };
+    // Some models demand an explicit version — look it up and go around.
+    if (r.status === 400 && /version/i.test(text) && !version) {
+      version = await armModelVersion(t.token, ref, modelId, fetchImpl);
+      if (version) continue;
+    }
+    // Quota 400: Azure names the capacity actually available. Asking for the
+    // sku default (e.g. 50) when the subscription's limit is 2 should deploy
+    // at 2, not fail — the user can raise quota later to scale up.
+    if (r.status === 400 && isQuotaError(text) && capacity == null) {
+      const avail = availableCapacityIn(text);
+      if (avail != null && avail >= 1) {
+        capacity = avail;
+        continue;
+      }
+      if (avail === 0) {
+        return { ok: false, note: `no quota left for this model on the subscription — ${firstErrorLine(text)}\n  request a quota increase: https://ai.azure.com → Management center → Quota` };
       }
     }
     if (r.status === 403) {
       return { ok: false, note: `your Azure sign-in lacks deployment rights on ${ref.name} — you need Cognitive Services Contributor (or ask the owner): ${firstErrorLine(text)}` };
     }
-    if (!r.ok) return { ok: false, note: `ARM deploy failed (HTTP ${r.status}): ${firstErrorLine(text)}` };
+    return { ok: false, note: `ARM deploy failed (HTTP ${r.status}): ${firstErrorLine(text)}` };
   }
-  return { ok: true };
+  return { ok: false, note: "ARM deploy failed after retries" };
 }
 
 export async function armDeleteDeployment(

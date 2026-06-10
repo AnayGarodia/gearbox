@@ -185,3 +185,39 @@ test("service-principal env vars are the CI rung; without anything the error nam
     expect(none.error).toContain("AZURE_CLIENT_SECRET");
   }
 });
+
+// ── quota-adaptive capacity ───────────────────────────────────────────────────
+import { availableCapacityIn } from "../src/accounts/azure-arm.ts";
+
+const QUOTA_400 = JSON.stringify({ error: { code: "InsufficientQuota", message:
+  "This operation require 50 new capacity in quota Requests Per Minute - GPT 2 Image Generation, which is bigger than the current available capacity 2. The current quota usage is 0 and the quota limit is 2 for quota Request" } });
+
+test("availableCapacityIn reads Azure's quota arithmetic", () => {
+  expect(availableCapacityIn("bigger than the current available capacity 2. The current quota usage is 0")).toBe(2);
+  expect(availableCapacityIn("The current quota usage is 8 and the quota limit is 8")).toBe(0); // limit − usage fallback
+  expect(availableCapacityIn("some unrelated 400")).toBeNull();
+});
+
+test("deploy adapts to the subscription's real quota: 50 requested, 2 available → deployed at 2", async () => {
+  const puts: any[] = [];
+  const arm = fakeArm({
+    putStatus: (body) => {
+      puts.push(body);
+      return body.sku.capacity <= 2 ? { status: 201, body: "{}" } : { status: 400, body: QUOTA_400 };
+    },
+  });
+  const r = await armCreateDeployment("my-res.services.ai.azure.com", "img", "gpt-image-1", "GlobalStandard", arm.fetch, fakeExec);
+  expect(r.ok).toBe(true);
+  expect(r.note).toContain("capacity 2"); // tells the user it scaled down and why
+  expect(puts.map((p) => p.sku.capacity)).toEqual([50, 2]);
+});
+
+test("zero quota left fails with the quota-increase pointer, not a retry loop", async () => {
+  const ZERO = JSON.stringify({ error: { message: "requires 50 new capacity … available capacity 0. The current quota usage is 2 and the quota limit is 2" } });
+  let putCount = 0;
+  const arm = fakeArm({ putStatus: () => { putCount++; return { status: 400, body: ZERO }; } });
+  const r = await armCreateDeployment("my-res.services.ai.azure.com", "img", "gpt-image-1", "GlobalStandard", arm.fetch, fakeExec);
+  expect(r.ok).toBe(false);
+  expect(r.note).toContain("Quota");
+  expect(putCount).toBe(1);
+});
