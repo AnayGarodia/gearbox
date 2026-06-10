@@ -84,10 +84,13 @@ export async function compactHistory(opts: {
   let summary: string;
   try {
     summary = await summarize(transcript);
-  } catch {
-    return null; // best-effort: keep the original history on failure
+  } catch (e: any) {
+    // A summarizer FAILURE is not "nothing to do" — conflating them made
+    // /compact report "nothing old enough" while it was actually broken.
+    // Keep the original history and tell the caller why.
+    throw new Error(e?.message ?? "summarizer failed");
   }
-  if (!summary.trim()) return null;
+  if (!summary.trim()) throw new Error("summarizer returned an empty summary");
 
   const messages: ModelMessage[] = [
     { role: "user", content: "Summarize what we've done so far into durable notes I can continue from." },

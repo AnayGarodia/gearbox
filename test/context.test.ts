@@ -277,12 +277,16 @@ test("compactHistory returns null when nothing is old enough", async () => {
   expect(await compactHistory({ history, summarize: fakeSummary, keepRecent: 4 })).toBeNull();
 });
 
-test("compactHistory keeps original history when the summarizer fails", async () => {
+test("compactHistory THROWS on summarizer failure (failure ≠ nothing-to-do)", async () => {
+  // Returning null here conflated "model down" with "nothing old enough to
+  // compact" — /compact reported the wrong thing while silently broken.
   const history = [...toolTurn(1), ...toolTurn(2), ...toolTurn(3)];
   const boom: Summarizer = async () => {
     throw new Error("model down");
   };
-  expect(await compactHistory({ history, summarize: boom, keepRecent: 1 })).toBeNull();
+  await expect(compactHistory({ history, summarize: boom, keepRecent: 1 })).rejects.toThrow("model down");
+  // And genuinely nothing-to-do still returns null, not an error.
+  expect(await compactHistory({ history: [...toolTurn(1)], summarize: boom, keepRecent: 4 })).toBeNull();
 });
 
 test("estimateHistoryTokens grows with history", () => {

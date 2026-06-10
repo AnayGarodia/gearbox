@@ -87,3 +87,29 @@ test("routingLineText: routine prints a dim single line; surprising appends the 
   });
   expect(routingLineText(surprising)).toBe("routed → anthropic · opus · $0.50 · fell back from gpt-5");
 });
+
+import { servedMatchesRequested } from "../src/ui/routing-line.ts";
+
+test("wire-truth: the routing line verifies the provider's reported model", () => {
+  // Match (decorated ids count): quiet ✓wire tag.
+  const ok = buildRoutingLine({ model: "DeepSeek-V4-Pro", provider: "azure-foundry", costUSD: 0.01, kind: "metered", servedAs: "deepseek-v4-pro", requestedSdkId: "DeepSeek-V4-Pro" });
+  expect(ok.model).toContain("✓wire");
+  expect(ok.surprising).toBe(false);
+  // MISMATCH: the loudest thing on the line.
+  const bad = buildRoutingLine({ model: "DeepSeek-V4-Pro", provider: "azure-foundry", costUSD: 0.01, kind: "metered", servedAs: "claude-sonnet-4-6", requestedSdkId: "DeepSeek-V4-Pro" });
+  expect(bad.model).toContain('provider served "claude-sonnet-4-6"');
+  expect(bad.surprising).toBe(true);
+});
+
+test("servedMatchesRequested tolerates provider id decoration", () => {
+  expect(servedMatchesRequested("claude-sonnet-4-6-20251114", "claude-sonnet-4-6")).toBe(true);
+  expect(servedMatchesRequested("gpt-5.5-2026-01-12", "gpt-5.5")).toBe(true);
+  expect(servedMatchesRequested("claude-sonnet-4-6", "DeepSeek-V4-Pro")).toBe(false);
+});
+
+test("unpriced models say so instead of $0.00", () => {
+  expect(formatTurnCost(0, "metered", false)).toContain("unknown");
+  expect(formatTurnCost(0, "metered", true)).toBe("$0.00");
+  const line = buildRoutingLine({ model: "x", provider: "p", costUSD: 0, kind: "metered", priced: false });
+  expect(line.costText).toContain("no price data");
+});

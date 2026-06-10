@@ -226,7 +226,7 @@ export async function runTask(opts: {
   cacheBreak?: number; // index of the last settled-history message (from the context engine), cache that prefix; the volatile turn-context tail rides after it
   onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; // backgrounded delegate reports (host injects them into the conversation)
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
-}): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string; raw: unknown; producedOutput: boolean } }> {
+}): Promise<{ messages: ModelMessage[]; usage: Usage; headers?: Record<string, string | undefined>; failure?: { message: string; raw: unknown; producedOutput: boolean }; servedModelId?: string }> {
   const { model, messages, onEvent, signal, plan } = opts;
   const depth = opts.depth ?? 0;
   const usage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -465,6 +465,7 @@ export async function runTask(opts: {
 
   let next = messages;
   let headers: Record<string, string | undefined> | undefined;
+  let servedModelId: string | undefined;
   if (result) {
     try {
       const resp = await result.response;
@@ -472,6 +473,10 @@ export async function runTask(opts: {
       // Rate-limit response headers: the router reads these to estimate live
       // API headroom for the account/provider (parsed by the caller).
       headers = (resp as any).headers as Record<string, string | undefined> | undefined;
+      // WIRE TRUTH: the model id the provider itself says served the request.
+      // The routing line shows this when it disagrees with what we asked for —
+      // the user must never have to trust our intent over the wire.
+      servedModelId = typeof (resp as any).modelId === "string" ? (resp as any).modelId : undefined;
     } catch {
       /* keep prior messages; multi-turn still works from input history */
     }
@@ -483,7 +488,7 @@ export async function runTask(opts: {
     if (errored) onEvent({ type: "phase", label: "blocked", state: "err" });
     onEvent({ type: "done", usage });
   }
-  return { messages: next, usage, headers, failure };
+  return { messages: next, usage, headers, failure, servedModelId };
 }
 
 /**

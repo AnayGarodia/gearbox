@@ -34,7 +34,7 @@ import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
 import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loadRoutingPreferences, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
-import { findModel, estimateCost, modelRegistry, providerAvailable, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
+import { findModel, estimateCost, hasPricing, modelRegistry, providerAvailable, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
 import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, truncate, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
@@ -486,6 +486,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // The flywheel's recording hooks: what kind routed this turn, and the last
   // edited turn's (kind, model) so /undo can debit it as a human revert.
   const routedKindRef = useRef<string | null>(null);
+  // WIRE TRUTH: the model id the provider's response says served the last
+  // turn. The routing line cross-checks this against what we requested.
+  const servedModelRef = useRef<string | null>(null);
   const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
@@ -1932,6 +1935,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const apiRates = parseRateHeaders(account.provider, r.headers, Date.now());
           if (apiRates.length) cliMetaRef.current = { costUSD: undefined, rates: apiRates };
         }
+        servedModelRef.current = r.servedModelId ?? null;
         const produced = r.messages.slice(ctx.length);
         const imageNote = activeImagesRef.current.length ? `\n\n[Attached images: ${activeImagesRef.current.map((img) => basename(img.path)).join(", ")}]` : "";
         const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt + imageNote }, ...produced]);
@@ -2046,12 +2050,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       } catch {
         return "no model available to compact with";
       }
-      const res = await compactHistory({ history: msgRef.current, summarize: modelSummarizer(model, creds, signal), keepRecent });
+      let res;
+      try {
+        res = await compactHistory({ history: msgRef.current, summarize: modelSummarizer(model, creds, signal), keepRecent });
+      } catch (e: any) {
+        return `compaction failed (${model.label}): ${e?.message ?? "summarizer error"} · history unchanged`;
+      }
       if (!res) return "nothing old enough to compact yet";
       msgRef.current = res.messages;
+      // The status bar's ctx% reads lastInput from the LAST call — after
+      // compaction that's stale (it kept showing the pre-compaction size).
+      // Reset it to the new history estimate so the bar reflects reality now.
+      setLastInput(res.after);
       const saved = res.before - res.after;
       const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
-      return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""} · ~${savedStr} tokens freed`;
+      return `compacted ${res.summarizedTurns} earlier turn${res.summarizedTurns > 1 ? "s" : ""} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
     },
     [],
   );
@@ -2486,6 +2499,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             provider: isSub ? (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude") : (ranSpec?.provider ?? "—"),
             costUSD: cost,
             kind: isSub ? "subscription" : "metered",
+            priced: isSub || hasPricing(modelId),
+            servedAs: servedModelRef.current ?? undefined,
+            requestedSdkId: ranSpec?.sdkId,
             fellOverFrom: fellOverFromRef.current,
             escalated: /escalated after/.test(routedRef.current?.reason ?? ""),
           });
@@ -4095,8 +4111,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             try {
               notice(await compactNow(2, ac.signal));
               persist();
-            } catch {
-              notice("compaction failed");
+            } catch (e: any) {
+              notice(`compaction failed: ${e?.message ?? "unknown error"} · history unchanged`);
             } finally {
               abortRef.current = null;
               setBusy(false);

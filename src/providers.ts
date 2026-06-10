@@ -489,6 +489,13 @@ function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | 
  * marginal cost and are always skipped. Pricing them at list rates was wrong
  * because the seat fee is sunk, not per-call.
  */
+/** True when we have real pricing for a model (curated/profile/discovered).
+ *  Drives honest cost display: unpriced models say "unknown", never "$0.00". */
+export function hasPricing(modelId: string): boolean {
+  const spec = modelRegistry().find((m) => m.id === modelId);
+  return !!(profileFor(modelId)?.cost ?? spec?.cost);
+}
+
 export function estimateCost(
   turns: { model: string; inputTokens: number; outputTokens: number; cachedInputTokens?: number; cacheCreationInputTokens?: number }[],
 ): number {

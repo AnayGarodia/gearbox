@@ -1,6 +1,5 @@
 import React from "react";
-import { Box, Text , Transform } from "ink";
-import { osc8 } from "../links.ts";
+import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import type { Line } from "../lines.ts";
 
@@ -67,10 +66,12 @@ const LineRow = React.memo(function LineRow({ line, absLine, selection, lineWidt
               {s.text}
             </Text>
           );
-          // OSC 8 hyperlink, injected POST-LAYOUT via Transform so Ink's width
-          // math never sees the escape bytes (raw ANSI in span text corrupts
-          // wrapping — the oldest rule in this codebase).
-          return [s.link ? <Transform key={j} transform={osc8(s.link)}>{span}</Transform> : span];
+          // NO OSC 8 hyperlinks here, even via Transform: Ink's clip/slice
+          // layer is not OSC-aware, so a row clipped at the viewport edge
+          // cuts the escape mid-sequence and prints the tail ("8;;") as
+          // visible garbage. Paths/URLs render as plain styled text — every
+          // modern terminal makes those clickable natively (cmd+click).
+          return [span];
         }
         const a = Math.max(range[0] - start, 0);
         const b = Math.min(range[1] - start, s.text.length);
