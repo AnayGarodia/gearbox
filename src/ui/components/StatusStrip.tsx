@@ -22,9 +22,10 @@ function fmtTok(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-// A persistent, toggle-able usage strip (/cost) that sits above the composer and
+// A persistent, toggle-able usage strip (/usage) that sits above the composer and
 // does NOT capture input — you keep typing while watching context %, subscription
-// 5h/7d headroom, and session spend. Closed with /cost again.
+// 5h/7d headroom, and session spend. Closed with /usage again. (/cost is the
+// separate deep money-story card.)
 function StatusStripImpl({
   ctxPct,
   tokens,
