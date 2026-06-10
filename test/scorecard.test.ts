@@ -46,3 +46,16 @@ test("scorecardRows renders a title, a column header, and one row per candidate"
   expect(rows.some((r) => r.tone === "colhead")).toBe(true);
   expect(rows.some((r) => r.tone === "chosen" && r.text.includes("◀"))).toBe(true);
 });
+
+test("scorecardRows shows the kind's provenance and flags a fallback verdict", () => {
+  const card = new RoutingSelector().explain({ prompt: "refactor the parser" });
+  expect(scorecardRows(card)[0]!.text).toContain("code task · quality bar"); // no provenance → bare kind
+  expect(scorecardRows({ ...card, kindSource: "llm" })[0]!.text).toContain("code task (llm)");
+  expect(scorecardRows({ ...card, kindSource: "fallback" })[0]!.text).toContain("(fallback — classifier unavailable)");
+});
+
+test("explain() classifies a bare question as chat (0.3 bar), not code", () => {
+  const card = new RoutingSelector().explain({ prompt: "What is capital of India" });
+  expect(card.kind).toBe("chat");
+  expect(card.bar).toBeCloseTo(0.3, 5);
+});

@@ -81,6 +81,10 @@ export interface ScorecardEntry {
 // can implement explain().
 export interface Scorecard {
   kind: NonNullable<Task["kind"]>;
+  /** How the kind was determined ("llm" | "keyword" | "cache" | "fallback") —
+   *  set by the caller (App) from the last turn's classification so a fallback
+   *  default is never mistaken for a real classifier verdict. */
+  kindSource?: string;
   bar: number;
   prompt: string;
   entries: ScorecardEntry[];
