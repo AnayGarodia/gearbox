@@ -51,6 +51,7 @@ import { computeDiff, diffStat } from "./diff.ts";
 import { applyEdit } from "./edit.ts";
 import { updateRetrievalFile } from "./context/retrieve.ts";
 import { runShellStream } from "./shell.ts";
+import { appendFact } from "./context/memory.ts";
 import { requestPermission } from "./permission.ts";
 import { which, Glob, spawnSyncProc } from "./proc.ts";
 import type { OnEvent } from "./agent/events.ts";
@@ -438,6 +439,18 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
         onEvent?.({ type: "verification", command, ok: r.ok, summary: r.ok ? "passed" : "failed" });
       }
       return r.output;
+    },
+  }),
+  remember: tool({
+    description:
+      "Save ONE durable, non-obvious fact about this project to its persistent memory (loaded into every future session). Use it the moment you learn something a future session would otherwise have to rediscover: a build quirk, a vendor gotcha, an architectural decision and its why, a constraint the user stated. NOT for session-local context, code structure (the repo shows that), or anything already in the project guide. One short sentence per call.",
+    inputSchema: z.object({
+      fact: z.string().describe("One sentence, self-contained (a future session has no other context)."),
+    }),
+    execute: async ({ fact }) => {
+      const ok = appendFact(fact, root);
+      onEvent?.({ type: "tool-end", id: `remember-${Date.now()}`, ok, summary: ok ? fact.slice(0, 64) : "couldn't write memory" });
+      return ok ? "remembered" : "couldn't write the memory file";
     },
   }),
   };

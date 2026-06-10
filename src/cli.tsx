@@ -421,6 +421,7 @@ Usage:
 Options:
   --model <name>      e.g. sonnet-4.6, haiku, gemini-flash, deepseek
   -c, --continue      resume the most recent session here (/resume to pick one)
+  -p, --print "…"     headless one-shot: answer and exit (read-only tools; --yolo to allow edits; --json for scripts)
   --yolo              auto-approve writes/edits/shell (no permission prompts)
   --inline            use terminal scrollback instead of the fullscreen frame
   --fullscreen        fullscreen app frame (default)
@@ -449,6 +450,67 @@ if (args.includes("--version") || args.includes("-v")) {
 if (args[0] === "onboard" || args[0] === "setup") {
   await runCliOnboarding();
   process.exit(0);
+}
+
+// Headless one-shot: `gearbox -p "prompt"` prints the answer and exits — the
+// building-block mode for CI, cron, and pipelines. Tools are READ-ONLY unless
+// --yolo (there's no human at a permission prompt to say no). --json emits
+// {text, model, usage} for scripts.
+const pIdx = args.findIndex((a) => a === "-p" || a === "--print");
+if (pIdx >= 0) {
+  const jsonOut = args.includes("--json");
+  const yolo = args.includes("--yolo");
+  const prompt = args.slice(pIdx + 1).filter((a) => a !== "--json" && a !== "--yolo").join(" ").trim();
+  if (!prompt) {
+    console.error('usage: gearbox -p "prompt" [--json] [--yolo]');
+    process.exit(2);
+  }
+  const { runTask } = await import("./agent/run.ts");
+  const { RoutingSelector } = await import("./model/router.ts");
+  const { buildContext } = await import("./context/builder.ts");
+  const { resolveCreds } = await import("./accounts/resolve.ts");
+  const { defaultAccount } = await import("./accounts/store.ts");
+  const { recordSpend, resolveTurnCost } = await import("./accounts/ledger.ts");
+  try {
+    let choice;
+    try {
+      choice = new RoutingSelector().select({ prompt, requires: ["tools"] });
+    } catch {
+      choice = new RoutingSelector().select({ prompt }); // subscription-only setups
+    }
+    // A CLI seat hosts the one-shot via the vendor binary.
+    if (choice.backend?.kind === "cli") {
+      const { runCliTask } = await import("./agent/cli-backend.ts");
+      let out = "";
+      const r = await runCliTask({
+        binary: choice.backend.binary, profile: choice.backend.profile, prompt, messages: [],
+        onEvent: (e) => { if (e.type === "text") out += e.text; }, deferTerminal: true, autoApprove: yolo,
+      });
+      if (r.failure) { console.error(r.failure.message); process.exit(1); }
+      console.log(jsonOut ? JSON.stringify({ text: out.trim(), model: choice.model.id, usage: r.usage }) : out.trim());
+      process.exit(0);
+    }
+    const acct = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
+    const creds = acct ? await resolveCreds(acct) : undefined;
+    const { system, messages, cacheBreak } = buildContext({ history: [], userText: prompt, model: choice.model, plan: !yolo });
+    let out = "";
+    const r = await runTask({
+      model: choice.model, messages, system, creds, cacheBreak, plan: !yolo,
+      onEvent: (e) => { if (e.type === "text") out += e.text; else if (e.type === "error") console.error(e.message); },
+      maxRetries: 2, deferTerminal: true,
+    });
+    recordSpend({
+      accountId: acct?.id ?? `env:${choice.model.provider}`, model: choice.model.id, source: "turn",
+      inputTokens: r.usage.inputTokens, outputTokens: r.usage.outputTokens,
+      ...resolveTurnCost({ modelId: choice.model.id, isSub: false, usage: r.usage }), at: Date.now(),
+    });
+    if (r.failure) { console.error(r.failure.message); process.exit(1); }
+    console.log(jsonOut ? JSON.stringify({ text: out.trim(), model: choice.model.id, usage: r.usage }) : out.trim());
+    process.exit(0);
+  } catch (e: any) {
+    console.error(e?.message ?? String(e));
+    process.exit(1);
+  }
 }
 
 if (args[0] === "mcp") {

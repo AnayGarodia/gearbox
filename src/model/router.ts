@@ -153,7 +153,9 @@ export class RoutingSelector implements ModelSelector {
     const neutral = (id: string, provider: string): AccountState =>
       ctx.byAccountId.get(id) ?? { accountId: id, provider, exec: "in-loop", isSubscription: false };
 
-    for (const m of modelRegistry().filter((mm) => providerAvailable(mm.provider))) {
+    // routable:false (models.dev overlay) = pin-able via /model, never a
+    // routing candidate — auto-routing only gambles on vetted models.
+    for (const m of modelRegistry().filter((mm) => providerAvailable(mm.provider) && mm.routable !== false)) {
       const accts = accountsForProvider(m.provider).filter((a) => a.enabled && a.exec !== "cli");
       if (accts.length === 0) {
         // No stored account for this provider: use the env-key default state.

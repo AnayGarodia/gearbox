@@ -457,6 +457,7 @@ export const friendlyTool = (name: string) =>
   name === "list_dir" ? "list" :
   name === "glob" ? "glob" :
   name === "search" ? "search" :
+  name === "remember" ? "noting" :
   name;
 
 // Strip the CWD prefix so tool args show as relative paths in the transcript.

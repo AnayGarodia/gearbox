@@ -49,6 +49,7 @@ import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { profileFor } from "./model/profiles.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
 import type { Account, ResolvedCreds } from "./accounts/types.ts";
+import { loadCachedCatalog } from "./model/modelsdev.ts";
 
 // Provider id is catalog-driven (open string). The four below are "native"
 // (first-party SDK packages); every other provider talks the OpenAI wire.
@@ -93,6 +94,10 @@ export interface ModelSpec {
   reasoning?: boolean;
   /** Model-specific effort level strings, e.g. ["low","medium","high","max"]. */
   efforts?: string[];
+  /** false = selectable via /model but EXCLUDED from auto-routing (models.dev
+   *  catalog entries: callable, but unvetted for quality — routing to them
+   *  silently would trade reliability for novelty). */
+  routable?: boolean;
   capabilities?: {
     tools?: boolean | "unknown";
     images?: boolean | "unknown";
@@ -263,13 +268,50 @@ export function modelRegistry(): ModelSpec[] {
   const base = MODELS.filter((m) => !(m.capabilities?.source === "seeded" && suppressed.has(m.provider)));
   const seen = new Set<string>();
   const out: ModelSpec[] = [];
-  for (const m of [...base, ...accountModelSpecs()]) {
+  for (const m of [...base, ...accountModelSpecs(), ...modelsDevSpecs()]) {
     const key = `${m.provider}\0${m.sdkId}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(m);
   }
   return out;
+}
+
+// ── models.dev catalog overlay ───────────────────────────────────────────────
+// The synced catalog (src/model/modelsdev.ts, refreshed in the background and
+// by /model refresh) makes new models PIN-ABLE the day they ship, without a
+// gearbox release. They merge lowest-priority (curated + discovered always
+// win), only for providers you can actually call, and with routable:false —
+// /model can pin them, auto-routing never gambles on them.
+let _modelsDevSpecs: ModelSpec[] | null = null;
+
+function modelsDevSpecs(): ModelSpec[] {
+  if (_modelsDevSpecs) return _modelsDevSpecs;
+  try {
+    const cached = loadCachedCatalog();
+    const entries = cached?.entries ?? [];
+    _modelsDevSpecs = entries
+      .filter((e) => providerAvailable(e.provider))
+      .map((e) => ({
+        id: `${e.provider}/${e.id}`,
+        provider: e.provider,
+        sdkId: e.id,
+        label: e.label || e.id,
+        contextWindow: e.contextWindow ?? 128_000,
+        cost: e.cost ? { inUSDPerMtok: e.cost.inUSDPerMtok, outUSDPerMtok: e.cost.outUSDPerMtok } : undefined,
+        routable: false,
+        capabilities: { tools: e.tools ?? "unknown", images: e.images ?? "unknown", source: "api-discovered" as const },
+      }));
+  } catch {
+    _modelsDevSpecs = [];
+  }
+  return _modelsDevSpecs;
+}
+
+/** Drop the in-memory overlay so the next modelRegistry() re-reads the synced
+ *  cache (called after /model refresh). */
+export function refreshModelsDevOverlay(): void {
+  _modelsDevSpecs = null;
 }
 
 /**

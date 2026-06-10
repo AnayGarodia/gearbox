@@ -34,9 +34,9 @@ import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
 import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loadRoutingPreferences, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
-import { findModel, estimateCost, modelRegistry, providerAvailable, type ModelSpec } from "../providers.ts";
+import { findModel, estimateCost, modelRegistry, providerAvailable, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
-import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
+import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, truncate, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { classifyTask, type TaskKind } from "../agent/classify.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
@@ -91,6 +91,9 @@ import { updateRetrievalFile, resetRetrievalIndex } from "../context/retrieve.ts
 import { addToast, TOAST_TTL_MS, type Toast, type ToastKind } from "./toast.ts";
 import { editorNames, setEditorPref } from "./links.ts";
 import { liveCheckAll, formatDoctorRows } from "../accounts/doctor.ts";
+import { searchSessions } from "../session-search.ts";
+import { syncModelsDev } from "../model/modelsdev.ts";
+import { checkFileDiagnostics, formatDiagnostics, shutdownAllLsp } from "../lsp/diagnostics.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -211,6 +214,46 @@ const PR_SYSTEM =
 
 // Clip generator input so a huge staged diff can't blow the prompt.
 const clipForPrompt = (s: string, max = 8000): string => (s.length > max ? s.slice(0, max) + "\n…(clipped)" : s);
+
+// The verify pillar's FAST tier: language-server diagnostics on the turn's
+// changed files. Free when no server matches the project (detectServers is a
+// which() + marker-file check); errors surface as a failed "lsp diagnostics"
+// check so the auto-fix loop sees the exact compiler lines. Warnings never
+// fail the tier (a turn must not go red over lint nits).
+const LSP_FILE_RE = /\.(ts|tsx|js|jsx|py|go|rs)$/;
+async function runLspTier(changed: string[], onEvent: OnEvent): Promise<boolean> {
+  const files = changed.filter((f) => LSP_FILE_RE.test(f)).slice(0, 8);
+  if (!files.length) return false;
+  let anyErrors = false;
+  const startedAt = Date.now();
+  let sawServer = false;
+  const errorLines: string[] = [];
+  for (const f of files) {
+    try {
+      const abs = resolve(process.cwd(), f);
+      const content = readFileSync(abs, "utf8");
+      const r = await checkFileDiagnostics(abs, content, process.cwd());
+      if (r.note) continue; // no server for this file / failed to start — the shell tier covers it
+      sawServer = true;
+      const errs = r.diagnostics.filter((d) => d.severity === "error");
+      if (errs.length) {
+        anyErrors = true;
+        errorLines.push(formatDiagnostics(errs, 6, process.cwd()));
+      }
+    } catch { /* diagnostics are best-effort — verification still has the shell tier */ }
+  }
+  if (!sawServer) return false;
+  onEvent({
+    type: "verification",
+    command: "lsp diagnostics",
+    ok: !anyErrors,
+    summary: anyErrors ? errorLines.join("\n").split("\n")[0]!.slice(0, 160) : "passed",
+    intent: "typecheck",
+    durationMs: Date.now() - startedAt,
+    output: anyErrors ? errorLines.join("\n") : undefined,
+  });
+  return anyErrors;
+}
 
 let codexModelCache: CliModelChoice[] | null = null;
 
@@ -774,6 +817,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return () => setPermissionHandler(null);
   }, []);
 
+  // models.dev catalog: refresh in the background (24h cache) so newly shipped
+  // models become pin-able without a release. Never blocks anything.
+  useEffect(() => {
+    void syncModelsDev({}).then((entries) => {
+      if (entries.length) refreshModelsDevOverlay();
+    }).catch(() => {});
+  }, []);
+
   // Delegate sub-task spend flows into the session record (it previously hit
   // only the cross-session usage.json, so the status-bar $, /cap session, and
   // the cost tab under-counted fan-out turns). Main turns push their own
@@ -843,6 +894,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     toastTimersRef.current.add(t);
   }, []);
   useEffect(() => () => { for (const t of toastTimersRef.current) clearTimeout(t); }, []);
+  useEffect(() => () => { void shutdownAllLsp(); }, []); // language servers die with the app
   const copyWithFeedback = useCallback((text: string) => {
     const clean = text.replace(/[ \t]+\n/g, "\n").trim();
     if (!clean) return;
@@ -2299,12 +2351,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal, escalate: attempt });
         msgRef.current = r.messages;
         if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && !interruptedRef.current && changedFiles.size && checks.length === 0) {
-          const commands = detectVerificationCommands(process.cwd(), [...changedFiles]);
-          if (commands.length) {
-            const results = await runVerification(commands, { onEvent, signal: ac.signal });
-            if (results.some((res) => !res.ok)) hadError = true;
+          // FAST tier first: language-server diagnostics on the changed files
+          // (~1.5s settle, no test run). Type errors feed the same auto-fix
+          // loop as a failed check, and a red here skips the slower shell
+          // checks this round — fail fast, fix, then prove with real checks.
+          const lspFailed = await runLspTier([...changedFiles], onEvent);
+          if (lspFailed) {
+            hadError = true;
           } else {
-            onEvent({ type: "phase", label: "verification skipped", detail: "no test/build/typecheck command detected", state: "err" });
+            const commands = detectVerificationCommands(process.cwd(), [...changedFiles]);
+            if (commands.length) {
+              const results = await runVerification(commands, { onEvent, signal: ac.signal });
+              if (results.some((res) => !res.ok)) hadError = true;
+            } else {
+              onEvent({ type: "phase", label: "verification skipped", detail: "no test/build/typecheck command detected", state: "err" });
+            }
           }
         }
         // Record the turn's model + usage (routing/cost data; per-turn so the
@@ -2739,12 +2800,35 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             return;
           }
           echo(text);
-          const pick = sessions[parseInt(arg, 10) - 1];
-          if (!pick) {
-            notice(`no session ${arg} · /resume to list`);
+          // A number picks from the last listing; anything else is a SEARCH
+          // across every saved session's title + conversation text.
+          const n = parseInt(arg, 10);
+          if (Number.isFinite(n) && String(n) === arg.trim()) {
+            const pick = sessions[n - 1];
+            if (!pick) {
+              notice(`no session ${arg} · /resume to list`);
+              return;
+            }
+            loadInto(pick);
             return;
           }
-          loadInto(pick);
+          const matches = searchSessions(arg, { limit: 10 });
+          if (!matches.length) {
+            notice(`no session mentions “${arg}” · /resume to list them all`);
+            return;
+          }
+          const matched = matches
+            .map((m) => sessions.find((sx) => sx.id === m.id))
+            .filter((sx): sx is NonNullable<typeof sx> => !!sx);
+          resumeListRef.current = matched;
+          if (fullscreen && matched.length) {
+            panelSessionsRef.current = matched;
+            atBottomRef.current = true;
+            setPanel({ kind: "sessions", title: `sessions matching “${truncate(arg, 24)}” · ⏎ to load`, index: 0 });
+            return;
+          }
+          const rows = matches.map((m, i) => `  ${i + 1}. ${m.title || "(untitled)"} · ${m.turns} turn${m.turns === 1 ? "" : "s"}\n     ${m.snippet}`).join("\n");
+          notice(`sessions matching “${arg}” · /resume <n>:\n${rows}`);
           return;
         }
         case "help": {
@@ -3311,6 +3395,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           return;
         }
         case "model":
+          if (arg.trim().toLowerCase() === "refresh") {
+            echo(text);
+            notice("syncing the model catalog from models.dev…");
+            void syncModelsDev({ maxAgeMs: 0 }).then((entries) => {
+              refreshModelsDevOverlay();
+              toast(`model catalog synced · ${entries.length} models known`);
+            }).catch(() => notice("catalog sync failed — offline? the cached catalog stays in effect"));
+            return;
+          }
           // Bare /model on an API setup → the interactive picker panel (fullscreen).
           // Subscriptions keep the inline CLI list; /model <name> still pins inline.
           // Only open the panel when there are API models to show (else fall through
