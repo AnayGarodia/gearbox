@@ -288,7 +288,7 @@ export function scorecardRows(card: Scorecard): ScorecardLine[] {
   for (const e of entries) {
     const score = e.verdict === "below bar" ? "—" : e.score.toFixed(2);
     out.push({
-      text: row(e.label, qcol(e), `$${e.estCostPerMtok.toFixed(2)}`, leftcol(e), score, e.verdict + (e.chosen ? "  ◀" : "")),
+      text: row(e.label, qcol(e), `$${e.estCostPerMtok.toFixed(2)}`, leftcol(e), score, e.verdict + (e.chosen ? "  ◀" : "") + (e.priorNote ? `  · ${e.priorNote}` : "")),
       tone: e.chosen ? "chosen" : e.verdict === "below bar" ? "dim" : "row",
     });
   }

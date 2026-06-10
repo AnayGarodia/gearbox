@@ -29,6 +29,7 @@ import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey } from "./cooldown.ts";
+import { priorFor, priorLine } from "./priors.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -135,9 +136,10 @@ function tpsOf(c: Candidate): number {
 // Profile metrics resolve against the canonical model id (a subscription seat
 // mirrors its canonical model's pricing and quality), falling back to the seat's
 // own spec for cost when no profile exists.
-function toScoreCandidate(c: Candidate): ScoreCandidate {
+function toScoreCandidate(c: Candidate, kind?: string): ScoreCandidate {
   const cost = costPair(c);
-  return { id: c.spec.id, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, quality: qualityOf(c), tps: tpsOf(c), account: c.state };
+  const prior = kind ? priorFor(kind, c.canonicalId ?? c.spec.id) : null;
+  return { id: c.spec.id, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, quality: qualityOf(c) + (prior?.delta ?? 0), tps: tpsOf(c), account: c.state };
 }
 
 export class RoutingSelector implements ModelSelector {
@@ -221,7 +223,14 @@ export class RoutingSelector implements ModelSelector {
     // penalise them on a 0.5 guess). Seats with a known-weak quality (e.g.
     // Haiku) are still held to the bar so they are not chosen for hard tasks
     // just because they are free and fast.
-    let clears = pool.filter(clearsBar(bar));
+    // Measured per-repo priors (the flywheel): a model that keeps failing
+    // verification HERE has its effective quality pulled down — enough turns
+    // of red and it sinks below the bar for this repo's work. Conservative,
+    // asymmetric, and silent until ≥4 verified outcomes exist (priors.ts).
+    const adjQuality = (c: Candidate): number => qualityOf(c) + (priorFor(kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
+    const clearsAdj = (c: Candidate): boolean =>
+      c.backend?.kind === "cli" ? !hasKnownQuality(c) || adjQuality(c) >= bar : adjQuality(c) >= bar;
+    let clears = pool.filter(clearsAdj);
     // If the raised bar (from escalation) leaves nothing, promote to the
     // strongest available tier. Without this, the fallback below would drop
     // to the cheapest candidate, which is the opposite of escalating.
@@ -260,7 +269,7 @@ export class RoutingSelector implements ModelSelector {
     if (preferred) return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
 
     // Score all bar-clearing candidates and pick the winner.
-    const best = pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive });
+    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive });
     const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
     return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
@@ -283,10 +292,10 @@ export class RoutingSelector implements ModelSelector {
     // Score the entire pool (including below-bar) so the UI can display all
     // candidates. The winner is still determined from the bar-clearing set only.
     const scored = new Map<string, ScoredCandidate>();
-    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c), { candidates: [], now: p.ctx.now, estInputTokens: p.estInputTokens }))) scored.set(s.candidate.id, s);
+    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind), { candidates: [], now: p.ctx.now, estInputTokens: p.estInputTokens }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
       ? preferred.spec.id
-      : pickBest({ candidates: candidates.map(toScoreCandidate), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive }).candidate.id;
+      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive }).candidate.id;
 
     const clearsForBar = clearsBar(p.bar);
     for (const c of p.pool) {
@@ -296,10 +305,12 @@ export class RoutingSelector implements ModelSelector {
       // known-weak seat does not).
       const clears = clearsForBar(c);
       const chosen = c.spec.id === winnerId;
+      const pl = priorLine(p.kind, c.canonicalId ?? c.spec.id);
       entries.push({
         label: c.spec.label,
         backend: c.backend.kind === "cli" ? "seat" : "api",
-        quality: qualityOf(c),
+        quality: qualityOf(c) + (priorFor(p.kind, c.canonicalId ?? c.spec.id)?.delta ?? 0),
+        priorNote: pl ?? undefined,
         qualitySrc: profileFor(c.canonicalId ?? c.spec.id)?.quality.src ?? "seeded",
         estCostPerMtok: costPerMtok(c),
         balanceText: balanceText(c.state),

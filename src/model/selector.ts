@@ -61,6 +61,8 @@ export interface ModelChoice {
 // the user see exactly why each model was or was not chosen. The router populates
 // this from scored candidates; the UI renders it in the tab panel.
 export interface ScorecardEntry {
+  /** Measured per-repo prior, when ≥4 verified outcomes exist ("measured here: 7/9 ✓ (−0.04)"). */
+  priorNote?: string;
   label: string;
   backend: "api" | "seat";
   quality: number;

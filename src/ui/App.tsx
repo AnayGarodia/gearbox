@@ -96,6 +96,7 @@ import { syncModelsDev } from "../model/modelsdev.ts";
 import { checkFileDiagnostics, formatDiagnostics, shutdownAllLsp } from "../lsp/diagnostics.ts";
 import { loadPlugins, emitHook, installPluginLogger } from "../plugins.ts";
 import { loadAgents, agentInvocation, type AgentDef } from "../agents.ts";
+import { recordTurnOutcome } from "../model/priors.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -481,6 +482,10 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Reports from BACKGROUNDED delegate sub-tasks, delivered into the next
   // turn's prompt (the model asked for them; the user saw the notice).
   const pendingBackgroundRef = useRef<string[]>([]);
+  // The flywheel's recording hooks: what kind routed this turn, and the last
+  // edited turn's (kind, model) so /undo can debit it as a human revert.
+  const routedKindRef = useRef<string | null>(null);
+  const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
   const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
@@ -1951,6 +1956,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
         routedKind = await classifyTask(prompt, signal);
       }
+      routedKindRef.current = routedKind ?? null;
       let choice: ModelChoice;
       try {
         // interactive: true — this is the foreground turn the user is waiting on, so
@@ -2574,6 +2580,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // implies "done" when nothing was actually checked.
           const tier = changed.length && !failed.length ? provenTier(checkItems.filter((c) => c.ok).map((c) => c.intent ?? c.command)) : undefined;
           if (changed.length) lastChangedFilesRef.current = changed;
+          // Flywheel: every edited turn's VERIFY outcome becomes a measured
+          // per-repo prior for (kind, model) — the ground truth that lets the
+          // router stop guessing in this repo (priors.ts).
+          const ranModel = sessionRef.current.turns[sessionRef.current.turns.length - 1]?.model;
+          if (changed.length && ranModel && ranModel !== "unknown") {
+            const outcomeKind = routedKindRef.current ?? "code";
+            const outcome = failed.length ? "failed" : tier && tier !== "none" ? "passed" : "unverified";
+            try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome }); } catch { /* never break settle */ }
+            lastOutcomeKeyRef.current = { kind: outcomeKind, modelId: ranModel };
+          }
           // Once per session, after a clean code-changing turn in a project whose
           // checks can't prove behavior (no test command at all, or only
           // build/typecheck): offer to capture current behavior with a
@@ -3026,6 +3042,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (!snap) {
             notice("nothing to undo");
             return;
+          }
+          // Flywheel: reverting a turn is the costliest verdict on its model.
+          if (lastOutcomeKeyRef.current) {
+            try { recordTurnOutcome({ ...lastOutcomeKeyRef.current, outcome: "undone" }); } catch { /* best-effort */ }
+            lastOutcomeKeyRef.current = null;
           }
           const plan = planUndo(snap.changes);
           void (async () => {
