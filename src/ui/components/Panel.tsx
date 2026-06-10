@@ -6,6 +6,8 @@ import { ShimmerText } from "./Shimmer.tsx";
 import { itemsToLines, type Line } from "../lines.ts";
 import { panelBodyHeight, windowStart, filterModelRows, clampIndex, truncate, fieldWindow, type PanelState, type PanelModelRow, type PanelSessionRow, type AccountDetailViewData } from "../panel.ts";
 import { filterAddSpecs, type AddSpec } from "../../accounts/add-spec.ts";
+import { ListRow, HintLine, Field } from "./ui.tsx";
+import { GHOST_LOOKS } from "./Mascot.tsx";
 import type { AccountView } from "../types.ts";
 
 function accountStateColor(status: string): string {
@@ -73,31 +75,28 @@ export function Panel({
           const sel = start + i === idx;
           if (row.add) {
             return (
-              <Text key="__add__" wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-                <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-                <Text color={color.accent} bold={sel}>+ add an account</Text>
-                <Text color={color.faint}>  any provider · subscription · key</Text>
-              </Text>
+              <ListRow key="__add__" selected={sel} label="+ add an account" labelColor={color.accent} detail="any provider · subscription · key" />
             );
           }
           const r = row.r;
+          // Status word only on the row (the active account reads from its bold
+          // name + "current" status word); commands live on the hint line.
           return (
-            <Text key={r.alias} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-              <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-              <Text color={color.text} bold={r.active}>{r.name.padEnd(labelPad)}</Text>
+            <ListRow key={r.alias} selected={sel} label={r.name} labelWidth={labelPad} bold={r.active}>
               <Text color={color.faint}>  {r.type}</Text>
-              <Text color={accountStateColor(r.status)}>  {r.status}</Text>
+              <Text color={accountStateColor(r.status)}>  {r.active ? "current" : r.status}</Text>
               {r.detail ? <Text color={color.faint}>  · {r.detail}</Text> : null}
-              {r.type === "subscription" && !(r.detail && r.detail.includes("@")) ? (
-                <Text color={color.accentDim}>  · /account login {r.alias} to identify</Text>
-              ) : null}
-              {r.active ? <Text color={color.ok}>  {glyph.on} current</Text> : null}
-            </Text>
+            </ListRow>
           );
         })}
       </Box>
     );
+    // The command for the SELECTED row lives down here, not crowded into the row.
     hint = "↑↓ move · ⏎ select · → detail · esc close";
+    const selRow = items[idx];
+    if (selRow && !selRow.add && selRow.r.type === "subscription" && !(selRow.r.detail && selRow.r.detail.includes("@"))) {
+      hint = `/account login ${selRow.r.alias} to identify · ` + hint;
+    }
   } else if (panel.kind === "sessions") {
     const rows = sessions ?? [];
     const idx = clampIndex(panel.index, rows.length);
@@ -127,19 +126,24 @@ export function Panel({
               );
             }
             return (
-              <Text key={r.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-                <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-                {r.pinned ? <Text color={color.warn}>{glyph.on} </Text> : null}
-                <Text color={armed ? color.err : color.text} bold={sel}>{truncate(r.title || "(untitled)", 52)}</Text>
-                <Text color={armed ? color.err : color.faint}>{armed ? "  · press d again to delete" : `  · ${r.turns} turn${r.turns === 1 ? "" : "s"} · ${r.when}`}</Text>
-              </Text>
+              <ListRow
+                key={r.id}
+                selected={sel}
+                marker={r.pinned ? { text: glyph.on + " ", color: color.warn } : undefined}
+                label={truncate(r.title || "(untitled)", 52)}
+                labelColor={armed ? color.err : color.text}
+                detail={armed ? "· press d again to delete" : `· ${r.turns} turn${r.turns === 1 ? "" : "s"} · ${r.when}`}
+                detailColor={armed ? color.err : color.faint}
+              />
             );
           })
         )}
         {cur?.preview && (cur.preview.ask || cur.preview.reply) ? (
+          // ONE quote spine for the whole preview; the reply continues under it
+          // with the same indent so both lines truncate at the same column.
           <Box flexDirection="column" marginTop={1}>
-            <Text wrap="truncate-end" color={color.faint}>{glyph.quote} <Text color={color.user}>{truncate(cur.preview.ask, Math.max(8, innerW - 4))}</Text></Text>
-            {cur.preview.reply ? <Text wrap="truncate-end" color={color.faint}>{glyph.quote} {truncate(cur.preview.reply, Math.max(8, innerW - 4))}</Text> : null}
+            <Text wrap="truncate-end"><Text color={color.faint}>{glyph.quote} </Text><Text color={color.user}>{truncate(cur.preview.ask, Math.max(8, innerW - 2))}</Text></Text>
+            {cur.preview.reply ? <Text wrap="truncate-end"><Text>{"  "}</Text><Text color={color.faint}>{truncate(cur.preview.reply, Math.max(8, innerW - 2))}</Text></Text> : null}
           </Box>
         ) : null}
       </Box>
@@ -156,16 +160,9 @@ export function Panel({
         {specs.length === 0 ? (
           <Text color={color.faint}>no provider matches “{ph.filter}”</Text>
         ) : (
-          slice.map((s, i) => {
-            const sel = start + i === idx;
-            return (
-              <Text key={s.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-                <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-                <Text color={color.text} bold={sel}>{s.label.padEnd(24)}</Text>
-                <Text color={color.faint}>  {s.summary}</Text>
-              </Text>
-            );
-          })
+          slice.map((s, i) => (
+            <ListRow key={s.id} selected={start + i === idx} label={s.label} labelWidth={24} detail={s.summary} />
+          ))
         )}
       </Box>
     );
@@ -194,23 +191,13 @@ export function Panel({
           </Box>
         ) : null}
         <Box marginTop={1} flexDirection="column">
-          <Text>
-            <Text color={color.accent} bold>{field?.label ?? ""}</Text>
-            {field?.secret ? <Text color={color.faint}>  (visible as typed)</Text> : null}
-          </Text>
-          {(() => {
-            const fw = fieldWindow(ph.fieldEdit.value, ph.fieldEdit.cursor, Math.max(8, innerW - 4));
-            return (
-              <Box>
-                <Text color={color.faint}>{glyph.prompt} </Text>
-                <Text color={color.text}>{fw.pre}</Text>
-                <Text color={color.accent} inverse>{fw.at}</Text>
-                <Text color={color.text}>{fw.post}</Text>
-              </Box>
-            );
-          })()}
-          {!ph.fieldEdit.value && field ? <Text color={color.faint}>  e.g. {field.placeholder}</Text> : null}
-          {ph.fieldError ? <Text color={color.err}>  {glyph.err} {ph.fieldError}</Text> : null}
+          <Field
+            label={field?.label ?? ""}
+            note={field?.secret ? "(visible as typed)" : undefined}
+            value={fieldWindow(ph.fieldEdit.value, ph.fieldEdit.cursor, Math.max(8, innerW - 4))}
+            placeholder={field?.placeholder}
+            error={ph.fieldError}
+          />
           {field?.hint ? (
             <Box flexDirection="column" marginTop={1}>
               {field.hint.split("\n").map((line, i) => (
@@ -236,12 +223,10 @@ export function Panel({
             const sel = start + i === idx;
             const pinned = r.id === currentModelId;
             return (
-              <Text key={r.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-                <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-                <Text color={pinned ? color.ok : color.text} bold={pinned}>{truncate(r.label, 28).padEnd(28)}</Text>
+              <ListRow key={r.id} selected={sel} label={r.label} labelWidth={28} labelColor={pinned ? color.ok : color.text} bold={pinned}>
                 <Text color={color.faint}>{r.provider}</Text>
                 {pinned ? <Text color={color.ok}>  {glyph.on} pinned</Text> : null}
-              </Text>
+              </ListRow>
             );
           })
         )}
@@ -256,9 +241,7 @@ export function Panel({
           const sel = i === idx;
           const active = t.name === panel.original;
           return (
-            <Text key={t.name} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-              <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-              <Text color={color.text} bold={sel}>{t.label.padEnd(20)}</Text>
+            <ListRow key={t.name} selected={sel} label={t.label} labelWidth={20}>
               {/* A swatch of the palette's own semantics — readable in ANY theme. */}
               <Text color={t.palette.accent}>{glyph.on}</Text>
               <Text color={t.palette.ok}>{glyph.on}</Text>
@@ -267,10 +250,34 @@ export function Panel({
               <Text color={t.palette.path}>{glyph.on}</Text>
               <Text color={color.faint}>  {t.hint}</Text>
               {active ? <Text color={color.ok}>  {glyph.check} current</Text> : null}
-            </Text>
+            </ListRow>
           );
         })}
         <Box marginTop={1}><Text color={color.faint}>the whole screen previews as you move</Text></Box>
+      </Box>
+    );
+    hint = "↑↓ preview live · ⏎ keep · esc revert";
+  } else if (panel.kind === "ghosts") {
+    // Boo's wardrobe: skins (palettes) + personas (costumes) in one gallery.
+    // ↑↓ previews live on the splash; ⏎ keeps it as the resting look.
+    const looks = GHOST_LOOKS;
+    const idx = clampIndex(panel.index, looks.length);
+    const start = windowStart(idx, looks.length, bodyH);
+    const slice = looks.slice(start, start + bodyH);
+    body = (
+      <Box flexDirection="column" paddingX={1}>
+        {slice.map((l, i) => {
+          const sel = start + i === idx;
+          const active = l.value === panel.original;
+          return (
+            <ListRow key={l.value} selected={sel} label={l.label} labelWidth={14}>
+              <Text color={color.faint}>{l.persona ? "persona" : "skin   "}</Text>
+              <Text color={color.faint}>  {l.hint}</Text>
+              {active ? <Text color={color.ok}>  {glyph.check} current</Text> : null}
+            </ListRow>
+          );
+        })}
+        <Box marginTop={1}><Text color={color.faint}>Boo previews on the home screen as you move</Text></Box>
       </Box>
     );
     hint = "↑↓ preview live · ⏎ keep · esc revert";
@@ -345,13 +352,11 @@ export function Panel({
               const sel = start + i === idx;
               const failed = d.status === "failed";
               return (
-                <Text key={d.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-                  <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-                  <Text color={failed ? color.err : color.text} bold={sel}>{truncate(d.id, idW).padEnd(idW)}</Text>
+                <ListRow key={d.id} selected={sel} label={d.id} labelWidth={idW} labelColor={failed ? color.err : color.text}>
                   <Text color={color.faint}>  {truncate(d.model, 22)}</Text>
                   <Text color={failed ? color.err : d.status === "succeeded" ? color.ok : color.warn}>  {d.status}</Text>
                   {d.capacityUnits !== undefined ? <Text color={color.faint}>  {d.capacityUnits}PTU</Text> : null}
-                </Text>
+                </ListRow>
               );
             })
           )}
@@ -377,15 +382,9 @@ export function Panel({
               ? (panel.modelsError ? <Text color={color.faint}>{glyph.err} {truncate(panel.modelsError, Math.max(8, innerW - 4))}</Text> : <ShimmerText text="loading available models…" />)
               : <Text color={color.faint}>no models match “{ph.filter}”</Text>
           ) : (
-            slice.map((m, i) => {
-              const sel = start + i === idx;
-              return (
-                <Text key={m} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-                  <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-                  <Text color={color.text} bold={sel}>{truncate(m, Math.max(8, innerW - 4))}</Text>
-                </Text>
-              );
-            })
+            slice.map((m, i) => (
+              <ListRow key={m} selected={start + i === idx} label={truncate(m, Math.max(8, innerW - 4))} />
+            ))
           )}
         </Box>
       );
@@ -401,22 +400,14 @@ export function Panel({
         <Box flexDirection="column" paddingX={1}>
           <Text color={color.faint}>deploy: <Text color={color.text}>{ph.selectedModel}</Text></Text>
           <Box marginTop={1} flexDirection="column">
-            {capacityTypes.map((t, i) => {
-              const sel = i === idx;
-              return (
-                <Text key={t.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
-                  <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-                  <Text color={color.text} bold={sel}>{t.id.padEnd(22)}</Text>
-                  <Text color={color.faint}>{t.note}</Text>
-                </Text>
-              );
-            })}
+            {capacityTypes.map((t, i) => (
+              <ListRow key={t.id} selected={i === idx} label={t.id} labelWidth={22} detail={t.note} />
+            ))}
           </Box>
         </Box>
       );
       hint = "↑↓ · ⏎ select · esc back";
     } else if (ph.phase === "deploy-name") {
-      const fw = fieldWindow(ph.fieldEdit.value, ph.fieldEdit.cursor, Math.max(8, innerW - 4));
       body = (
         <Box flexDirection="column" paddingX={1}>
           <Text color={color.faint}>
@@ -425,15 +416,12 @@ export function Panel({
             capacity: <Text color={color.text}>{ph.capacityType}</Text>
           </Text>
           <Box marginTop={1} flexDirection="column">
-            <Text color={color.accent} bold>deployment name</Text>
-            <Box>
-              <Text color={color.faint}>{glyph.prompt} </Text>
-              <Text color={color.text}>{fw.pre}</Text>
-              <Text color={color.accent} inverse>{fw.at}</Text>
-              <Text color={color.text}>{fw.post}</Text>
-            </Box>
-            {!ph.fieldEdit.value ? <Text color={color.faint}>  e.g. gpt-4o-deployment</Text> : null}
-            {ph.fieldError ? <Text color={color.err}>  {glyph.err} {ph.fieldError}</Text> : null}
+            <Field
+              label="deployment name"
+              value={fieldWindow(ph.fieldEdit.value, ph.fieldEdit.cursor, Math.max(8, innerW - 4))}
+              placeholder="gpt-4o-deployment"
+              error={ph.fieldError}
+            />
           </Box>
           {panel.submitting ? <Box marginTop={1}><Text color={color.faint}>deploying…</Text></Box> : null}
         </Box>
@@ -475,7 +463,7 @@ export function Panel({
       </Box>
       <Box flexDirection="column" width={width} height={bodyH}>{body}</Box>
       <Box width={width} paddingX={1}>
-        <Text color={color.faint}>{hint}</Text>
+        <HintLine text={hint} />
       </Box>
     </Box>
   );

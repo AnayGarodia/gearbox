@@ -478,6 +478,18 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
         </Box>
       ) : null}
       {item.diff && item.diff.length > 0 ? <DiffView lines={item.diff} width={Math.max(30, width - 12)} /> : null}
+      {item.diagnostics?.length ? (
+        <Box flexDirection="column">
+          {item.diagnostics.slice(0, 4).map((d, i) => (
+            <Box key={i}>
+              <Text color={d.severity === "error" ? color.err : color.warn}>{glyph.notice} </Text>
+              <Text color={d.severity === "error" ? color.err : color.warn} bold>{`${d.line}${d.col != null ? ":" + d.col : ""} `}</Text>
+              <Text color={color.dim}>{d.message}</Text>
+            </Box>
+          ))}
+          {item.diagnostics.length > 4 ? <Text color={color.faint}>{`… +${item.diagnostics.length - 4} more`}</Text> : null}
+        </Box>
+      ) : null}
     </Box>
   );
 }
@@ -537,11 +549,14 @@ function VerificationLine({ item }: { item: Extract<Item, { kind: "verification"
 }
 
 function PreferenceLine({ item }: { item: Extract<Item, { kind: "preference" }> }) {
+  // A mini consent line (mirrors lines.ts): ▸ question · the accept command as
+  // an accent-on-accentBg chip — the command IS the action.
   return (
     <Box marginTop={1} marginLeft={2}>
-      <Text color={color.accentDim}>◆ </Text>
+      <Text color={color.accent}>▸ </Text>
       <Text color={color.text}>{item.text}</Text>
-      <Text color={color.faint}>{" · " + item.acceptCommand}</Text>
+      <Text color={color.faint}>{" · "}</Text>
+      <Text color={color.accent} bold backgroundColor={color.accentBg}>{item.acceptCommand}</Text>
     </Box>
   );
 }

@@ -137,29 +137,38 @@ function CodeBlock({ lang, code, width }: { lang: string; code: string; width: n
   );
   return (
     <Box flexDirection="column" marginY={1} paddingX={1} borderStyle="single" borderColor={color.accentDim}>
-      {lang ? renderPaddedLine("lang", [<Text key="lang-text" color={color.accentDim} bold backgroundColor={color.codeBg}>{` ${lang} `}</Text>], visibleLen(lang) + 2) : null}
+      {/* Single-paint lang row: one Text span carries the pre-padded label, so
+          the row is one background pass (no label chip + pad seam). */}
+      {lang ? (
+        <Text key="lang">
+          <Text color={color.accentDim} bold backgroundColor={color.codeBg}>{` ${lang} `.padEnd(contentWidth).slice(0, Math.max(contentWidth, visibleLen(lang) + 2))}</Text>
+        </Text>
+      ) : null}
       {lines.map((l, i) => {
         const row = diffRow(l, lang);
-        const prefix = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} │ `;
+        const gutter = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} `;
+        const sep = "│ "; // structure, not accent — always faint
         const highlighted = highlightLine(row.code, row.lang);
         const isBlank = row.code.trim() === "";
         if (isBlank) {
           // Blank lines get the prefix only · no trailing background band.
           return (
             <Text key={i}>
-              <Text color={color.faint} backgroundColor={row.bg}>{prefix}</Text>
+              <Text color={color.faint} backgroundColor={row.bg}>{gutter}</Text>
+              <Text color={color.faint} backgroundColor={row.bg}>{sep}</Text>
             </Text>
           );
         }
         return renderPaddedLine(
           i,
           [
-            <Text key="prefix" color={row.sign ? row.fg : color.faint} bold={Boolean(row.sign)} backgroundColor={row.bg}>{prefix}</Text>,
+            <Text key="gutter" color={row.sign ? row.fg : color.faint} bold={Boolean(row.sign)} backgroundColor={row.bg}>{gutter}</Text>,
+            <Text key="sep" color={color.faint} backgroundColor={row.bg}>{sep}</Text>,
             ...highlighted.map((s, j) => (
               <Text key={j} color={s.color} bold={s.bold} dimColor={s.dim} backgroundColor={row.bg}>{s.text}</Text>
             )),
           ],
-          prefix.length + spansLen(highlighted),
+          gutter.length + sep.length + spansLen(highlighted),
           row.bg,
         );
       })}

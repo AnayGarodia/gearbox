@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import { GHOSTS, type SpriteCell } from "../mascot-sprite.ts";
 import { getImageMode, imageId, idColor, placeholderRows, type GhostSize } from "../image.ts";
-import { renderGhost, EYES_CLOSED, TALK, type GhostCfg, type OverlayKind } from "../ghost/engine.ts";
+import { renderGhost, EYES_CLOSED, TALK, PERSONAS, PERSONA_ORDER, type GhostCfg, type OverlayKind } from "../ghost/engine.ts";
 
 // Boo · the ghost in the gearbox. Built parametrically (src/ui/ghost/engine.ts):
 // a 20x20 pixel sprite composited from layers (body + face + palette + accessory
@@ -33,6 +33,47 @@ const SKIN_CFG: Record<GhostSkin, GhostCfg> = {
 export function skinToCfg(skin: GhostSkin): GhostCfg {
   return { ...SKIN_CFG[skin] };
 }
+
+// ── Looks: skins + personas, one persisted string ─────────────────────────────
+// A "look" is what prefs.ghost stores: a plain skin name ("mint") or a persona
+// in the namespaced form "persona:skater". lookToCfg is the skinToCfg-equivalent
+// for the wider vocabulary — unknown values degrade to the base ghost, so a
+// stale pref can never crash a render.
+export type GhostLook = string;
+
+export function lookToCfg(look: GhostLook): GhostCfg {
+  if (look.startsWith("persona:")) {
+    const p = look.slice("persona:".length);
+    const per = PERSONAS[p];
+    if (per) return { palette: per.palette, face: per.face, persona: p };
+  }
+  return skinToCfg((SKINS as string[]).includes(look) ? (look as GhostSkin) : "base");
+}
+
+/** True for any value /ghost (or a stored pref) should accept. */
+export function isGhostLook(look: string): boolean {
+  return (SKINS as string[]).includes(look) || (look.startsWith("persona:") && !!PERSONAS[look.slice("persona:".length)]);
+}
+
+const SKIN_HINTS: Record<GhostSkin, string> = {
+  base: "the classic lavender ghost",
+  mint: "cool mint",
+  pink: "strawberry",
+  golden: "gilded + joyful",
+  fire: "why is Boo on fire",
+  shades: "too cool to elaborate",
+};
+
+/** The /ghost gallery rows: every skin, then every persona (costume). */
+export const GHOST_LOOKS: { value: string; label: string; hint: string; persona: boolean }[] = [
+  ...SKINS.map((s) => ({ value: s as string, label: s as string, hint: SKIN_HINTS[s], persona: false })),
+  ...PERSONA_ORDER.map((p) => ({
+    value: "persona:" + p,
+    label: (PERSONAS[p]?.label ?? p).toLowerCase(),
+    hint: PERSONAS[p]?.blurb ?? "",
+    persona: true,
+  })),
+];
 
 /** One sprite row → run-length-merged <Text> spans (fewer nodes, same pixels). */
 function SpriteRow({ row }: { row: SpriteCell[] }) {
@@ -153,8 +194,8 @@ export type MascotState = "thinking" | "streaming" | "tool" | "celebrate" | "err
 // eyes + mouth. Used for every state so the height is constant.
 const FACE_CROP = { rowStart: 4, rowEnd: 14 };
 
-export function stateView(state: MascotState, skin: GhostSkin): { cfg: GhostCfg; anim: AnimSpec } {
-  const skinPal = SKIN_CFG[skin].palette;
+export function stateView(state: MascotState, skin: GhostLook): { cfg: GhostCfg; anim: AnimSpec } {
+  const skinPal = lookToCfg(skin).palette;
   switch (state) {
     case "thinking":
       // Pulsing dots so the "thinking" beat reads as alive, not stalled.
@@ -176,7 +217,7 @@ export function stateView(state: MascotState, skin: GhostSkin): { cfg: GhostCfg;
 export const STATE_GHOST_ROWS = 5; // FACE_CROP rows 4..14 → 5 cell rows
 
 /** The compact state ghost for the working line (blocks path). */
-export function StateGhost({ state, skin }: { state: MascotState; skin: GhostSkin }) {
+export function StateGhost({ state, skin }: { state: MascotState; skin: GhostLook }) {
   const { cfg, anim } = stateView(state, skin);
   return <AnimatedGhost cfg={cfg} scale={1} anim={anim} />;
 }
@@ -201,16 +242,18 @@ function KittyGhost({ variant, size }: { variant: string; size: GhostSize }) {
  *  ghost just blinks occasionally (calm · no float or sparkle); the kitty PNG path
  *  stays static (re-placing a PNG on a timer glitches). `size` is chosen by the
  *  caller: "big" (2×) on a roomy window, "mini" (1×) when short, "none" (wordmark). */
-export function MascotSplash({ skin = "base", size = "big", wordmark = true, tagline, mood }: { skin?: GhostSkin; size?: GhostSize | "none"; wordmark?: boolean; tagline?: string; mood?: { face: string; overlay?: OverlayKind } | null }) {
+export function MascotSplash({ skin = "base", size = "big", wordmark = true, tagline, mood }: { skin?: GhostLook; size?: GhostSize | "none"; wordmark?: boolean; tagline?: string; mood?: { face: string; overlay?: OverlayKind } | null }) {
   const kitty = getImageMode() === "kitty";
   // A one-shot mood (wink after a pin, hearts after a theme switch, sleepy when
-  // idle) overrides the skin's face for a beat; App owns the decay timer.
-  const cfg = mood ? { ...skinToCfg(skin), face: mood.face } : skinToCfg(skin);
+  // idle) overrides the look's face for a beat; App owns the decay timer. A
+  // persona look is the RESTING cfg — home shows still play patches on top.
+  const cfg = mood ? { ...lookToCfg(skin), face: mood.face } : lookToCfg(skin);
   return (
     <Box flexDirection="column" alignItems="center" marginTop={1}>
       {size !== "none" ? (
         kitty ? (
-          <KittyGhost variant={skin} size={size} />
+          // The baked PNG set covers skins only — a persona look falls back to base.
+          <KittyGhost variant={GHOSTS[skin] ? skin : "base"} size={size} />
         ) : (
           <AnimatedGhost cfg={cfg} scale={size === "big" ? 2 : 1} anim={{ blink: !mood, show: !mood, overlay: mood?.overlay }} />
         )

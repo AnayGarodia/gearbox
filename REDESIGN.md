@@ -1,88 +1,89 @@
-# UI rebuild brief — opencode-style Gearbox
+# Broadsheet — the Gearbox UI design contract
 
-Synthesized 2026-06-10 from (a) a source-level dossier of opencode's TUI
-(Go/Bubble Tea v0.6.0 + the OpenTUI v1 era) and (b) a community-evidence sweep
-(reddit, HN, GitHub issues across Claude Code / opencode / aider / Crush /
-Gemini CLI / Codex). This is the contract for the rebuild.
+Gearbox's UI is not a chat log. It is **a typeset work ledger with a live
+telemetry margin** — the terminal treated as a printed page whose material is
+type, space, and alignment. This document is the contract every UI change is
+held to.
 
-## Why users prefer opencode's UI (evidence-ranked)
+## The first principle: design for the moment
 
-1. **No flicker/tearing during streaming** — the #1 complaint about every
-   Ink-style harness ("Literally no other CLI tool has these issues: opencode,
-   codex, gemini" — HN). Gearbox already has the virtualized buffer + coalesced
-   deltas; the rebuild must keep and harden that.
-2. **Selection/copy/scrollback that work** — alt-screen done WELL (independent
-   scroll regions) is loved; mouse-grab breaking selection is hated. Keep
-   inline mode first-class; in fullscreen keep wheel scroll but document the
-   modifier-selection path; add transcript export/open-in-$EDITOR as the
-   escape hatch.
-3. **Tool-output middle tier** — collapsed one-line stubs by default,
-   one-keystroke expansion to full detail. Neither "Read 3 files" opacity nor
-   JSON floods.
-4. **Always-visible model + cost + context%** — a thin status readout. Gearbox
-   already leads here (routing line, /usage strip); restyle, don't remove.
-5. **The opencode look** — centered width-capped column, flat layered
-   backgrounds, colored left-spine blocks, no box borders. "Treats you like a
-   developer."
+At any given moment, show exactly what the user needs to know right now, in
+the best form for knowing it. Surfaces are derived from moments:
 
-## The opencode visual language (rebuild targets)
+| Moment | What the user needs | The form |
+|---|---|---|
+| Idle / home | Am I set up? Who answers? What can I do? | Boo (+ shows) · one readiness line (`N accounts ready · pin`) · the centered composer |
+| Composing | Who handles this, what it costs | Composer footer: live pick `provider · model` beside the cursor |
+| Working | Progress? Doing what now? How to stop? | One now-row (shimmer verb left, `Ns · esc` right); **history recedes** to faint ink |
+| Reviewing | What changed? Proven? Cost? | The receipt: verdict · files · proof tier; margin carries model · $ · time; ⌃O reopens detail |
+| Deciding | What am I approving, options | The consent line: verbatim command, single-key options — the only bright element while pending |
+| Auditing | Where did money go? Why this model? | Per-turn margin figures · the meter (ctx gauge · session $) · tabs for depth |
 
-- **Layout**: one centered column, content capped at `min(termWidth, 86)`
-  cols; generous side margins on wide terminals. Transcript viewport above,
-  composer pinned at bottom, full-width status bar at the very bottom.
-- **Three background layers** (dark): page `#0a0a0a` → panel `#141414`
-  (message/tool blocks) → element `#1e1e1e` (input, chips, modal elements).
-  Grouping by background shade, NOT by drawn borders.
-- **Signature block**: thick `▌` LEFT spine carrying semantic color + panel
-  background + padding 1,2. User message = blue spine on panel; assistant =
-  NO block, bare markdown on page bg (quiet asymmetry); tool = panel with
-  invisible spine, warning-orange both-edges while a permission is pending.
-- **Collapsed tool stubs**: `∟ Edit src/foo.ts` corner-glyph lines appended
-  under assistant text; `/details` (or ctrl+o) toggles full blocks (diffs,
-  first-6-lines reads, console-block shell output).
-- **Composer**: thick left+right border in gray, element bg, bold `>` prompt
-  (swaps to `!` + blue border in bash mode); footer line under it: hint left
-  (`enter send` / `working ⋯ esc interrupt`), `Provider Model` right.
-- **Status bar**: panel bg full width; left wordmark chip + version +
-  `~/path:branch`; right mode/agent chip (uppercase, thick left border,
-  accent). Session header: title as H1 + right-aligned `tokens/ctx% · $cost`.
-- **Palette** (default dark): text `#eeeeee`, muted `#808080`, primary peach
-  `#fab283`, secondary blue `#5c9cf5`, accent purple `#9d7cd8`, error
-  `#e06c75`, warning `#f5a742`, success `#7fd88f`. Keep Gearbox's multi-theme
-  system; re-base the default theme on this language.
-- **Diffs**: unified < 120 cols, side-by-side ≥ 120; tinted line-number
-  gutters (`#1b2b34`/`#2d1f26`), full-row add/remove tints (`#20303b`/
-  `#37222c`), LSP diagnostics in red under the diff.
-- **Motion**: shimmer verbs on pending tools ("Reading file..."), ellipsis
-  spinner in the composer footer — not in the transcript. Plain text, no
-  cutesy verbs (the "Gittifying..." backlash is real).
+## The three signature ideas
 
-## What Gearbox keeps (already ahead of the field)
+1. **The telemetry margin** (`lines.ts marginLine`, `MARGIN_W = 16`): a page of
+   two channels — prose ≤76 cols left, right-aligned figures (model, $,
+   duration, ±lines, proof) in a 16-col margin when the content column is
+   ≥88 cols; below that the figures fold inline (` · $0.02 · 4s`). Narrative
+   left, truth right. Any number belongs in the margin.
+2. **Turns are numbered sections** (`lines.ts` user item with `turnNo`): a
+   faint hairline between turns, the index (`01`, `02`…) in the brand ink, the
+   prompt set bold. No boxes, no background slabs. Command echoes render as
+   one small `❯` line.
+3. **Turns settle into receipts** (`collapse.ts` + the summary item): live =
+   full tool ladder; settled = verdict (bold) · touched files · proof tier in
+   the margin, beside the routed line's model · cost. ⌃O expands.
 
-- Virtualized line buffer + WeakMap memoization + delta coalescing (the
-  anti-flicker machinery) — the rebuild restyles `lines.ts` output, it does
-  not replace the renderer.
-- Inline mode as the selection-native option; fullscreen default.
-- The routing provenance line, /why scorecard, /usage strip, cost-in-status —
-  community evidence says always-on cost visibility is a top-5 want.
-- Prompt queueing, fuzzy pickers, session resume, permission gate semantics.
-- Boo stays as the working indicator (compact state ghost), restyled to sit
-  inside the composer-footer hint slot rather than the transcript flow.
+## Brand
 
-## Build sequence
+Boo is the identity. The default palette ("ghost", `theme.ts dark`) derives
+from him: ghost-indigo accent `#8B93F8`, light-indigo heading ink `#B9BDF9`,
+warm-paper grays, money in neutral ink (never green — spend isn't "good").
+Boo appears exactly twice: the home screen (with the persona shows and the
+`/ghost` wardrobe) and the working beat. Never in the flow otherwise.
 
-1. `theme.ts`: add the layered-background keys (page/panel/element) + the
-   opencode-derived default dark palette; all themes gain the 3 layers.
-2. `lines.ts` + `Transcript.tsx`: width-capped centered column; user-message
-   spine blocks; bare assistant markdown; block info lines (model · time).
-3. Tool rendering: collapsed `∟` stubs + `/details` toggle; expanded panel
-   blocks per tool kind; permission state = warning edges on the block.
-4. Composer + footer line + status bar restyle.
-5. Session header (title + tokens/ctx/cost readout).
-6. Diff renderer: gutter tints + side-by-side ≥ 120 cols.
-7. Modals/panels: restyle Panel.tsx to the element-layer language; live-
-   preview theme picker already exists — re-skin.
+## Supporting principles
 
-Invariants that must not regress: every line ≤ width (tested), no raw ANSI in
-Ink, routing seam untouched, all existing render tests pass (update snapshots
-deliberately, not incidentally).
+- **One page.** A single centered column holds everything in fullscreen —
+  transcript, now-row, queued chips, toasts, consent, composer. Full-width is
+  reserved for two chrome rows: the masthead (wordmark · tabs · account) and
+  the meter (cwd:branch · model · ctx gauge · $).
+- **Hierarchy is ink, not noise.** Three ink levels (text/dim/faint) + one
+  accent + ok/warn/err. Bold marks identity. Backgrounds only on interactive
+  surfaces. Attention is directed by *receding* what isn't this moment's
+  answer (`recedeLine`), never by adding brightness.
+- **Motion is information.** Nothing idles. Allowed: the streaming shimmer,
+  margin figures landing, Boo's home shows and one-shot moods, ⌃O expand.
+  `GEARBOX_NO_MOTION=1` freezes everything.
+- **Decisions look like decisions.** Permission, verify-failure, and
+  preference offers share the consent-line pattern (▸ + element bg + accent
+  edge + single-key options); shell consent wears the warn edge.
+- **Settled work is quiet.** The default screen state reads like a printed
+  page.
+
+## Row-count contracts (change ONLY in lockstep, all sites commented)
+
+| Contract | Value | Sites |
+|---|---|---|
+| HEADER (masthead + rule) | 3 | App.tsx HEADER · Masthead (TabStrip.tsx) |
+| Tab click row | 2 | App mouse handler · tabStripHit |
+| Composer block | 4 (marginTop + input + footer + marginBottom) | Composer.tsx · App footer estimate |
+| Consent (permission) footer | 5 | PermissionPrompt.tsx · App `if (perm) footer +=` |
+| statusBarHit chrome | 3 | StatusBar.tsx · App |
+| Content cap | 92 cols (76 prose + 16 margin) | App lineWidth · lines.ts MARGIN_W |
+
+## Invariants (tested; never weaken)
+
+Every emitted Line ≤ width. No raw ANSI — Ink color props only. The routing
+seam is untouched by UI work. The frame never exceeds the terminal (footer
+over-estimated, alt-screen clips). Mouse hit-tests derive from the same
+constants as the render (no drift). Diffs: unified with tinted line-number
+gutters below 120 cols, side-by-side at ≥120 (`SIDE_BY_SIDE_MIN`); LSP
+diagnostics render under the diff they belong to (◆ line:col message).
+
+## Verification
+
+`bun test` + `bun run typecheck`, then the PTY harness at 150x55 / 120x36 /
+100x30 / 80x24 (`/tmp/gb-shot.py`, `/tmp/gb-frames2.py`): `scrolled=0
+wrapped=0`, masthead/meter/composer present, margin column right-aligned,
+narrow widths showing inline-folded figures.

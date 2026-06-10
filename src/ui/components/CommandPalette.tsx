@@ -1,7 +1,8 @@
 import React from "react";
-import { Box, Text } from "ink";
-import { color, glyph } from "../theme.ts";
+import { Box } from "ink";
+import { color } from "../theme.ts";
 import { matchCommands } from "../../commands.ts";
+import { ListRow } from "./ui.tsx";
 
 export interface PaletteRow {
   value: string;
@@ -17,59 +18,31 @@ function windowed<T>(items: T[], selected: number, limit: number): { rows: T[]; 
   return { rows: items.slice(start, start + count), start };
 }
 
-/** Split a row into the command part (primary) and the description part
- * (secondary) so each can be coloured independently, then pad to fill the row's
- * background. The description is truncated first when the row is too narrow. */
-function rowParts(marker: string, label: string, detail: string | undefined, width: number): { cmd: string; det: string; pad: string } {
-  // Clamp the command column too — a long usage string (e.g. "/checkpoint
-  // [name|list|restore|rm]") must truncate, not wrap the row and break the
-  // palette's row budget.
-  let cmd = `${marker}${label.padEnd(16)}`;
-  if (cmd.length > width) cmd = cmd.slice(0, Math.max(1, width - 1)) + "…";
-  let det = detail ? "  " + detail : "";
-  if (cmd.length + det.length > width) {
-    const room = Math.max(0, width - cmd.length);
-    det = room > 1 ? det.slice(0, room - 1) + "…" : "";
-  }
-  const pad = " ".repeat(Math.max(0, width - cmd.length - det.length));
-  return { cmd, det, pad };
-}
-
-/** One palette row: command in primary text, description in secondary, with the
+/** Live command hints, shown while the input starts with "/". One ListRow per
+ * command: label column padded to 16, description truncated to fit, the
  * selected row carrying the single accent-highlighted background. */
-function Row({ active, marker, label, detail, width }: { active: boolean; marker: string; label: string; detail?: string; width: number }) {
-  const { cmd, det, pad } = rowParts(marker, label, detail, width);
-  return (
-    <Text backgroundColor={active ? color.accentBg : undefined}>
-      <Text color={active ? color.text : color.dim} bold={active}>{cmd}</Text>
-      <Text color={active ? color.dim : color.faint}>{det}</Text>
-      {pad}
-    </Text>
-  );
-}
-
-/** Live command hints, shown while the input starts with "/". */
 export function CommandPalette({ draft, selected = 0, limit = 5, rows, width = 80 }: { draft: string; selected?: number; limit?: number; rows?: PaletteRow[]; width?: number }) {
   const rowWidth = Math.max(20, width - 2);
-  if (rows?.length) {
-    const shown = windowed(rows, selected, limit);
-    return (
-      <Box flexDirection="column" paddingX={1} marginTop={1}>
-        {shown.rows.map((r, i) => {
-          const active = shown.start + i === selected;
-          return <Row key={r.value} active={active} marker={active ? `${glyph.select} ` : "  "} label={r.label} detail={r.detail} width={rowWidth} />;
-        })}
-      </Box>
-    );
-  }
-  const matches = matchCommands(draft);
-  if (matches.length === 0) return null;
-  const shown = windowed(matches, selected, limit);
+  const list: PaletteRow[] = rows?.length
+    ? rows
+    : matchCommands(draft).map((c) => ({ value: c.name, label: c.usage, detail: c.desc }));
+  if (list.length === 0) return null;
+  const shown = windowed(list, selected, limit);
   return (
     <Box flexDirection="column" paddingX={1} marginTop={1}>
-      {shown.rows.map((c, i) => {
+      {shown.rows.map((r, i) => {
         const active = shown.start + i === selected;
-        return <Row key={c.name} active={active} marker={active ? `${glyph.select} ` : "  "} label={c.usage} detail={c.desc} width={rowWidth} />;
+        return (
+          <ListRow
+            key={r.value}
+            selected={active}
+            label={r.label.padEnd(16)}
+            labelColor={active ? color.text : color.dim}
+            detail={r.detail}
+            detailColor={active ? color.dim : color.faint}
+            width={rowWidth}
+          />
+        );
       })}
     </Box>
   );

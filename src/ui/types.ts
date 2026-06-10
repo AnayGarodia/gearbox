@@ -67,6 +67,10 @@ export type Item =
       // (the children) under ⌃O. Live items never carry these.
       collapsed?: boolean;
       children?: Item[];
+      // LSP diagnostics for the file this write/edit touched, attached by the
+      // verify fast tier (App.tsx runLspTier) — rendered under the diff as
+      // `◆ line:col message` rows in err/warn ink.
+      diagnostics?: { line: number; col?: number; severity: "error" | "warning"; message: string }[];
     }
   | { kind: "phase"; id: number; label: string; detail?: string; state: "running" | "ok" | "err" }
   // Post-turn routing provenance line: `routed → provider · model · cost`.

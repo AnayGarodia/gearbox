@@ -1,6 +1,8 @@
 import React from "react";
-import { Box, Text } from "ink";
-import { color, glyph } from "../theme.ts";
+import { Box } from "ink";
+import { color } from "../theme.ts";
+import { HintLine, ListRow } from "./ui.tsx";
+import { truncate } from "../panel.ts";
 
 function windowed<T>(items: T[], selected: number, limit: number): { rows: T[]; start: number } {
   const count = Math.max(1, limit);
@@ -17,13 +19,11 @@ export function FilePalette({ matches, selected = 0, limit = 5, width = 80 }: { 
   if (shown.rows.length === 0) return null;
   return (
     <Box flexDirection="column" paddingX={1} marginTop={1}>
-      <Text color={color.faint}>@ files · tab to complete</Text>
+      <HintLine text="@ files · tab to complete" />
       {shown.rows.map((f, i) => {
         const active = shown.start + i === selected;
-        const raw = `${active ? `${glyph.select} ` : "  "}${f}`;
-        const text = raw.length > rowWidth ? raw.slice(0, Math.max(0, rowWidth - 1)) + "…" : raw.padEnd(rowWidth);
         return (
-          <Text key={f} color={active ? color.text : color.faint} bold={active} backgroundColor={active ? color.accentBg : undefined}>{text}</Text>
+          <ListRow key={f} selected={active} label={truncate(f, Math.max(1, rowWidth - 2))} labelColor={active ? color.text : color.faint} width={rowWidth} />
         );
       })}
     </Box>

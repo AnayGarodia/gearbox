@@ -104,13 +104,17 @@ function codeBlockLines(code: string, lang: string, width: number): Line[] {
   );
   const out: Line[] = [];
   if (lang) {
-    out.push(padBg([{ text: ` ${lang} `, color: color.accentDim, bold: true, bg: color.codeBg }], blockWidth, color.codeBg));
+    // Single-paint: ONE span carries the whole label row (text pre-padded), so
+    // the row is one background pass instead of a label chip + a pad span.
+    out.push([{ text: ` ${lang} `.padEnd(blockWidth).slice(0, blockWidth), color: color.accentDim, bold: true, bg: color.codeBg }]);
   }
   for (let i = 0; i < lines.length; i++) {
     const row = codeRow(lines[i]!, lang);
-    const prefix = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} │ `;
+    const gutter = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} `;
     const spans: Span[] = [
-      { text: prefix, color: row.sign ? row.fg : color.faint, bold: Boolean(row.sign), bg: row.bg },
+      { text: gutter, color: row.sign ? row.fg : color.faint, bold: Boolean(row.sign), bg: row.bg },
+      // The │ separator is structure, not accent — always faint.
+      { text: "│ ", color: color.faint, bg: row.bg },
       ...(highlightLine(row.code, row.lang) as Span[]).map((s) => ({ ...s, bg: row.bg })),
     ];
     out.push(padBg(clipSpans(spans, blockWidth), blockWidth, row.bg));
@@ -424,6 +428,31 @@ function diffStatSpans(lines?: { sign: "+" | "-"; text: string }[]): Span[] {
   ];
 }
 
+// Width threshold for the two-pane diff: below this, the unified gutter view.
+export const SIDE_BY_SIDE_MIN = 120;
+
+type NumberedDiff = { sign: "+" | "-"; text: string; n: number };
+
+/** Standard hunk pairing for the two-pane view: a run of consecutive − lines
+ *  sits beside the run of + lines that immediately follows it (row k of each);
+ *  unpaired rows sit beside a blank pane. Pure + exported for tests. */
+export function pairDiffRows(diff: NumberedDiff[]): { left: NumberedDiff | null; right: NumberedDiff | null }[] {
+  const rows: { left: NumberedDiff | null; right: NumberedDiff | null }[] = [];
+  let i = 0;
+  while (i < diff.length) {
+    if (diff[i]!.sign === "-") {
+      const dels: NumberedDiff[] = [];
+      while (i < diff.length && diff[i]!.sign === "-") dels.push(diff[i++]!);
+      const adds: NumberedDiff[] = [];
+      while (i < diff.length && diff[i]!.sign === "+") adds.push(diff[i++]!);
+      for (let k = 0; k < Math.max(dels.length, adds.length); k++) rows.push({ left: dels[k] ?? null, right: adds[k] ?? null });
+    } else {
+      rows.push({ left: null, right: diff[i++]! });
+    }
+  }
+  return rows;
+}
+
 function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, expand = false): Line[] {
   // Big diffs collapse HARDER: past ~24 changed lines the body is mostly noise
   // in the transcript — show a taste, keep the colored ± header honest, and
@@ -436,8 +465,37 @@ function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, exp
   // across the whole diff so the collapsed taste matches the expanded view.
   let oldN = 0;
   let newN = 0;
-  const numbered = diff.map((d) => ({ ...d, n: d.sign === "+" ? ++newN : ++oldN }));
+  const numbered: NumberedDiff[] = diff.map((d) => ({ ...d, n: d.sign === "+" ? ++newN : ++oldN }));
   const numW = Math.max(2, String(Math.max(oldN, newN, 1)).length);
+
+  if (width >= SIDE_BY_SIDE_MIN) {
+    // Two panes: old | new, a 1-col gap between. Each pane = a line-number
+    // gutter on the darker tint + the code on the row tint. Collapse behavior
+    // (MAX + ⌃O) counts pane ROWS, with the honest source-line remainder.
+    const paneW = Math.floor((width - 1) / 2);
+    const pane = (d: NumberedDiff | null, add: boolean): Line => {
+      if (!d) return [{ text: " ".repeat(paneW), bg: color.diffContextBg }];
+      const bg = add ? color.diffAddBg : color.diffDelBg;
+      const gutterBg = add ? color.diffAddGutterBg : color.diffDelGutterBg;
+      const fg = add ? color.ok : color.err;
+      const gutter = ` ${String(d.n).padStart(numW)} `;
+      const contentWidth = Math.max(paneW - gutter.length, 1);
+      return clipSpans([
+        { text: gutter, color: fg, dim: true, bg: gutterBg },
+        ...padBg([
+          { text: add ? "+ " : "− ", color: fg, bold: true, bg },
+          ...highlightLine(d.text).map((s) => ({ ...s, bg })),
+        ], contentWidth, bg),
+      ], paneW);
+    };
+    const rows = pairDiffRows(numbered);
+    const shownRows = rows.slice(0, MAX);
+    const out: Line[] = shownRows.map((r) => clipSpans([...pane(r.left, false), { text: " " }, ...pane(r.right, true)], width));
+    const shownSrc = shownRows.reduce((n, r) => n + (r.left ? 1 : 0) + (r.right ? 1 : 0), 0);
+    if (shownSrc < diff.length) out.push([{ text: `… +${diff.length - shownSrc} more lines · ⌃O to expand`, color: color.faint }]);
+    return out;
+  }
+
   const shown = numbered.slice(0, MAX);
   const out: Line[] = shown.map((d) => {
     const add = d.sign === "+";
@@ -700,6 +758,21 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
           out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: it.summary.slice(0, Math.max(width - 5, 1)), color: it.status === "err" ? color.err : color.dim }]);
         }
         if (it.diff?.length) out.push(...diffLines(it.diff, width, expand));
+        // LSP diagnostics for the file this tool touched (attached by the
+        // verify fast tier): up to 4 `◆ line:col message` rows under the diff,
+        // err/warn ink by severity, the remainder folded into a count.
+        if (it.diagnostics?.length) {
+          const DIAG_MAX = 4;
+          for (const d of it.diagnostics.slice(0, DIAG_MAX)) {
+            const c = d.severity === "error" ? color.err : color.warn;
+            out.push(clipSpans([
+              { text: "  " + glyph.notice + " ", color: c },
+              { text: `${d.line}${d.col != null ? ":" + d.col : ""} `, color: c, bold: true },
+              { text: d.message, color: color.dim },
+            ], width));
+          }
+          if (it.diagnostics.length > DIAG_MAX) out.push([{ text: `  … +${it.diagnostics.length - DIAG_MAX} more`, color: color.faint }]);
+        }
         break;
       }
       case "phase": {
@@ -747,7 +820,15 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         break;
       }
       case "preference": {
-        out.push(clipSpans([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: it.text, color: color.text }, { text: " · " + it.acceptCommand, color: color.faint }], width));
+        // A mini consent line: ▸ question · the command that says yes. The
+        // command wears the interactive accent-on-accentBg chip (it IS the
+        // action); everything else stays quiet. One line.
+        out.push(clipSpans([
+          { text: "  ▸ ", color: color.accent },
+          { text: it.text, color: color.text },
+          { text: " · ", color: color.faint },
+          { text: it.acceptCommand, color: color.accent, bold: true, bg: color.accentBg },
+        ], width));
         break;
       }
       case "summary": {

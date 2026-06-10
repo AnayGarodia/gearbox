@@ -8,7 +8,7 @@ import { StatusStrip } from "./components/StatusStrip.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer } from "./components/Composer.tsx";
-import { MascotSplash, SKINS, type GhostSkin, type MascotState } from "./components/Mascot.tsx";
+import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type GhostLook, type MascotState } from "./components/Mascot.tsx";
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
@@ -226,7 +226,7 @@ const clipForPrompt = (s: string, max = 8000): string => (s.length > max ? s.sli
 // check so the auto-fix loop sees the exact compiler lines. Warnings never
 // fail the tier (a turn must not go red over lint nits).
 const LSP_FILE_RE = /\.(ts|tsx|js|jsx|py|go|rs)$/;
-async function runLspTier(changed: string[], onEvent: OnEvent): Promise<boolean> {
+async function runLspTier(changed: string[], onEvent: OnEvent, onFileDiagnostics?: (file: string, diags: { line: number; col?: number; severity: "error" | "warning"; message: string }[]) => void): Promise<boolean> {
   const files = changed.filter((f) => LSP_FILE_RE.test(f)).slice(0, 8);
   if (!files.length) return false;
   let anyErrors = false;
@@ -241,6 +241,12 @@ async function runLspTier(changed: string[], onEvent: OnEvent): Promise<boolean>
       if (r.note) continue; // no server for this file / failed to start — the shell tier covers it
       sawServer = true;
       const errs = r.diagnostics.filter((d) => d.severity === "error");
+      // Surface per-file diagnostics to the transcript: they render under the
+      // edit's diff (◆ line:col message), so the proof sits with the change.
+      const surfaced = r.diagnostics
+        .filter((d) => d.severity === "error" || d.severity === "warning")
+        .map((d) => ({ line: d.line, col: d.col, severity: d.severity as "error" | "warning", message: d.message }));
+      if (surfaced.length) onFileDiagnostics?.(f, surfaced);
       if (errs.length) {
         anyErrors = true;
         errorLines.push(formatDiagnostics(errs, 6, process.cwd()));
@@ -356,7 +362,7 @@ function ActivityRail({ items, width }: { items: Item[]; width: number }) {
   );
 }
 
-function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingState; width: number; skin: GhostSkin; splashSize: "big" | "mini" | "none" }) {
+function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingState; width: number; skin: GhostLook; splashSize: "big" | "mini" | "none" }) {
   const detected = state.importable.length + state.cloudImportable.length;
   const panelWidth = Math.min(Math.max(width - 4, 30), 58);
 
@@ -455,7 +461,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [effort, setEffortState] = useState<Effort>("medium");
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
-  const [ghostSkin, setGhostSkinState] = useState<GhostSkin>("base");
+  const [ghostSkin, setGhostSkinState] = useState<GhostLook>(() => { const g = loadPrefs().ghost; return g && isGhostLook(g) ? g : "base"; });
   // One-shot splash moods (wink after a pin, hearts after a theme switch,
   // sleepy when idle on home). flashMood decays back to the base face; a real
   // state change (typing, a turn starting) always wins because the splash only
@@ -730,7 +736,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const cliMetaRef = useRef<{ costUSD?: number; rates?: { utilization?: number; status?: string; resetsAt?: number; type?: string }[] } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
-  const ghostSkinRef = useRef<GhostSkin>("base");
+  const ghostSkinRef = useRef<GhostLook>(loadPrefs().ghost && isGhostLook(loadPrefs().ghost!) ? loadPrefs().ghost! : "base");
   const permRef = useRef<PermRequest | null>(null);
   const permQueue = useRef<{ req: PermRequest; resolve: (d: PermDecision) => void }[]>([]);
   const scrollTopRef = useRef(0);
@@ -1296,7 +1302,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     }
   }, []);
 
-  const setGhostSkin = (s: GhostSkin) => {
+  const setGhostSkin = (s: GhostLook) => {
     ghostSkinRef.current = s;
     setGhostSkinState(s);
   };
@@ -2511,7 +2517,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // (~1.5s settle, no test run). Type errors feed the same auto-fix
           // loop as a failed check, and a red here skips the slower shell
           // checks this round — fail fast, fix, then prove with real checks.
-          const lspFailed = await runLspTier([...changedFiles], onEvent);
+          const lspFailed = await runLspTier([...changedFiles], onEvent, (file, diags) => {
+            // Attach to the LAST write/edit tool item that touched this file so
+            // the diagnostics render under its diff.
+            setItems((its) => {
+              for (let i = its.length - 1; i >= 0; i--) {
+                const t = its[i]!;
+                if (t.kind === "tool" && (t.name.includes("write") || t.name.includes("edit") || t.name === "file_change") && t.arg && (t.arg === file || t.arg.endsWith("/" + file) || file.endsWith("/" + t.arg) || relPath(t.arg) === file)) {
+                  const next = its.slice();
+                  next[i] = { ...t, diagnostics: diags };
+                  return next;
+                }
+              }
+              return its;
+            });
+          });
           if (lspFailed) {
             hadError = true;
           } else {
@@ -3563,19 +3583,28 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         case "ghost": {
           echo(text);
-          let next: GhostSkin;
-          if (arg) {
-            const found = SKINS.find((s) => s === arg.toLowerCase());
-            if (!found) {
-              notice(`unknown mood: ${arg} · try ${SKINS.join(", ")}`);
+          if (!arg) {
+            // The wardrobe: skins + personas with live preview on the splash.
+            // Inline mode has no panel overlay — fall back to cycling skins.
+            if (fullscreen) {
+              setPanel({ kind: "ghosts", title: "Boo · live preview", index: Math.max(0, GHOST_LOOKS.findIndex((l) => l.value === ghostSkinRef.current)), original: ghostSkinRef.current });
               return;
             }
-            next = found;
-          } else {
-            next = SKINS[(SKINS.indexOf(ghostSkinRef.current) + 1) % SKINS.length]!;
+            const next = SKINS[(SKINS.indexOf(ghostSkinRef.current as GhostSkin) + 1) % SKINS.length]!;
+            setGhostSkin(next);
+            updatePrefs({ ghost: next });
+            notice(`Boo is feeling ${next}.`);
+            return;
           }
-          setGhostSkin(next);
-          notice(`Boo is feeling ${next}.`);
+          const q = arg.toLowerCase().trim();
+          const look = isGhostLook(q) ? q : isGhostLook(`persona:${q}`) ? `persona:${q}` : null;
+          if (!look) {
+            notice(`unknown look: ${arg} · try ${GHOST_LOOKS.map((l) => l.label).join(", ")}`);
+            return;
+          }
+          setGhostSkin(look);
+          updatePrefs({ ghost: look });
+          notice(`Boo is feeling ${look.replace("persona:", "")}.`);
           return;
         }
         case "retry":
@@ -4511,6 +4540,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           setTheme(p.original);
           setThemeEpochState((e) => e + 1);
         }
+        if (p.kind === "ghosts") setGhostSkin(p.original); // revert the previewed look
         setPanel(null); return;
       }
       if (p.kind === "static") {
@@ -4806,6 +4836,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           setThemeEpochState((e) => e + 1);
           setPanel(null);
           toast(`theme → ${picked.name}`);
+          return;
+        }
+        return;
+      }
+      // ghosts: ↑↓ previews LIVE on the splash, ⏎ keeps, esc reverts (esc branch).
+      if (p.kind === "ghosts") {
+        const apply = (idx: number) => {
+          const next = clampIndex(idx, GHOST_LOOKS.length);
+          setGhostSkin(GHOST_LOOKS[next]!.value);
+          setPanel({ ...p, index: next });
+        };
+        if (key.upArrow) { apply(p.index - 1); return; }
+        if (key.downArrow) { apply(p.index + 1); return; }
+        if (key.return) {
+          const picked = GHOST_LOOKS[clampIndex(p.index, GHOST_LOOKS.length)]!;
+          setGhostSkin(picked.value);
+          updatePrefs({ ghost: picked.value });
+          setPanel(null);
+          toast(`Boo → ${picked.label}`);
           return;
         }
         return;

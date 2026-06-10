@@ -45,6 +45,8 @@ export type PanelState =
     }
   // theme gallery: ↑↓ previews LIVE (the whole UI repaints), ⏎ keeps, esc reverts
   | { kind: "themes"; title: string; index: number; original: string }
+  // Boo gallery: skins + personas, live preview on the splash; same contract as themes
+  | { kind: "ghosts"; title: string; index: number; original: string }
   // git confirm: review/edit a generated commit message or PR title before it runs
   | {
       kind: "git-confirm";

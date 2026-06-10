@@ -35,8 +35,11 @@ test("accounts panel marks the selected row and the current account", () => {
   expect(out).toContain("⏎ select");
   expect(out).toContain("▶"); // selection marker present
   expect(out).toContain("founders@aztea.ai"); // identified seat shows its email
-  // an email-less subscription seat prompts to identify it
-  expect(out).toContain("/account login claude-personal to identify");
+  // an email-less subscription seat prompts to identify it — the prompt lives on
+  // the HINT LINE of the selected row now (rows stay uncrowded by design).
+  const sel2: PanelState = { kind: "accounts", title: "accounts", index: 2 };
+  const out2 = render(<Panel panel={sel2} width={120} height={12} accounts={view} />).lastFrame() ?? "";
+  expect(out2).toContain("/account login claude-personal to identify");
 });
 
 test("models panel filters and shows the filter prompt", () => {

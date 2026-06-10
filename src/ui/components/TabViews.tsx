@@ -2,6 +2,13 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import { sparkline } from "../cost-tab.ts";
+import { fitCol } from "./ui.tsx";
+
+// Tiny column helpers: labels fill a left-aligned column (ONE truncation rule,
+// fitCol), figures right-align so the digits line up like a statement.
+const colL = fitCol;
+const colR = (s: string, w: number) => s.padStart(w);
+const usd = (n: number) => (n >= 0.005 ? "$" + n.toFixed(2) : "<$0.01");
 
 // The Cost tab: daily spend bars (from the append-only ledger), the burn-rate
 // forecast, the session savings line, per-model and per-account breakdowns.
@@ -31,9 +38,9 @@ export function CostView({
       <Text color={color.accent} bold>cost</Text>
       {dailyBars?.length ? (
         <Box marginTop={1} flexDirection="column">
+          <Text color={color.faint}>7-day spend</Text>
           <Text>
-            <Text color={color.faint}>{"last 7 days  "}</Text>
-            <Text color={color.text}>{sparkline(dailyBars.map((d) => d.usd))}</Text>
+            <Text color={color.text}>{"  " + sparkline(dailyBars.map((d) => d.usd))}</Text>
             <Text color={color.faint}>{"  peak $" + maxDay.toFixed(2) + " · today $" + (dailyBars[dailyBars.length - 1]?.usd ?? 0).toFixed(2)}</Text>
           </Text>
         </Box>
@@ -55,8 +62,8 @@ export function CostView({
           <Text color={color.faint}>this session, by model</Text>
           {perModel.map((m) => (
             <Text key={m.model} wrap="truncate-end">
-              <Text color={color.dim}>{"  " + m.model.padEnd(24)}</Text>
-              <Text color={m.usd >= 0.005 ? color.text : color.faint}>{("$" + m.usd.toFixed(2)).padStart(7)}</Text>
+              <Text color={color.dim}>{"  " + colL(m.model, 24)}</Text>
+              <Text color={m.usd >= 0.005 ? color.text : color.faint}>{colR(usd(m.usd), 7)}</Text>
               <Text color={color.faint}>{"  " + m.turns + " turn" + (m.turns === 1 ? "" : "s")}</Text>
             </Text>
           ))}
@@ -65,12 +72,15 @@ export function CostView({
       {spendRows.length ? (
         <Box marginTop={1} flexDirection="column">
           <Text color={color.faint}>per account (all sessions)</Text>
-          {spendRows.map((r) => (
-            <Box key={r.label}>
-              <Text color={color.dim}>{"  " + r.label.padEnd(22)}</Text>
-              <Text color={color.faint}>{r.spent}</Text>
-            </Box>
-          ))}
+          {(() => {
+            const w = Math.max(...spendRows.map((r) => r.spent.length), 1);
+            return spendRows.map((r) => (
+              <Box key={r.label}>
+                <Text color={color.dim}>{"  " + colL(r.label, 22)}</Text>
+                <Text color={color.faint}>{colR(r.spent, w)}</Text>
+              </Box>
+            ));
+          })()}
         </Box>
       ) : null}
       <Box marginTop={1}>
@@ -112,13 +122,13 @@ export function RoutingView({
       ) : null}
       {recentTurns?.length ? (
         <Box marginTop={1} flexDirection="column">
+          <Text color={color.faint}>recent turns</Text>
           <Text>
-            <Text color={color.faint}>{"recent turns  "}</Text>
-            <Text color={color.text}>{sparkline(recentTurns.map((t) => t.usd))}</Text>
+            <Text color={color.text}>{"  " + sparkline(recentTurns.map((t) => t.usd))}</Text>
             <Text color={color.faint}>{"  cost shape, oldest → newest"}</Text>
           </Text>
           {recentTurns.slice(-5).map((t, i) => (
-            <Text key={i} wrap="truncate-end" color={color.dim}>{"  " + t.model.padEnd(24)}{t.usd >= 0.005 ? "$" + t.usd.toFixed(2) : "<$0.01"}</Text>
+            <Text key={i} wrap="truncate-end" color={color.dim}>{"  " + colL(t.model, 24)}{colR(usd(t.usd), 7)}</Text>
           ))}
         </Box>
       ) : null}
