@@ -5563,13 +5563,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     selectorKind === "fixed" ? (model?.label ? `${model.label} pinned` : "pinned") :
     "auto-routing";
   // The home composer's mouse geometry: the centered group's row heights, added
-  // up. Splash heights are fixed by AnimatedGhost's constant-height contract
-  // (scale 2 = 22 rows + marginTop + wordmark/tagline = 26 · scale 1 = 11 → 15 ·
+  // up. Splash height is fixed by AnimatedGhost's constant-height contract
+  // (always 1× now: marginTop + 11-row ghost block + wordmark/tagline = 15 ·
   // "none" = wordmark+tagline = 3). PTY-verified; keep in lockstep with homeJsx
   // below and MascotSplash.
   {
     const homeLineCount = Math.max(1, edit.value.split("\n").length);
-    const splashH = homeRoom >= 4 ? (homeSplashSize === "big" ? 26 : homeSplashSize === "mini" ? 15 : 3) : 0;
+    const splashH = homeRoom >= 4 ? (homeSplashSize === "none" ? 3 : 15) : 0;
     const readinessH = homeRoom >= 8 ? 2 : 0;
     const commandsH = showHomeCommands ? 1 + HOME_COMMANDS.length : 0;
     const groupH = splashH + readinessH + commandsH + 4 + homeLineCount + PALETTE_ROWS; // composer block (lift=false) = 4 + N

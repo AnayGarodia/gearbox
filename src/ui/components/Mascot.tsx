@@ -255,7 +255,10 @@ export function MascotSplash({ skin = "base", size = "big", wordmark = true, tag
           // The baked PNG set covers skins only — a persona look falls back to base.
           <KittyGhost variant={GHOSTS[skin] ? skin : "base"} size={size} />
         ) : (
-          <AnimatedGhost cfg={cfg} scale={size === "big" ? 2 : 1} anim={{ blink: !mood, show: !mood, overlay: mood?.overlay }} />
+          /* Always 1×: the half-block fold gives 2px of vertical resolution per
+             cell row, so the sprite reads crisp. 2× turned every pixel into a
+             solid fg=bg cell — a blown-up, chunky Boo that read as broken. */
+          <AnimatedGhost cfg={cfg} scale={1} anim={{ blink: !mood, show: !mood, overlay: mood?.overlay }} />
         )
       ) : null}
       {wordmark ? (
