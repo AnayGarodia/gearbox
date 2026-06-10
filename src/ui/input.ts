@@ -55,6 +55,47 @@ export function offsetAt(value: string, lineIdx: number, col: number): number {
   return off + Math.min(col, lines[li]!.length);
 }
 
+// ── soft wrap ─────────────────────────────────────────────────────────────────
+// The composer SOFT-WRAPS long logical lines at `w` columns. These pure helpers
+// are the single source of truth for the display-row geometry: the Composer
+// renders from wrapMap, and App's footer estimate + mouse hit-test count the
+// same rows — so a wrapped line can never break the row contract again.
+
+/** One entry per DISPLAY row: the slice value.substr(start, len). An empty
+ *  logical line still yields a row (len 0). Rows are contiguous: a chunk
+ *  boundary shares its offset with the next chunk's start. */
+export function wrapMap(value: string, w: number): { start: number; len: number }[] {
+  const width = Math.max(1, w);
+  const rows: { start: number; len: number }[] = [];
+  let off = 0;
+  for (const line of value.split(NL)) {
+    const chunks = Math.max(1, Math.ceil(line.length / width));
+    for (let i = 0; i < chunks; i++) rows.push({ start: off + i * width, len: Math.min(width, line.length - i * width) });
+    off += line.length + 1;
+  }
+  return rows;
+}
+
+/** The display row + column the cursor occupies under wrapping. At an interior
+ *  chunk boundary the caret lands on the NEXT row's col 0 (where the next typed
+ *  character goes); at the very end of a line it sits at col == len — the
+ *  renderer reserves one slack cell for exactly that. */
+export function wrapCaret(value: string, w: number, cursor: number): { row: number; col: number } {
+  const map = wrapMap(value, w);
+  for (let i = map.length - 1; i >= 0; i--) {
+    const r = map[i]!;
+    if (cursor >= r.start && cursor <= r.start + r.len) return { row: i, col: cursor - r.start };
+  }
+  return { row: 0, col: 0 };
+}
+
+/** Offset of a (display row, column) point under wrapping — the mouse map. */
+export function wrapOffset(value: string, w: number, row: number, col: number): number {
+  const map = wrapMap(value, w);
+  const r = map[Math.max(0, Math.min(row, map.length - 1))]!;
+  return r.start + Math.max(0, Math.min(col, r.len));
+}
+
 const insert = (s: Edit, text: string): KeyAction => {
   const sel = selectionRange(s);
   const start = sel?.[0] ?? s.cursor;

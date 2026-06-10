@@ -7,7 +7,7 @@ import { StatusBar, statusBarHit, statusBarLayout, formatStatusCost } from "./co
 import { StatusStrip } from "./components/StatusStrip.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
-import { Composer } from "./components/Composer.tsx";
+import { Composer, composerRows, composerWrapW } from "./components/Composer.tsx";
 import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type GhostLook, type MascotState } from "./components/Mascot.tsx";
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working, workingRows } from "./components/Working.tsx";
@@ -72,7 +72,7 @@ import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, reloadMcpConnections, removeMcpServer, shellSplit } from "../mcp.ts";
-import { applyKey, applyMouse, extendUnitSelection, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
+import { applyKey, applyMouse, caretPos, extendUnitSelection, sanitizeInputText, selectionRange, wrapOffset, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { clipboardImageToFile } from "./clipboard-image.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
@@ -490,7 +490,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Home-screen composer mouse geometry (the composer floats mid-screen there).
   // Computed in render scope beside homeJsx — the one place that knows the
   // centered layout's heights — and read by the raw mouse handler.
-  const homeGeomRef = useRef<{ firstInputRow: number; left: number } | null>(null);
+  const homeGeomRef = useRef<{ firstInputRow: number; left: number; width: number } | null>(null);
   const transcriptMouseAnchorRef = useRef<{ line: number; col: number } | null>(null);
   const transcriptRangeAnchorRef = useRef<{ line: number; col: number } | null>(null);
   // In-progress transcript drag granularity: `char` tracks the raw point; `word`/`line`
@@ -1008,23 +1008,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // marginBottom(rows-2) · footer hint(rows-3) · pad(rows-4) · input rows
     // (rows-5 … rows-4-lineCount) · pad · marginTop. Keep in lockstep with
     // Composer.tsx and the footer estimate.
-    const composerPoint = (x: number, y: number): { line: number; col: number; off: number } | null => {
+    const composerPoint = (x: number, y: number): { off: number } | null => {
       if (permRef.current) return null; // the consent line replaces the composer
       const value = editRef.current.value;
-      const lineCount = Math.max(1, value.split("\n").length);
       // Home screen: the composer floats mid-screen — its geometry is computed
       // in render scope (where the layout values live) and published via ref.
       const home = homeScreenRef.current ? homeGeomRef.current : null;
-      const firstInputRow = home ? home.firstInputRow : rows - 4 - lineCount;
-      const lastInputRow = home ? home.firstInputRow + lineCount - 1 : rows - 5;
-      const left = home ? home.left : pageLeftRef.current;
       if (home == null && homeScreenRef.current) return null;
+      const w = home ? home.width : pageWRef.current;
+      const rowCount = composerRows(value, w); // display rows (soft wrap — same map the renderer uses)
+      const firstInputRow = home ? home.firstInputRow : rows - 4 - rowCount;
+      const lastInputRow = firstInputRow + rowCount - 1;
+      const left = home ? home.left : pageLeftRef.current;
       if (y < firstInputRow || y > lastInputRow) return null;
-      const line = y - firstInputRow;
+      const row = y - firstInputRow;
       // 1 border + space + prompt + space, SGR coords are 1-based — plus the
       // column's left offset (page column in-session, centered box on home).
       const col = Math.max(0, x - 5 - left);
-      return { line, col, off: offsetAt(value, line, col) };
+      return { off: wrapOffset(value, composerWrapW(w), row, col) };
     };
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
@@ -1039,8 +1040,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return col >= modelZone[0] && col < modelZone[1] ? "model" : null;
       }
       const value = editRef.current.value;
-      const lineCount = Math.max(1, value.split("\n").length);
-      return statusBarHit({ x: x - pageLeftRef.current, y, termRows: rows, composerLines: lineCount, paletteRows: paletteRowsLiveRef.current, model, costText, ctxPct, width: pageWRef.current });
+      return statusBarHit({ x: x - pageLeftRef.current, y, termRows: rows, composerLines: composerRows(value, pageWRef.current), paletteRows: paletteRowsLiveRef.current, model, costText, ctxPct, width: pageWRef.current });
     };
     const viewportTop = 4; // masthead (marginTop + masthead row + rule = 3 rows); viewport begins on row 4.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
@@ -1121,10 +1121,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             composerUnitDragRef.current = null;
           } else if (cp != null && isPrimary && !isDrag) {
             // Composer click: track timing for double/triple-click detection.
-            // line/col come from composerPoint — the ONE composer geometry — so
-            // the click, the drag anchor (off), and applyMouse always agree.
+            // The OFFSET comes from composerPoint (the one composer geometry,
+            // soft-wrap aware); the LOGICAL line/col for applyMouse derive from
+            // it — so the click, the drag anchor, and applyMouse always agree.
             const value = editRef.current.value;
-            const { line: lineIdx, col } = cp;
+            const { lineIdx, col } = caretPos(value, cp.off);
             const shift = (b & 4) !== 0;
             const now = Date.now();
             const prev = lastComposerClickRef.current;
@@ -3924,13 +3925,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
   if (perm) footer += 5; // consent block: marginTop + title + command + options + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
-  else if (!panel && !homeScreen) footer += 5; // composer (marginTop + pad + input + pad + footer hint · Composer.tsx row contract)
+  else if (!panel && !homeScreen) footer += 4 + composerRows(edit.value, pageW); // composer (marginTop + pad + WRAPPED input rows + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
-  // Boo working block (marginTop + head-crop ghost with verb/action/trail
-  // beside him; 2 on small frames) — Working.tsx row contract. The activity
-  // rail folded INTO this block (it had also been over-estimated at +3 while
-  // never rendering, silently shrinking the busy transcript by 3 phantom rows).
-  if (busy || linger) footer += workingRows(pageW, rows);
+  // The now block (marginTop + verb row + activity row while busy; 2 on the
+  // post-turn linger beat) — Working.tsx row contract.
+  if (busy || linger) footer += workingRows(busy);
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
   footer += toasts.length;
@@ -4159,7 +4158,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // "none" = wordmark+tagline = 3). PTY-verified; keep in lockstep with homeJsx
   // below and MascotSplash.
   {
-    const homeLineCount = Math.max(1, edit.value.split("\n").length);
+    const homeLineCount = composerRows(edit.value, homeW); // display rows (soft wrap)
     const splashH = homeRoom >= 4 ? (homeSplashSize === "none" ? 3 : 15) : 0;
     const readinessH = homeRoom >= 8 ? 2 : 0;
     const commandsH = showHomeCommands ? 1 + HOME_COMMANDS.length : 0;
@@ -4174,6 +4173,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       ? {
           firstInputRow: 6 + topPad + splashH + readinessH + commandsH, // header(3) + topPad + content + composer marginTop + pad + 1
           left: Math.floor((width - homeW) / 2),
+          width: homeW,
         }
       : null;
   }
@@ -4211,7 +4211,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const footerJsx = (
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
-        {busy || linger ? (() => { const a = turnActivity(items, pageW); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} rows={rows} skin={ghostSkin} action={a.action} trail={a.trail} />; })() : null}
+        {busy || linger ? (() => { const a = turnActivity(items, pageW); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} action={a.action} trail={a.trail} />; })() : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (
@@ -4259,7 +4259,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? (() => { const a = turnActivity(items, width); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} rows={rows} skin={ghostSkin} action={a.action} trail={a.trail} />; })() : null}
+      {busy || linger ? (() => { const a = turnActivity(items, width); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} action={a.action} trail={a.trail} />; })() : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (

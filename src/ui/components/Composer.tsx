@@ -1,7 +1,14 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
-import { caretPos, selectionRange, type Edit } from "../input.ts";
+import { selectionRange, wrapMap, wrapCaret, type Edit } from "../input.ts";
+
+// The soft-wrap column budget for a composer of `width` total columns:
+// 2 box edges + 3-col prompt prefix + 1 slack cell for the end-of-line cursor.
+// THE shared geometry: App's footer estimate and mouse hit-test derive display
+// rows from the same number (composerRows / wrapMap), so they cannot drift.
+export const composerWrapW = (width: number): number => Math.max(8, Math.max(width - 2, 8) - 4);
+export const composerRows = (value: string, width: number): number => wrapMap(value, composerWrapW(width)).length;
 
 // The opencode editor look: the input sits on the element layer (color.elementBg)
 // between a thick LEFT and RIGHT edge (┃) in a quiet border gray, with a bold `❯`
@@ -54,8 +61,6 @@ function ComposerImpl({
   lift?: boolean; // fullscreen only: a 1-row bottom margin so the input sits off the screen's bottom edge. Inline has no edge to lift off (the terminal owns the rows below), so it stays flush — no stray trailing blank.
   onEdit?: (edit: Edit) => void;
 }) {
-  const lines = value.split("\n");
-  const { lineIdx: curLine, col: curCol } = caretPos(value, cursor);
   const selected = selectionRange({ value, cursor, selectionAnchor });
   // Shell mode: a leading `!` (or sticky bash mode) runs the line as a shell
   // command. A distinct pink accent + `!` prompt so it never reads as chat/command.
@@ -69,20 +74,20 @@ function ComposerImpl({
   // Columns inside the two ┃ edges; each row is padded to this so the element
   // layer reads as one solid surface, not text-shaped patches.
   const innerW = Math.max(width - 2, 8);
+  // SOFT WRAP: long logical lines render as multiple display rows of wrapW
+  // columns (wrapMap in input.ts — the same map App's footer estimate and
+  // mouse hit-test count, so the row contract holds for any input length).
+  const wrapW = composerWrapW(width);
+  const rows = wrapMap(value, wrapW);
+  const { row: curRow, col: curCol } = wrapCaret(value, wrapW, cursor);
   const prefix = (i: number) => (i === 0 ? " " + promptGlyph + " " : "   ");
   const bgPad = (used: number) => (used < innerW ? <Text backgroundColor={color.elementBg}>{" ".repeat(innerW - used)}</Text> : null);
-  const offsetOfLine = (line: number) => {
-    let off = 0;
-    for (let i = 0; i < line; i++) off += lines[i]!.length + 1;
-    return off;
-  };
-  const renderLine = (ln: string, line: number) => {
-    const lineStart = offsetOfLine(line);
-    const lineEnd = lineStart + ln.length;
-    const selStart = selected ? Math.max(selected[0], lineStart) - lineStart : -1;
-    const selEnd = selected ? Math.min(selected[1], lineEnd) - lineStart : -1;
+  const renderRow = (r: { start: number; len: number }, i: number) => {
+    const ln = value.substr(r.start, r.len);
+    const selStart = selected ? Math.max(selected[0], r.start) - r.start : -1;
+    const selEnd = selected ? Math.min(selected[1], r.start + r.len) - r.start : -1;
     const hasSel = selected && selStart < selEnd;
-    const cursorHere = line === curLine;
+    const cursorHere = i === curRow;
     if (!hasSel) {
       if (!cursorHere) return <Text color={color.text}>{ln}</Text>;
       return (
@@ -101,10 +106,10 @@ function ComposerImpl({
       </Text>
     );
   };
-  // Columns a rendered input row occupies (the cursor block past the line end
+  // Columns a rendered input row occupies (the cursor block past the row end
   // adds one), so the element-bg padding fills exactly to the right edge.
-  const usedCols = (ln: string, line: number) =>
-    prefix(line).length + ln.length + (line === curLine && curCol >= ln.length ? 1 : 0);
+  const usedCols = (r: { len: number }, i: number) =>
+    prefix(i).length + r.len + (i === curRow && curCol >= r.len ? 1 : 0);
 
   // Footer hint (left): mode badge first (bash/vim), then the contextual hint,
   // then the quiet policy + branch. One line, always present.
@@ -162,13 +167,13 @@ function ComposerImpl({
           // Non-empty: render the live editable input WITH the cursor, even while
           // busy — what you type queues and sends when the turn finishes.
           <Box flexDirection="column" width={innerW}>
-            {lines.map((ln, i) => (
+            {rows.map((r, i) => (
               <Box key={i} width={innerW}>
                 <Text backgroundColor={color.elementBg}>
                   <Text color={accent} bold>{prefix(i)}</Text>
-                  {renderLine(ln, i)}
+                  {renderRow(r, i)}
                 </Text>
-                {bgPad(usedCols(ln, i))}
+                {bgPad(usedCols(r, i))}
               </Box>
             ))}
           </Box>

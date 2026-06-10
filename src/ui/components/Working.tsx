@@ -2,26 +2,19 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import { shimmer, shimmerFrame } from "../shimmer.ts";
-import { StateGhost, STATE_GHOST_ROWS, type MascotState, type GhostLook } from "./Mascot.tsx";
+import type { MascotState } from "./Mascot.tsx";
 
-// The working beat (Broadsheet): Boo IS the indicator. A compact head-crop
-// ghost whose face carries the agent's state — thinking (pulsing dots) →
-// streaming (talking mouth) → tool (loading fill) → celebrate (confetti) /
-// error (tears) — with the shimmering verb beside him and the figures
-// (elapsed · esc) at the page's right edge. Boo is deliberately CALM through
-// the long phases: thinking/tool barely move; only the brief, meaningful
-// beats animate. The block is STATE_GHOST_ROWS tall (one fixed crop for every
-// state, so the composer below never shifts).
+// The working beat (Broadsheet): a compact two-line now block. Line 1 is the
+// shimmering verb with the figures (elapsed · esc) at the page's right edge;
+// line 2 is the live activity — the current step with its ticking elapsed and
+// a short trail of recent steps/checks. No mascot here: while code runs the
+// transcript is the show, and rows belong to it (Boo lives on the home screen).
 //
 // ROW-COUNT CONTRACT (keep in lockstep with App.tsx's footer estimate):
-//   full  (width ≥ WORKING_GHOST_MIN_W and rows ≥ WORKING_GHOST_MIN_H):
-//         marginTop + STATE_GHOST_ROWS = 6 rows — Boo + verb + action + trail
-//   compact: marginTop + 1 verb row = 2 rows (a 5-row ghost would eat a small
-//         frame's transcript — the coding area outranks the mascot)
-export const WORKING_GHOST_MIN_W = 60;
-export const WORKING_GHOST_MIN_H = 32;
-export const workingRows = (width: number, rows: number): number =>
-  width >= WORKING_GHOST_MIN_W && rows >= WORKING_GHOST_MIN_H ? 1 + STATE_GHOST_ROWS : 2;
+//   busy: marginTop + verb row + activity row = 3 rows (activity may be empty
+//         early in a turn — the frame under-fills by one row, which is safe)
+//   linger (the post-turn done/error beat): marginTop + verdict row = 2 rows
+export const workingRows = (busy: boolean): number => (busy ? 3 : 2);
 
 export function Working({
   state,
@@ -29,8 +22,6 @@ export function Working({
   elapsed,
   linger,
   width,
-  rows = 999,
-  skin = "base",
   action,
   trail,
 }: {
@@ -39,10 +30,8 @@ export function Working({
   elapsed: number;
   linger?: boolean; // post-turn celebrate/error beat · show a label, not the timer
   width: number;
-  rows?: number; // terminal height — small frames drop the ghost (workingRows)
-  skin?: GhostLook; // /ghost wardrobe — Boo works in the outfit you gave him
-  action?: string | null; // current step (tool + target + ticking elapsed), beside Boo
-  trail?: string | null; // recent steps/checks, beside Boo
+  action?: string | null; // current step (tool + target + ticking elapsed)
+  trail?: string | null; // recent steps/checks
 }) {
   const label = linger ? (state === "error" ? "something broke" : "done") : verb;
   // The verb glows (shimmer.ts) while live; the linger label sits still in its
@@ -53,46 +42,31 @@ export function Working({
   const labelJsx = glow ? (
     <Text>{glow.map((s, i) => <Text key={i} color={s.color}>{s.ch}</Text>)}</Text>
   ) : (
-    <Text color={state === "error" ? color.err : color.ok}>{label}</Text>
-  );
-  const figures = live ? (
-    <Text>
-      <Text color={color.accentDim}>{elapsed}s</Text>
-      <Text color={color.faint}> · esc interrupt</Text>
+    <Text color={state === "error" ? color.err : color.ok}>
+      <Text>{(state === "error" ? "● " : "● ")}</Text>
+      {label}
     </Text>
-  ) : (
-    <Text color={color.faint}> </Text>
   );
-
-  if (workingRows(width, rows) === 2) {
-    // Compact frame: the one-line now-row (a 5-row ghost would crowd it).
-    return (
-      <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
-        {labelJsx}
-        {figures}
-      </Box>
-    );
-  }
-  // Side column beside the head: verb + figures, then the live activity (the
-  // current step and a short trail) — the "what is it doing NOW" rail folded
-  // into rows Boo already occupies, so it costs no extra height.
-  const room = Math.max(12, width - 2 - 20 - 2); // padding + ghost cols + gap
+  const activity = [action, trail].filter(Boolean).join("   ");
   return (
-    <Box width={width} paddingX={1} marginTop={1}>
-      <StateGhost state={state} skin={skin} />
-      <Box flexDirection="column" flexGrow={1} height={STATE_GHOST_ROWS} justifyContent="center" marginLeft={2}>
-        <Box justifyContent="space-between">
-          {labelJsx}
-          {figures}
-        </Box>
-        {!linger && action ? (
-          <Text wrap="truncate-end">
-            <Text color={color.accentDim}>{"▸ "}</Text>
-            <Text color={color.dim}>{action.slice(0, room)}</Text>
+    <Box width={width} paddingX={1} marginTop={1} flexDirection="column">
+      <Box justifyContent="space-between">
+        {labelJsx}
+        {live ? (
+          <Text>
+            <Text color={color.accentDim}>{elapsed}s</Text>
+            <Text color={color.faint}> · esc interrupt</Text>
           </Text>
-        ) : null}
-        {!linger && trail ? <Text color={color.faint} wrap="truncate-end">{"  " + trail.slice(0, room)}</Text> : null}
+        ) : (
+          <Text color={color.faint}> </Text>
+        )}
       </Box>
+      {live && activity ? (
+        <Text wrap="truncate-end">
+          <Text color={color.accentDim}>{"▸ "}</Text>
+          <Text color={color.dim}>{activity.slice(0, Math.max(12, width - 4))}</Text>
+        </Text>
+      ) : null}
     </Box>
   );
 }

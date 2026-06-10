@@ -3,7 +3,7 @@
 Near-term build order. The north star is `VISION.md` (ROUTE · VERIFY · ACCOUNT);
 the full milestone vision is `DESIGN.md`. This file tracks what's done and what's next.
 
-## Where we are — harness, accounts, VERIFY, and most of ROUTE v2 are shipped
+## Where we are — harness, accounts, VERIFY, ROUTE v2, and the priors flywheel are shipped
 
 ### Done — M0 harness
 - Multi-provider agent loop through the `ModelSelector` seam.
@@ -65,12 +65,21 @@ the full milestone vision is `DESIGN.md`. This file tracks what's done and what'
   + session TurnMeta; crash-safe temp-rename writes.
 - Sessions are durable and resumable (`/resume`, `--continue`).
 
+### Done — Flywheel (priors)
+- Per-repo measured priors from real outcomes (`src/model/priors.ts`,
+  `~/.gearbox/priors.json`): every edited turn's VERIFY result and every `/undo`
+  is recorded per (kind, model) and adjusts effective quality in this repo —
+  conservative, asymmetric, silent under 4 verified outcomes.
+- `/why` shows the measured evidence ("measured here: 7/9 ✓") alongside seeded estimates.
+- The escalation path (cheap model failed → strong model passed) is captured as
+  the natural shadow comparison.
+
 ## Build order (next)
 
 ### 1 · ROUTE v2 — what's left
-- Shadow-eval on a sampled, budget-capped fraction of tasks.
-- Per-repo measured priors from real outcomes (seeded guesses → measured confidence).
+- Shadow-eval: sampled, budget-capped second-model runs (beyond the free
+  escalation-path comparisons already captured).
 
-### 2 · Flywheel
-- Per-repo priors auto-tuned from accept/edit/revert (git signal).
+### 2 · Flywheel v2
+- Fold richer git signal (accept/edit/revert beyond /undo) into the priors.
 - Curation → bounded working context → cheap task-boundary switching + poisoning recovery.

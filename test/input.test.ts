@@ -154,3 +154,37 @@ test("line drag hulls whole lines", () => {
   const up = extendUnitSelection(v, { start: 4, end: 7 }, 1, "line");
   expect([up.cursor, up.selectionAnchor]).toEqual([0, 7]);
 });
+
+// ── soft wrap (wrapMap / wrapCaret / wrapOffset) ──────────────────────────────
+import { wrapMap, wrapCaret, wrapOffset } from "../src/ui/input.ts";
+
+test("wrapMap chunks long lines and keeps short/empty lines as single rows", () => {
+  expect(wrapMap("", 10)).toEqual([{ start: 0, len: 0 }]);
+  expect(wrapMap("hello", 10)).toEqual([{ start: 0, len: 5 }]);
+  // 25 chars at width 10 → 10 + 10 + 5
+  expect(wrapMap("a".repeat(25), 10)).toEqual([
+    { start: 0, len: 10 }, { start: 10, len: 10 }, { start: 20, len: 5 },
+  ]);
+  // multi-line: each logical line wraps independently (newline not counted)
+  expect(wrapMap("abcdefghijkl\nxy", 10)).toEqual([
+    { start: 0, len: 10 }, { start: 10, len: 2 }, { start: 13, len: 2 },
+  ]);
+});
+
+test("wrapCaret: interior chunk boundary lands on the next row; line end uses the slack cell", () => {
+  const v = "a".repeat(25);
+  expect(wrapCaret(v, 10, 0)).toEqual({ row: 0, col: 0 });
+  expect(wrapCaret(v, 10, 10)).toEqual({ row: 1, col: 0 }); // boundary → next row
+  expect(wrapCaret(v, 10, 25)).toEqual({ row: 2, col: 5 }); // line end
+  const full = "a".repeat(20);
+  expect(wrapCaret(full, 10, 20)).toEqual({ row: 1, col: 10 }); // exact-fit end → slack
+});
+
+test("wrapOffset is the inverse mouse map (clamped to the row)", () => {
+  const v = "a".repeat(25) + "\nxy";
+  expect(wrapOffset(v, 10, 0, 3)).toBe(3);
+  expect(wrapOffset(v, 10, 1, 3)).toBe(13);
+  expect(wrapOffset(v, 10, 2, 99)).toBe(25); // clamp to chunk len
+  expect(wrapOffset(v, 10, 3, 1)).toBe(27); // second logical line
+  expect(wrapOffset(v, 10, 99, 0)).toBe(26); // row clamp
+});

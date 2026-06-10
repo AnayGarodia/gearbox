@@ -1,94 +1,82 @@
 # Gearbox
 
-A multi-provider terminal coding agent. v0.1 is the harness — a clean agent loop
-with streaming, tools, sessions, and a rich TUI. The headline feature landing on
-top is **intelligent model routing**: automatically picking the cheapest model
-that clears the quality bar for each task, across every provider and key you pay
-for. See `DESIGN.md` for the full vision.
+A multi-provider terminal coding agent. The harness is a clean agent loop with
+streaming, tools, sessions, and a rich TUI; the headline feature — **intelligent
+model routing** — is live: every turn is classified, scored against every
+(model, account) pair you pay for (API keys, cloud creds, and flat-rate
+subscription seats), and sent to the cheapest candidate that clears the quality
+bar. Per-repo measured priors (the flywheel) adjust those scores from real
+VERIFY outcomes. See `DESIGN.md` for the vision, `ROADMAP.md` for status,
+`CLAUDE.md`/`AGENTS.md` for the deep contributor guide.
 
 ---
 
 ## Build, test, run
 
-**Requires:** [Bun](https://bun.sh) ≥ 1.1, at least one provider API key.
+**Requires:** [Bun](https://bun.sh) ≥ 1.1, at least one provider account.
 
 ```sh
 bun install            # install deps
-bun test               # 69 tests, ~2s, no keys needed
+bun test               # full suite, no keys needed
 bun run typecheck      # tsc --noEmit
-bun run src/cli.tsx    # run from source (dev)
+bun run src/cli.tsx    # run from source (dev only — use the installed `gearbox` binary for real work)
 bun run build          # compile to dist/gearbox (single binary)
 ```
 
-**Provider setup** (choose any common API-key provider):
+**Provider setup** (any of ~25 catalog providers):
 ```sh
-gearbox auth add <api-key>
+gearbox auth add <api-key>             # sniffer auto-detects the provider
 gearbox auth add <provider> <api-key>
-gearbox auth import
+gearbox auth add claude work           # subscription seat via the vendor CLI
+gearbox auth import                    # pick up env/cloud credentials
 ```
 
-No provider configured → first-run setup screen. Gearbox does not run a fake model.
+No account configured → interactive onboarding. Gearbox does not run a fake model.
 
 **Common invocations:**
 ```sh
-gearbox                          # start in cwd
-gearbox --model haiku            # specific model (fuzzy match)
+gearbox                          # start in cwd (fullscreen UI)
+gearbox --model haiku            # pin a model (fuzzy match; disables routing)
 gearbox --continue / -c          # resume latest session
 gearbox --yolo                   # skip permission prompts
+gearbox --inline                 # plain terminal scrollback instead of alt-screen
+gearbox -p "prompt" [--json]     # headless one-shot
 ```
 
 ---
 
-## Layout
+## Layout (orientation — see CLAUDE.md for the annotated tree)
 
 ```
 src/
-  cli.tsx              entry point; arg parsing, Ink render, alternate screen
-  config.ts            Config (defaultModelId, maxSteps); GEARBOX_MODEL / GEARBOX_MAX_STEPS envs
-  providers.ts         ProviderId, ModelSpec, MODELS registry, resolveModel()
-                         ← ONLY place that touches a concrete provider SDK
+  cli.tsx              entry point; arg parsing, headless subcommands, Ink render
+  providers.ts         provider+model id → AI SDK model (the ONLY SDK touchpoint)
+  tools.ts             AI SDK tools: read/write/edit/list/search/glob/run_shell/
+                         fetch_url/web_search/remember (+ MCP + delegate merged in)
+  mcp.ts               MCP client: mcp.json configs → mcp_<server>_<tool> tools
+  verify.ts            VERIFY gate: detect checks, run post-edit, iterate to green
+  undo.ts / git/ops.ts per-turn snapshots + whole-tree checkpoints → /undo, /diff, git suite
   model/
-    selector.ts        THE ROUTING SEAM — select(task) → ModelChoice
-                         FixedSelector today; smart router drops in here later
-  commands.ts          Slash-command metadata, /help, model list/switch, context breakdown
-  tools.ts             AI SDK tools: read_file, write_file, edit_file, search, glob,
-                         list_dir, run_shell (scoped to cwd; permission-gated)
-  permission.ts        Permission broker — write/edit/shell ask before running
-                         (auto-approved under --yolo or "allow all")
-  shell.ts             runShell() — execSync wrapper, output capped at 60k chars
-  diff.ts              computeDiff / diffStat — unified diff for write/edit results
-  session.ts           Session persistence (~/.gearbox/sessions/<slug>/); per-turn
-                         model+usage stored for the future cost engine
-  context/
-    builder.ts         Context Engine: curates history + injects memory/repomap/
-                         retrieved files into a bounded system prompt per turn
-    memory.ts          Two-layer memory: GEARBOX.md (project brief) + facts.md
-                         (living notes via /memory or #note)
-    repomap.ts         Lightweight repo map injected into every system prompt
-    retrieve.ts        File retrieval: surfaces relevant files for each turn
+    selector.ts        THE ROUTING SEAM — select(task) → ModelChoice (+ backend)
+    router.ts          RoutingSelector: scores (model, account) pairs incl. subscription seats
+    scoring.ts         pure scorer: cost + scarcity + penalties − plan bonus
+    priors.ts          per-repo measured priors from VERIFY outcomes (the flywheel)
+    profiles.ts        model corpus: quality, cost, latency, effort vocab
+  accounts/            multi-account system: store, sniffer, resolve/failover rank,
+                         health, usage, ledger (the single spend writer)
+  context/             context engine: builder, BM25 retrieval, repo map, memory, compaction
   agent/
     events.ts          AgentEvent — the normalized stream the UI consumes
-                         (never expose raw AI SDK types above this layer)
-    run.ts             Real agent loop: streamText → AgentEvent, abort-aware,
-                         incremental tool-input streaming, usage capture
-    mock.ts            Scripted AgentEvent fixture (used by tests)
+    run.ts             agent loop: streamText → AgentEvent; usage always captured
+    classify.ts        cheap task classifier feeding the router
+    delegate.ts        delegate / delegate_parallel sub-agents (worktree-isolated)
+    cli-backend.ts     claude/codex CLI subprocess backend (subscription seats)
   ui/
-    App.tsx            Root Ink component: state, useInput, slash commands, turns
-    theme.ts           Colors + glyphs (the look)
-    input.ts           Pure key→action reducer for the composer (tested)
-    history.ts         Pure ↑/↓ prompt-history nav (tested)
-    lines.ts           itemsToLines — flattens transcript items to fixed-width
-                         Line[]; INVARIANT: every line ≤ width (tested)
-    git.ts             Current branch for the status bar
-    mention.ts / files.ts  @file fuzzy picker
-    useTerminalSize.ts Reactive terminal width
-    image.ts           Ghost rendering mode detection (blocks/kitty/iterm)
-    components/        Banner, Transcript, Viewport, Composer, CommandPalette,
-                         FilePalette, Markdown, Mascot, StatusBar,
-                         PermissionPrompt, Working
-    ghost/engine.ts    Parametric pixel-ghost renderer (Boo the mascot)
-test/                  Pure-logic + Ink render tests; no API keys required
-experiments/           Architecture validation prototypes (findings in FINDINGS.md)
+    App.tsx            root Ink component: state, turns, the live failover hop-loop
+    command-handler.ts ALL slash-command dispatch — new commands go here
+    lines.ts           virtualized line buffer; INVARIANT: every line ≤ width
+    components/        Composer, Viewport, Transcript, Panel, StatusBar, Mascot, …
+test/                  pure-logic + Ink render tests; no API keys required
 ```
 
 ---
@@ -97,35 +85,29 @@ experiments/           Architecture validation prototypes (findings in FINDINGS.
 
 ### The routing seam
 `src/model/selector.ts` is the single point of model choice. **Never** call a
-provider SDK directly outside `providers.ts` or hardcode a model id anywhere.
-The agent asks the selector; the selector returns a `ModelChoice`.
-
-```
-FixedSelector.select(task)          ← today: first available model
-    └─ pickDefaultModel()           ← src/config.ts
-         └─ resolveModel(spec)      ← src/providers.ts (only SDK touch)
-              └─ streamText(...)    ← src/agent/run.ts
-```
+provider SDK outside `providers.ts` or hardcode a model id. `RoutingSelector`
+is the live default (classify → quality bar → cheapest winner across accounts
+and subscription seats); `FixedSelector` exists only for an explicit pin
+(`--model`, `/model <name>`).
 
 ### The event boundary
 `src/agent/run.ts` emits `AgentEvent` (`src/agent/events.ts`). The UI consumes
-only `AgentEvent` — never the raw AI SDK stream types. This decouples the UI
-from both the provider and the routing layer.
+only `AgentEvent` — never raw AI SDK stream types.
 
-### The context engine
-`src/context/builder.ts` assembles the system prompt and curates history before
-every turn. It injects: base system + plan addendum + project memory
-(`GEARBOX.md`/`CLAUDE.md`/`AGENTS.md` + `facts.md`) + a repo map + retrieved
-files. History is curation-trimmed at whole-turn boundaries (never splitting a
-`tool_use` from its `tool_result`) to stay within the model's context window.
+### Spend truth
+Every dollar flows through `accounts/ledger.ts recordSpend()` — usage.json
+aggregates + append-only `~/.gearbox/ledger.jsonl` + the session's per-turn
+record, all from one event. Never drop usage capture; never write spend
+anywhere else.
 
-### Usage is always captured
-Every model call captures `{ inputTokens, outputTokens }` in `run.ts` and
-stores it in `session.turns`. Do not drop usage — it feeds the future cost engine.
+### VERIFY
+A turn that edited files runs the detected checks (`src/verify.ts`) and reports
+the proof tier honestly (tests > types > unverified), auto-iterating to green
+(≤3). Outcomes feed the per-repo priors.
 
 ### No raw ANSI in Ink
-Use `color`/`backgroundColor` props only. Raw ANSI escape sequences corrupt
-Ink's width math and break the virtualized line buffer.
+Use `color`/`backgroundColor` props only. Raw escape sequences corrupt Ink's
+width math and the virtualized line buffer.
 
 ---
 
@@ -133,23 +115,25 @@ Ink's width math and break the virtualized line buffer.
 
 | Convention | Detail |
 |---|---|
-| Adding a model | Add a row to `MODELS` in `providers.ts` — data, not code |
-| Adding a slash command | Add to `COMMANDS` in `commands.ts`, handle in `App.tsx` |
-| Permission gates | Mutating tools call `requestPermission()` before acting |
-| Session data dir | `~/.gearbox/` (override: `GEARBOX_HOME`) |
-| Max agent steps | `GEARBOX_MAX_STEPS` env (default 24) |
-| First-run setup | No account → onboarding screen, no fake model |
-| Fullscreen | `GEARBOX_INLINE=1` forces plain inline flow |
-| Ghost rendering | `GEARBOX_GHOST=kitty\|iterm` opts in to PNG paths |
-| Motion freeze | `GEARBOX_NO_MOTION=1` freezes Boo to frame 0 |
+| Adding a model | Data, not code: `providers.ts` registry + `model/profiles.ts` corpus row |
+| Adding a slash command | Metadata in `commands.ts`, dispatch in `ui/command-handler.ts` (not App.tsx) |
+| Permission gates | Mutating tools call `requestPermission()`; project rules in `.gearbox/permissions.json` |
+| Data dir | `~/.gearbox/` (override: `GEARBOX_HOME`) |
+| Layout | Fullscreen by default; `--inline` / `GEARBOX_INLINE=1` opts into inline |
+| Ghost rendering | `GEARBOX_GHOST=kitty\|iterm` opts into PNG paths; `GEARBOX_NO_MOTION=1` freezes |
+| Crash safety | usage.json + sessions written via temp-write + rename |
 
 ### In-app keys
 `⏎` send · `⌃J` newline · `↑↓` line/history · `tab` @file complete ·
-`shift+tab` plan mode · `esc` interrupt · `⌃c` quit
+`shift+tab` cycle mode (normal · auto-accept · plan) · `⌃Y` copy reply ·
+`esc` interrupt · `⌃c` quit · `/keys` for the full cheatsheet
 
-### Slash commands
-`/help` `/model` `/account` `/onboard` `/cost` `/plan` `/init` `/memory`
-`/context` `/config` `/yolo` `/clear` `/resume` `/retry` `/exit`
+### Slash commands (grouped in /help)
+Routing: `/model` `/effort` `/prefer` `/why` · Conversation: `/clear` `/resume`
+`/retry` `/undo` `/diff` `/compact` `/context` `/memory` `/ask` · Accounts:
+`/account` `/onboard` `/mcp` `/usage` `/budget` `/cap` · Git: `/commit` `/push`
+`/pr` `/worktree` `/checkpoint` · Modes/settings: `/plan` `/yolo` `/verify`
+`/theme` `/config` · Save: `/copy` `/export` · Other: `/init` `/keys` `/help` `/exit`
 
 ---
 
@@ -157,20 +141,22 @@ Ink's width math and break the virtualized line buffer.
 
 ```
 User ⏎
-  → App.tsx: buildContext() assembles system + messages
-  → selector.select(task) → ModelChoice
-  → runTask({ model, messages, system, onEvent })
-      → streamText (AI SDK) → fullStream
-          → AgentEvent stream → App state → Viewport render
-  → session saved (~/.gearbox/sessions/<slug>/<id>.json)
+  → classify (cheap model / keyword fast-path) → task kind
+  → buildContext() assembles system + memory + repo map + retrieved files
+  → selector.select(task) → ModelChoice {model, account, backend, reason}
+  → runTask (in-loop API) or CLI backend (subscription seat)
+      → streamText → AgentEvent stream → App state → Viewport render
+      → failure before output? classify → park cooldown → re-select → hop (≤2)
+  → ledger.recordSpend() → usage.json + ledger.jsonl + session turn meta
+  → VERIFY gate (if files changed) → priors updated
+  → session saved (~/.gearbox/sessions/<slug>/)
 ```
 
 ---
 
 ## Tests
 
-All tests are in `test/`; run with `bun test`. Tests cover: agent mock stream,
-commands, context engine, diff, prompt history, image mode, input reducer, line
-buffer, mascot renderer, mention picker, permission broker, session persistence,
-tool-input streaming. No API keys required; the real agent loop is exercised via
-mocked runners and event fixtures.
+All tests live in `test/`; run `bun test` (no API keys — the agent loop is
+exercised via mocked runners and event fixtures). Pure logic is tested directly
+(scoring, input reducer, line buffer, panel state machines); UI via
+ink-testing-library renders; the turn lifecycle via a headless App harness.
