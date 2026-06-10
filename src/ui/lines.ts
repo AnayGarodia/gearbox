@@ -984,12 +984,11 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         break;
       }
       case "scorecard": {
-        const toneColor: Record<string, string> = { title: color.text, colhead: color.faint, chosen: color.accent, row: color.dim, dim: color.faint, note: color.faint };
+        const toneColor: Record<string, string> = { title: color.text, colhead: color.faint, chosen: color.accent, row: color.dim, dim: color.faint, note: color.faint, summary: color.text };
         let first = true;
-        for (const r of scorecardRows(it.card)) {
+        for (const r of scorecardRows(it.card, Math.max(40, width - 4))) {
           const prefix = first ? "  " + glyph.notice + " " : "    ";
           out.push(clipSpans([{ text: prefix, color: color.accentDim }, { text: r.text, color: toneColor[r.tone] ?? color.text }], width));
-          if (first) out.push(BLANK);
           first = false;
         }
         break;

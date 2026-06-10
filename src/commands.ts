@@ -268,12 +268,32 @@ const ENV_LABEL: Record<ProviderId, string> = {
 // columns line up identically. `tone` maps to a color at the render layer.
 export interface ScorecardLine {
   text: string;
-  tone: "title" | "colhead" | "chosen" | "row" | "dim" | "note";
+  tone: "title" | "colhead" | "chosen" | "row" | "dim" | "note" | "summary";
 }
 
-const provAbbrev = (src: string): string => (src === "measured" ? "meas" : src === "researched" ? "rsch" : "seed");
+// Map the router's internal verdict strings to plain words. Unknown verdicts
+// pass through verbatim so a new router verdict can never blank a cell.
+const verdictWord = (v: string, bar: number): string =>
+  v === "chosen" ? "picked"
+    : v === "seat ~free" ? "free on plan"
+      : v === "below bar" ? `under ${bar.toFixed(2)} bar`
+        : v === "scarce credit" ? "low credit"
+          : v === "near limit" ? "near rate limit"
+            : v === "ok" ? "eligible"
+              : v;
 
-export function scorecardRows(card: Scorecard): ScorecardLine[] {
+const wrapWords = (text: string, width: number): string[] => {
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of text.split(/\s+/).filter(Boolean)) {
+    if (cur && cur.length + 1 + w.length > width) { lines.push(cur); cur = w; }
+    else cur = cur ? `${cur} ${w}` : w;
+  }
+  if (cur) lines.push(cur);
+  return lines;
+};
+
+export function scorecardRows(card: Scorecard, width = 80): ScorecardLine[] {
   const out: ScorecardLine[] = [];
   out.push({ text: `why · ${card.kind} task · quality bar ${card.bar.toFixed(2)}`, tone: "title" });
   if (card.prompt) out.push({ text: `"${card.prompt.length > 60 ? card.prompt.slice(0, 57) + "…" : card.prompt}"`, tone: "note" });
@@ -281,23 +301,57 @@ export function scorecardRows(card: Scorecard): ScorecardLine[] {
     out.push({ text: card.note ?? "no candidates", tone: "note" });
     return out;
   }
+
+  // The plain-English answer to "why?", before any numbers.
+  const pick = card.entries.find((e) => e.chosen);
+  if (pick) {
+    const summary =
+      pick.verdict === "preferred"
+        ? `picked ${pick.label} — your saved /prefer choice for ${card.kind} tasks`
+        : pick.backend === "seat"
+          ? `picked ${pick.label} on your ${pick.accountLabel ?? "subscription"} plan — flat rate ($0 extra) and its quality ${pick.quality.toFixed(2)} clears the ${card.bar.toFixed(2)} bar`
+          : `picked ${pick.label} — cheapest model that clears the ${card.bar.toFixed(2)} quality bar for ${card.kind} tasks`;
+    out.push({ text: "", tone: "note" });
+    for (const l of wrapWords(summary, width)) out.push({ text: l, tone: "summary" });
+  }
+  out.push({ text: "", tone: "note" });
+
   const entries = card.entries.slice(0, 8);
-  const labelW = Math.min(20, Math.max(5, ...entries.map((e) => e.label.length)));
-  const qcol = (e: typeof entries[number]) => `${e.quality.toFixed(2)} ${provAbbrev(e.qualitySrc)}`;
-  const leftcol = (e: typeof entries[number]) => e.headroomText ?? e.balanceText ?? "—";
+  const via = (e: typeof entries[number]) => e.accountLabel ?? (e.backend === "seat" ? "plan" : "api key");
+  const qual = (e: typeof entries[number]) => e.quality.toFixed(2) + (e.qualitySrc === "seeded" ? "~" : "");
+  const cost = (e: typeof entries[number]) => (e.backend === "seat" ? "plan" : `$${e.estCostPerMtok.toFixed(2)}`);
+  const leftcol = (e: typeof entries[number]) => (e.headroomPct != null ? `${e.headroomPct}% plan` : e.balanceText ?? e.headroomText ?? "—");
   const lw = Math.max(4, ...entries.map((e) => leftcol(e).length));
-  const row = (label: string, q: string, cost: string, left: string, score: string, verdict: string) =>
-    `${label.padEnd(labelW).slice(0, labelW)}  ${q.padEnd(9)}  ${cost.padStart(7)}  ${left.padEnd(lw)}  ${score.padStart(5)}  ${verdict}`;
-  out.push({ text: row("model", "quality", "$/Mtok", "left", "score", "verdict"), tone: "colhead" });
+  let labelW = Math.min(14, Math.max(5, ...entries.map((e) => e.label.length)));
+  let viaW = Math.min(12, Math.max(3, ...entries.map((e) => via(e).length)));
+  // Shrink the name columns first on narrow terminals; the renderers' hard clip
+  // (rightmost columns) is the last resort.
+  const vw = Math.max(7, ...entries.map((e) => verdictWord(e.verdict, card.bar).length + (e.chosen ? 2 : 0)));
+  const need = () => labelW + viaW + 7 + 7 + lw + 5 + vw + 12;
+  while (need() > width && viaW > 7) viaW--;
+  while (need() > width && labelW > 8) labelW--;
+  const row = (label: string, viaC: string, q: string, costC: string, left: string, score: string, verdict: string) =>
+    `${label.padEnd(labelW).slice(0, labelW)}  ${viaC.padEnd(viaW).slice(0, viaW)}  ${q.padEnd(7)}  ${costC.padStart(7)}  ${left.padEnd(lw)}  ${score.padStart(5)}  ${verdict}`;
+  out.push({ text: row("model", "via", "quality", "$/Mtok", "left", "score", "verdict"), tone: "colhead" });
   for (const e of entries) {
     const score = e.verdict === "below bar" ? "—" : e.score.toFixed(2);
     out.push({
-      text: row(e.label, qcol(e), `$${e.estCostPerMtok.toFixed(2)}`, leftcol(e), score, e.verdict + (e.chosen ? "  ◀" : "") + (e.priorNote ? `  · ${e.priorNote}` : "")),
+      text: row(e.label, via(e), qual(e), cost(e), leftcol(e), score, verdictWord(e.verdict, card.bar) + (e.chosen ? " ◀" : "")),
       tone: e.chosen ? "chosen" : e.verdict === "below bar" ? "dim" : "row",
     });
+    // The flywheel's measured prior is a flagship signal — its own sub-line, not
+    // a verdict suffix that clips off the right edge.
+    if (e.priorNote) out.push({ text: `  ↳ ${e.priorNote}`, tone: e.chosen ? "chosen" : "note" });
   }
   if (card.entries.length > entries.length) out.push({ text: `…and ${card.entries.length - entries.length} more`, tone: "note" });
-  return out;
+
+  out.push({ text: "", tone: "note" });
+  out.push({ text: "score ≈ est. $ this turn + penalties − plan bonus · lowest eligible wins", tone: "note" });
+  const seeded = entries.some((e) => e.qualitySrc === "seeded");
+  out.push({ text: `left = plan-window headroom or API credit${seeded ? " · ~ = estimated quality" : ""}`, tone: "note" });
+  // Guarantee the fit here (rightmost column clips first) — the name columns
+  // already shrank above, so this only fires when even the minimums don't fit.
+  return out.map((r) => (r.text.length > width ? { ...r, text: r.text.slice(0, width) } : r));
 }
 
 /**

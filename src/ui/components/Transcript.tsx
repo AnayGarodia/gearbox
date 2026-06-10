@@ -594,9 +594,9 @@ function ContextCard({ view }: { view: ContextView }) {
   );
 }
 
-function ScorecardCard({ card }: { card: Scorecard }) {
-  const toneColor: Record<string, string> = { title: color.text, colhead: color.faint, chosen: color.accent, row: color.dim, dim: color.faint, note: color.faint };
-  const rows = scorecardRows(card);
+function ScorecardCard({ card, width }: { card: Scorecard; width: number }) {
+  const toneColor: Record<string, string> = { title: color.text, colhead: color.faint, chosen: color.accent, row: color.dim, dim: color.faint, note: color.faint, summary: color.text };
+  const rows = scorecardRows(card, Math.max(40, width - 4));
   return (
     <Box flexDirection="column" marginTop={1} marginLeft={2}>
       {rows.map((r, i) => (
@@ -635,7 +635,7 @@ function Row({ item, width, expandAll = false }: { item: Item; width: number; ex
     case "context":
       return <ContextCard view={item.view} />;
     case "scorecard":
-      return <ScorecardCard card={item.card} />;
+      return <ScorecardCard card={item.card} width={width} />;
     case "notice":
       return (
         <Box marginTop={1} marginLeft={2} flexDirection="column">
