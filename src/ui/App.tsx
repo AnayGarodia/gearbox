@@ -529,6 +529,10 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Word/line-wise drag extension after a double/triple click on the composer:
   // the anchor unit (the word/line first selected) that the drag hulls against.
   const composerUnitDragRef = useRef<{ mode: "word" | "line"; start: number; end: number } | null>(null);
+  // Home-screen composer mouse geometry (the composer floats mid-screen there).
+  // Computed in render scope beside homeJsx — the one place that knows the
+  // centered layout's heights — and read by the raw mouse handler.
+  const homeGeomRef = useRef<{ firstInputRow: number; left: number } | null>(null);
   const transcriptMouseAnchorRef = useRef<{ line: number; col: number } | null>(null);
   const transcriptRangeAnchorRef = useRef<{ line: number; col: number } | null>(null);
   // In-progress transcript drag granularity: `char` tracks the raw point; `word`/`line`
@@ -1032,17 +1036,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // (rows-5 … rows-4-lineCount) · pad · marginTop. Keep in lockstep with
     // Composer.tsx and the footer estimate.
     const composerPoint = (x: number, y: number): { line: number; col: number; off: number } | null => {
-      if (busyRef.current || permRef.current) return null;
-      if (homeScreenRef.current) return null; // home screen: the composer floats mid-screen, not at the bottom
+      if (permRef.current) return null; // the consent line replaces the composer
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      const firstInputRow = rows - 4 - lineCount;
-      const lastInputRow = rows - 5;
+      // Home screen: the composer floats mid-screen — its geometry is computed
+      // in render scope (where the layout values live) and published via ref.
+      const home = homeScreenRef.current ? homeGeomRef.current : null;
+      const firstInputRow = home ? home.firstInputRow : rows - 4 - lineCount;
+      const lastInputRow = home ? home.firstInputRow + lineCount - 1 : rows - 5;
+      const left = home ? home.left : pageLeftRef.current;
+      if (home == null && homeScreenRef.current) return null;
       if (y < firstInputRow || y > lastInputRow) return null;
       const line = y - firstInputRow;
-      // 1 border + space + prompt + space, SGR coords are 1-based — plus the page
-      // column's left offset (the composer sits in the centered page column).
-      const col = Math.max(0, x - 5 - pageLeftRef.current);
+      // 1 border + space + prompt + space, SGR coords are 1-based — plus the
+      // column's left offset (page column in-session, centered box on home).
+      const col = Math.max(0, x - 5 - left);
       return { line, col, off: offsetAt(value, line, col) };
     };
     // Which status-bar label, if any, sits under this click. Row + column math
@@ -5558,6 +5566,27 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     selectorKind === "subscription" ? (activeCli?.label ?? "subscription") :
     selectorKind === "fixed" ? (model?.label ? `${model.label} pinned` : "pinned") :
     "auto-routing";
+  // The home composer's mouse geometry: the centered group's row heights, added
+  // up. Splash heights are fixed by AnimatedGhost's constant-height contract
+  // (scale 2 = 22 rows + marginTop + wordmark/tagline = 26 · scale 1 = 11 → 15 ·
+  // "none" = wordmark+tagline = 3). PTY-verified; keep in lockstep with homeJsx
+  // below and MascotSplash.
+  {
+    const homeLineCount = Math.max(1, edit.value.split("\n").length);
+    const splashH = homeRoom >= 4 ? (homeSplashSize === "big" ? 26 : homeSplashSize === "mini" ? 15 : 3) : 0;
+    const readinessH = homeRoom >= 8 ? 2 : 0;
+    const commandsH = showHomeCommands ? 1 + HOME_COMMANDS.length : 0;
+    const groupH = splashH + readinessH + commandsH + 4 + homeLineCount + PALETTE_ROWS; // composer block (lift=false) = 4 + N
+    // The REAL centered region is one row taller than transcriptHeight (which
+    // carries a deliberate -1 over-estimate so the frame never exceeds rows).
+    const topPad = Math.max(0, Math.floor((transcriptHeight + 1 - groupH) / 2));
+    homeGeomRef.current = homeScreen
+      ? {
+          firstInputRow: 6 + topPad + splashH + readinessH + commandsH, // header(3) + topPad + content + composer marginTop + pad + 1
+          left: Math.floor((width - homeW) / 2),
+        }
+      : null;
+  }
   const homeJsx = homeScreen ? (
     <Box flexGrow={1} flexDirection="column" justifyContent="center" alignItems="center">
       {homeRoom >= 4 ? <MascotSplash skin={ghostSkin} size={homeSplashSize} tagline={`v${pkg.version} · one terminal · every model`} mood={ghostMood} /> : null}
