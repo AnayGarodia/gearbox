@@ -516,9 +516,12 @@ export function staticItemLines(it: Item, width: number): Line[] {
         { text: glyph.userBar + "  ", color: color.user, bg: color.userBg },
         ...l.map((s) => ({ ...s, bg: s.bg ?? color.userBg })),
       ], width, color.userBg);
-    lines.push(row([]));
-    for (const l of wrapSpans(proseSpans(it.text, { color: color.text, bg: color.userBg }), Math.max(width - 5, 1))) lines.push(row(l));
-    lines.push(row([]));
+    const wrapped = wrapSpans(proseSpans(it.text, { color: color.text, bg: color.userBg }), Math.max(width - 5, 1));
+    // Breathing room only when there's something to breathe around: a one-line
+    // message is a single spine row (a 3-row slab for "hi" read as dead space).
+    if (wrapped.length > 1) lines.push(row([]));
+    for (const l of wrapped) lines.push(row(l));
+    if (wrapped.length > 1) lines.push(row([]));
   } else if (it.kind === "assistant" && it.text) {
     lines.push(...indent(markdownToLines(it.text, Math.max(width - 2, 1)), 2));
   }

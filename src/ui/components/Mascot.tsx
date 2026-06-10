@@ -16,15 +16,15 @@ import { renderGhost, EYES_CLOSED, TALK, type GhostCfg, type OverlayKind } from 
 // The baked GHOSTS sprites (mascot-sprite.ts) are retained only for the opt-in
 // kitty/iTerm PNG path; the default blocks path renders the engine live.
 
-export type GhostSkin = "base" | "mint" | "pink" | "golden" | "lavender" | "shades";
-export const SKINS: GhostSkin[] = ["base", "mint", "pink", "golden", "lavender", "shades"];
+export type GhostSkin = "base" | "mint" | "pink" | "golden" | "fire" | "shades";
+export const SKINS: GhostSkin[] = ["base", "mint", "pink", "golden", "fire", "shades"];
 
 // A persisted skin → an engine cfg. `shades` is now an accessory + the cool face.
-// `base` wears the warm peach (fire) palette so Boo matches the brand accent;
-// the old lavender default survives as the `lavender` skin.
+// `base` is the classic lavender ghost (the fire palette read as "why is Boo on
+// fire" as a default — it survives as /ghost fire).
 const SKIN_CFG: Record<GhostSkin, GhostCfg> = {
-  base: { palette: "fire", face: "happy" },
-  lavender: { palette: "default", face: "happy" },
+  base: { palette: "default", face: "happy" },
+  fire: { palette: "fire", face: "happy" },
   mint: { palette: "mint", face: "happy" },
   pink: { palette: "pink", face: "happy" },
   golden: { palette: "golden", face: "joy" },
@@ -87,25 +87,55 @@ export interface AnimSpec {
   shake?: boolean; // ±1-col jitter, transient (error beat only)
   overlay?: OverlayKind; // a frame-driven overlay (dots, tears, confetti, …)
   bob?: boolean; // a one-tick idle lift every ~8s (splash only) — quiet sign of life
+  show?: boolean; // the home-screen idle show: occasional costumes/moments (homeShow)
+}
+
+// ── The home idle show ────────────────────────────────────────────────────────
+// Every ~24s on the home screen Boo plays a short bit — skates by, dons the
+// wizard hat, throws a party — then returns to himself. Deterministic in the
+// tick (pure, tested): cycle N picks show N, ~4.5s on, the rest calm. The first
+// cycle stays plain so the app never lands mid-costume.
+export const HOME_SHOWS: { patch: Partial<GhostCfg>; overlay?: OverlayKind }[] = [
+  { patch: { persona: "skater", face: "happy" } },
+  { patch: { persona: "wizard", face: "joy" }, overlay: "sparkle" },
+  { patch: { accessory: "party", face: "joy" }, overlay: "confetti" },
+  { patch: { accessory: "headphones", face: "happy" } },
+  { patch: { persona: "pirate", face: "wink" } },
+  { patch: { persona: "astronaut", face: "surprised" }, overlay: "sparkle" },
+  { patch: { face: "love" }, overlay: "hearts" },
+  { patch: { persona: "ninja", face: "cool" } },
+];
+const SHOW_PERIOD = 100; // ticks (~24s at 240ms)
+const SHOW_ON = 19; // ticks the bit plays (~4.5s)
+export function homeShow(tick: number): { patch: Partial<GhostCfg>; overlay?: OverlayKind } | null {
+  if (tick < SHOW_PERIOD || tick % SHOW_PERIOD >= SHOW_ON) return null;
+  return HOME_SHOWS[(Math.floor(tick / SHOW_PERIOD) - 1) % HOME_SHOWS.length]!;
 }
 
 /** A live ghost: applies the anim spec to the cfg per frame and renders it. The
  *  transient shake offset is applied to a wrapping Box so the sprite itself stays
  *  cache-stable. */
 export function AnimatedGhost({ cfg, scale, anim }: { cfg: GhostCfg; scale: 1 | 2; anim: AnimSpec }) {
-  const tick = useTick(240, !!(anim.blink || anim.talk || anim.shake || anim.overlay || anim.bob));
+  const tick = useTick(240, !!(anim.blink || anim.talk || anim.shake || anim.overlay || anim.bob || anim.show));
   const slow = Math.floor(tick / 2); // calmer cadence for talk + overlays
   const frameCfg: GhostCfg = { ...cfg, scale };
-  if (anim.blink && tick % 26 === 0 && tick !== 0) frameCfg.eyesOverride = EYES_CLOSED;
+  const show = anim.show ? homeShow(tick) : null;
+  if (show) Object.assign(frameCfg, show.patch);
+  if (anim.blink && tick % 26 === 0 && tick !== 0 && !show) frameCfg.eyesOverride = EYES_CLOSED;
   if (anim.talk) frameCfg.mouthOverride = TALK[slow % TALK.length]!;
-  if (anim.overlay) frameCfg.overlay = { kind: anim.overlay, frame: slow };
+  const overlay = show?.overlay ?? anim.overlay;
+  if (overlay) frameCfg.overlay = { kind: overlay, frame: slow };
   const data = useMemo(() => renderGhost(frameCfg), [JSON.stringify(frameCfg)]);
   const shake = anim.shake ? tick % 2 : 0;
+  // Height discipline: a persona grid is 22px tall (vs 20), i.e. +1 cell row at
+  // 1× and +2 at 2× — compensate with top margin so the block height (and
+  // everything laid out below) NEVER changes, costume on or off.
+  const personaPad = anim.show ? (frameCfg.persona ? 0 : scale === 2 ? 2 : 1) : 0;
   // Idle bob: a one-tick lift every ~7.7s. marginTop/marginBottom always sum to 1
   // so the block height never changes — nothing below the ghost ever shifts.
-  const lift = anim.bob && tick % 32 === 18 ? 0 : 1;
+  const lift = anim.bob && tick % 32 === 18 && !show ? 0 : 1;
   return (
-    <Box marginLeft={shake} marginTop={anim.bob ? lift : 0} marginBottom={anim.bob ? 1 - lift : 0}>
+    <Box marginLeft={shake} marginTop={(anim.bob ? lift : 0) + personaPad} marginBottom={anim.bob ? 1 - lift : 0}>
       <Sprite data={data} />
     </Box>
   );
@@ -184,7 +214,7 @@ export function MascotSplash({ skin = "base", size = "big", wordmark = true, tag
         kitty ? (
           <KittyGhost variant={skin} size={size} />
         ) : (
-          <AnimatedGhost cfg={cfg} scale={size === "big" ? 2 : 1} anim={{ blink: !mood, bob: true, overlay: mood?.overlay }} />
+          <AnimatedGhost cfg={cfg} scale={size === "big" ? 2 : 1} anim={{ blink: !mood, bob: true, show: !mood, overlay: mood?.overlay }} />
         )
       ) : null}
       {wordmark ? (

@@ -326,9 +326,9 @@ function UserLine({ text, width }: { text: string; width: number }) {
   };
   return (
     <Box marginTop={1} flexDirection="column">
-      {row("", -1)}
+      {lines.length > 1 ? row("", -1) : null}
       {lines.map((line, i) => row(line, i))}
-      {row("", lines.length)}
+      {lines.length > 1 ? row("", lines.length) : null}
     </Box>
   );
 }
