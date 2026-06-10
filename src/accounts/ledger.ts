@@ -8,7 +8,7 @@
 // recorded), and (c) notifies an optional subscriber so the UI and the
 // session's TurnMeta record derive from the SAME event instead of being
 // assembled in parallel (TRIAGE R2: "no single source of truth").
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { recordUsage } from "./usage.ts";
@@ -70,6 +70,33 @@ let listener: ((ev: SpendEvent) => void) | null = null;
  *  spend reaches the live session/strip without delegate.ts importing UI. */
 export function setSpendListener(fn: ((ev: SpendEvent) => void) | null): void {
   listener = fn;
+}
+
+/** Per-day spend totals from the append-only event log (newest last) — the
+ *  cost tab's daily bars. Reads the tail only (a long-lived log can't slow a
+ *  tab switch); days with no events are zero-filled so the bars line up. */
+export function readDailySpend(days = 7, now = Date.now()): { day: string; usd: number }[] {
+  const byDay = new Map<string, number>();
+  try {
+    const raw = readFileSync(join(home(), "ledger.jsonl"), "utf8");
+    const lines = raw.split("\n");
+    const tail = lines.slice(Math.max(0, lines.length - 20_000));
+    for (const line of tail) {
+      if (!line) continue;
+      try {
+        const ev = JSON.parse(line);
+        if (typeof ev?.at !== "number" || typeof ev?.costUSD !== "number") continue;
+        const day = new Date(ev.at).toISOString().slice(0, 10);
+        byDay.set(day, (byDay.get(day) ?? 0) + ev.costUSD);
+      } catch { /* skip torn line */ }
+    }
+  } catch { /* no log yet */ }
+  const out: { day: string; usd: number }[] = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const day = new Date(now - i * 86_400_000).toISOString().slice(0, 10);
+    out.push({ day, usd: byDay.get(day) ?? 0 });
+  }
+  return out;
 }
 
 /** THE spend writer. Everything that costs money calls this — nothing else

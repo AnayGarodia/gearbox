@@ -101,8 +101,10 @@ export function Panel({
   } else if (panel.kind === "sessions") {
     const rows = sessions ?? [];
     const idx = clampIndex(panel.index, rows.length);
-    const start = windowStart(idx, rows.length, bodyH);
-    const slice = rows.slice(start, start + bodyH);
+    const listH = Math.max(1, bodyH - 4); // reserve rows for the preview pane
+    const start = windowStart(idx, rows.length, listH);
+    const slice = rows.slice(start, start + listH);
+    const cur = rows[idx];
     body = (
       <Box flexDirection="column" paddingX={1}>
         {rows.length === 0 ? (
@@ -110,18 +112,39 @@ export function Panel({
         ) : (
           slice.map((r, i) => {
             const sel = start + i === idx;
+            const renaming = panel.rename?.id === r.id;
+            const armed = panel.confirmDelete === r.id;
+            if (renaming && panel.rename) {
+              const fw = fieldWindow(panel.rename.fieldEdit.value, panel.rename.fieldEdit.cursor, Math.max(8, innerW - 10));
+              return (
+                <Text key={r.id} wrap="truncate-end" backgroundColor={color.accentBg}>
+                  <Text color={color.accent}>{glyph.select} </Text>
+                  <Text color={color.faint}>rename: </Text>
+                  <Text color={color.text}>{fw.pre}</Text>
+                  <Text color={color.accent} inverse>{fw.at}</Text>
+                  <Text color={color.text}>{fw.post}</Text>
+                </Text>
+              );
+            }
             return (
               <Text key={r.id} wrap="truncate-end" backgroundColor={sel ? color.accentBg : undefined}>
                 <Text color={sel ? color.accent : color.faint}>{sel ? `${glyph.select} ` : "  "}</Text>
-                <Text color={color.text} bold={sel}>{(r.title || "(untitled)").slice(0, 52)}</Text>
-                <Text color={color.faint}>  · {r.turns} turn{r.turns === 1 ? "" : "s"} · {r.when}</Text>
+                {r.pinned ? <Text color={color.warn}>{glyph.on} </Text> : null}
+                <Text color={armed ? color.err : color.text} bold={sel}>{truncate(r.title || "(untitled)", 52)}</Text>
+                <Text color={armed ? color.err : color.faint}>{armed ? "  · press d again to delete" : `  · ${r.turns} turn${r.turns === 1 ? "" : "s"} · ${r.when}`}</Text>
               </Text>
             );
           })
         )}
+        {cur?.preview && (cur.preview.ask || cur.preview.reply) ? (
+          <Box flexDirection="column" marginTop={1}>
+            <Text wrap="truncate-end" color={color.faint}>{glyph.quote} <Text color={color.user}>{truncate(cur.preview.ask, Math.max(8, innerW - 4))}</Text></Text>
+            {cur.preview.reply ? <Text wrap="truncate-end" color={color.faint}>{glyph.quote} {truncate(cur.preview.reply, Math.max(8, innerW - 4))}</Text> : null}
+          </Box>
+        ) : null}
       </Box>
     );
-    hint = "↑↓ move · ⏎ load · esc close";
+    hint = panel.rename ? "⏎ save name · esc cancel" : "↑↓ move · ⏎ load · p pin · r rename · d delete · esc close";
   } else if (panel.kind === "wizard" && panel.wizardPhase.phase === "pick") {
     const ph = panel.wizardPhase;
     const specs = filterAddSpecs(ph.filter);

@@ -20,9 +20,9 @@ import { buildProvidersView } from "./providers-view.ts";
 import { ProvidersView } from "./components/ProvidersView.tsx";
 import { TabStrip, tabStripHit, TABS, type AppTab } from "./components/TabStrip.tsx";
 import { CostView, RoutingView } from "./components/TabViews.tsx";
-import { premiumRate, estimateSavings, formatPolicyString, savingsLine } from "./cost-tab.ts";
+import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
 import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
-import { newSessionId, saveSession, loadSession, listSessions, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
+import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName, lowContextNotice } from "./character.ts";
 import { color, glyph, setTheme, activeTheme, THEMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
@@ -52,7 +52,7 @@ import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
 import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
-import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener } from "../accounts/ledger.ts";
+import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend } from "../accounts/ledger.ts";
 import * as gitOps from "../git/ops.ts";
 import { invalidateGitBranch } from "./git.ts";
 import { gitConfirmOpen, gitConfirmEdit, gitConfirmSetSubmitting, gitConfirmError, gitConfirmReady, gitConfirmMessage, type GitConfirmPanel } from "./panel.ts";
@@ -1197,7 +1197,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Saved sessions for this project, newest first, EXCLUDING the one you're in
   // (resuming the current session is a no-op / loads the just-cleared one). Drives
   // both the interactive /resume panel and the `/resume <n>` direct path.
-  const resumableSessions = (): Session[] => listSessions().filter((s) => s.id !== sessionRef.current.id);
+  const resumableSessions = (): Session[] =>
+    listSessions()
+      .filter((s) => s.id !== sessionRef.current.id)
+      .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.updatedAt - a.updatedAt);
   const sessionWhen = (t: number): string => {
     const m = Math.round((Date.now() - t) / 60000);
     return m < 1 ? "just now" : m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
@@ -4291,6 +4294,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (p.submitting) return; // block esc during in-flight operations
           if (p.detailPhase.phase !== "browse") { setPanel(detailBack(p)); return; }
         }
+        if (p.kind === "sessions" && p.rename) { setPanel({ ...p, rename: undefined }); return; }
+        if (p.kind === "sessions" && p.confirmDelete) { setPanel({ ...p, confirmDelete: undefined }); return; }
         if (p.kind === "git-confirm" && p.submitting) return; // a commit/PR is mid-flight
         if (p.kind === "themes") {
           // The gallery previews live — esc means "never mind", restore the original.
@@ -4356,9 +4361,50 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (p.kind === "sessions") {
         const sess = panelSessionsRef.current;
         const n = sess.length;
-        if (key.upArrow) setPanel({ ...p, index: clampIndex(p.index - 1, n) });
-        else if (key.downArrow) setPanel({ ...p, index: clampIndex(p.index + 1, n) });
-        else if (key.return) { const s = sess[clampIndex(p.index, n)]; setPanel(null); if (s) loadInto(s); }
+        const refresh = (index: number) => {
+          const next = resumableSessions().sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) || b.updatedAt - a.updatedAt);
+          panelSessionsRef.current = next;
+          resumeListRef.current = next;
+          setPanel({ kind: "sessions", title: p.title, index: clampIndex(index, next.length) });
+        };
+        // Rename phase: the title is a live edit field; ⏎ saves, esc cancels.
+        if (p.rename) {
+          if (key.escape) { setPanel({ ...p, rename: undefined }); return; }
+          const action = applyKey(p.rename.fieldEdit, input, key);
+          if (action.type === "edit") { setPanel({ ...p, rename: { ...p.rename, fieldEdit: action.state } }); return; }
+          if (action.type === "submit") {
+            const title = p.rename.fieldEdit.value.trim();
+            if (title) updateSessionMeta(p.rename.id, { title });
+            refresh(p.index);
+            if (title) toast(`renamed · ${title.slice(0, 48)}`);
+          }
+          return;
+        }
+        const cur = sess[clampIndex(p.index, n)];
+        if (key.upArrow) { setPanel({ ...p, index: clampIndex(p.index - 1, n), confirmDelete: undefined }); return; }
+        if (key.downArrow) { setPanel({ ...p, index: clampIndex(p.index + 1, n), confirmDelete: undefined }); return; }
+        if (key.return) { setPanel(null); if (cur) loadInto(cur); return; }
+        if (input === "p" && cur) {
+          updateSessionMeta(cur.id, { pinned: !cur.pinned });
+          refresh(p.index);
+          toast(cur.pinned ? "unpinned" : "pinned · stays at the top of /resume", "info");
+          return;
+        }
+        if (input === "r" && cur) {
+          setPanel({ ...p, confirmDelete: undefined, rename: { id: cur.id, fieldEdit: { value: cur.title ?? "", cursor: (cur.title ?? "").length } } });
+          return;
+        }
+        if (input === "d" && cur) {
+          // Deleting a conversation is destructive: d arms, d again fires.
+          if (p.confirmDelete === cur.id) {
+            deleteSession(cur.id);
+            refresh(p.index);
+            toast("session deleted", "info");
+          } else {
+            setPanel({ ...p, confirmDelete: cur.id });
+          }
+          return;
+        }
         return;
       }
       if (p.kind === "account-detail") {
@@ -5010,7 +5056,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     panelModels = buildPanelModelRows(panelCurrentModel);
   } else if (panel?.kind === "sessions") {
     panelSessionsRef.current = resumableSessions();
-    panelSessions = panelSessionsRef.current.map((s) => ({ id: s.id, when: sessionWhen(s.updatedAt), turns: s.turns?.length ?? 0, title: s.title || "(untitled)" }));
+    panelSessions = panelSessionsRef.current.map((s) => {
+      const firstAsk = s.items?.find((i: any) => i.kind === "user") as any;
+      const lastReply = [...(s.items ?? [])].reverse().find((i: any) => i.kind === "assistant" && i.text) as any;
+      return {
+        id: s.id, when: sessionWhen(s.updatedAt), turns: s.turns?.length ?? 0,
+        title: s.title || "(untitled)", pinned: s.pinned,
+        preview: { ask: (firstAsk?.text ?? "").split("\n")[0] ?? "", reply: (lastReply?.text ?? "").split("\n").filter(Boolean).pop() ?? "" },
+      };
+    });
   } else if (panel?.kind === "wizard" && panel.wizardPhase.phase === "field") {
     panelWizardSpec = specFor(panel.wizardPhase.specId);
   } else if (panel?.kind === "account-detail") {
@@ -5136,7 +5190,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         </Box>
       ) : null}
       {quickPickerJsx}
-      {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} width={width} /> : null}
+      {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={turnsLeftForecast({ dailyCapUSD: capsRef.current.daily, spentTodayUSD: totalSpentToday(), sessionUSD: estimateCost(sessionRef.current.turns), sessionTurns: sessionRef.current.turns.length })} width={width} /> : null}
       <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={width} online={online} />
       <Box height={PALETTE_ROWS} flexDirection="column">{paletteJsx}</Box>
       {composerJsx}
@@ -5172,13 +5226,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (tab === "cost") {
       const tabSavings = savingsLine(estimateCost(sessionRef.current.turns), estimateSavings(sessionRef.current.turns, premiumRate(modelRegistry()), (t) => estimateCost([t])));
       const tabSpendRows = loadUsage().slice(0, 6).filter((u) => u.spentUSD > 0).map((u) => ({ label: getAccount(u.accountId)?.label ?? u.accountId, spent: `$${u.spentUSD.toFixed(2)} spent` }));
-      tabView = <CostView width={width - 2} savingsText={tabSavings} policyText={tabPolicy} spendRows={tabSpendRows} />;
+      const tabDaily = readDailySpend(7);
+      const sessionTurnsArr = sessionRef.current.turns;
+      const byModel = new Map<string, { usd: number; turns: number }>();
+      for (const t of sessionTurnsArr) {
+        const cur = byModel.get(t.model) ?? { usd: 0, turns: 0 };
+        cur.usd += estimateCost([t]); cur.turns += 1;
+        byModel.set(t.model, cur);
+      }
+      const tabPerModel = [...byModel.entries()].map(([model, v]) => ({ model, ...v })).sort((a, b) => b.usd - a.usd).slice(0, 6);
+      const tabForecast = turnsLeftForecast({
+        dailyCapUSD: capsRef.current.daily,
+        spentTodayUSD: totalSpentToday(),
+        sessionUSD: estimateCost(sessionTurnsArr),
+        sessionTurns: sessionTurnsArr.length,
+      });
+      tabView = <CostView width={width - 2} savingsText={tabSavings} policyText={tabPolicy} spendRows={tabSpendRows} dailyBars={tabDaily} forecastText={tabForecast} perModel={tabPerModel} />;
     } else if (tab === "providers") {
       tabView = <Box paddingX={1}><ProvidersView width={width - 2} rows={buildProvidersView(listAccounts(), accountUsage, Date.now())} title="providers" /></Box>;
     } else if (tab === "routing") {
       const tabLastPick = lastPick ? `${lastPick.model.provider} · ${lastPick.model.label} · ${lastPick.reason}` : null;
       const tabKindPrefs = Object.entries(loadRoutingPreferences().byKind).map(([kind, p]) => ({ kind, model: p?.modelId ?? "" })).filter((p) => p.model);
-      tabView = <RoutingView width={width - 2} policyText={tabPolicy} lastPick={tabLastPick} kindPrefs={tabKindPrefs} />;
+      const tabRecent = sessionRef.current.turns.slice(-12).map((t) => ({ model: t.model, usd: estimateCost([t]) }));
+      tabView = <RoutingView width={width - 2} policyText={tabPolicy} lastPick={tabLastPick} kindPrefs={tabKindPrefs} recentTurns={tabRecent} />;
     }
   }
 

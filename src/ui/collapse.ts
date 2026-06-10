@@ -91,7 +91,7 @@ export function collapseTurn(items: Item[], nextId: () => number): Item[] {
       });
     }
   }
-  return collapseDelegateGroups(out);
+  return collapseToolRuns(collapseDelegateGroups(out), nextId);
 }
 
 // Once a delegate_parallel batch has SETTLED, fold its per-task child tool items
@@ -170,4 +170,55 @@ export function retryPhrase(ok: boolean, attempts: number): string {
   const fails = ok ? attempts - 1 : attempts;
   const n = fails === 1 ? "once" : `${fails} times`;
   return ok ? `retried ${n}` : `failed after ${attempts} attempts`;
+}
+
+
+// ── turn tree: fold runs of quick context steps ──────────────────────────────
+// A settled turn often reads as a wall of read/shell lines before the real
+// work. Fold any run of ≥3 consecutive QUICK tool steps (reads + non-check
+// shell — never edits/writes, which carry diffs and ARE the work record, and
+// never errors' neighbors hiding a red line) into ONE expandable row:
+// "⏺ steps  ·  7 quick steps · read ×5 · shell ×2 · ⌃O expands".
+const QUICK_VERB: Record<string, string> = {
+  read_file: "read", Read: "read", run_shell: "shell", command_execution: "shell", Bash: "shell", fetch_url: "fetch", WebFetch: "fetch",
+};
+
+function isQuickStep(it: Item): boolean {
+  return it.kind === "tool" && !it.collapsed && it.status !== "running" && !(it as any).diff?.length && QUICK_VERB[it.name] != null;
+}
+
+export function collapseToolRuns(items: Item[], nextId: () => number): Item[] {
+  const out: Item[] = [];
+  let run: Extract<Item, { kind: "tool" }>[] = [];
+  const flush = () => {
+    if (run.length >= 3) {
+      const counts = new Map<string, number>();
+      for (const t of run) {
+        const v = QUICK_VERB[t.name] ?? t.name;
+        counts.set(v, (counts.get(v) ?? 0) + 1);
+      }
+      const parts = [...counts.entries()].map(([n, c]) => (c > 1 ? `${n} ×${c}` : n)).join(" · ");
+      const totalMs = run.reduce((n, t) => n + (t.durationMs ?? 0), 0);
+      out.push({
+        kind: "tool",
+        id: nextId(),
+        callId: `toolrun:${run[0]!.id}`,
+        name: "steps",
+        status: run.some((t) => t.status === "err") ? "err" : "ok",
+        summary: `${run.length} quick steps · ${parts}`,
+        durationMs: totalMs || undefined,
+        collapsed: true,
+        children: [...run],
+      } as Item);
+    } else {
+      out.push(...run);
+    }
+    run = [];
+  };
+  for (const it of items) {
+    if (isQuickStep(it)) run.push(it as Extract<Item, { kind: "tool" }>);
+    else { flush(); out.push(it); }
+  }
+  flush();
+  return out;
 }

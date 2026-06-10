@@ -33,6 +33,7 @@ export function StatusStrip({
   sub,
   subProbing = false,
   api,
+  forecast,
   width,
 }: {
   ctxPct: number | null;
@@ -42,6 +43,7 @@ export function StatusStrip({
   sub?: { name: string; limits?: LimitWindow[]; limitNote?: string } | null;
   subProbing?: boolean; // a usage probe is in flight for this account → show "checking…" not "ok"
   api?: UsageAcct | null;
+  forecast?: string | null; // "≈N turns left today …" when a daily cap is set
   width: number;
 }) {
   // Label column wide enough for the longest label we print (e.g. "Anthropic"),
@@ -123,6 +125,7 @@ export function StatusStrip({
       )}
       <Row label="session">
         <Text color={cost >= 0.005 ? color.text : color.faint}>${cost.toFixed(2)}</Text>
+        {forecast ? <Text color={color.warn}>  ·  {forecast}</Text> : null}
       </Row>
     </Box>
   );

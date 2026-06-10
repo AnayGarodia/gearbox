@@ -21,6 +21,9 @@ export interface PanelSessionRow {
   when: string; // relative time, e.g. "19h ago"
   turns: number;
   title: string;
+  pinned?: boolean;
+  /** Preview pane content for the selected row: your opener + the last reply. */
+  preview?: { ask: string; reply: string };
 }
 
 export type PanelState =
@@ -30,8 +33,8 @@ export type PanelState =
   | { kind: "accounts"; title: string; index: number }
   // interactive list: pin the selected model, with type-to-filter
   | { kind: "models"; title: string; index: number; filter: string }
-  // interactive list: load the selected saved session
-  | { kind: "sessions"; title: string; index: number }
+  // interactive list: load/pin/rename/delete a saved session
+  | { kind: "sessions"; title: string; index: number; confirmDelete?: string; rename?: { id: string; fieldEdit: Edit } }
   // guided add-account wizard: pick a provider, then step through its fields
   | {
       kind: "wizard";

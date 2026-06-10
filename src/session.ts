@@ -30,7 +30,7 @@
  * disk or permission error never crashes the app. Reads that fail return null
  * or an empty collection.
  */
-import { mkdirSync, readFileSync, writeFileSync, readdirSync, renameSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, readdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import type { ModelMessage } from "ai";
@@ -95,6 +95,8 @@ export interface Session {
   items: Item[];
   /** One entry per completed turn, carrying model id and token usage. */
   turns: TurnMeta[];
+  /** Pinned sessions float to the top of /resume and never age out visually. */
+  pinned?: boolean;
 }
 
 /** Creates the session directory if it does not already exist. */
@@ -123,6 +125,26 @@ export function saveSession(s: Session): void {
   } catch {
     /* persistence is best-effort; never crash the app over it */
   }
+}
+
+/** Delete a saved session's file. Best-effort; true on success. */
+export function deleteSession(id: string): boolean {
+  try {
+    unlinkSync(join(dir(), `${id}.json`));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Patch a saved session on disk (rename, pin) without loading it into the
+ *  live conversation. Best-effort; returns the updated record or null. */
+export function updateSessionMeta(id: string, patch: Partial<Pick<Session, "title" | "pinned">>): Session | null {
+  const s = loadSession(id);
+  if (!s) return null;
+  const next = { ...s, ...patch };
+  saveSession(next);
+  return next;
 }
 
 /**

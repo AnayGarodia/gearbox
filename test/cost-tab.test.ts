@@ -65,3 +65,20 @@ test("savingsLine shows spend always, the ~saved clause only when real", () => {
   expect(savingsLine(0.04, 0.001)).toBe("session $0.04 spent"); // sub-cent savings omitted
   expect(savingsLine(0.04, 0.31)).toBe("session $0.04 spent · ~$0.31 saved vs always-premium");
 });
+
+import { sparkline, turnsLeftForecast } from "../src/ui/cost-tab.ts";
+
+test("sparkline scales to the max and keeps zero as a baseline tick", () => {
+  const s = sparkline([0, 1, 2, 4]);
+  expect(s).toHaveLength(4);
+  expect(s[0]).toBe("▁");
+  expect(s[3]).toBe("█");
+  expect(sparkline([0, 0, 0])).toBe("▁▁▁");
+});
+
+test("turnsLeftForecast: only speaks when a daily cap makes it meaningful", () => {
+  expect(turnsLeftForecast({ dailyCapUSD: 5, spentTodayUSD: 4, sessionUSD: 0.5, sessionTurns: 10 })).toContain("≈20 turns left");
+  expect(turnsLeftForecast({ spentTodayUSD: 1, sessionUSD: 0.5, sessionTurns: 10 })).toBeNull(); // no cap
+  expect(turnsLeftForecast({ dailyCapUSD: 5, spentTodayUSD: 0, sessionUSD: 0, sessionTurns: 5 })).toBeNull(); // free session
+  expect(turnsLeftForecast({ dailyCapUSD: 1000, spentTodayUSD: 0, sessionUSD: 0.01, sessionTurns: 4 })).toBeNull(); // far from the cap
+});

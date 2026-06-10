@@ -89,3 +89,28 @@ export function savingsLine(spendUSD: number, savingsUSD: number | null): string
   if (savingsUSD == null || savingsUSD < 0.005) return spend;
   return `${spend} · ~$${savingsUSD.toFixed(2)} saved vs always-premium`;
 }
+
+// ── sparkline ─────────────────────────────────────────────────────────────────
+// A row of ▁▂▃▄▅▆▇█ cells scaled to the series max — the glanceable shape of
+// "how have my days been". Zero stays a baseline tick so gaps read as quiet
+// days, not missing data. Pure.
+const SPARK = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+export function sparkline(values: number[]): string {
+  const max = Math.max(...values, 0);
+  if (max <= 0) return SPARK[0]!.repeat(values.length);
+  return values.map((v) => SPARK[Math.min(SPARK.length - 1, Math.round((Math.max(0, v) / max) * (SPARK.length - 1)))]).join("");
+}
+
+/** "≈N turns left today" against a daily cap, from the session's average turn
+ *  cost. Null when there's nothing to forecast against (no cap, no spend yet,
+ *  or a free/subscription session). Pure. */
+export function turnsLeftForecast(opts: { dailyCapUSD?: number; spentTodayUSD: number; sessionUSD: number; sessionTurns: number }): string | null {
+  const { dailyCapUSD, spentTodayUSD, sessionUSD, sessionTurns } = opts;
+  if (!dailyCapUSD || dailyCapUSD <= 0 || sessionTurns < 2 || sessionUSD <= 0) return null;
+  const avg = sessionUSD / sessionTurns;
+  if (avg <= 0.0001) return null;
+  const left = Math.max(0, dailyCapUSD - spentTodayUSD);
+  const turns = Math.floor(left / avg);
+  if (turns > 500) return null; // far from the cap — a forecast would be noise
+  return `≈${turns} turn${turns === 1 ? "" : "s"} left today at this burn rate`;
+}

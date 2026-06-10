@@ -65,3 +65,36 @@ test("retryPhrase reads naturally", () => {
   expect(retryPhrase(true, 3)).toBe("retried 2 times");
   expect(retryPhrase(false, 2)).toBe("failed after 2 attempts");
 });
+
+import { collapseToolRuns } from "../src/ui/collapse.ts";
+
+const mkTool = (id: number, name: string, over: any = {}) =>
+  ({ kind: "tool", id, callId: `c${id}`, name, status: "ok", summary: "", ...over }) as any;
+
+test("collapseToolRuns: ≥3 consecutive quick steps fold into one expandable row", () => {
+  let nid = 100;
+  const items = [
+    mkTool(1, "read_file"), mkTool(2, "read_file"), mkTool(3, "run_shell"), mkTool(4, "read_file"),
+    mkTool(5, "edit_file", { diff: [{ sign: "+", text: "x" }] }),
+  ];
+  const out = collapseToolRuns(items as any, () => nid++);
+  expect(out).toHaveLength(2);
+  const group: any = out[0];
+  expect(group.collapsed).toBe(true);
+  expect(group.children).toHaveLength(4);
+  expect(group.summary).toContain("4 quick steps");
+  expect(group.summary).toContain("read ×3");
+  expect(group.summary).toContain("shell");
+  expect((out[1] as any).name).toBe("edit_file"); // the work record stays verbatim
+});
+
+test("collapseToolRuns: short runs and edits stay untouched; an error taints the group red", () => {
+  let nid = 100;
+  const short = collapseToolRuns([mkTool(1, "read_file"), mkTool(2, "read_file")] as any, () => nid++);
+  expect(short).toHaveLength(2); // <3 → verbatim
+  const withErr = collapseToolRuns(
+    [mkTool(1, "read_file"), mkTool(2, "run_shell", { status: "err" }), mkTool(3, "read_file")] as any,
+    () => nid++,
+  );
+  expect((withErr[0] as any).status).toBe("err"); // a red step can't hide inside a green group
+});
