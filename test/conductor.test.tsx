@@ -2,18 +2,24 @@
 // tab model rides on. The full multi-App mount is exercised by hand (it needs a
 // real TTY + alt screen); these pin the logic that decides routing and the chip.
 import { test, expect } from "bun:test";
-import { tabsChip, tabSlug } from "../src/ui/components/Conductor.tsx";
+import { tabRowsOf, tabSlug } from "../src/ui/components/Conductor.tsx";
 import { requestPermission, registerPermissionHandler, setPermissionHandler, registerPreMutationHook, resetPermissions } from "../src/permission.ts";
 
 const status = (busy: boolean, needsInput = false, title = "t") => ({ busy, needsInput, title });
 
-test("tabsChip: null for a single tab; marks active, busy, and needs-input", () => {
-  expect(tabsChip([{ status: status(false) }], 0)).toBeNull();
-  const chip = tabsChip([{ status: status(false) }, { status: status(true) }, { status: status(false, true) }], 0)!;
-  expect(chip.text).toBe("⌃T [1]·2●·3⚠");
-  expect(chip.alert).toBe(true); // a HIDDEN tab needs input
-  // The active tab needing input is visible on screen — no alert.
-  expect(tabsChip([{ status: status(false, true) }, { status: status(false) }], 0)!.alert).toBe(false);
+test("tabRowsOf: maps status + active flag; falls back to the dir basename", () => {
+  const rows = tabRowsOf(
+    [
+      { dir: "/x/main", status: status(false, false, "") },
+      { dir: "/x/fix", status: status(true, false, "fix auth") },
+      { dir: "/x/docs", status: status(false, true, "docs") },
+    ],
+    1,
+  );
+  expect(rows.map((r) => r.title)).toEqual(["main", "fix auth", "docs"]);
+  expect(rows.map((r) => r.active)).toEqual([false, true, false]);
+  expect(rows[1]!.busy).toBe(true);
+  expect(rows[2]!.needsInput).toBe(true);
 });
 
 test("tabSlug: sanitizes names, falls back to tab-<id>", () => {

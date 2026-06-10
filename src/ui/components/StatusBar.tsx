@@ -113,7 +113,6 @@ function StatusBarImpl({
   online = true,
   cwd,
   branch,
-  tabsLabel,
 }: {
   model: string;
   cost?: number;
@@ -124,8 +123,6 @@ function StatusBarImpl({
   cwd?: string;
   branch?: string | null;
   epoch?: number; // /theme invalidates the memo (setTheme mutates `color` in place)
-  /** conductor tabs chip, e.g. "⌃T 1●·2·3"; alert = some background tab needs input */
-  tabsLabel?: { text: string; alert: boolean } | null;
 }) {
   const costText = formatStatusCost(cost);
   // The context GAUGE: 5 cells, severity-colored, shown whenever a context % is
@@ -137,7 +134,6 @@ function StatusBarImpl({
 
   // Attention chips: scarce, meaningful, spent only where they change what you do.
   const chips: { text: string; c: string; bold?: boolean }[] = [];
-  if (tabsLabel) chips.push({ text: tabsLabel.text, c: tabsLabel.alert ? color.err : color.accent, bold: tabsLabel.alert });
   if (!online) chips.push({ text: "⚠ offline", c: color.err, bold: true });
   if (yolo) chips.push({ text: "yolo", c: color.err, bold: true });
   const chipLen = chips.reduce((n, c) => n + c.text.length, 0) + Math.max(0, chips.length - 1) * 2 + (chips.length ? 2 : 0);
