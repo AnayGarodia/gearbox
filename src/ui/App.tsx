@@ -10,7 +10,7 @@ import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type GhostLook, type MascotState } from "./components/Mascot.tsx";
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
-import { Working } from "./components/Working.tsx";
+import { Working, workingRows } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
 import { itemsToLines, relPath, friendlyTool, fmtElapsed, type Line } from "./lines.ts";
 import { collapseTurn, collapseDelegateGroups } from "./collapse.ts";
@@ -5338,7 +5338,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (perm) footer += 5; // consent block: marginTop + title + command + options + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
   else if (!panel && !homeScreen) footer += 5; // composer (marginTop + pad + input + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
-  if (busy || linger) footer += 2; // one-line working strip (+ marginTop) — the meter's ctx gauge carries low-context now (no extra notice row)
+  if (busy || linger) footer += workingRows(pageW); // Boo working block (marginTop + the head-crop ghost; 2 on narrow frames) — Working.tsx row contract
   if (busy) footer += 3; // current-turn activity rail (marginTop + action line + trail)
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
@@ -5620,7 +5620,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const footerJsx = (
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
-        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} /> : null}
+        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} skin={ghostSkin} /> : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (
@@ -5668,7 +5668,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} /> : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} skin={ghostSkin} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (

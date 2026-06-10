@@ -14,7 +14,7 @@ the best form for knowing it. Surfaces are derived from moments:
 |---|---|---|
 | Idle / home | Am I set up? Who answers? What can I do? | Boo (+ shows) · one readiness line (`N accounts ready · pin`) · the centered composer |
 | Composing | Who handles this, what it costs | Composer footer: live pick `provider · model` beside the cursor |
-| Working | Progress? Doing what now? How to stop? | One now-row (shimmer verb left, `Ns · esc` right); **history recedes** to faint ink |
+| Working | Progress? Doing what now? How to stop? | Boo's head-crop ghost (face = agent state) + shimmer verb, `Ns · esc` right; **history recedes** to faint ink. Narrow frames drop the ghost |
 | Reviewing | What changed? Proven? Cost? | The receipt: verdict · files · proof tier; margin carries model · $ · time; ⌃O reopens detail |
 | Deciding | What am I approving, options | The consent line: verbatim command, single-key options — the only bright element while pending |
 | Auditing | Where did money go? Why this model? | Per-turn margin figures · the meter (ctx gauge · session $) · /cost and /why for depth |
