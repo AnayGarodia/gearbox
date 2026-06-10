@@ -30,7 +30,7 @@ test("statusBarHit accounts for the gauge in the right segment", () => {
   // the meter is the BOTTOM row now: y = termRows; model zone [69,75) → x = 70..75
   const args = { termRows: 40, composerLines: 1, paletteRows: 0, model: "sonnet", costText: "$0.44", ctxPct: 40, width: 100 };
   expect(statusBarHit({ ...args, x: 70, y: 40 })).toBe("model");
-  expect(statusBarHit({ ...args, x: 84, y: 40 })).toBeNull(); // old (gauge-less) position misses now
+  expect(statusBarHit({ ...args, x: 84, y: 40 })).toBe("context"); // the gauge is a door to /context now
 });
 
 // statusBarHit resolves an SGR click (1-based x/y) to the model label. The METER
@@ -82,4 +82,23 @@ test("fitStatusFields keeps the first field and sheds lowest-priority ones to fi
   expect(tight).not.toContain("$0.44");
   expect(tight).not.toContain("80.0k tok");
   expect(fitStatusFields(fields, 3).map((f) => f.text)).toEqual(["sonnet-4.6"]);
+});
+
+test("every meter fact is a door: gauge → context, $ → cost, cwd:branch → where", () => {
+  const args = { termRows: 40, composerLines: 1, paletteRows: 0, model: "sonnet", costText: "$0.44", ctxPct: 40, width: 100, where: "~/proj:main", chipLen: 0 };
+  const { modelZone, gaugeZone, costZone, whereZone } = statusBarLayout(args);
+  expect(gaugeZone![0]).toBe(modelZone[1] + 5); // "  ·  " separator
+  expect(costZone![1]).toBe(99); // right-aligned to the 1-col padding
+  expect(whereZone).toEqual([1, 1 + "~/proj:main".length]);
+  expect(statusBarHit({ ...args, x: costZone![0] + 1, y: 40 })).toBe("cost");
+  expect(statusBarHit({ ...args, x: 2, y: 40 })).toBe("where");
+  expect(statusBarHit({ ...args, x: whereZone![1] + 2, y: 40 })).toBeNull(); // the gap after the path
+});
+
+test("where truncates against chips + right segment exactly like the render", () => {
+  const long = "~/a/very/long/project/path/that/keeps/going:feature-branch";
+  const { whereZone, whereShown } = statusBarLayout({ model: "sonnet", costText: "$0.44", ctxPct: 40, width: 60, where: long, chipLen: 10 });
+  expect(whereShown.length).toBeLessThan(long.length);
+  expect(whereShown.endsWith("…")).toBe(true);
+  expect(whereZone).toEqual([1, 1 + whereShown.length]);
 });

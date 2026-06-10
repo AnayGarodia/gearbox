@@ -3,7 +3,7 @@ import { Box, Text, useApp, useInput, useStdin } from "ink";
 import type { ModelMessage } from "ai";
 import { Banner } from "./components/Banner.tsx";
 import { Transcript } from "./components/Transcript.tsx";
-import { StatusBar, statusBarHit, statusBarLayout, formatStatusCost } from "./components/StatusBar.tsx";
+import { StatusBar, statusBarHit, statusBarLayout, formatStatusCost, collapsePath } from "./components/StatusBar.tsx";
 import { StatusStrip } from "./components/StatusStrip.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
@@ -18,7 +18,7 @@ import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
 import { buildProvidersView } from "./providers-view.ts";
 import { ProvidersView } from "./components/ProvidersView.tsx";
-import { Masthead, MASTHEAD_ROW, TABBAR_LEFT } from "./components/Masthead.tsx";
+import { Masthead, MASTHEAD_ROW, TABBAR_LEFT, mastheadAccountZone } from "./components/Masthead.tsx";
 import { tabBarSegments, tabBarHit, type TabRow } from "./tabbar.ts";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
 import { setPermissionHandler, registerPermissionHandler, registerPreMutationHook, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
@@ -429,6 +429,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   tabRowsRef.current = tabRows;
   const tabsCtlRef = useRef(tabs);
   tabsCtlRef.current = tabs;
+  // Set after their values exist each render; the mouse handler reads them.
+  const handleCommandRef = useRef<((text: string) => void) | null>(null);
+  const bannerAccountRef = useRef<string | null>(null);
   const { stdin, isRawModeSupported, setRawMode } = useStdin();
   const { columns, rows } = useTerminalSize();
   const online = useOnline(20_000, true); // background reachability → "⚠ offline"
@@ -763,7 +766,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const maxScrollRef = useRef(0);
   const paletteRowsLiveRef = useRef(0); // PALETTE_ROWS, for status-bar click hit-testing
   const homeScreenRef = useRef(false); // fullscreen home screen (composer mid-screen, not at the bottom)
-  const statusBarRenderRef = useRef<{ model: string; costText: string; ctxPct: number | null; width: number }>({ model: "", costText: "", ctxPct: null, width: 0 });
+  const statusBarRenderRef = useRef<{ model: string; costText: string; ctxPct: number | null; width: number; where: string; chipLen: number }>({ model: "", costText: "", ctxPct: null, width: 0, where: "", chipLen: 0 });
   // The shared page column's left offset (Broadsheet "one page"): footer surfaces
   // are indented by this, so the composer mouse hit-test must subtract it.
   const pageLeftRef = useRef(0);
@@ -1109,8 +1112,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     };
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
-    const statusBarZoneAt = (x: number, y: number): "model" | null => {
-      const { model, costText, ctxPct, width: w } = statusBarRenderRef.current;
+    const statusBarZoneAt = (x: number, y: number): "model" | "context" | "cost" | "where" | null => {
+      const { model, costText, ctxPct, width: w, where, chipLen } = statusBarRenderRef.current;
       if (homeScreenRef.current) {
         // Home screen: the composer lives mid-screen, so the status bar is the
         // very last row (marginTop + bar, nothing below it).
@@ -1120,7 +1123,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return col >= modelZone[0] && col < modelZone[1] ? "model" : null;
       }
       const value = editRef.current.value;
-      return statusBarHit({ x: x - pageLeftRef.current, y, termRows: rows, composerLines: composerRows(value, pageWRef.current), paletteRows: paletteRowsLiveRef.current, model, costText, ctxPct, width: pageWRef.current });
+      return statusBarHit({ x: x - pageLeftRef.current, y, termRows: rows, composerLines: composerRows(value, pageWRef.current), paletteRows: paletteRowsLiveRef.current, model, costText, ctxPct, width: pageWRef.current, where, chipLen });
     };
     const viewportTop = 4; // masthead (marginTop + masthead row + rule = 3 rows); viewport begins on row 4.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
@@ -1160,14 +1163,26 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               else tabsCtlRef.current.switchTo(act.n);
               continue;
             }
+            // The account name on the masthead's right edge opens /account.
+            const az = mastheadAccountZone(bannerAccountRef.current, tabRowsRef.current, widthLiveRef.current);
+            if (az && x - 1 >= az[0] && x - 1 < az[1]) {
+              handleCommandRef.current?.("/account");
+              continue;
+            }
           }
           // Status-bar click pickers (fullscreen only). A primary press on the
           // model or effort label toggles its floating picker; a press anywhere
           // else closes an open one before normal click handling resumes.
           if (fullscreen && isPrimary && !isDrag && !up && !busyRef.current && !permRef.current) {
             const zone = statusBarZoneAt(x, y);
-            if (zone) {
+            if (zone === "model") {
               setQuickPicker(quickPickerRef.current === zone ? null : zone);
+              continue;
+            }
+            if (zone) {
+              // The meter's facts are doors: gauge → /context, $ → /usage,
+              // cwd:branch → /diff (what changed here this session).
+              handleCommandRef.current?.(zone === "context" ? "/context" : zone === "cost" ? "/usage" : "/diff");
               continue;
             }
             if (quickPickerRef.current) setQuickPicker(null);
@@ -1704,6 +1719,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const email = idy.match(/[^\s·]+@[^\s·]+/)?.[0];
     return [name, tier, email].filter(Boolean).join(" · ");
   })();
+  bannerAccountRef.current = bannerAccount;
   const routing = setupRequired || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
   // Context window of whatever's actually answering: the in-loop model, or — on a
   // subscription — the CLI's window. Claude Code Max runs a 200k window (NOT the
@@ -1712,9 +1728,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     ? (activeCliRef.current?.binary?.includes("codex") ? (findModel(activeCliModel ?? "")?.contextWindow ?? 272_000) : 200_000)
     : model?.contextWindow ?? null;
   const ctxPct = !setupRequired && activeCtxWindow && lastInput > 0 ? Math.round((lastInput / activeCtxWindow) * 100) : null;
-  // Mirror exactly what the status bar renders (model + session cost + width), so
-  // the click hit-test's right-aligned model zone matches the rendered position.
-  statusBarRenderRef.current = { model: modelLabel, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), ctxPct, width };
+  // Mirror exactly what the status bar renders (model + cost + where + chips),
+  // so every click zone matches the rendered position.
+  const sbWhere = collapsePath(rootRef.current) + (branch ? `:${branch}` : "");
+  const sbChips = [...(!online ? ["⚠ offline"] : []), ...(yolo ? ["yolo"] : [])];
+  const sbChipLen = sbChips.reduce((n, c) => n + c.length, 0) + Math.max(0, sbChips.length - 1) * 2 + (sbChips.length ? 2 : 0);
+  statusBarRenderRef.current = { model: modelLabel, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), ctxPct, width, where: sbWhere, chipLen: sbChipLen };
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const pushPhase = (label: string, detail?: string) => {
@@ -2999,6 +3018,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     },
     [exit, runTurn, onboardingState, tabs],
   );
+  handleCommandRef.current = handleCommand; // the raw mouse handler dispatches through this
 
   const submit = useCallback(
     (value: string) => {

@@ -46,3 +46,14 @@ test("done (finished-while-hidden) shows ✓ and is outranked only by needs-inpu
   const segs = tabBarSegments([row("fix", { done: true })], 0, 80);
   expect(segs[0]!.text).toBe(" 1 fix✓ ");
 });
+
+test("mastheadAccountZone right-aligns to the padding and yields to a crowded bar", async () => {
+  const { mastheadAccountZone } = await import("../src/ui/components/Masthead.tsx");
+  const rows = [row("main", { active: true })];
+  const zone = mastheadAccountZone("claude · Max · a@b.co", rows, 100)!;
+  expect(zone[1]).toBe(99); // ends at width − 1 (the right padding col)
+  expect(zone[1] - zone[0]).toBe("claude · Max · a@b.co".length);
+  // Narrow bar: no room → no zone (the render hides the account too).
+  expect(mastheadAccountZone("claude · Max · a@b.co", [row("alpha"), row("bravo"), row("charlie", { active: true })], 46)).toBeNull();
+  expect(mastheadAccountZone(null, rows, 100)).toBeNull();
+});

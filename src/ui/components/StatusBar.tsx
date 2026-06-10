@@ -36,29 +36,46 @@ export function fitStatusFields<T extends { text: string; priority: number }>(fi
 
 export type StatusZone = [start: number, end: number]; // 0-based, half-open cols
 
-// Where the clickable MODEL label sits, in 0-based terminal columns. The meter is
-// WHERE LEFT, MODEL + GAUGE + COST RIGHT, so the model lives in the right segment
-// which is right-aligned to the 1-col right padding: the right text is
-// `<model>` (+ `  ·  █████ ctx`) (+ `  ·  $cost`), so it starts at
-// width − 1 − rightLen and the model is its leading run. Single source of truth ·
-// the render and the mouse hit-test both derive from this so they cannot drift.
+// Where every CLICKABLE region of the meter sits, in 0-based terminal columns.
+// The meter is WHERE LEFT, MODEL + GAUGE + COST RIGHT; the right segment is
+// right-aligned to the 1-col right padding as `<model>  ·  █████ ctx  ·  $cost`.
+// Single source of truth: the render and the mouse hit-test both derive from
+// this so they cannot drift. Zones: model → picker · gauge → /context ·
+// cost → /usage · where (cwd:branch) → /diff.
 export function statusBarLayout({
   model,
   costText,
   ctxPct,
   width,
+  where = "",
+  chipLen = 0,
 }: {
   model: string;
   costText?: string;
   ctxPct?: number | null;
   width: number;
-}): { modelZone: StatusZone } {
+  where?: string;
+  chipLen?: number;
+}): { modelZone: StatusZone; gaugeZone: StatusZone | null; costZone: StatusZone | null; whereZone: StatusZone | null; whereShown: string } {
   const rightLen =
     model.length +
     (ctxPct != null ? SEP.length + GAUGE_LEN : 0) +
     (costText ? SEP.length + costText.length : 0);
   const start = Math.max(0, width - 1 - rightLen); // 1 = right paddingX
-  return { modelZone: [start, start + model.length] };
+  const modelZone: StatusZone = [start, start + model.length];
+  let x = modelZone[1];
+  let gaugeZone: StatusZone | null = null;
+  if (ctxPct != null) {
+    gaugeZone = [x + SEP.length, x + SEP.length + GAUGE_LEN];
+    x = gaugeZone[1];
+  }
+  const costZone: StatusZone | null = costText ? [x + SEP.length, x + SEP.length + costText.length] : null;
+  // Left: the cwd:branch run, budgeted exactly like the render (chips after it).
+  const leftBudget = Math.max(0, width - 2 - rightLen - 2);
+  const whereRoom = Math.max(0, leftBudget - chipLen);
+  const whereShown = where.length <= whereRoom ? where : whereRoom > 1 ? where.slice(0, whereRoom - 1) + "…" : "";
+  const whereZone: StatusZone | null = whereShown ? [1, 1 + whereShown.length] : null;
+  return { modelZone, gaugeZone, costZone, whereZone, whereShown };
 }
 
 // Resolve a fullscreen SGR mouse click (1-based x/y) to the model label, or null.
@@ -77,13 +94,18 @@ export function statusBarHit(args: {
   costText?: string;
   ctxPct?: number | null;
   width: number;
-}): "model" | null {
+  where?: string;
+  chipLen?: number;
+}): "model" | "context" | "cost" | "where" | null {
   // The meter is the BOTTOM EDGE of the frame (App renders it last) — the row
   // math is simply "the last row". Lockstep with App.tsx footerJsx ordering.
   if (args.y !== args.termRows || !args.model) return null;
-  const { modelZone } = statusBarLayout(args);
+  const { modelZone, gaugeZone, costZone, whereZone } = statusBarLayout(args);
   const col = args.x - 1; // SGR x is 1-based; zones are 0-based
   if (col >= modelZone[0] && col < modelZone[1]) return "model";
+  if (gaugeZone && col >= gaugeZone[0] && col < gaugeZone[1]) return "context";
+  if (costZone && col >= costZone[0] && col < costZone[1]) return "cost";
+  if (whereZone && col >= whereZone[0] && col < whereZone[1]) return "where";
   return null;
 }
 
@@ -139,12 +161,10 @@ function StatusBarImpl({
   const chipLen = chips.reduce((n, c) => n + c.text.length, 0) + Math.max(0, chips.length - 1) * 2 + (chips.length ? 2 : 0);
 
   // Left: cwd:branch + the attention chips (the wordmark lives in the masthead
-  // now). Budgeted so the right (model · gauge · cost) stays whole and
-  // right-aligned — the click hit-test depends on that exact alignment.
+  // now). The truncation comes from statusBarLayout — the SAME math the click
+  // hit-test uses, so the where-zone always matches the rendered run.
   const where = cwd ? collapsePath(cwd) + (branch ? `:${branch}` : "") : "";
-  const leftBudget = Math.max(0, width - 2 /*paddingX*/ - rightLen - 2 /*gap*/);
-  const whereRoom = Math.max(0, leftBudget - chipLen);
-  const whereShown = where.length <= whereRoom ? where : whereRoom > 1 ? where.slice(0, whereRoom - 1) + "…" : "";
+  const { whereShown } = statusBarLayout({ model, costText, ctxPct, width, where, chipLen });
 
   return (
     <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">

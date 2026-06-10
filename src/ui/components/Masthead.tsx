@@ -18,6 +18,20 @@ export const TABBAR_LEFT = 1 + WORDMARK.length + 2;
 /** 1-based terminal row the masthead text sits on (marginTop pushes it to 2). */
 export const MASTHEAD_ROW = 2;
 
+/** Where the CLICKABLE account name sits on the masthead row (0-based,
+ *  half-open cols), or null when it isn't rendered. Mirrors the render below
+ *  exactly: right-aligned to the 1-col padding, shown only when the tab bar
+ *  leaves it ≥ 8 cols of room. Clicking it opens /account. */
+export function mastheadAccountZone(account: string | null | undefined, tabRows: TabRow[] | null | undefined, width: number): [number, number] | null {
+  if (!account || !tabRows?.length) return null;
+  const segs = tabBarSegments(tabRows, TABBAR_LEFT, width - 1);
+  const end = segs.length ? segs[segs.length - 1]!.x1 : TABBAR_LEFT;
+  const room = Math.max(0, width - end - 4);
+  if (room <= 8) return null;
+  const shown = Math.min(account.length, room);
+  return [width - 1 - shown, width - 1];
+}
+
 // Memoized: props are stable while scrolling/streaming. `epoch` exists solely so
 // /theme invalidates the memo (setTheme mutates `color` in place).
 function MastheadImpl({ account, width, tabRows }: { account?: string | null; width: number; epoch?: number; tabRows?: TabRow[] | null }) {
@@ -42,6 +56,7 @@ function MastheadImpl({ account, width, tabRows }: { account?: string | null; wi
       );
       x = s.x1;
     }
+    // Same math as mastheadAccountZone — render and click zone cannot drift.
     const acctRoom = Math.max(0, width - x - 4);
     return (
       <Box flexDirection="column" marginTop={1}>
