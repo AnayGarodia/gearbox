@@ -250,6 +250,15 @@ export interface UsageView {
   totalApiSpend: string;
   sessionUSD?: string;
   hasEstimate: boolean;
+  // The money story (formerly the cost tab) — attached by the /cost command so
+  // the one card answers "where did money go" completely. All optional: the
+  // pinned /usage strip path never computes them.
+  daily?: { day: string; usd: number }[]; // last-7-days ledger spend, oldest → newest
+  forecast?: string | null; // "≈N turns left today …" (needs /cap daily)
+  auxToday?: number; // classifier/title/commit-message spend today
+  perModel?: { model: string; usd: number; turns: number }[]; // this session
+  savings?: string; // savingsLine() text
+  policy?: string; // formatPolicyString() text
 }
 
 export type AcctInfo = {

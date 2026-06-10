@@ -104,7 +104,7 @@ export function collapsePath(p: string, max = 32): string {
   return s;
 }
 
-export function StatusBar({
+function StatusBarImpl({
   model,
   cost = 0,
   ctxPct,
@@ -122,6 +122,7 @@ export function StatusBar({
   online?: boolean;
   cwd?: string;
   branch?: string | null;
+  epoch?: number; // /theme invalidates the memo (setTheme mutates `color` in place)
 }) {
   const costText = formatStatusCost(cost);
   // The context GAUGE: 5 cells, severity-colored, shown whenever a context % is
@@ -168,3 +169,8 @@ export function StatusBar({
     </Box>
   );
 }
+
+// Memoized: the meter re-rendered on every scroll frame even though none of its
+// inputs change while scrolling. All props are primitives, so the default
+// shallow compare is exact.
+export const StatusBar = React.memo(StatusBarImpl);

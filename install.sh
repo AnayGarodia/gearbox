@@ -96,7 +96,15 @@ archive="${tmp}/package.tgz"
 extract_dir="${tmp}/extract"
 
 printf "${D}  → downloading ${PACKAGE_NAME}@${resolved_version}${R}\n"
-curl -fsSL "$tarball_url" -o "$archive"
+# Right after a publish, the registry metadata can resolve a version whose
+# tarball hasn't replicated to the CDN edge yet (transient 404). Retry over
+# ~30s before giving up. --retry-all-errors needs curl ≥7.71 (macOS 12+);
+# older curls ignore unknown flags' behavior, so probe and degrade.
+if curl --help all 2>/dev/null | grep -q -- --retry-all-errors; then
+  curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors "$tarball_url" -o "$archive"
+else
+  curl -fsSL --retry 5 --retry-delay 5 "$tarball_url" -o "$archive"
+fi
 mkdir -p "$extract_dir" "$target_dir" "$BIN_DIR"
 tar -xzf "$archive" -C "$extract_dir"
 

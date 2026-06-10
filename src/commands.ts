@@ -62,7 +62,8 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/account", usage: "/account", desc: "list accounts; /account <name> switches, /account login <name> re-auths, /account add adds one", group: "accounts" },
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
-  { name: "/usage", usage: "/usage", desc: "live usage: limits, spend & context (fullscreen: toggles a strip)", group: "accounts" },
+  { name: "/usage", usage: "/usage", desc: "live limits & context (fullscreen: toggles a strip above the composer)", group: "accounts" },
+  { name: "/cost", usage: "/cost", desc: "the money story: 7-day spend, per-model & per-account breakdowns, savings", group: "accounts" },
   { name: "/doctor", usage: "/doctor", desc: "live-check every account with one tiny real call · names the fix for each failure", group: "accounts" },
   { name: "/budget", usage: "/budget <provider> <amount> [monthly|total]", desc: "set a spend budget so routing can estimate remaining credit and preserve it", group: "accounts" },
   { name: "/cap", usage: "/cap <session|daily|monthly|total> <amount>", desc: "hard spend ceiling · turns refuse once reached (/cap off to clear)", group: "accounts" },
@@ -86,7 +87,7 @@ export const COMMANDS: CommandMeta[] = [
 // Hidden aliases: still work when typed, but kept out of /help and the palette
 // to reduce clutter (/accounts, /login fold into /account; /vim into /config;
 // /ghost is an easter egg; /cwd was removed · `/context` shows the directory).
-const HIDDEN = new Set(["/accounts", "/login", "/vim", "/ghost", "/cwd", "/cost"]);
+const HIDDEN = new Set(["/accounts", "/login", "/vim", "/ghost", "/cwd"]);
 
 /** Commands whose name starts with the typed draft (for the live palette). */
 export function matchCommands(draft: string): CommandMeta[] {

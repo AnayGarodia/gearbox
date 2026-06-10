@@ -313,3 +313,25 @@ export function applyMouse(s: Edit, click: MouseClick): KeyAction {
     },
   };
 }
+
+/**
+ * Extend a word/line selection during a drag that began with a double or
+ * triple click: the selection becomes the hull of the anchor range (the
+ * word/line originally clicked) and the word/line under the drag point —
+ * whole units stay selected on both sides, like every native text field.
+ * The cursor rides the moving end so a later shift-click still extends
+ * sensibly. Pure.
+ */
+export function extendUnitSelection(
+  value: string,
+  anchor: { start: number; end: number },
+  offset: number,
+  mode: "word" | "line",
+): Edit {
+  const start = mode === "line" ? lineStartAt(value, offset) : wordStartAt(value, offset);
+  const end = mode === "line" ? lineEndAt(value, offset) : wordEndAt(value, offset);
+  // Dragging forward: anchor start stays, cursor extends to the unit's end.
+  // Dragging backward: anchor end stays, cursor extends to the unit's start.
+  if (end >= anchor.end) return { value, cursor: Math.max(end, anchor.end), selectionAnchor: Math.min(start, anchor.start) };
+  return { value, cursor: Math.min(start, anchor.start), selectionAnchor: Math.max(end, anchor.end) };
+}
