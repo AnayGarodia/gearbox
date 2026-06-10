@@ -16,7 +16,7 @@ import { RoutingSelector, classify } from "../model/router.ts";
 import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
-import { truncate, gitConfirmOpen, type PanelState, type PanelModelRow } from "./panel.ts";
+import { truncate, gitConfirmOpen, diffOpen, diffSetText, type PanelState, type PanelModelRow } from "./panel.ts";
 import { listAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
 import type { Account } from "../accounts/types.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
@@ -158,7 +158,9 @@ export interface CommandCtx {
   runTurnRef: MutableRefObject<(prompt: string, attempt?: number) => Promise<void>>;
   selectorRef: MutableRefObject<ModelSelector>;
   sessionRef: MutableRefObject<{ id: string; createdAt: number; title: string; turns: TurnMeta[] }>;
-  undoStackRef: MutableRefObject<{ changes: FileChange[]; at: number }[]>;
+  undoStackRef: MutableRefObject<{ changes: FileChange[]; at: number; checkpoint?: string }[]>;
+  /** sha of the session's first turn checkpoint — the /diff baseline (null until a mutation). */
+  sessionBaseRef: MutableRefObject<string | null>;
   verifyRef: MutableRefObject<VerifyMode>;
   vimRef: MutableRefObject<"off" | "insert" | "normal">;
   // ── state setters ──
@@ -237,7 +239,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
     busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
     gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
     lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
-    routedRef, runTurnRef, selectorRef, sessionRef, undoStackRef, verifyRef, vimRef,
+    routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
     setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
     setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
     setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
@@ -587,6 +589,18 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         }
         case "diff": {
           echo(text);
+          // Fullscreen: the full diff view — changed files vs the session
+          // baseline (the first turn checkpoint; HEAD before any mutation),
+          // with the selected file's unified diff in a scrollable pane.
+          if (fullscreen && gitOps.isRepo()) {
+            const base = sessionBaseRef.current;
+            const files = gitOps.diffFilesSince(base);
+            let p = diffOpen(files, base, base ? "this session" : "working tree vs HEAD");
+            if (files.length) p = diffSetText(p, gitOps.fileDiffSince(base, files[0]!.path));
+            setPanel(p);
+            return;
+          }
+          // Inline (or no repo): the per-file snapshot diffs, printed.
           // Earliest pre-turn content per path across the session's snapshots,
           // compared to what's on disk now — one colored diff per changed file.
           const map = new Map<string, { before: string; existed: boolean }>();
@@ -622,6 +636,18 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           if (lastOutcomeKeyRef.current) {
             try { recordTurnOutcome({ ...lastOutcomeKeyRef.current, outcome: "undone" }); } catch { /* best-effort */ }
             lastOutcomeKeyRef.current = null;
+          }
+          // A whole-tree checkpoint covers what per-file snapshots can't: shell
+          // deletes, renames, and files the agent mutated outside write/edit.
+          if (snap.checkpoint) {
+            const r = gitOps.checkpointRestore(snap.checkpoint);
+            if (r.ok) {
+              gitOps.checkpointDelete(snap.checkpoint);
+              resetRetrievalIndex(); // restored files invalidate the lexical index wholesale
+              notice(`undid last turn (whole-tree restore to its start; a __pre-restore__ checkpoint holds what you just left)\n  (files only — the conversation is unchanged)`);
+              return;
+            }
+            notice(`checkpoint restore failed (${r.err || "unknown"}) — falling back to per-file snapshots`);
           }
           const plan = planUndo(snap.changes);
           void (async () => {
@@ -833,6 +859,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             // without a reload the new tree's project servers are silently ignored.
             reloadMcpConnections();
             undoStackRef.current = [];
+            sessionBaseRef.current = null; // the /diff baseline is per-tree
             cliSessionRef.current = undefined;
             // Tree-rooted drafts must not survive the move: a /commit draft
             // written for the old tree's diff would commit the NEW tree's

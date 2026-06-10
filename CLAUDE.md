@@ -32,7 +32,16 @@ src/
   git/ops.ts         the git suite's engine: status/diff/commit/push (arg arrays — model text NEVER rides a shell string), worktrees, ref-based checkpoints (temp index → refs/gearbox/checkpoints, captures untracked files), gh wrappers w/ compare-URL fallback
   fetch.ts           fetch_url implementation (public URLs → readable text)
   websearch.ts       web_search: DuckDuckGo default, Brave/SearXNG via env keys
-  undo.ts            per-turn file snapshots → /undo (revert last turn) + /diff (session changes)
+  undo.ts            per-turn file snapshots → /undo (revert last turn) + /diff (session changes).
+                     /undo is now TOTAL: the permission broker's pre-mutation hook (src/permission.ts
+                     setPreMutationHook, installed by App) takes a lazy whole-tree turn checkpoint
+                     (git/ops.ts turnCheckpointSave) at a turn's FIRST mutating tool — runs under
+                     yolo/rules/grants too — so shell deletes/renames restore via checkpointRestore;
+                     per-file snapshots remain the fallback. Turn checkpoints pruned to 8.
+                     /diff (fullscreen) opens the FULL DIFF PANEL: changed files vs the session
+                     baseline (first turn checkpoint's sha, else HEAD) over a scrollable tinted
+                     unified-diff pane (panel.ts diffOpen/diffMove/diffScroll · gitOps.diffFilesSince/
+                     fileDiffSince); inline keeps the printed per-file diffs.
   verify.ts          VERIFY pillar: detect test/build/typecheck, run as the post-edit gate, tiered proof (tests>types>none), auto-iterate-to-green (≤3), characterization-test offer (/verify test)
   edit.ts            whitespace-tolerant edit matcher behind edit_file (occurrence + replaceAll)
   init.ts            /init — scan the repo, write a GEARBOX.md guide
@@ -94,7 +103,10 @@ src/
     useTerminalSize.ts  reactive width on resize (everything reflows)
     width.ts         display-column math (charWidth/displayWidth/sliceWidth): emoji/CJK are 2 cols, combining marks 0; lines.ts + Viewport measure with THESE, never .length
     git.ts           current branch for the status line
-    App.tsx          the Ink app: state, useInput dispatch, commands, turns (the hop-loop failover lives here)
+    App.tsx          the Ink app: state, useInput dispatch, turns (the hop-loop failover lives here)
+    command-handler.ts  ALL slash-command dispatch (extracted from App, ~1700 lines): handleCommand(ctx, text)
+                     behind CommandCtx (refs + setters + helper callbacks built fresh per call in App).
+                     New commands go HERE, not in App.tsx; anything they need from App rides through ctx.
     components/      Banner, Transcript, Composer, CommandPalette, FilePalette, StatusBar, StatusStrip, Masthead, PermissionPrompt, Panel, Markdown, Mascot, ProvidersView, Viewport, Working
     panel.ts         dismissable command-panel model + pure helpers (clamp/window/filter/truncate/fieldWindow) + wizard & account-detail state machines; tested
     prefs.ts         ~/.gearbox/prefs.json (theme, vim, notify, inline, verify, caps, pins)

@@ -20,7 +20,7 @@ import { buildProvidersView } from "./providers-view.ts";
 import { ProvidersView } from "./components/ProvidersView.tsx";
 import { Masthead } from "./components/Masthead.tsx";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
-import { setPermissionHandler, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
+import { setPermissionHandler, setPreMutationHook, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName } from "./character.ts";
 import { color, glyph, setTheme, activeTheme, THEMES } from "./theme.ts";
@@ -54,7 +54,7 @@ import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsag
 import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend, readAuxSpendToday } from "../accounts/ledger.ts";
 import * as gitOps from "../git/ops.ts";
 import { invalidateGitBranch } from "./git.ts";
-import { gitConfirmOpen, gitConfirmEdit, gitConfirmSetSubmitting, gitConfirmError, gitConfirmReady, gitConfirmMessage, type GitConfirmPanel } from "./panel.ts";
+import { gitConfirmOpen, gitConfirmEdit, gitConfirmSetSubmitting, gitConfirmError, gitConfirmReady, gitConfirmMessage, diffMove, diffScroll, diffSetText, type GitConfirmPanel } from "./panel.ts";
 import { checkCaps, type BudgetCaps } from "../model/budget-guard.ts";
 import { recordChange, planUndo, type FileChange } from "../undo.ts";
 import { probeUsage } from "../accounts/usage-probe.ts";
@@ -462,7 +462,16 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const ctxOverheadRef = useRef(12_000);
   const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
-  const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
+  const undoStackRef = useRef<{ changes: FileChange[]; at: number; checkpoint?: string }[]>([]); // per-turn file snapshots for /undo + /diff
+  // Lazy whole-tree turn checkpoint (the /undo substrate for shell deletes and
+  // renames): taken by the broker's pre-mutation hook at a turn's FIRST mutating
+  // tool, attached to the turn's undo entry in the finally below.
+  const turnSeqRef = useRef(0);
+  const turnCheckpointRef = useRef<string | null>(null);
+  // The session's diff baseline: the sha of the FIRST turn checkpoint. /diff
+  // measures the whole session against it (pruning may drop the REF later, but
+  // the commit object stays resolvable for weeks — long past any session).
+  const sessionBaseRef = useRef<string | null>(null);
   const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
   // Large pastes collapse to a `[Pasted N lines]` chip in the composer; the real
   // text is kept here and expanded back in on submit.
@@ -819,7 +828,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           pumpPerm();
         }),
     );
-    return () => setPermissionHandler(null);
+    // Before a turn's FIRST mutating tool (under any approval path — yolo,
+    // rules, and grants included), snapshot the whole tree. Synchronous, so the
+    // tool can't mutate before the checkpoint exists.
+    setPreMutationHook(() => {
+      if (!busyRef.current || turnCheckpointRef.current) return;
+      const seq = ++turnSeqRef.current;
+      const r = gitOps.turnCheckpointSave(seq);
+      if (!r.ok) return; // not a git repo / checkpoint failed → per-file snapshots still apply
+      const name = gitOps.turnCheckpointName(seq);
+      turnCheckpointRef.current = name;
+      if (!sessionBaseRef.current) {
+        const sha = gitOps.git(["rev-parse", `refs/gearbox/checkpoints/${name}`]);
+        if (sha.ok && sha.out) sessionBaseRef.current = sha.out;
+      }
+    });
+    return () => { setPermissionHandler(null); setPreMutationHook(null); };
   }, []);
 
   // Plugins (.gearbox/plugins/*.ts + ~/.gearbox/plugins/*.ts): loaded once at
@@ -2334,6 +2358,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
       const changedFiles = new Set<string>();
       let turnChanges: FileChange[] = []; // pre-turn file snapshots, for /undo + /diff
+      turnCheckpointRef.current = null; // each turn takes its own (lazily, on first mutation)
       const checks: string[] = [];
       const failures: string[] = [];
       let hadError = false;
@@ -2669,7 +2694,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         setBusy(false);
         persist();
         // Snapshot this turn's file changes onto the undo stack (/undo, /diff).
-        if (turnChanges.length) undoStackRef.current.push({ changes: turnChanges, at: Date.now() });
+        // The whole-tree checkpoint (when one was taken) rides along so /undo can
+        // restore shell-side deletes/renames the per-file snapshots can't see.
+        const checkpoint = turnCheckpointRef.current ?? undefined;
+        turnCheckpointRef.current = null;
+        if (turnChanges.length || checkpoint) {
+          undoStackRef.current.push({ changes: turnChanges, at: Date.now(), checkpoint });
+          try { gitOps.pruneTurnCheckpoints(8); } catch { /* best-effort */ }
+        }
         const interrupted = interruptedRef.current;
         if (interrupted) {
           notice("interrupted");
@@ -2815,7 +2847,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
         gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
         lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
-        routedRef, runTurnRef, selectorRef, sessionRef, undoStackRef, verifyRef, vimRef,
+        routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
         // state setters
         setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
         setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
@@ -3091,6 +3123,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         else if (key.downArrow) setPanel({ ...p, scroll: clampScroll(p.scroll + 1, max) });
         else if (key.pageUp) setPanel({ ...p, scroll: clampScroll(p.scroll - page, max) });
         else if (key.pageDown) setPanel({ ...p, scroll: clampScroll(p.scroll + page, max) });
+        return;
+      }
+      if (p.kind === "diff") {
+        if (input === "q") { setPanel(null); return; }
+        // Mirror Panel.tsx's split: file list ≤1/3 of the body, diff pane below.
+        const bodyH = panelBodyHeight(viewportHeightRef.current);
+        const listH = Math.max(1, Math.min(p.files.length || 1, Math.floor(bodyH / 3)));
+        const diffH = Math.max(1, bodyH - listH - 1);
+        const loadSel = (next: ReturnType<typeof diffMove>) =>
+          next.files.length && next.diff === null
+            ? diffSetText(next, gitOps.fileDiffSince(next.baseline, next.files[next.index]!.path))
+            : next;
+        if (key.upArrow) setPanel(loadSel(diffMove(p, -1)));
+        else if (key.downArrow) setPanel(loadSel(diffMove(p, 1)));
+        else if (key.pageUp) setPanel(diffScroll(p, -Math.max(1, diffH - 1), diffH));
+        else if (key.pageDown) setPanel(diffScroll(p, Math.max(1, diffH - 1), diffH));
         return;
       }
       if (p.kind === "accounts") {

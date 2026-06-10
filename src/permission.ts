@@ -74,6 +74,16 @@ let handler: Handler | null = null;
 const granted = new Set<PermKind>();
 let yolo = false;
 
+// Pre-mutation hook: runs on EVERY mutating request BEFORE any decision logic
+// (yolo, rules, and standing grants included — they all still mutate). The App
+// uses it to take a lazy whole-tree turn checkpoint so /undo covers shell-side
+// deletes/renames. Synchronous and exception-isolated: it can never block or
+// break the gate.
+let preMutation: ((req: PermRequest) => void) | null = null;
+export function setPreMutationHook(fn: ((req: PermRequest) => void) | null): void {
+  preMutation = fn;
+}
+
 /**
  * Install or remove the permission handler.
  * Pass null to revert to headless auto-approve behavior.
@@ -117,6 +127,7 @@ export function resetPermissions(): void {
  * resulting decision is applied to the broker state before returning.
  */
 export async function requestPermission(req: PermRequest): Promise<boolean> {
+  try { preMutation?.(req); } catch { /* the checkpoint hook must never wedge the gate */ }
   // Project rules (.gearbox/permissions.json) pre-decide first: an explicit
   // "deny" refuses even under yolo (the user wrote it down — "rm *": "deny"
   // must hold precisely when everything else is auto-approved), "allow" skips
