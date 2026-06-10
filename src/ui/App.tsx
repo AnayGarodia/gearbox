@@ -72,7 +72,7 @@ import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, removeMcpServer, shellSplit } from "../mcp.ts";
-import { applyKey, applyMouse, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
+import { applyKey, applyMouse, extendUnitSelection, offsetAt, sanitizeInputText, selectionRange, type Edit, type MouseClick } from "./input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { clipboardImageToFile } from "./clipboard-image.ts";
 import { setTitle, bell, notify } from "./terminal.ts";
@@ -526,6 +526,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const pasteCoalesceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copiedSelectionRef = useRef("");
   const mouseAnchorRef = useRef<number | null>(null);
+  // Word/line-wise drag extension after a double/triple click on the composer:
+  // the anchor unit (the word/line first selected) that the drag hulls against.
+  const composerUnitDragRef = useRef<{ mode: "word" | "line"; start: number; end: number } | null>(null);
   const transcriptMouseAnchorRef = useRef<{ line: number; col: number } | null>(null);
   const transcriptRangeAnchorRef = useRef<{ line: number; col: number } | null>(null);
   // In-progress transcript drag granularity: `char` tracks the raw point; `word`/`line`
@@ -1022,18 +1025,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // off), so the terminal handles selection/scrollback natively — don't attach here.
   useEffect(() => {
     if (!stdin || !fullscreen || process.env.GEARBOX_MOUSE === "0") return;
-    const composerOffset = (x: number, y: number): number | null => {
+    // The composer's mouse geometry — the ONE place that knows which terminal
+    // rows hold input text. Bottom-up (Composer.tsx row contract, lift=true,
+    // PTY-verified): meter(rows) · meter marginTop(rows-1) · composer
+    // marginBottom(rows-2) · footer hint(rows-3) · pad(rows-4) · input rows
+    // (rows-5 … rows-4-lineCount) · pad · marginTop. Keep in lockstep with
+    // Composer.tsx and the footer estimate.
+    const composerPoint = (x: number, y: number): { line: number; col: number; off: number } | null => {
       if (busyRef.current || permRef.current) return null;
       if (homeScreenRef.current) return null; // home screen: the composer floats mid-screen, not at the bottom
       const value = editRef.current.value;
       const lineCount = Math.max(1, value.split("\n").length);
-      const firstInputRow = rows - 4 - lineCount; // below the input: pad row, footer hint, then the meter (marginTop + row)
-      if (y < firstInputRow || y > rows - 5) return null;
-      const lineIdx = y - firstInputRow;
+      const firstInputRow = rows - 4 - lineCount;
+      const lastInputRow = rows - 5;
+      if (y < firstInputRow || y > lastInputRow) return null;
+      const line = y - firstInputRow;
       // 1 border + space + prompt + space, SGR coords are 1-based — plus the page
       // column's left offset (the composer sits in the centered page column).
       const col = Math.max(0, x - 5 - pageLeftRef.current);
-      return offsetAt(value, lineIdx, col);
+      return { line, col, off: offsetAt(value, line, col) };
     };
     // Which status-bar label, if any, sits under this click. Row + column math
     // lives in the pure, tested statusBarHit; here we only supply live layout.
@@ -1088,7 +1098,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             }
             if (quickPickerRef.current) setQuickPicker(null);
           }
-          const off = composerOffset(x, y);
+          const cp = composerPoint(x, y);
+          const off = cp?.off ?? null;
           const point = transcriptPoint(x, y);
           if (isPrimary && isDrag && transcriptMouseAnchorRef.current && !point) {
             const bottom = viewportTop + transcriptHeightLiveRef.current - 1;
@@ -1126,18 +1137,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               }
             }
             mouseAnchorRef.current = null;
-          } else if (off != null && isPrimary && !isDrag) {
+            composerUnitDragRef.current = null;
+          } else if (cp != null && isPrimary && !isDrag) {
             // Composer click: track timing for double/triple-click detection.
-            // SGR x is 1-based. The 0-based text col subtracts 5 (1 border + 1 pad
-            // + "❯ " prompt + space) — must match composerOffset above, or a single
-            // click lands the cursor one column right of where you clicked and the
-            // drag anchor (set from `off`) disagrees with it. Re-derive the line
-            // index from y so applyMouse gets the correct col/line.
+            // line/col come from composerPoint — the ONE composer geometry — so
+            // the click, the drag anchor (off), and applyMouse always agree.
             const value = editRef.current.value;
-            const lineCount = Math.max(1, value.split("\n").length);
-            const firstInputRow = rows - lineCount;
-            const lineIdx = y - firstInputRow;
-            const col = Math.max(0, x - 5 - pageLeftRef.current); // must match composerOffset above
+            const { line: lineIdx, col } = cp;
             const shift = (b & 4) !== 0;
             const now = Date.now();
             const prev = lastComposerClickRef.current;
@@ -1147,19 +1153,29 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             }
             lastComposerClickRef.current = { time: now, x, y, count: clickCount };
             const click: MouseClick = { line: lineIdx, col, count: clickCount, shift };
-            mouseAnchorRef.current = off;
+            mouseAnchorRef.current = cp.off;
             transcriptMouseAnchorRef.current = null;
             transcriptDragRef.current = null;
             setTranscriptSel(null);
             const action = applyMouse({ value, cursor: editRef.current.cursor, selectionAnchor: editRef.current.selectionAnchor }, click);
             if (action.type === "edit") setEdit(action.state);
-            else setEdit({ value, cursor: off });
+            else setEdit({ value, cursor: cp.off });
+            // Double/triple click selected a word/line — remember that unit so a
+            // drag extends the selection word-/line-wise (hulling whole units).
+            composerUnitDragRef.current =
+              !shift && clickCount >= 2 && action.type === "edit" && action.state.selectionAnchor != null
+                ? { mode: clickCount >= 3 ? "line" : "word", start: Math.min(action.state.selectionAnchor, action.state.cursor), end: Math.max(action.state.selectionAnchor, action.state.cursor) }
+                : null;
           } else if (off != null && isDrag && mouseAnchorRef.current != null) {
-            // Extend selection from anchor, but only for single-click drags.
-            // Double/triple-click sets word/line selection; a drag event immediately
-            // after (common on trackpads with micro-motion) must not clobber it.
-            const lastCount = lastComposerClickRef.current?.count ?? 1;
-            if (lastCount === 1) {
+            // Drag inside the composer. After a double/triple click the drag
+            // extends word-/line-wise (the hull of the anchor unit and the unit
+            // under the pointer — micro-motion on a trackpad just re-selects the
+            // same word, so it can't clobber the click selection). A plain drag
+            // extends character-wise from the press anchor.
+            const unit = composerUnitDragRef.current;
+            if (unit) {
+              setEdit(extendUnitSelection(editRef.current.value, unit, off, unit.mode));
+            } else if ((lastComposerClickRef.current?.count ?? 1) === 1) {
               setEdit({ value: editRef.current.value, cursor: off, selectionAnchor: mouseAnchorRef.current });
             }
           } else if (point && isPrimary && !isDrag) {
