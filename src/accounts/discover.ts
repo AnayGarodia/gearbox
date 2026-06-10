@@ -33,6 +33,20 @@ export interface DiscoverResult {
   note?: string;
 }
 
+/** Status-specific note for an Azure deployments-list failure — "HTTP 401" and
+ *  "HTTP 404" need OPPOSITE fixes, so a generic message left users stuck. Pure. */
+export function azureListNote(status: number, provider: "azure" | "azure-foundry"): string {
+  if (status === 401) return "key rejected (HTTP 401) — re-check the key in portal → Keys and Endpoint · fix it, then /account refresh";
+  if (status === 403) return "key valid but blocked (HTTP 403) — resource firewall/VNet rules or a missing data-plane role · fix it, then /account refresh";
+  if (status === 404 && provider === "azure") {
+    return "resource not found (HTTP 404) — wrong resource name, or this is a Foundry endpoint: re-add with /account add azure https://<endpoint> <key>";
+  }
+  return `deployments list failed (HTTP ${status}) · fix it, then /account refresh`;
+}
+
+// The actionable empty-deployments note — names the in-app next step.
+const NO_DEPLOYMENTS_NOTE = "no chat deployments yet — press → on this account in /account to deploy a model (or ai.azure.com), then /account refresh";
+
 /** Azure deployment list (`/openai/deployments`) → callable chat deployment ids. */
 export function parseAzureDeployments(json: any): string[] {
   const data = Array.isArray(json?.data) ? json.data : [];
@@ -81,9 +95,9 @@ export async function discoverModels(account: Account, fetchImpl: typeof fetch =
       if (!resourceName || !apiKey) return { ok: false, models: [], note: "azure: missing resource name or key" };
       const url = `https://${resourceName}.openai.azure.com/openai/deployments?api-version=${AZURE_LIST_API_VERSION}`;
       const r = await fetchImpl(url, { headers: { "api-key": apiKey } });
-      if (!r.ok) return { ok: false, models: [], note: `no deployments listed (HTTP ${r.status})` };
+      if (!r.ok) return { ok: false, models: [], note: azureListNote(r.status, "azure") };
       const models = parseAzureDeployments(await r.json());
-      return { ok: true, models, note: models.length ? undefined : "no chat deployments yet — create one in Azure, then /account refresh" };
+      return { ok: true, models, note: models.length ? undefined : NO_DEPLOYMENTS_NOTE };
     }
 
     // OpenAI-wire path (Foundry, gateways, openai-compat, local servers).
@@ -95,15 +109,25 @@ export async function discoverModels(account: Account, fetchImpl: typeof fetch =
       const cleanBase = base.replace(/\/$/, "");
       // Azure AI Foundry supports the same /openai/deployments listing route as
       // classic Azure. It returns *actual* deployments (not the whole catalog),
-      // so prefer it over /models when we detect a Foundry-style endpoint.
+      // so it is AUTHORITATIVE for Foundry accounts: an OK answer — even an
+      // empty one — must be trusted. Falling through to /models on an empty
+      // list used to persist the resource's whole deployable CATALOG (hundreds
+      // of ids) as callable models, every one of which 404s at inference. Only
+      // a missing route (404/network) may fall back; 401/403 is a credential
+      // problem the catalog dump would mask.
       if (account.provider === "azure-foundry" && creds.apiKey) {
         try {
           const depUrl = `${mgmtBase}/openai/deployments?api-version=${AZURE_LIST_API_VERSION}`;
           const dr = await fetchImpl(depUrl, { headers: { "api-key": creds.apiKey } });
           if (dr.ok) {
             const models = parseAzureDeployments(await dr.json());
-            if (models.length) return { ok: true, models };
+            return { ok: true, models, note: models.length ? undefined : NO_DEPLOYMENTS_NOTE };
           }
+          if (dr.status === 401 || dr.status === 403) {
+            return { ok: false, models: [], note: azureListNote(dr.status, "azure-foundry") };
+          }
+          // Route genuinely absent (e.g. 404 on a non-Foundry-shaped endpoint):
+          // fall through to /models below.
         } catch {
           // fall through to /models
         }
@@ -116,6 +140,10 @@ export async function discoverModels(account: Account, fetchImpl: typeof fetch =
 
     return { ok: true, models: [] };
   } catch (e: any) {
-    return { ok: false, models: [], note: e?.message ?? "discovery failed" };
+    const msg = String(e?.message ?? "");
+    if (/ENOTFOUND|getaddrinfo|Unable to connect|fetch failed/i.test(msg)) {
+      return { ok: false, models: [], note: "endpoint not found — check the resource name / endpoint URL · fix it, then /account refresh" };
+    }
+    return { ok: false, models: [], note: msg || "discovery failed" };
   }
 }

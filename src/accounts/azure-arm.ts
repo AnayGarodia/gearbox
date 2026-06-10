@@ -127,6 +127,21 @@ async function tokenFromServicePrincipal(fetchImpl: typeof fetch): Promise<{ tok
   }
 }
 
+/** Cheap, NO-NETWORK probe: is any rung of the token ladder even plausible?
+ *  Used by the account panel to warn BEFORE the user walks the whole
+ *  deploy-pick → capacity → name flow only to hit "no Azure management
+ *  sign-in" at the end. A true here doesn't guarantee the token works —
+ *  the real ladder remains the backstop. */
+export async function armAuthReady(): Promise<boolean> {
+  if (process.env.GEARBOX_DISABLE_AZ === "1") return false;
+  if (tokenCache && Date.now() < tokenCache.expiresAt - 5 * 60_000) return true;
+  const refresh = await getSecret(REFRESH_REF).catch(() => null);
+  if (refresh) return true;
+  if (which("az")) return true;
+  const { AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET } = process.env;
+  return Boolean(AZURE_TENANT_ID && AZURE_CLIENT_ID && AZURE_CLIENT_SECRET);
+}
+
 /** The management token, from whichever rung works. The error names ALL the
  *  ways to fix it — a user with no az is told about gearbox's own sign-in
  *  first, because that one needs nothing installed. */

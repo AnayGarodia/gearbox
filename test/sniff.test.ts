@@ -33,8 +33,19 @@ test("detects a Vertex service-account JSON", () => {
 test("detects an Azure endpoint", () => {
   const g = sniffCredential("https://my-resource.openai.azure.com");
   expect(g.kind).toBe("azure");
+  expect(g.provider).toBe("azure");
   expect(g.fields.resourceName).toBe("my-resource");
   expect(g.missing).toContain("apiKey");
+});
+
+test("Foundry/AI-services hosts classify as azure-foundry, not classic azure", () => {
+  // A classic account minted from these hosts builds a broken
+  // https://<sub>.openai.azure.com base — the provider tag must say foundry.
+  for (const url of ["https://my-proj.services.ai.azure.com", "https://my-res.cognitiveservices.azure.com"]) {
+    const g = sniffCredential(url);
+    expect(g.kind).toBe("azure"); // guided message still routes via /account add azure
+    expect(g.provider).toBe("azure-foundry");
+  }
 });
 
 test("detects a Vercel AI Gateway key", () => {

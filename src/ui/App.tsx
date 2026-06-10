@@ -36,7 +36,7 @@ import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, loa
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, hasPricing, modelRegistry, providerAvailable, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
-import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, truncate, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
+import { clampIndex, clampScroll, panelBodyHeight, filterModelRows, appendFilter, backspaceFilter, wizardOpen, wizardPickMove, wizardPickFilter, wizardPickBackspace, wizardPickConfirm, wizardFieldEdit, wizardFieldAdvance, wizardIsComplete, wizardBack, truncate, detailOpen, detailSetDeployments, detailSetAvailableModels, detailSetError, detailSetModelsError, detailStartRefresh, detailMoveIndex, detailStartDeploy, detailDeployFilter, detailDeployBackspace, detailDeployMove, detailPickCapacity, detailCapacityMove, detailConfirmCapacity, detailNameEdit, detailNameAdvance, detailIsNameComplete, detailSetSubmitting, detailStartDelete, detailOptimisticRemove, detailBack, detailSetArmReady, type PanelState, type PanelModelRow, type PanelSessionRow, type WizardPanel, type AccountDetailPanel, type AccountDetailViewData } from "./panel.ts";
 import { runTask, runCompletion } from "../agent/run.ts";
 import { classifyTask, type TaskKind } from "../agent/classify.ts";
 import { loadGearboxDocs, buildAskSystem, looksLikeGearboxQuestion } from "../help/ask.ts";
@@ -97,7 +97,7 @@ import { checkFileDiagnostics, formatDiagnostics, shutdownAllLsp } from "../lsp/
 import { loadPlugins, emitHook, installPluginLogger } from "../plugins.ts";
 import { loadAgents, agentInvocation, type AgentDef } from "../agents.ts";
 import { recordTurnOutcome } from "../model/priors.ts";
-import { armDeviceLogin } from "../accounts/azure-arm.ts";
+import { armDeviceLogin, armAuthReady } from "../accounts/azure-arm.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 
@@ -4488,6 +4488,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
                     ? (r.ok
                         ? detailSetAvailableModels(prev as AccountDetailPanel, r.models)
                         : detailSetModelsError(prev as AccountDetailPanel, r.note ?? "couldn't load deployable models"))
+                    : prev,
+                ),
+              );
+              // Cheap no-network probe: warn up front when deploy/delete would
+              // fail for lack of an ARM sign-in, instead of at the end of the flow.
+              void armAuthReady().then((ready) =>
+                setPanel((prev) =>
+                  prev?.kind === "account-detail" && prev.accountId === capturedAcc.id && seq === detailLoadSeqRef.current
+                    ? detailSetArmReady(prev as AccountDetailPanel, ready)
                     : prev,
                 ),
               );

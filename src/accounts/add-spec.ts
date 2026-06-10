@@ -145,8 +145,8 @@ export const ADD_SPECS: AddSpec[] = [
       {
         key: "apiVersion",
         label: "API version (optional)",
-        placeholder: "blank for the v1 API (recommended)",
-        hint: "Leave blank. A dated version (2024-08-01-preview) switches inference to the LEGACY deployments URLs — only for old setups that need it",
+        placeholder: "blank for the GA deployments API (recommended)",
+        hint: "Leave blank (GA deployments API — works everywhere). A dated version (2024-08-01-preview) pins that version; the literal v1 opts into the new /openai/v1 surface",
         required: false,
         validate: () => null,
       },

@@ -22,6 +22,7 @@ import {
   detailIsDeleteComplete,
   detailOptimisticRemove,
   detailBack,
+  detailSetArmReady,
   type AccountDetailPanel,
 } from "../src/ui/panel.ts";
 import type { AzureDeploymentInfo } from "../src/accounts/manage.ts";
@@ -34,6 +35,13 @@ const base = (): AccountDetailPanel =>
   detailOpen("acc-1", "Azure (my-resource)");
 
 // ── Open ──────────────────────────────────────────────────────────────────────
+
+test("detailSetArmReady records the ARM sign-in probe (undefined while probing)", () => {
+  const p = base();
+  expect(p.armReady).toBeUndefined(); // probing — no warning yet
+  expect(detailSetArmReady(p, false).armReady).toBe(false); // browse footer shows the login hint
+  expect(detailSetArmReady(p, true).armReady).toBe(true);
+});
 
 test("detailOpen: starts at browse phase, loading state", () => {
   const p = base();

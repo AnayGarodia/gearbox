@@ -70,6 +70,8 @@ export type PanelState =
       refreshing: boolean; // a reload is in flight; the stale list stays visible
       submitting: boolean;
       index: number; // selection in browse list
+      /** ARM management sign-in availability (deploy/delete need it). undefined = probing. */
+      armReady?: boolean;
       detailPhase:
         | { phase: "browse" }
         | { phase: "deploy-pick"; filter: string; index: number }
@@ -298,6 +300,12 @@ export function detailOpen(accountId: string, title: string): AccountDetailPanel
     index: 0,
     detailPhase: { phase: "browse" },
   };
+}
+
+/** Record whether an ARM management sign-in is available (deploy/delete need
+ *  one; the browse footer shows a one-line hint when it's missing). */
+export function detailSetArmReady(p: AccountDetailPanel, ready: boolean): AccountDetailPanel {
+  return { ...p, armReady: ready };
 }
 
 /** Store fetched deployments (clears loading + refreshing state for the list). */

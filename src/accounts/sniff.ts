@@ -39,14 +39,19 @@ export function sniffCredential(text: string): CredentialGuess {
     }
   }
 
-  // 2) Azure / Foundry endpoint URL.
+  // 2) Azure / Foundry endpoint URL. Classic resources live on
+  // *.openai.azure.com; services.ai.azure.com / cognitiveservices.azure.com
+  // hosts are Foundry/AI-services endpoints — a classic account minted from
+  // one builds a broken base URL, so tag the right provider. The kind stays
+  // "azure" so the guided message routes to `/account add azure <endpoint>
+  // <key>`, which delegates URL-shaped Foundry endpoints itself.
   const azure = t.match(
-    /https?:\/\/([a-z0-9-]+)\.(?:openai\.azure\.com|cognitiveservices\.azure\.com|services\.ai\.azure\.com)/i,
+    /https?:\/\/([a-z0-9-]+)\.(openai\.azure\.com|cognitiveservices\.azure\.com|services\.ai\.azure\.com)/i,
   );
   if (azure) {
     return {
       kind: "azure",
-      provider: "azure",
+      provider: /^openai\.azure\.com$/i.test(azure[2]!) ? "azure" : "azure-foundry",
       fields: { resourceName: azure[1]!, endpoint: t },
       missing: ["apiKey"],
       confidence: "high",
