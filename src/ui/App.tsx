@@ -45,6 +45,7 @@ import { markUsed, listAccounts, loadAccounts, setDefaultAccount, removeAccount,
 import type { Account } from "../accounts/types.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
 import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, addVertexAccount, testAccount, addCliAccount, cliAuthStatus, cliLoginArgs, cliOauthToken, type AddResult } from "../accounts/onboard.ts";
+import { sniffCredential } from "../accounts/sniff.ts";
 import { ADD_SPECS, specFor, filterAddSpecs, buildPaletteAddRows, buildAddGuidance, type AddSpec } from "../accounts/add-spec.ts";
 import { discoverModels } from "../accounts/discover.ts";
 import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDeployment, type AzureDeploymentInfo } from "../accounts/manage.ts";
@@ -3133,6 +3134,25 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (text.startsWith("/")) {
         handleCommand(text);
         return;
+      }
+      // A bare credential pasted straight into the composer: add the account
+      // instead of sending the secret to a model. Intuitive (paste → signed in)
+      // AND a safety net (an API key must never land in a prompt). Only
+      // high-confidence single-token sniffs divert; normal prose never matches.
+      {
+        const t = text.trim();
+        if (t && !/\s/.test(t) && t.length >= 12) {
+          const g = sniffCredential(t);
+          if (g.confidence === "high" && !g.missing.length) {
+            echo(t.slice(0, 8) + "…" + t.slice(-4)); // never echo the full secret
+            void (async () => {
+              const r = await addByPastedKey(t);
+              notice(r.ok ? `✓ ${r.message}` : r.message);
+              if (r.ok && r.account && r.account.exec === "in-loop") await handleAddResult(r.account, r.message).catch(() => {});
+            })();
+            return;
+          }
+        }
       }
       if (setupRequired) {
         echo(text);

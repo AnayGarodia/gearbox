@@ -1708,6 +1708,24 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         }
         case "login": {
           echo(text);
+          // The short path: /login claude · /login codex — adds the account if
+          // needed, runs the vendor OAuth, done. A name still works for extra
+          // accounts (/login claude work). Anything else re-auths by account name.
+          const w = arg.trim().toLowerCase().split(/\s+/)[0] ?? "";
+          if (["claude", "codex", "chatgpt", "claude-cli", "codex-cli"].includes(w)) {
+            signInCli(`${w.startsWith("codex") || w === "chatgpt" ? "codex" : "claude"} ${arg.trim().split(/\s+/).slice(1).join(" ")}`.trim());
+            return;
+          }
+          if (!arg.trim()) {
+            notice([
+              "sign in:",
+              "  /login claude        Claude Pro/Max subscription",
+              "  /login codex         ChatGPT Plus/Pro subscription",
+              "  paste any API key or `claude setup-token` right into the composer — it's detected and added",
+              "  /login <name>        re-auth an existing account",
+            ].join("\n"));
+            return;
+          }
           reloginByRef(arg);
           return;
         }

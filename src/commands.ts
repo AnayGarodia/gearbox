@@ -61,6 +61,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/checkpoint", usage: "/checkpoint [name|list|restore|rm]", desc: "snapshot the whole working tree (untracked too) · restore rolls back to it", group: "git" },
   // accounts & cost
   { name: "/account", usage: "/account", desc: "list accounts; /account <name> switches, /account login <name> re-auths, /account add adds one", group: "accounts" },
+  { name: "/login", usage: "/login [claude|codex|name]", desc: "sign in — /login claude or /login codex; or paste any API key/token straight into the composer", group: "accounts" },
   { name: "/onboard", usage: "/onboard", desc: "first-run setup; provider list and import/add commands", group: "accounts" },
   { name: "/mcp", usage: "/mcp", desc: "list or connect MCP servers: /mcp add <name> <command> [args]", group: "accounts" },
   { name: "/usage", usage: "/usage", desc: "live limits & context (fullscreen: toggles a strip above the composer)", group: "accounts" },
@@ -88,7 +89,7 @@ export const COMMANDS: CommandMeta[] = [
 // Hidden aliases: still work when typed, but kept out of /help and the palette
 // to reduce clutter (/accounts, /login fold into /account; /vim into /config;
 // /ghost is an easter egg; /cwd was removed · `/context` shows the directory).
-const HIDDEN = new Set(["/accounts", "/login", "/vim", "/ghost", "/cwd"]);
+const HIDDEN = new Set(["/accounts", "/vim", "/ghost", "/cwd"]);
 
 /** Commands whose name starts with the typed draft (for the live palette). */
 export function matchCommands(draft: string): CommandMeta[] {
