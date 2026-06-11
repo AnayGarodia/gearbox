@@ -77,6 +77,50 @@ export interface TurnMeta {
   at: number;
   /** Wire-reported model id that actually served the turn, when the backend exposed one. */
   servedModel?: string;
+  /** Retrieval feedback for this turn: which injected files were actually touched by tools. */
+  retrieval?: RetrievalUseMeta;
+}
+
+export interface RetrievalUseMeta {
+  injected: string[];
+  used: string[];
+  unused: string[];
+}
+
+export interface CompactionArchive {
+  id: string;
+  at: number;
+  /** Optional user-supplied focus for this compaction pass. */
+  instruction?: string;
+  /** 1-based inclusive range of original turns summarized/elided by this pass. */
+  turns: { start: number; end: number };
+  /** Original provider-neutral messages removed from the active model history. */
+  messages: ModelMessage[];
+  /** Summary text inserted into the compacted active history, when model-backed. */
+  summary?: string;
+  /** Structured summary, when the summarizer produced valid JSON. */
+  structured?: CompactionSummary;
+  /** Deterministic verification of mandatory anchors preserved by the summary. */
+  verification?: CompactionVerification;
+}
+
+export interface CompactionSummary {
+  goals: string[];
+  decisions: string[];
+  files: { path: string; change: string }[];
+  commands: { command: string; outcome: string }[];
+  facts: string[];
+  openThreads: string[];
+  topics: { title: string; notes: string[]; files?: string[] }[];
+}
+
+export interface CompactionVerification {
+  ok: boolean;
+  missingFiles: string[];
+  missingCommands: string[];
+  missingFailures: string[];
+  missingConstraints: string[];
+  patch: string[];
 }
 
 /**
@@ -101,6 +145,8 @@ export interface Session {
   turns: TurnMeta[];
   /** Pinned sessions float to the top of /resume and never age out visually. */
   pinned?: boolean;
+  /** Original turns removed by /compact, retained so summaries carry reversible pointers. */
+  compactions?: CompactionArchive[];
 }
 
 /** Creates the session directory if it does not already exist. */

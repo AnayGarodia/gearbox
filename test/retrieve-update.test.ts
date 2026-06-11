@@ -6,6 +6,7 @@ import { rankFiles, updateRetrievalFile, resetRetrievalIndex } from "../src/cont
 // contiguous literal never appears in THIS file's source (which git indexes).
 const UNIQ = ["zzqx", "unicorn", "probe", "tok"].join("");
 const FAKE = "src/__fake_retrieve_probe__.ts";
+const CALLER = "src/__fake_retrieve_caller__.ts";
 
 describe("updateRetrievalFile (incremental index freshness)", () => {
   test("a newly created file becomes retrievable without a full rebuild", () => {
@@ -40,5 +41,15 @@ describe("updateRetrievalFile (incremental index freshness)", () => {
   test("is a no-op (no throw) when nothing is indexed for the cwd", () => {
     resetRetrievalIndex();
     expect(() => updateRetrievalFile(FAKE, `x ${UNIQ}\n`)).not.toThrow();
+  });
+
+  test("reference/import signals surface usage files for caller queries", () => {
+    rankFiles("anything"); // rebuild after the reset above
+    updateRetrievalFile(FAKE, `export function ${UNIQ}() { return 1; }\n`);
+    updateRetrievalFile(CALLER, `import { ${UNIQ} } from "./__fake_retrieve_probe__";\nexport const useIt = ${UNIQ}();\n`);
+    const ranked = rankFiles(`callers of ${UNIQ}`);
+    expect(ranked.some((r) => r.file === CALLER && r.boosted)).toBe(true);
+    updateRetrievalFile(FAKE, null);
+    updateRetrievalFile(CALLER, null);
   });
 });

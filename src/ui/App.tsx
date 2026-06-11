@@ -22,7 +22,7 @@ import { Masthead, MASTHEAD_ROW, TABBAR_LEFT, mastheadAccountZone } from "./comp
 import { tabBarSegments, tabBarHit, type TabRow } from "./tabbar.ts";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
 import { setPermissionHandler, registerPermissionHandler, registerPreMutationHook, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
-import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
+import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta, type CompactionArchive, type RetrievalUseMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName } from "./character.ts";
 import { color, glyph, setTheme, activeTheme, THEMES, providerColor } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
@@ -61,9 +61,11 @@ import { checkCaps, type BudgetCaps } from "../model/budget-guard.ts";
 import { recordChange, planUndo, type FileChange } from "../undo.ts";
 import { probeUsage } from "../accounts/usage-probe.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
-import { buildContext, sanitizeToolPairs } from "../context/builder.ts";
+import { buildContext, sanitizeToolPairs, type ContextSection } from "../context/builder.ts";
 import { repoMap } from "../context/repomap.ts";
-import { compactHistory, modelSummarizer, estimateHistoryTokens, elideHistory, shouldAutoCompact } from "../context/compact.ts";
+import { compactHistory, modelSummarizer, elideHistory, type CompactResult } from "../context/compact.ts";
+import { contextGovernor } from "../context/governor.ts";
+import { recordRetrievalUse } from "../context/retrieval-priors.ts";
 import { appendFact, loadFacts } from "../context/memory.ts";
 import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
@@ -85,7 +87,7 @@ import { listProjectFiles, expandMentions } from "./files.ts";
 import { useTerminalSize } from "./useTerminalSize.ts";
 import { useOnline, isNetworkError } from "./net.ts";
 import { gitBranch } from "./git.ts";
-import { basename, extname, resolve } from "node:path";
+import { basename, extname, relative, resolve } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { computeDiff, diffStat } from "../diff.ts";
@@ -303,6 +305,30 @@ export function turnActivity(items: Item[], width: number): { action: string | n
     action: `${head}${timer ? "  · " + timer : ""}`,
     trail: [trail || null, checkText || null].filter(Boolean).join("   ") || null,
   };
+}
+
+function retrievalUseMeta(
+  retrieved: { file: string; pointer: boolean }[],
+  produced: ModelMessage[],
+  cwd: string,
+): RetrievalUseMeta | undefined {
+  const injected = [...new Set(retrieved.filter((r) => !r.pointer).map((r) => r.file))];
+  if (!injected.length) return undefined;
+  const touched = new Set<string>();
+  const norm = (p: string): string => relative(cwd, resolve(cwd, p)).replace(/\\/g, "/");
+  for (const m of produced) {
+    const content = (m as any).content;
+    if (m.role !== "assistant" || !Array.isArray(content)) continue;
+    for (const part of content) {
+      if (part?.type !== "tool-call") continue;
+      const input = part.input ?? part.args ?? {};
+      const raw = input.path ?? input.file;
+      if (typeof raw === "string" && raw) touched.add(norm(raw));
+    }
+  }
+  const used = injected.filter((f) => touched.has(norm(f)));
+  const unused = injected.filter((f) => !touched.has(norm(f)));
+  return { injected, used, unused };
 }
 
 function SetupSplash({ state, width, skin, splashSize }: { state: OnboardingState; width: number; skin: GhostLook; splashSize: "big" | "mini" | "none" }) {
@@ -526,6 +552,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // that should have fired before it (overflow instead of a graceful compact).
   // The first in-loop turn replaces it with the measured value.
   const ctxOverheadRef = useRef(12_000);
+  const lastContextSectionsRef = useRef<ContextSection[]>([]);
   const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number; checkpoint?: string }[]>([]); // per-turn file snapshots for /undo + /diff
@@ -744,11 +771,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const msgRef = useRef<ModelMessage[]>([]);
   const itemsRef = useRef<Item[]>([]);
   itemsRef.current = items;
-  const sessionRef = useRef<{ id: string; createdAt: number; title: string; turns: TurnMeta[] }>({
+  const sessionRef = useRef<{ id: string; createdAt: number; title: string; turns: TurnMeta[]; compactions: CompactionArchive[] }>({
     id: newSessionId(),
     createdAt: Date.now(),
     title: "",
     turns: [],
+    compactions: [],
   });
   const resumeListRef = useRef<Session[]>([]);
   const curAsstRef = useRef<number | null>(null);
@@ -757,6 +785,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const liveLineRef = useRef(""); // the in-progress draft, stashed when you step up into history so ↓ restores it
   const lastPromptRef = useRef<string | null>(null);
   const routedRef = useRef<{ model: ModelSpec; reason: string } | null>(null); // the real per-turn pick
+  const retrievalUseRef = useRef<RetrievalUseMeta | null>(null);
   // The model label this turn FELL BACK FROM, when same-turn failover moved off the
   // intended account. Set in the failover loop, read once at the turn-completion seam
   // (drives the surprising-amber per-turn line), cleared in the turn's finally.
@@ -1394,6 +1423,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       messages: msgRef.current,
       items: itemsRef.current,
       turns: s.turns,
+      compactions: s.compactions,
     }, rootRef.current);
   }, []);
 
@@ -1412,7 +1442,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     idRef.current = s.items.reduce((m, i) => Math.max(m, i.id), 0) + 1;
     setItems(s.items);
     msgRef.current = s.messages;
-    sessionRef.current = { id: s.id, createdAt: s.createdAt, title: s.title, turns: s.turns ?? [] };
+    sessionRef.current = { id: s.id, createdAt: s.createdAt, title: s.title, turns: s.turns ?? [], compactions: s.compactions ?? [] };
     // Resumed history is plain text, not a vendor session id (we don't persist
     // one). Clear any stale CLI session so a subscription turn starts the binary
     // fresh with this history rather than --resume-ing whatever was last open.
@@ -2177,10 +2207,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        let { system, messages: ctx, cacheBreak, sections } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan, verifyMode: verifyRef.current, cwd: rootRef.current });
+        let { system, messages: ctx, cacheBreak, sections, retrievedFiles } = buildContext({
+          history: messages,
+          userText: prompt,
+          userContent,
+          model: choice.model,
+          plan,
+          verifyMode: verifyRef.current,
+          cwd: rootRef.current,
+          compactions: sessionRef.current.compactions,
+        });
         // Remember this turn's non-history context overhead (system + memory +
         // repomap + retrieval + git) so the auto-compact trigger can budget on
         // the FULL context, not history alone.
+        lastContextSectionsRef.current = sections;
         ctxOverheadRef.current = sections.filter((s) => s.name !== "history" && s.name !== "user").reduce((a, s) => a + s.tokens, 0);
         if (agentDef) system = `${system}\n\n# ACTIVE AGENT: ${agentDef.name}\n${agentDef.system}`;
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
@@ -2218,6 +2258,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         servedModelRef.current = r.servedModelId ?? null;
         const produced = r.messages.slice(ctx.length);
+        retrievalUseRef.current = retrievalUseMeta(retrievedFiles, produced, rootRef.current) ?? null;
         const imageNote = activeImagesRef.current.length ? `\n\n[Attached images: ${activeImagesRef.current.map((img) => basename(img.path)).join(", ")}]` : "";
         const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt + imageNote }, ...produced]);
         return { messages: ledger, usage: r.usage, failure: r.failure, cooldownKey: account?.id ?? `env:${choice.model.provider}` };
@@ -2343,10 +2384,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // and rewrite msgRef in place. The visible transcript (items) is untouched;
   // only the model's working context shrinks. Returns a status line for a notice.
   const compactNow = useCallback(
-    async (keepRecent: number, signal?: AbortSignal): Promise<string> => {
+    async (keepRecent: number, signal?: AbortSignal, instruction?: string): Promise<string> => {
       // Apply a successful compaction (either path) and report real numbers.
-      const apply = (res: { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number; how: string }, how: string): string => {
+      const apply = (res: CompactResult, how: string): string => {
         msgRef.current = res.messages;
+        const archive = res.archive;
+        if (archive) sessionRef.current.compactions.push({ ...archive, at: Date.now() });
         // The status bar's ctx% reads lastInput from the LAST call — after
         // compaction that's stale (it kept showing the pre-compaction size).
         // Reset to history + the non-history overhead (system/memory/repomap/
@@ -2356,7 +2399,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const savedStr = saved >= 1000 ? `${(saved / 1000).toFixed(1)}k` : String(Math.max(0, saved));
         // res.how carries the truth per rung (summarized/elided/truncated) —
         // summarizedTurns is 0 on the tool-result-truncation rung.
-        return `${res.how}${how} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
+        const pointer = archive ? ` · archive ${archive.id}` : "";
+        return `${res.how}${how}${pointer} · ~${savedStr} tokens freed (was ~${Math.round(res.before / 1000)}k, now ~${Math.round(res.after / 1000)}k)`;
       };
       // The model-free fallback: mechanical elision (tool output distilled to
       // one line per call). /compact must ALWAYS be able to shrink the history,
@@ -2382,7 +2426,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       let res;
       try {
-        res = await compactHistory({ history: msgRef.current, summarize: modelSummarizer(model, creds, signal), keepRecent });
+        res = await compactHistory({
+          history: msgRef.current,
+          summarize: modelSummarizer(model, creds, signal),
+          keepRecent,
+          focusInstruction: instruction,
+          archiveId: `compact-${sessionRef.current.compactions.length + 1}`,
+        });
       } catch (e: any) {
         return mechanical(`summarizer failed on ${model.label}: ${e?.message ?? "error"}`);
       }
@@ -2741,6 +2791,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // the cheap pick already missed, so it climbs to a stronger model instead of
         // re-running the too-weak one — fixing the false economy of a cheap pick that
         // fails and forces an expensive retry anyway.
+        retrievalUseRef.current = null;
         const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal, escalate: attempt });
         msgRef.current = r.messages;
         if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && !interruptedRef.current && changedFiles.size && checks.length === 0) {
@@ -2808,7 +2859,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           at: Date.now(),
           servedModel: servedModelRef.current ?? undefined,
         });
-        sessionRef.current.turns.push(turnMetaOf(spendEv));
+        const turnMeta = turnMetaOf(spendEv);
+        if (retrievalUseRef.current) {
+          turnMeta.retrieval = retrievalUseRef.current;
+          recordRetrievalUse(retrievalUseRef.current, rootRef.current);
+        }
+        sessionRef.current.turns.push(turnMeta);
         // Session auto-title: after the FIRST turn, replace the clipped-prompt
         // placeholder with a real title from the cheap-model seam (fire-and-
         // forget; the heuristic title stays if generation can't run). /resume
@@ -2882,22 +2938,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const answeringWindow = activeCliRef.current
               ? (activeCliRef.current.binary?.includes("codex") ? (findModel(activeCliModelRef.current ?? "")?.contextWindow ?? 272_000) : 200_000)
               : (findModel(modelId)?.contextWindow ?? 200_000);
-            // Budget on the FULL context the next turn will send: history
-            // (tokenized with the answering model, not the summarizer) plus the
-            // non-history overhead buildContext reported (system + memory +
-            // repomap + retrieval). History alone under-counted by 10-20k, so
-            // compaction fired at the wrong point relative to the real window.
-            // The threshold lives in shouldAutoCompact (compact.ts) — still
-            // conservative: the builder's per-turn elision keeps normal sessions
-            // bounded; compaction is the deeper safety net.
-            const historyTokens = estimateHistoryTokens(msgRef.current, modelId);
-            if (shouldAutoCompact(historyTokens, ctxOverheadRef.current, answeringWindow)) {
+            // ContextGovernor centralizes autonomous context policy: pressure,
+            // overhead, dynamic keepRecent, and focus inference all live there.
+            const decision = contextGovernor({
+              history: msgRef.current,
+              prompt: lastPromptRef.current ?? "",
+              changedFiles: [...changedFiles],
+              failures,
+              sections: lastContextSectionsRef.current.length ? lastContextSectionsRef.current : [{ name: "system", tokens: ctxOverheadRef.current }],
+              contextWindow: answeringWindow,
+              modelId,
+            });
+            if (decision.shouldCompact) {
               setVerb("Compacting context");
-              const msg = await compactNow(4, ac.signal);
+              const msg = await compactNow(decision.keepRecent, ac.signal, decision.focus);
               // Only narrate when compaction actually changed something — the old
               // "nothing old enough" notice repeated after every turn once the
               // trigger latched, nagging without acting.
-              if (!msg.includes("nothing to compact")) notice(msg);
+              if (!msg.includes("nothing to compact")) notice(`${msg} · ${decision.reason}`);
             }
           } catch {
             /* compaction is best-effort; never fail the turn over it */

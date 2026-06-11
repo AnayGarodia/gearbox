@@ -60,6 +60,38 @@ test("compactHistory lowers keepRecent when nothing is old enough at the request
   expect(calls.has("t2")).toBe(true);
 });
 
+test("compactHistory carries focus instruction and reversible archive pointer", async () => {
+  let seen = "";
+  const summarize: Summarizer = async (transcript) => {
+    seen = transcript;
+    return JSON.stringify({
+      goals: ["keep authentication facts"],
+      decisions: [],
+      files: [{ path: "x.ts", change: "read during compacted turns" }],
+      commands: [],
+      facts: ["authentication facts were preserved"],
+      openThreads: [],
+      topics: [{ title: "authentication", notes: ["token work"], files: ["x.ts"] }],
+    });
+  };
+  const res = await compactHistory({
+    history: [...toolTurn(1), ...toolTurn(2), ...toolTurn(3)],
+    summarize,
+    keepRecent: 1,
+    focusInstruction: "authentication flow",
+    archiveId: "compact-test",
+  });
+  expect(res).not.toBeNull();
+  expect(seen).toContain("Compaction focus: preserve details relevant to \"authentication flow\"");
+  expect(JSON.stringify(res!.messages)).toContain("compaction archive: compact-test");
+  expect(res!.archive?.id).toBe("compact-test");
+  expect(res!.archive?.instruction).toBe("authentication flow");
+  expect(res!.archive?.turns).toEqual({ start: 1, end: 2 });
+  expect(res!.archive?.messages.length).toBe(toolTurn(1).length + toolTurn(2).length);
+  expect(res!.archive?.structured?.goals).toEqual(["keep authentication facts"]);
+  expect(res!.archive?.verification?.ok).toBe(true);
+});
+
 // ── final rung: a single mega-turn shrinks via in-place tool-result truncation ──
 
 test("a single mega-turn actually shrinks (truncated tool result, honest `how`)", () => {

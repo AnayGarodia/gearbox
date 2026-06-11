@@ -14,17 +14,31 @@ import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import { groupTurns, textOf, msgTokens, elideTurn } from "./builder.ts";
 import { countTokens } from "../model/tokens.ts";
+import { parseCompactionSummary } from "./compact-summary.ts";
+import { applyVerificationPatch, verifyCompactionSummary } from "./compact-verify.ts";
 
 // Injectable so tests can compact without a live model call.
 export type Summarizer = (transcript: string) => Promise<string>;
 
-const SUMMARY_SYSTEM = `You compress a coding-session transcript into durable notes for an AI agent that will continue the work with NO other memory of it. Preserve, as terse bullet points:
-- the user's goals, constraints, and any decisions made (with the why, when stated)
-- files created/edited and what changed in each
-- commands/tests run and their outcomes (pass/fail, key error lines)
+const SUMMARY_SYSTEM = `You compress a coding-session transcript into durable notes for an AI agent that will continue the work with NO other memory of it.
+Output ONLY valid JSON with this shape:
+{
+  "goals": string[],
+  "decisions": string[],
+  "files": [{"path": string, "change": string}],
+  "commands": [{"command": string, "outcome": string}],
+  "facts": string[],
+  "openThreads": string[],
+  "topics": [{"title": string, "notes": string[], "files": string[]}]
+}
+Preserve:
+- the user's goals, constraints, and decisions made (with the why, when stated)
+- files created/edited/read and what changed or mattered in each
+- commands/tests run and outcomes (pass/fail, key error lines)
 - facts learned about the codebase (paths, function names, gotchas)
 - open threads / what's left to do, and the current in-progress step if any
-Rules: copy identifiers, file paths, and commands EXACTLY — never paraphrase a name. Record only what the transcript shows; do not infer or invent. Drop chit-chat and raw file dumps. The notes MUST be much shorter than the transcript; if in doubt, cut prose, never facts. Output only the notes.`;
+- topic/task clusters when the old transcript covered multiple separable threads
+Rules: copy identifiers, file paths, and commands EXACTLY — never paraphrase a name. Record only what the transcript shows; do not infer or invent. Drop chit-chat and raw file dumps. The JSON MUST be much shorter than the transcript; if in doubt, cut prose, never facts.`;
 
 /** A Summarizer backed by a real model (chosen by the caller via the selector).
  *  Pass the model's account creds so compaction works for STORED API accounts,
@@ -70,6 +84,15 @@ export interface CompactResult {
   before: number;
   after: number;
   how: string;
+  archive?: {
+    id: string;
+    instruction?: string;
+    turns: { start: number; end: number };
+    messages: ModelMessage[];
+    summary?: string;
+    structured?: import("../session.ts").CompactionSummary;
+    verification?: import("../session.ts").CompactionVerification;
+  };
 }
 
 // Per-result token cap for the final escalation rung: a single oversized
@@ -181,8 +204,11 @@ export function elideHistory(history: ModelMessage[], keepRecent = 4): CompactRe
 }
 
 /** Render turns as a readable transcript for the summarizer. */
-function renderTranscript(turns: ModelMessage[][]): string {
+function renderTranscript(turns: ModelMessage[][], focusInstruction?: string): string {
   const lines: string[] = [];
+  if (focusInstruction?.trim()) {
+    lines.push(`Compaction focus: preserve details relevant to "${focusInstruction.trim()}". Keep other durable facts only if they affect future work.`);
+  }
   for (const turn of turns) {
     for (const m of turn) {
       const who = m.role === "user" ? "User" : m.role === "assistant" ? "Assistant" : m.role === "tool" ? "Tool" : m.role;
@@ -207,6 +233,8 @@ export async function compactHistory(opts: {
   history: ModelMessage[];
   summarize: Summarizer;
   keepRecent?: number;
+  focusInstruction?: string;
+  archiveId?: string;
 }): Promise<CompactResult | null> {
   const { history, summarize } = opts;
   const turns = groupTurns(history);
@@ -217,7 +245,7 @@ export async function compactHistory(opts: {
 
   const old = turns.slice(0, split);
   const recent = turns.slice(split);
-  const transcript = renderTranscript(old);
+  const transcript = renderTranscript(old, opts.focusInstruction);
   if (!transcript.trim()) return shrinkRecentWindow(history);
 
   let summary: string;
@@ -230,10 +258,17 @@ export async function compactHistory(opts: {
     throw new Error(e?.message ?? "summarizer failed");
   }
   if (!summary.trim()) throw new Error("summarizer returned an empty summary");
+  const parsed = parseCompactionSummary(summary);
+  const verification = verifyCompactionSummary(parsed.text, old.flat());
+  const verifiedSummary = applyVerificationPatch(parsed.text, verification);
 
+  const archiveId = opts.archiveId ?? "compact";
+  const range = { start: 1, end: old.length };
+  const pointer = `[compaction archive: ${archiveId} · original turns ${range.start}-${range.end} retained in session metadata]`;
+  const focus = opts.focusInstruction?.trim();
   const messages: ModelMessage[] = [
-    { role: "user", content: "Summarize what we've done so far into durable notes I can continue from." },
-    { role: "assistant", content: `Notes from earlier in this session:\n${summary}` },
+    { role: "user", content: focus ? `Summarize what we've done so far into durable notes I can continue from. Focus: ${focus}` : "Summarize what we've done so far into durable notes I can continue from." },
+    { role: "assistant", content: `Notes from earlier in this session:\n${pointer}\n\n${verifiedSummary}` },
     ...recent.flat(),
   ];
   const before = estimateHistoryTokens(history);
@@ -242,5 +277,20 @@ export async function compactHistory(opts: {
   // grow it). Never return a result that frees nothing — fall through to the
   // mechanical rungs, which carry their own after < before checks.
   if (after >= before) return elideHistory(history, opts.keepRecent);
-  return { messages, summarizedTurns: old.length, before, after, how: `summarized ${old.length} turn${old.length > 1 ? "s" : ""}` };
+  return {
+    messages,
+    summarizedTurns: old.length,
+    before,
+    after,
+    how: `summarized ${old.length} turn${old.length > 1 ? "s" : ""}`,
+    archive: {
+      id: archiveId,
+      instruction: focus || undefined,
+      turns: range,
+      messages: old.flat(),
+      summary: verifiedSummary,
+      structured: parsed.structured,
+      verification,
+    },
+  };
 }

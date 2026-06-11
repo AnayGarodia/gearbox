@@ -74,6 +74,42 @@ test("buildContext wraps injected context in <harness-context> with the user tex
   expect(text).not.toContain("# POSSIBLY RELEVANT FILES");
 });
 
+test("buildContext automatically recalls relevant compacted archives", () => {
+  const { messages, sections, retrievedArchives } = buildContext({
+    history: [],
+    userText: "continue the auth token expiry fix",
+    model: sonnet,
+    compactions: [{
+      id: "compact-auth",
+      at: 123,
+      instruction: "authentication token expiry work",
+      turns: { start: 1, end: 2 },
+      summary: "Changed src/accounts/health.ts to handle expired auth tokens. Ran bun test test/health.test.ts.",
+      structured: {
+        goals: ["fix expired auth token handling"],
+        decisions: [],
+        files: [{ path: "src/accounts/health.ts", change: "handle expired auth tokens" }],
+        commands: [{ command: "bun test test/health.test.ts", outcome: "passed" }],
+        facts: [],
+        openThreads: [],
+        topics: [{ title: "auth token expiry", notes: ["health check classifies expired tokens"], files: ["src/accounts/health.ts"] }],
+      },
+      messages: [
+        { role: "user", content: "fix expired auth token handling" },
+        { role: "assistant", content: "edited src/accounts/health.ts and verified health tests" },
+      ],
+    }],
+  });
+  const text = userMsgText(messages[messages.length - 1]!);
+  expect(text).toContain("# RELEVANT ARCHIVED CONTEXT");
+  expect(text).toContain("compact-auth");
+  expect(text).toContain("Provenance:");
+  expect(text).toContain("topic: auth token expiry");
+  expect(text).toContain("src/accounts/health.ts");
+  expect(retrievedArchives).toEqual([{ archiveId: "compact-auth", title: "authentication token expiry work" }]);
+  expect(sections.some((s) => s.name === "archives" && s.tokens > 0)).toBe(true);
+});
+
 // ── tiered push: conversational prompts retrieve nothing ──
 test("retrieveFiles returns nothing for prompts that merely share English words with code", () => {
   expect(retrieveFiles("thanks for the help", process.cwd(), 6, 12_000)).toEqual([]);

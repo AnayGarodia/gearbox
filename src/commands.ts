@@ -49,7 +49,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/retry", usage: "/retry", desc: "send your last message again", group: "chat" },
   { name: "/undo", usage: "/undo", desc: "revert the last turn's file changes (conversation unchanged)", group: "chat" },
   { name: "/diff", usage: "/diff", desc: "show all file changes made this session", group: "chat" },
-  { name: "/compact", usage: "/compact", desc: "shrink the conversation to free up room", group: "chat" },
+  { name: "/compact", usage: "/compact [focus]", desc: "shrink the conversation, optionally preserving a focused thread", group: "chat" },
   { name: "/context", usage: "/context", desc: "see what's loaded and how many tokens it uses", group: "chat" },
   { name: "/ask", usage: "/ask <q>", desc: "ask about Gearbox itself · answered from its own docs", group: "chat" },
   { name: "/memory", usage: "/memory [note]", desc: "show or add facts to remember (or start a line with #)", group: "chat" },

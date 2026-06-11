@@ -7,7 +7,7 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { ModelMessage } from "ai";
 import { SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type GhostLook, type MascotState } from "./components/Mascot.tsx";
 import { setYolo, isYolo } from "../permission.ts";
-import { newSessionId, type Session, type TurnMeta } from "../session.ts";
+import { newSessionId, type Session, type TurnMeta, type CompactionArchive } from "../session.ts";
 import { setTheme, activeTheme, THEMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
@@ -168,7 +168,7 @@ export interface CommandCtx {
   routedKindRef: MutableRefObject<{ kind: import("../agent/classify.ts").TaskKind; source: string } | null>;
   runTurnRef: MutableRefObject<(prompt: string, attempt?: number) => Promise<void>>;
   selectorRef: MutableRefObject<ModelSelector>;
-  sessionRef: MutableRefObject<{ id: string; createdAt: number; title: string; turns: TurnMeta[] }>;
+  sessionRef: MutableRefObject<{ id: string; createdAt: number; title: string; turns: TurnMeta[]; compactions: CompactionArchive[] }>;
   undoStackRef: MutableRefObject<{ changes: FileChange[]; at: number; checkpoint?: string }[]>;
   /** sha of the session's first turn checkpoint — the /diff baseline (null until a mutation). */
   sessionBaseRef: MutableRefObject<string | null>;
@@ -205,7 +205,7 @@ export interface CommandCtx {
   cliModelChoices: (binary: string) => CliModelChoice[];
   cliModelLabel: (modelId?: string) => string | null;
   cliSupportsModel: (binary: string, modelId: string) => boolean;
-  compactNow: (keepRecent: number, signal?: AbortSignal) => Promise<string>;
+  compactNow: (keepRecent: number, signal?: AbortSignal, instruction?: string) => Promise<string>;
   echo: (text: string, numbered?: boolean) => void;
   effortTarget: () => { label: string; efforts: string[]; provider: string } | null;
   exit: () => void;
@@ -437,7 +437,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           // next turn would otherwise pass --resume <old-id> and the binary
           // would continue the conversation the user just cleared.
           cliSessionRef.current = undefined;
-          sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
+          sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [], compactions: [] };
           charTestOfferedRef.current = false; // a fresh session may offer the test once again
           gitDraftRef.current = null; // a stale /commit go after /clear would surprise
           gitRegenRef.current = null;
@@ -962,7 +962,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             gitDraftRef.current = null;
             gitRegenRef.current = null;
             lastChangedFilesRef.current = [];
-            sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
+            sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [], compactions: [] };
             notice(`switched to worktree · ${found.branch ?? found.dir}\n  ${found.dir}\n  the conversation continues here; file ops, shell, and /resume now live in this tree`);
             return;
           }
@@ -1412,7 +1412,13 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           const ctxWindow = cliNow
             ? (cliNow.binary?.includes("codex") ? (findModel(activeCliModelRef.current ?? "")?.contextWindow ?? 272_000) : 200_000)
             : m.contextWindow;
-          const { sections } = buildContext({ history: msgRef.current, userText: lastPromptRef.current || "(your next message)", model: m, plan: modeRef.current === "plan" });
+          const { sections } = buildContext({
+            history: msgRef.current,
+            userText: lastPromptRef.current || "(your next message)",
+            model: m,
+            plan: modeRef.current === "plan",
+            compactions: sessionRef.current.compactions,
+          });
           const it: Item = { kind: "context", id: idRef.current++, view: buildContextView(sections, ctxWindow, process.cwd()) };
           if (openInfoPanel("context", it)) return;
           echo(text);
@@ -1860,6 +1866,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         }
         case "compact": {
           echo(text);
+          const instruction = arg.trim();
           if (busyRef.current) {
             notice("busy · try /compact once the current turn finishes");
             return;
@@ -1871,7 +1878,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           abortRef.current = ac;
           void (async () => {
             try {
-              notice(await compactNow(2, ac.signal));
+              notice(await compactNow(2, ac.signal, instruction || undefined));
               persist();
             } catch (e: any) {
               notice(`compaction failed: ${e?.message ?? "unknown error"} · history unchanged`);

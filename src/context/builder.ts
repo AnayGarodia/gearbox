@@ -40,8 +40,10 @@ import { countTokens } from "../model/tokens.ts";
 import { loadProjectMemory } from "./memory.ts";
 import { repoMap } from "./repomap.ts";
 import { retrieveFiles } from "./retrieve.ts";
+import { retrieveArchives } from "./archive-retrieve.ts";
 import { gitContext } from "./git.ts";
 import { detectVerificationCommands, type VerifyMode } from "../verify.ts";
+import type { CompactionArchive } from "../session.ts";
 
 export const BASE_SYSTEM = `You are Gearbox, a precise terminal coding agent.
 Work in small, verifiable steps. Use the tools to read before you write, and
@@ -147,6 +149,8 @@ export interface BuiltContext {
   system: string;
   messages: ModelMessage[];
   sections: ContextSection[];
+  retrievedFiles: { file: string; pointer: boolean }[];
+  retrievedArchives: { archiveId: string; title: string }[];
   // Index of the last SETTLED-history message, i.e. where the cacheable prefix
   // ends. The per-turn volatile context (git + retrieved files) rides in the
   // final user message AFTER this index, so the stable system + growing history
@@ -502,6 +506,7 @@ export function buildContext(opts: {
   verifyMode?: VerifyMode;
   cwd?: string;
   recentTurns?: number;
+  compactions?: CompactionArchive[];
 }): BuiltContext {
   const { history, userText, model, plan } = opts;
   const cwd = opts.cwd ?? process.cwd();
@@ -583,6 +588,8 @@ export function buildContext(opts: {
   // files in subsequently-dropped turns as in-context and skipped them.
   const retrieveBudget = Math.min(12_000, Math.floor(inputBudget * 0.15));
   const allHits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), []);
+  const archiveBudget = Math.min(6_000, Math.floor(inputBudget * 0.08));
+  const archiveHits = safe(() => retrieveArchives(userText, opts.compactions ?? [], 3, archiveBudget, modelId), []);
 
   // ── Step 3: curated history + current user message, budgeted ───────────────
 
@@ -601,6 +608,14 @@ export function buildContext(opts: {
       // Medium-confidence hits ride as pointers: the model knows where to look
       // without the content being forced into the window.
       parts.push(`# POSSIBLY RELEVANT FILES (not included — read_file if needed)\n${pointers.map((h) => `- ${h.file}`).join("\n")}`);
+    }
+    if (archiveHits.length) {
+      const block = archiveHits.map((h) => {
+        const excerpt = h.excerpt ? `\n\nRelevant excerpt:\n${h.excerpt}` : "";
+        const provenance = h.provenance.length ? `\nProvenance: ${h.provenance.join("; ")}` : "";
+        return `=== ${h.archiveId}: ${h.title} ===${provenance}\n${h.summary}${excerpt}`;
+      }).join("\n\n");
+      parts.push(`# RELEVANT ARCHIVED CONTEXT (retrieved from compacted earlier turns)\n${block}`);
     }
     // The envelope separates harness-injected material from the user's words:
     // the request is ONLY the user message after the closing tag; this block is
@@ -664,10 +679,11 @@ export function buildContext(opts: {
 
   // Last-ditch overflow guard: with every turn dropped, system + user alone
   // can still exceed the budget (a giant paste plus oversized retrieval).
-  // Shed the retrieved files — the model can re-read them — rather than send
-  // a request the provider will reject outright.
-  if (!projected.length && systemTokens + userTokens > inputBudget && allHits.length) {
+  // Shed retrieved files and archived-context recalls — the model can re-read
+  // files or ask again — rather than send a request the provider will reject.
+  if (!projected.length && systemTokens + userTokens > inputBudget && (allHits.length || archiveHits.length)) {
     allHits.length = 0;
+    archiveHits.length = 0;
     userMsg = composeUser([]);
     userTokens = msgTokens(userMsg, modelId);
   }
@@ -684,6 +700,7 @@ export function buildContext(opts: {
     userTokens = msgTokens(userMsg, modelId);
   }
   if (hits.length) sections.push({ name: "retrieved", tokens: hits.reduce((s, h) => s + h.tokens, 0) });
+  if (archiveHits.length) sections.push({ name: "archives", tokens: archiveHits.reduce((s, h) => s + h.tokens, 0) });
 
   // ── Step 4: deduplicate stale reads and sanitize orphan tool pairs ─────────
 
@@ -716,7 +733,14 @@ export function buildContext(opts: {
   // dropped orphan part cannot shift the index. -1 means no settled history
   // exists yet (the first turn), so only the system block is cached.
   const cacheBreak = finalMessages.length - 2;
-  return { system, messages: finalMessages, sections, cacheBreak };
+  return {
+    system,
+    messages: finalMessages,
+    sections,
+    retrievedFiles: hits.map((h) => ({ file: h.file, pointer: Boolean(h.pointer) })),
+    retrievedArchives: archiveHits.map((h) => ({ archiveId: h.archiveId, title: h.title })),
+    cacheBreak,
+  };
 }
 
 /**

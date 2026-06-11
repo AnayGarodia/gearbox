@@ -11,12 +11,13 @@
  *      expand camelCase segments, lowercase, drop stopwords and short tokens.
  *   2. For each code file in the project, compute a BM25 score across the
  *      query terms using the standard tf-saturation formula.
- *   3. Apply two additional boosts on top of BM25:
+ *   3. Apply three additional boosts on top of BM25:
  *        - Path boost: +4*idf when a query term appears in the file path.
  *          Surface files whose name matches the task even if the body does not.
  *        - Symbol boost: +3*idf when a query term appears in a defined symbol
  *          name (function/class/const/etc. extracted from the file at index time).
  *          Surface files that export the thing being asked about.
+ *        - Reference/import boost for explicit usage/caller/reference queries.
  *   4. A special-case boost for model-selection queries routes those queries
  *      toward model/selector, model/router, and config files.
  *   5. Files with a score of 0 are discarded; the rest are sorted descending.
@@ -34,6 +35,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { listProjectFiles } from "../ui/files.ts";
 import { countTokens } from "../model/tokens.ts";
+import { retrievalPriorScore } from "./retrieval-priors.ts";
+import { graphBoostForFile } from "./codegraph.ts";
 
 // Code file extensions considered for retrieval. Non-code assets are excluded
 // because they have no token-bearing symbols and inflate the index for free.
@@ -50,6 +53,9 @@ const STOP = new Set(
 // matches a symbol name rather than just appearing in the file body.
 const DEF_RE =
   /\b(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|const|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/g;
+const REF_RE = /\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(|<)/g;
+const IMPORT_RE = /(?:from\s*['"]([^'"]+)['"])|(?:require\(\s*['"]([^'"]+)['"]\s*\))|(?:import\(\s*['"]([^'"]+)['"]\s*\))/gm;
+const moduleName = (spec: string): string => (spec.split("/").pop() ?? spec).replace(CODE, "").replace(/\.[^.]+$/, "");
 
 /**
  * Tokenise a string into retrieval terms.
@@ -77,6 +83,7 @@ function terms(s: string): string[] {
  * `raw`      original file content (used when packing results by token budget).
  * `low`      lowercased content (used for BM25 term-frequency counting).
  * `fileDefs` lowercased symbol names declared in each file (for symbol boost).
+ * `fileRefs` lowercased call/import references in each file (for usage boost).
  * `df`       document frequency per term (number of files containing the term).
  * `n`        total number of indexed files (denominator for IDF).
  */
@@ -85,6 +92,7 @@ interface Index {
   raw: Map<string, string>;
   low: Map<string, string>;
   fileDefs: Map<string, string[]>;
+  fileRefs: Map<string, string[]>;
   df: Map<string, number>;
   n: number;
 }
@@ -103,6 +111,7 @@ function buildIndex(cwd: string): Index {
   const raw = new Map<string, string>();
   const low = new Map<string, string>();
   const fileDefs = new Map<string, string[]>();
+  const fileRefs = new Map<string, string[]>();
   const df = new Map<string, number>();
   for (const f of files) {
     let src: string;
@@ -118,12 +127,19 @@ function buildIndex(cwd: string): Index {
     const defs: string[] = [];
     for (const m of src.matchAll(DEF_RE)) defs.push(m[1]!.toLowerCase());
     fileDefs.set(f, defs);
+    const refs = new Set<string>();
+    for (const m of src.matchAll(REF_RE)) refs.add(m[1]!.toLowerCase());
+    for (const m of src.matchAll(IMPORT_RE)) {
+      const spec = m[1] ?? m[2] ?? m[3];
+      if (spec) refs.add(moduleName(spec).toLowerCase());
+    }
+    fileRefs.set(f, [...refs]);
     // Accumulate document frequency: each unique 3+ char word in this file
     // increments the global df counter by 1 (using Set to deduplicate per file).
     for (const t of new Set(lc.match(/[a-z]{3,}/g) ?? [])) df.set(t, (df.get(t) ?? 0) + 1);
   }
   const present = files.filter((f) => raw.has(f));
-  return { files: present, raw, low, fileDefs, df, n: present.length };
+  return { files: present, raw, low, fileDefs, fileRefs, df, n: present.length };
 }
 
 /** Return the cached index for `cwd`, building it on the first call. */
@@ -166,6 +182,7 @@ export function updateRetrievalFile(file: string, content: string | null, cwd = 
     idx.raw.delete(file);
     idx.low.delete(file);
     idx.fileDefs.delete(file);
+    idx.fileRefs.delete(file);
     idx.files = idx.files.filter((f) => f !== file);
   }
 
@@ -177,6 +194,13 @@ export function updateRetrievalFile(file: string, content: string | null, cwd = 
     const defs: string[] = [];
     for (const m of content.matchAll(DEF_RE)) defs.push(m[1]!.toLowerCase());
     idx.fileDefs.set(file, defs);
+    const refs = new Set<string>();
+    for (const m of content.matchAll(REF_RE)) refs.add(m[1]!.toLowerCase());
+    for (const m of content.matchAll(IMPORT_RE)) {
+      const spec = m[1] ?? m[2] ?? m[3];
+      if (spec) refs.add(moduleName(spec).toLowerCase());
+    }
+    idx.fileRefs.set(file, [...refs]);
     for (const t of new Set(lc.match(/[a-z]{3,}/g) ?? [])) idx.df.set(t, (idx.df.get(t) ?? 0) + 1);
     idx.files.push(file); // removal above already stripped any prior entry
   }
@@ -223,6 +247,8 @@ function countOcc(haystack: string, needle: string): number {
  *     the term is common in the body.
  *   - Symbol boost: +3*idf when the term matches a symbol defined in the file.
  *     Ensures a query for "buildContext" surfaces the file that exports it.
+ *   - Reference/import boost: +3*idf when an explicit usage/caller/reference
+ *     query term appears in call/import references.
  *   - Model-selection boost: hardcoded +8*idf applied only when the query looks
  *     like a model-selection question and the file is a known selector/router.
  *     Without this, generic terms like "model" swamp the routing files.
@@ -240,11 +266,13 @@ export function rankFiles(query: string, cwd = process.cwd()): { file: string; s
 
   // Detect a model-selection query so we can apply the hardcoded routing boost.
   const asksModelSelection = qt.includes("model") && (qt.includes("default") || qt.includes("used") || qt.includes("change"));
+  const asksReferences = qt.some((t) => ["reference", "references", "usage", "usages", "caller", "callers", "called"].includes(t));
 
   const scored = idx.files.map((f) => {
     const lc = idx.low.get(f)!;
     const fl = f.toLowerCase();
     const defs = idx.fileDefs.get(f)!;
+    const refs = idx.fileRefs.get(f) ?? [];
     let s = 0;
     let boosted = false; // any path/symbol hit — the query names something this file IS, not just words it contains
     for (const t of qt) {
@@ -252,7 +280,12 @@ export function rankFiles(query: string, cwd = process.cwd()): { file: string; s
       if (tf) s += idf(idx, t) * (tf * 2.2) / (tf + 1.2); // BM25 tf saturation: tf*(k1+1)/(tf+k1), k1 = 1.2
       if (fl.includes(t)) { s += 4 * idf(idx, t); boosted = true; } // path match: rewards files named after the query
       if (defs.some((d) => d.includes(t))) { s += 3 * idf(idx, t); boosted = true; } // symbol match: rewards defining files
+      if (asksReferences && refs.some((r) => r.includes(t))) { s += 3 * idf(idx, t); boosted = true; }
     }
+    const prior = retrievalPriorScore(f, cwd);
+    if (prior) s += prior * qIdf * 0.12;
+    const graphBoost = asksReferences ? graphBoostForFile(qt, f, cwd) : 0;
+    if (graphBoost) { s += graphBoost * qIdf * 0.18; boosted = true; }
     // Routing boost: model-selection queries should surface selector/router/config
     // even if those files score low on raw term frequency.
     if (asksModelSelection && /(^|\/)(model\/selector|model\/router|config)\.ts$/.test(fl)) { s += 8 * idf(idx, "model"); boosted = true; }
