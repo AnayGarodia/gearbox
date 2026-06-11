@@ -200,3 +200,25 @@ export function nextStepFor(failures: string[], changedFiles: string[]): string 
   }
   return "/retry";
 }
+
+// ── Overfitting guard ────────────────────────────────────────────────────────
+// After an auto-iterate-to-green pass succeeds (attempt > 0, all checks green,
+// files were changed), return a caveat notice reminding the user that passing
+// tests confirm structure, not semantic correctness.
+// Returns null for original-turn passes (attempt === 0) or when nothing
+// actually changed — both have lower overfitting risk.
+
+/** When an auto-iterate-to-green pass succeeds (attempt > 0, all checks
+ *  green, files were changed), return a caveat notice reminding the user
+ *  that passing tests confirm structure, not semantic correctness.
+ *  Returns null for original-turn passes (attempt === 0) or when nothing
+ *  actually changed — both have lower overfitting risk. */
+export function buildAutofixCaveat(
+  attempt: number,
+  failed: string[],
+  changed: string[],
+): string | null {
+  if (attempt === 0 || failed.length > 0 || changed.length === 0) return null;
+  const s = attempt === 1 ? "" : "s";
+  return `✓ checks pass after ${attempt} autofix attempt${s} — tests confirm structure, not semantic correctness; review the diff`;
+}

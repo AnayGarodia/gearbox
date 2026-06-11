@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { shouldAutoFix, buildFixPrompt, MAX_AUTOFIX_ATTEMPTS } from "../src/verify.ts";
+import { shouldAutoFix, buildFixPrompt, buildAutofixCaveat, MAX_AUTOFIX_ATTEMPTS } from "../src/verify.ts";
 
 describe("shouldAutoFix", () => {
   const base = { mode: "auto" as const, attempt: 0, failures: ["test: 1 failing"], changedFiles: ["src/a.ts"] };
@@ -36,5 +36,30 @@ describe("buildFixPrompt", () => {
 
   test("is non-empty even with a single failure", () => {
     expect(buildFixPrompt(["build: error"]).length).toBeGreaterThan(0);
+  });
+});
+
+describe("buildAutofixCaveat", () => {
+  test("returns null on the original turn (attempt 0)", () => {
+    expect(buildAutofixCaveat(0, [], ["src/a.ts"])).toBeNull();
+  });
+
+  test("returns null when checks still failing", () => {
+    expect(buildAutofixCaveat(1, ["test: 2 failing"], ["src/a.ts"])).toBeNull();
+  });
+
+  test("returns null when no files changed", () => {
+    expect(buildAutofixCaveat(1, [], [])).toBeNull();
+  });
+
+  test("returns caveat string when autofix succeeded", () => {
+    const c = buildAutofixCaveat(1, [], ["src/a.ts"]);
+    expect(c).not.toBeNull();
+    expect(c).toContain("tests confirm structure");
+    expect(c).toContain("1 autofix attempt");
+  });
+
+  test("pluralizes correctly for multiple attempts", () => {
+    expect(buildAutofixCaveat(2, [], ["src/a.ts"])).toContain("2 autofix attempts");
   });
 });
