@@ -44,6 +44,14 @@ const UNDO_WEIGHT = 0.5; // an /undo counts as half a failure — weaker evidenc
 // promotion, and a generous bonus would let a lucky streak outrank benchmarks.
 const MIN_DELTA = -0.12; // enough to sink below a 0.7 bar from a 0.8 quality
 const MAX_DELTA = 0.04;
+// Decay: priors must track the CURRENT repo and the CURRENT model, not their
+// whole history — a model that improved (or a repo whose tests changed) should
+// be able to climb back out. When verified outcomes pass this cap, all counts
+// are halved: the pass RATE is preserved at that moment, but every future
+// outcome carries double the weight of the pre-cap ones, so old evidence
+// fades geometrically. A halved prior (~20) stays well above MIN_N, so decay
+// never silences a prior that had already earned a voice.
+const DECAY_CAP = 40;
 
 function home(): string {
   return process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
@@ -87,6 +95,12 @@ export function recordTurnOutcome(opts: { kind: string; modelId: string; outcome
   const byModel = (byKind[opts.kind] ??= {});
   const c = (byModel[opts.modelId] ??= { passed: 0, failed: 0, undone: 0, unverified: 0 });
   c[opts.outcome] += 1;
+  if (c.passed + c.failed + c.undone > DECAY_CAP) {
+    c.passed = Math.round(c.passed / 2);
+    c.failed = Math.round(c.failed / 2);
+    c.undone = Math.round(c.undone / 2);
+    c.unverified = Math.round(c.unverified / 2);
+  }
   save(f);
   cache = { f, at: Date.now() };
 }

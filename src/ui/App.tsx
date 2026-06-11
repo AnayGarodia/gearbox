@@ -71,7 +71,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { resolveSandboxPolicy, sandboxAvailable } from "../sandbox/index.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
@@ -538,6 +538,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const sbxAvail = sandboxAvailable();
   const [sandboxMode, setSandboxMode] = useState(() => (sandboxAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, rootRef.current).mode : "off" as const));
   const charTestOfferedRef = useRef(false); // characterization-test offer: once per session
+  const autofixFpRef = useRef<string | undefined>(undefined); // last auto-fix attempt's failure fingerprint (same-failure early stop)
   const lastChangedFilesRef = useRef<string[]>([]); // most recent edited-turn file list (/verify test targets these)
   // /commit + /pr: regeneration inputs for the confirm panel's ⌃R, and the
   // inline-mode draft awaiting `/commit go` · `/pr go`.
@@ -2304,19 +2305,28 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       let routedSource = "plan mode"; // only plan pre-sets routedKind; otherwise the classifier below decides
       if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
-        const cls = await classifyTask(prompt, signal);
+        // routedKindRef still holds the PREVIOUS turn's verdict here (it is
+        // overwritten just below) — a short anaphoric follow-up ("yes do it")
+        // inherits it instead of being classified in isolation as chat.
+        const cls = await classifyTask(prompt, signal, { prevKind: routedKindRef.current?.kind });
         routedKind = cls.kind;
         routedSource = cls.source;
       }
       routedKindRef.current = routedKind ? { kind: routedKind, source: routedSource } : null;
+      // Honest working-set estimate: the previous turn's REAL input token count.
+      // Sessions grow slowly turn-over-turn, so last turn's input is the best
+      // call-free predictor of this one; without it every turn scored at the
+      // router's 16k nominal and the context-window fit filter never engaged
+      // with real numbers. First turn has no prior → undefined → nominal.
+      const estTokens = sessionRef.current.turns.at(-1)?.inputTokens || undefined;
       let choice: ModelChoice;
       try {
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true, estTokens });
       } catch {
-        choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
+        choice = sel.select({ prompt, kind: routedKind, requires, estTokens }); // directive model unavailable → fall back to routing
       }
       if (sel instanceof RoutingSelector && !directiveId) noteBackendSwitch(choice);
       // When the user explicitly chose the model (a directive or a /model pin),
@@ -2377,7 +2387,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires, estTokens }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         // Bail only when the router hands back the exact pick we just parked
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
@@ -3094,10 +3104,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Auto-iterate to green: if checks failed on a turn that edited files,
           // feed the failure back and re-run, bounded by MAX_AUTOFIX_ATTEMPTS.
           // `/verify off` disables this (verifyRef === "off").
-          if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed })) {
+          // Same-failure early stop: a fix attempt that reproduced the exact
+          // failure it was given isn't converging — don't burn the remaining
+          // attempt budget re-asking the same question.
+          const prevFp = attempt > 0 ? autofixFpRef.current : undefined;
+          const sameFailure = Boolean(prevFp && failed.length && prevFp === failureFingerprint(failed));
+          if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed, prevFingerprint: prevFp })) {
+            autofixFpRef.current = failureFingerprint(failed);
             notice(`checks failed — fixing (attempt ${attempt + 1}/${MAX_AUTOFIX_ATTEMPTS})`);
             const fixPrompt = buildFixPrompt(failed);
             setTimeout(() => void runTurnRef.current?.(fixPrompt, attempt + 1), 0);
+          } else if (verifyRef.current === "auto" && sameFailure && attempt < MAX_AUTOFIX_ATTEMPTS) {
+            notice(`the fix attempt reproduced the same failure — stopping early, over to you`);
           } else if (verifyRef.current === "auto" && attempt >= MAX_AUTOFIX_ATTEMPTS && failed.length) {
             notice(`still failing after ${MAX_AUTOFIX_ATTEMPTS} fix attempts — over to you`);
           } else {
