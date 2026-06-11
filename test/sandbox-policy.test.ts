@@ -14,11 +14,14 @@ describe("parseSandboxMode", () => {
 
 describe("resolveSandboxPolicy", () => {
   const cwd = "/tmp/ws";
-  test("default is off", () => {
+  test("default: workspace-write on darwin, off elsewhere", () => {
     const p = resolveSandboxPolicy({}, {}, cwd, { platform: "darwin" });
-    expect(p.mode).toBe("off");
+    expect(p.mode).toBe("workspace-write");
     expect(p.network).toBe(false);
-    expect(p.workspace).toBe("/tmp/ws");
+    expect(resolveSandboxPolicy({}, {}, cwd, { platform: "linux" }).mode).toBe("off");
+  });
+  test("prefs can turn it off", () => {
+    expect(resolveSandboxPolicy({ sandbox: "off" }, {}, cwd, { platform: "darwin" }).mode).toBe("off");
   });
   test("prefs set the mode; env overrides prefs", () => {
     expect(resolveSandboxPolicy({ sandbox: "workspace-write" }, {}, cwd, { platform: "darwin" }).mode).toBe("workspace-write");

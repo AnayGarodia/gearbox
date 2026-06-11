@@ -57,7 +57,9 @@ export function resolveSandboxPolicy(
 ): SandboxPolicy {
   const platform = opts.platform ?? process.platform;
   const envMode = parseSandboxMode(env.GEARBOX_SANDBOX);
-  const mode: SandboxMode = envMode ?? prefs.sandbox ?? "off";
+  // Default: on (workspace-write) where a backend exists, off elsewhere.
+  const platformDefault: SandboxMode = platform === "darwin" ? "workspace-write" : "off";
+  const mode: SandboxMode = envMode ?? prefs.sandbox ?? platformDefault;
   const envNet = env.GEARBOX_SANDBOX_NETWORK?.trim().toLowerCase();
   const network = envNet === "allow" || envNet === "on" ? true : envNet === "deny" || envNet === "off" ? false : (prefs.sandboxNetwork ?? false);
   const workspace = real(cwd);

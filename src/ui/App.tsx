@@ -73,6 +73,7 @@ import { missingRequirements, capabilitySummary, type ModelRequirement } from ".
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
+import { resolveSandboxPolicy, sandboxAvailable } from "../sandbox/index.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, reloadMcpConnections, removeMcpServer, shellSplit } from "../mcp.ts";
@@ -531,6 +532,11 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const escRef = useRef(0); // timestamp of the last esc, for double-esc rewind
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
   const verifyRef = useRef<VerifyMode>(loadPrefs().verify === "off" ? "off" : "auto"); // post-edit checks + auto-iterate-to-green
+  // Effective OS-sandbox mode for the status chip. Availability is folded in
+  // (darwin without sandbox-exec honestly reads "off"); sbxAvail distinguishes
+  // "off by choice" (warn chip) from "no backend on this platform" (no chip).
+  const sbxAvail = sandboxAvailable();
+  const [sandboxMode, setSandboxMode] = useState(() => (sandboxAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, rootRef.current).mode : "off" as const));
   const charTestOfferedRef = useRef(false); // characterization-test offer: once per session
   const lastChangedFilesRef = useRef<string[]>([]); // most recent edited-turn file list (/verify test targets these)
   // /commit + /pr: regeneration inputs for the confirm panel's ⌃R, and the
@@ -3162,7 +3168,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // state setters
         setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
         setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
-        setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
+        setSandboxMode, setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
         // helper callbacks
         applyEffortClamp, buildAccountView, buildPanelModelRows, cliModelChoices, cliModelLabel,
         cliSupportsModel, compactNow, echo, effortTarget, exit, findAccountRef, flashMood,
@@ -4567,7 +4573,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
           assumes y === termRows; change in lockstep. */}
       <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
-        <StatusBar model={modelDisplay} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} providerColor={provHue} providerFlash={provFlash} frameHue={setupRequired ? null : provHue} epoch={themeEpochState} />
+        <StatusBar model={modelDisplay} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} sandbox={sbxAvail ? sandboxMode : undefined} width={pageW} online={online} cwd={rootRef.current} branch={branch} providerColor={provHue} providerFlash={provFlash} frameHue={setupRequired ? null : provHue} epoch={themeEpochState} />
       </Box>
     </>
   );
