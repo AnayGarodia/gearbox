@@ -1,12 +1,11 @@
-// Aura — the ambient provider glow above the composer (the terminal take on
-// Lovable/Gemini's gradient backdrops). One row of ▁ cells breathing in the
-// ACTIVE provider's brand hue, so which backend you're on is visible at a
-// glance without reading anything:
-//   subscription seat → one continuous band (flat-rate: a steady glow)
-//   API key           → the band runs as moving segments (a ticking meter:
-//                       you're paying per token)
-// Animation is deliberately calm (one slow drift tick, like Boo); set
-// GEARBOX_NO_MOTION=1 to freeze. Ink color props only — never raw ANSI.
+// Aura — the ambient provider shimmer above the composer: sparse glowing motes
+// in the ACTIVE provider's brand hue (the terminal take on Lovable/Gemini's
+// gradient backdrops — depth from particle size + brightness, never a bar).
+// The backend kind is the MOTION:
+//   subscription seat → motes twinkle in place (flat-rate: a steady glow)
+//   API key           → motes stream sideways (metered: tokens flowing out)
+// Deliberately calm (one slow tick, like Boo); GEARBOX_NO_MOTION=1 freezes.
+// Ink color props only — never raw ANSI.
 import React, { useEffect, useState } from "react";
 import { Text } from "ink";
 import { color } from "../theme.ts";
@@ -26,48 +25,55 @@ export function hexMix(a: string, b: string, t: number): string {
   return `#${((r << 16) | (g << 8) | bl).toString(16).padStart(6, "0")}`;
 }
 
-const LEVELS = 5; // quantized brightness steps per row
-
-/** Per-cell brightness 0..1: two slow sine waves drifting with `phase`.
- *  Exported for tests (pure). */
-export function auraLevel(x: number, width: number, phase: number): number {
-  const u = x / Math.max(1, width);
-  const w = 0.5 + 0.5 * Math.sin(2 * Math.PI * (u * 1.6 - phase));
-  const v = 0.5 + 0.5 * Math.sin(2 * Math.PI * (u * 0.7 + phase * 0.6) + 1.7);
-  return 0.25 + 0.75 * (0.6 * w + 0.4 * v);
+// Deterministic per-column hash (0..1) — particles must be stable across
+// renders (Math.random would re-roll the sky every frame).
+function hash(x: number, salt: number): number {
+  const s = Math.sin(x * 127.1 + salt * 311.7) * 43758.5453;
+  return s - Math.floor(s);
 }
 
-/** Metered mask: every 6th cell (drifting with phase) goes dark, so an API-key
- *  aura reads as moving meter segments. Exported for tests (pure). */
-export function auraGap(x: number, phase: number): boolean {
-  return (x + Math.round(phase * 24)) % 6 === 0;
+const DENSITY = 0.4; // fraction of columns carrying a mote
+// Mote glyphs by brightness: faint dust → bright spark. All width-1.
+const GLYPHS = [" ", "˙", "·", "•", "✦"] as const;
+
+/** One cell of the shimmer field. Pure (tested): returns the glyph index
+ *  0..4 (0 = empty sky) for column x at animation phase 0..1. `metered`
+ *  streams the field sideways; otherwise motes twinkle in place. */
+export function auraCell(x: number, width: number, phase: number, metered: boolean): number {
+  // Metered: the whole field drifts left over time (sample a moving window).
+  const fx = metered ? (x + Math.round(phase * 96)) % Math.max(width, 1) : x;
+  if (hash(fx, 1) > DENSITY) return 0; // no mote in this column
+  const depth = hash(fx, 2); // 0..1 — how "close" the mote is (size + brightness)
+  // Twinkle: each mote breathes on its own offset so the sky never pulses in unison.
+  const tw = 0.55 + 0.45 * Math.sin(2 * Math.PI * (phase * 2 + hash(fx, 3)));
+  const b = depth * tw;
+  return b < 0.12 ? 1 : b < 0.32 ? 2 : b < 0.62 ? 3 : 4;
 }
 
 function AuraImpl({ hue, metered, width }: { hue: string | null; metered: boolean; width: number; epoch?: number }) {
   const [phase, setPhase] = useState(0);
   useEffect(() => {
     if (NO_MOTION || !hue) return;
-    const t = setInterval(() => setPhase((p) => (p + 0.02) % 1), TICK_MS);
+    const t = setInterval(() => setPhase((p) => (p + 0.01) % 1), TICK_MS);
     return () => clearInterval(t);
   }, [hue]);
   if (!hue || width < 8) return <Text> </Text>; // keep the row (layout contract), just blank
-  // Precompute the quantized shade ramp once per render.
-  // The glow fades toward the theme's ink-dark (navy), read at render time so
-  // /theme switches apply live.
-  const shades = Array.from({ length: LEVELS + 1 }, (_, i) => hexMix(color.navy, hue, 0.12 + (0.55 * i) / LEVELS));
+  // One shade per glyph tier, fading from the theme's ink-dark toward the brand
+  // hue — read at render time so /theme switches apply live.
+  const shades = GLYPHS.map((_, i) => hexMix(color.navy, hue, 0.18 + 0.62 * (i / (GLYPHS.length - 1))));
   // Build runs of same-shade cells so the row stays a handful of Text spans.
   const spans: React.ReactNode[] = [];
   let runShade = "";
   let run = "";
   for (let x = 0; x < width; x++) {
-    const lvl = metered && auraGap(x, phase) ? 0 : Math.min(LEVELS, Math.round(auraLevel(x, width, phase) * LEVELS));
-    const shade = shades[lvl]!;
+    const g = auraCell(x, width, phase, metered);
+    const shade = shades[g]!;
     if (shade !== runShade && run) {
       spans.push(<Text key={x - run.length} color={runShade}>{run}</Text>);
       run = "";
     }
     runShade = shade;
-    run += "▁";
+    run += GLYPHS[g];
   }
   if (run) spans.push(<Text key={width - run.length} color={runShade}>{run}</Text>);
   return <Text>{spans}</Text>;

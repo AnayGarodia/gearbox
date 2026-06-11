@@ -211,24 +211,47 @@ export const wordmarkGradient = [dark.accent, "#7178D9", "#565CAD"];
 // OUTSIDE the semantic vocabulary above (these mean identity, not severity),
 // and theme-independent — anthropic is clay in every palette. Unknown
 // providers fall back to the live accent.
+// On-brand, tuned to stay visible on a dark terminal (dark brands brightened):
+// Anthropic's clay, OpenAI/ChatGPT's monochrome ivory (their brand has no
+// color), Gemini's blue, AWS orange, DeepSeek blue, Mistral orange, Kimi
+// violet, Grok's monochrome, Perplexity teal, …
 const PROVIDER_HUES: Record<string, string> = {
-  anthropic: "#E08D6D", // Claude clay
-  "claude-cli": "#E08D6D",
-  bedrock: "#FFA94D", // AWS orange
-  openai: "#74C99E", // OpenAI teal-green
-  "codex-cli": "#74C99E",
-  azure: "#4FA3E3", // Azure blue
-  "azure-foundry": "#4FA3E3",
-  google: "#7CB3F5", // Google blue
-  gemini: "#7CB3F5",
-  vertex: "#7CB3F5",
-  deepseek: "#6A8EFF",
-  mistral: "#FF8A3D",
-  groq: "#FF6B5E",
-  xai: "#B8BCC4",
-  moonshot: "#9B7CF7",
-  zai: "#6FD6C8",
-  openrouter: "#A78BFA",
+  anthropic: "#D97757", // Anthropic clay (the actual brand "Crail")
+  "claude-cli": "#D97757",
+  openai: "#ECECF1", // ChatGPT ivory — the brand is monochrome, not green
+  "codex-cli": "#ECECF1",
+  google: "#8AB4F8", // Gemini blue
+  gemini: "#8AB4F8",
+  vertex: "#8AB4F8",
+  azure: "#50A6FF", // Azure blue
+  "azure-foundry": "#50A6FF",
+  bedrock: "#FF9900", // AWS orange
+  deepseek: "#4D6BFE", // DeepSeek brand blue
+  mistral: "#FA520F", // Mistral orange
+  groq: "#F55036",
+  xai: "#C9CDD3", // Grok monochrome silver
+  moonshot: "#7B61FF", // Kimi violet
+  zai: "#5E7CFA", // GLM blue
+  openrouter: "#6566F1",
+  perplexity: "#20B8CD",
+  together: "#3D8BFF",
+  fireworks: "#A05CFF",
+  cerebras: "#F15A29",
+  sambanova: "#EE7624",
+  minimax: "#F25C75",
+  novita: "#23D57C",
+  deepinfra: "#3B82F6",
+  hyperbolic: "#C6F432",
+  nebius: "#5A7CFF",
+  baseten: "#2BD489",
+  ollama: "#DDE1E6",
+  llamacpp: "#4A90E8",
+  lmstudio: "#8A5CF6",
+  vllm: "#F4B63F",
+  litellm: "#4AA9E8",
+  portkey: "#7A5CFA",
+  requesty: "#58C6B2",
+  "vercel-gateway": "#9E9EA4",
 };
 /** Brand hue for a provider id (case-insensitive, tolerant of suffixed ids like
  *  "azure-foundry"); falls back to the current theme accent. */
