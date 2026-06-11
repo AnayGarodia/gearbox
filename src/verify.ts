@@ -105,13 +105,24 @@ export const MAX_AUTOFIX_ATTEMPTS = 3;
 /**
  * Stable fingerprint of a failure set, for detecting a fix attempt that
  * changed nothing. Whitespace-normalized and length-capped so cosmetic
- * differences (wrapping, trailing spaces, ordering) don't read as progress;
- * counts and line numbers are kept — "2 tests failed" after "3 tests failed"
- * IS progress and must produce a different fingerprint.
+ * differences (wrapping, trailing spaces, ordering) don't read as progress.
+ * Run-variable tokens — durations ("[12.43ms]", "3.2s"), hex addresses, tmp
+ * paths — are normalized away too, or consecutive identical failures would
+ * fingerprint differently and silently defeat the early stop. Counts and
+ * line numbers are kept — "2 tests failed" after "3 tests failed" IS
+ * progress and must produce a different fingerprint.
  */
 export function failureFingerprint(failures: string[]): string {
   return failures
-    .map((f) => f.replace(/\s+/g, " ").trim().slice(0, 400))
+    .map((f) =>
+      f
+        .replace(/\[?\b\d+(\.\d+)?\s*(ms|s|m)\b\]?/g, "<t>") // durations: [12.43ms], 3.2s
+        .replace(/\b0x[0-9a-fA-F]+\b/g, "<addr>") // hex addresses in panics
+        .replace(/\/(?:private\/)?(?:var\/folders|tmp)\/\S+/g, "<tmp>") // tmp paths
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 400),
+    )
     .sort()
     .join("\u0000");
 }
