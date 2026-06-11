@@ -34,7 +34,7 @@
  * together, so the messages array always contains balanced tool ids.
  */
 import { resolve as resolvePath } from "node:path";
-import type { ModelMessage } from "ai";
+import type { ModelMessage, UserModelMessage } from "ai";
 import type { ModelSpec } from "../providers.ts";
 import { countTokens } from "../model/tokens.ts";
 import { loadProjectMemory } from "./memory.ts";
@@ -448,22 +448,22 @@ export function buildReminderBlock(plan: boolean, verifyMode: VerifyMode): strin
   return `[mode: normal | verify: ${verifyMode} — ${hint}]`;
 }
 
-function injectReminder(msg: ModelMessage, reminder: string): ModelMessage {
+function injectReminder(msg: UserModelMessage, reminder: string): UserModelMessage {
   if (typeof msg.content === "string") {
     return { ...msg, content: `${msg.content}\n\n${reminder}` };
   }
   if (Array.isArray(msg.content)) {
-    const parts = msg.content as any[];
+    const parts = msg.content;
     let lastTextIdx = -1;
     for (let i = parts.length - 1; i >= 0; i--) {
-      if ((parts[i] as any)?.type === "text") { lastTextIdx = i; break; }
+      if (parts[i]?.type === "text") { lastTextIdx = i; break; }
     }
     if (lastTextIdx >= 0) {
       const newParts = [...parts];
-      newParts[lastTextIdx] = { ...parts[lastTextIdx] as object, text: `${(parts[lastTextIdx] as any).text}\n\n${reminder}` };
-      return { ...msg, content: newParts as any };
+      newParts[lastTextIdx] = { ...parts[lastTextIdx] as object, text: `${(parts[lastTextIdx] as any).text}\n\n${reminder}` } as typeof parts[number];
+      return { ...msg, content: newParts };
     }
-    return { ...msg, content: [...parts, { type: "text" as const, text: reminder }] as any };
+    return { ...msg, content: [...parts, { type: "text" as const, text: reminder }] };
   }
   return msg;
 }
@@ -686,7 +686,7 @@ export function buildContext(opts: {
     const last = finalMessages[finalMessages.length - 1];
     if (last?.role === "user") {
       finalMessages[finalMessages.length - 1] = injectReminder(
-        last,
+        last as UserModelMessage,
         buildReminderBlock(Boolean(plan), opts.verifyMode ?? "auto"),
       );
     }
