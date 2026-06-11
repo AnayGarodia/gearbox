@@ -33,6 +33,14 @@ describe("generateSeatbeltProfile", () => {
     expect(p).toContain("(allow network*)");
     expect(p).toContain("(allow system-socket)");
     expect(p).not.toContain("(deny network*)");
+    expect(p).not.toContain("com.apple.mDNSResponder"); // helper denial only rides the no-network profile
+  });
+  test("network deny also blocks DNS-by-proxy via mach network helpers", () => {
+    const p = generateSeatbeltProfile(ws(), OPTS);
+    expect(p).toContain('(deny mach-lookup (global-name "com.apple.mDNSResponder")');
+    expect(p).toContain('(global-name "com.apple.networkd")');
+    // the deny must come AFTER the blanket allow — SBPL is last-match-wins
+    expect(p.indexOf("(deny mach-lookup")).toBeGreaterThan(p.indexOf("(allow mach-lookup)"));
   });
   test("extra write paths (worktree gitdir) are included and deduped", () => {
     const p = generateSeatbeltProfile(ws({ extraWritePaths: ["/repo/.git", "/tmp/ws"] }), OPTS);

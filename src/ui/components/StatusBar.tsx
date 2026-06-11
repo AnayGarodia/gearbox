@@ -144,7 +144,7 @@ function StatusBarImpl({
   cost?: number;
   ctxPct: number | null;
   yolo?: boolean;
-  sandbox?: "off" | "read-only" | "workspace-write"; // OS sandbox state; only non-default states earn a chip
+  sandbox?: "off" | "read-only" | "workspace-write"; // OS sandbox state; only non-default states earn a chip. undefined = no backend on this platform (off is not a choice there, so no warn chip)
   width: number;
   online?: boolean;
   cwd?: string;
