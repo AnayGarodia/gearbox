@@ -84,5 +84,7 @@ test("tabRowsOf: a tab's own name beats the dir basename (same-dir tabs aren't a
     ],
     0,
   );
-  expect(rows.map((r) => r.title)).toEqual(["gearbox", "wizard", "say PLUM"]); // session title still wins
+  // A NAMED tab keeps its name permanently — the session auto-title must NOT
+  // rename it after the first prompt; auto-title only fills unnamed tabs.
+  expect(rows.map((r) => r.title)).toEqual(["gearbox", "wizard", "skater"]);
 });

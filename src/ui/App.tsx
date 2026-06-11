@@ -1781,7 +1781,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const activeCtxWindow = activeCli
     ? (activeCliRef.current?.binary?.includes("codex") ? (findModel(activeCliModel ?? "")?.contextWindow ?? 272_000) : 200_000)
     : model?.contextWindow ?? null;
-  const ctxPct = !setupRequired && activeCtxWindow && lastInput > 0 ? Math.round((lastInput / activeCtxWindow) * 100) : null;
+  const ctxPct = !setupRequired && activeCtxWindow && lastInput > 0 ? Math.min(100, Math.round((lastInput / activeCtxWindow) * 100)) : null;
   // Mirror exactly what the status bar renders (model + cost + where + chips),
   // so every click zone matches the rendered position.
   const sbWhere = collapsePath(rootRef.current) + (branch ? `:${branch}` : "");
@@ -2115,6 +2115,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         cliMetaRef.current = null;
         const choices = cliModelChoices(pin.binary);
         const cliChoice = choices.find((m) => m.id === activeCliModelRef.current) ?? choices[0];
+        // No model pinned → pin the seat's DEFAULT explicitly and surface it.
+        // Letting the vendor CLI silently pick left the status bar saying just
+        // "ChatGPT" — the user had no idea what model was running.
+        if (!activeCliModelRef.current && cliChoice) {
+          activeCliModelRef.current = cliChoice.id;
+          setActiveCliModel(cliModelLabel(cliChoice.id) || cliChoice.id);
+        }
         return runCliBackend({
           binary: pin.binary, profile: pin.profile, modelId: activeCliModelRef.current, accountId: pin.id,
           efforts: cliChoice?.efforts ?? [], label: cliModelLabel(activeCliModelRef.current) || undefined,

@@ -48,7 +48,7 @@ interface TabState {
  *  tab — the + cell is how parallel sessions are discovered). */
 export function tabRowsOf(tabs: { dir: string; name?: string; status: SessionStatus; unseen?: boolean }[], activeIdx: number): TabRow[] {
   return tabs.map((t, i) => ({
-    title: t.status.title || t.name || basename(t.dir),
+    title: t.name || t.status.title || basename(t.dir), // a NAMED tab keeps its name; auto-title only fills unnamed ones
     active: i === activeIdx,
     busy: t.status.busy,
     needsInput: t.status.needsInput,
@@ -198,7 +198,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     cycle,
     list: () =>
       tabsRef.current.map((t, i) => ({
-        title: t.status.title || t.name,
+        title: t.name || t.status.title,
         dir: t.dir,
         active: i === activeIdxRef.current,
         status: t.status.needsInput ? "needs input" : t.status.busy ? "working" : "idle",
