@@ -2299,19 +2299,28 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       let routedSource = "plan mode"; // only plan pre-sets routedKind; otherwise the classifier below decides
       if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
-        const cls = await classifyTask(prompt, signal);
+        // routedKindRef still holds the PREVIOUS turn's verdict here (it is
+        // overwritten just below) — a short anaphoric follow-up ("yes do it")
+        // inherits it instead of being classified in isolation as chat.
+        const cls = await classifyTask(prompt, signal, { prevKind: routedKindRef.current?.kind });
         routedKind = cls.kind;
         routedSource = cls.source;
       }
       routedKindRef.current = routedKind ? { kind: routedKind, source: routedSource } : null;
+      // Honest working-set estimate: the previous turn's REAL input token count.
+      // Sessions grow slowly turn-over-turn, so last turn's input is the best
+      // call-free predictor of this one; without it every turn scored at the
+      // router's 16k nominal and the context-window fit filter never engaged
+      // with real numbers. First turn has no prior → undefined → nominal.
+      const estTokens = sessionRef.current.turns.at(-1)?.inputTokens || undefined;
       let choice: ModelChoice;
       try {
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true, estTokens });
       } catch {
-        choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
+        choice = sel.select({ prompt, kind: routedKind, requires, estTokens }); // directive model unavailable → fall back to routing
       }
       if (sel instanceof RoutingSelector && !directiveId) noteBackendSwitch(choice);
       // When the user explicitly chose the model (a directive or a /model pin),
@@ -2372,7 +2381,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires, estTokens }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         // Bail only when the router hands back the exact pick we just parked
         // (its zero-candidates fallback) — the same account on a DIFFERENT model

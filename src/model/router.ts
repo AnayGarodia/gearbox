@@ -207,11 +207,22 @@ function applyAvoid(pool: Candidate[], pol: Policy | undefined): Candidate[] {
   });
 }
 
+// Unique scoring identity for a candidate. Two accounts can serve the SAME
+// registry model (identical spec.id), so the winner lookup and the /why rows
+// must key on the (account, model) PAIR — keying on spec.id alone collapsed
+// same-model candidates and could return the wrong account from select().
+// (Seats are already unique — their spec.id embeds the account — but routing
+// every candidate through one identity keeps the invariant unconditional.)
+function scoreId(c: Candidate): string {
+  return `${c.state.accountId}::${c.spec.id}`;
+}
+
 function toScoreCandidate(c: Candidate, kind?: string, pol?: Policy, bar?: number): ScoreCandidate {
   const cost = costPair(c);
   const canonical = c.canonicalId ?? c.spec.id;
   return {
-    id: c.spec.id,
+    id: scoreId(c),
+    modelId: c.spec.id,
     inUSDPerMtok: cost.inUSDPerMtok,
     outUSDPerMtok: cost.outUSDPerMtok,
     // Quality WITHOUT the measured prior delta: the same outcome counts
@@ -351,9 +362,15 @@ export class RoutingSelector implements ModelSelector {
     // If the raised bar (from escalation) leaves nothing, promote to the
     // strongest available tier. Without this, the fallback below would drop
     // to the cheapest candidate, which is the opposite of escalating.
+    // Strength is the PRIOR-ADJUSTED quality (the same measure the bar uses):
+    // a model whose measured per-repo failures sank it must not be promoted as
+    // "strongest" on its benchmark number — the failures are why we escalated.
+    // And only UNKNOWN-quality seats get the benefit of the doubt here; a seat
+    // with a known-weak profile (e.g. Haiku) is exactly what we are escalating
+    // away from, so it is held to the same strength test as everyone else.
     if (escalate > 0 && clears.length === 0) {
-      const top = Math.max(...pool.map(qualityOf));
-      clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= top - 1e-9);
+      const top = Math.max(...pool.map(adjQuality));
+      clears = pool.filter((c) => (c.backend?.kind === "cli" && !hasKnownQuality(c)) || adjQuality(c) >= top - 1e-9);
     }
     return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens, pol };
   }
@@ -392,7 +409,7 @@ export class RoutingSelector implements ModelSelector {
 
     // Score all bar-clearing candidates and pick the winner.
     const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, p.bar)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) });
-    const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
+    const winner = candidates.find((c) => scoreId(c) === best.candidate.id)!;
     this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
     return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
@@ -423,7 +440,7 @@ export class RoutingSelector implements ModelSelector {
     // ScoreInput shape without re-listing the pool per call.
     for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind, p.pol, p.bar), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
-      ? preferred.spec.id
+      ? scoreId(preferred)
       : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, p.bar)), ...flags }).candidate.id;
 
     // Mirror prepare()'s prior-adjusted predicate so the scorecard verdict
@@ -434,9 +451,9 @@ export class RoutingSelector implements ModelSelector {
     const clearsAdj = (c: Candidate): boolean =>
       c.backend?.kind === "cli" ? !hasKnownQuality(c) || adjQuality(c) >= p.bar : adjQuality(c) >= p.bar;
     for (const c of p.pool) {
-      const s = scored.get(c.spec.id)!;
+      const s = scored.get(scoreId(c))!;
       const clears = clearsAdj(c);
-      const chosen = c.spec.id === winnerId;
+      const chosen = scoreId(c) === winnerId;
       const pl = priorLine(p.kind, c.canonicalId ?? c.spec.id);
       entries.push({
         label: c.spec.label,
