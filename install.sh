@@ -59,17 +59,62 @@ default_bin_dir() {
 
 BIN_DIR="$(default_bin_dir)"
 
-need() {
-  if ! command -v "$1" >/dev/null 2>&1; then
-    echo "Gearbox installer needs '$1'." >&2
-    echo "Install Node.js first, then rerun this installer." >&2
-    exit 1
-  fi
+have() { command -v "$1" >/dev/null 2>&1; }
+
+fail() {
+  printf "\n${Y}  ✗ %s${R}\n" "$1" >&2
+  shift
+  for line in "$@"; do printf "    %s\n" "$line" >&2; done
+  printf "\n" >&2
+  exit 1
 }
 
-need node
-need curl
-need tar
+# ── Runtime ladder: node → bun → prebuilt standalone binary → instructions ──
+# The installer must NEVER die with a raw error because a prerequisite is
+# missing: every rung either works or explains exactly what to do next.
+RUNTIME=""
+if have node; then RUNTIME="node"
+elif have bun; then RUNTIME="bun"
+else
+  # No JS runtime at all → install the self-contained binary from the GitHub
+  # release (compiled with Bun; needs nothing but curl, which got us here).
+  os=""; arch=""
+  case "$(uname -s)" in Darwin) os="darwin" ;; Linux) os="linux" ;; esac
+  case "$(uname -m)" in arm64|aarch64) arch="arm64" ;; x86_64|amd64) arch="x64" ;; esac
+  if [[ -n "$os" && -n "$arch" ]]; then
+    printf "${D}  no Node.js or Bun found — installing the standalone binary (no runtime needed)${R}\n"
+    bin_url="https://github.com/AnayGarodia/gearbox/releases/latest/download/gearbox-${os}-${arch}"
+    mkdir -p "$BIN_DIR"
+    if curl -fL --retry 3 --retry-delay 3 --progress-bar "$bin_url" -o "${BIN_DIR}/gearbox.download"; then
+      rm -f "${BIN_DIR}/gearbox"
+      mv "${BIN_DIR}/gearbox.download" "${BIN_DIR}/gearbox"
+      chmod 0755 "${BIN_DIR}/gearbox"
+      printf "\n${G}  ✓${R} ${B}gearbox${R} installed (standalone)\n"
+      printf "${D}    ${BIN_DIR}/gearbox${R}\n\n"
+      case ":${PATH}:" in
+        *":${BIN_DIR}:"*) printf "  run ${C}gearbox${R} to start\n" ;;
+        *)
+          printf "${Y}  ! ${BIN_DIR} is not on PATH${R}\n"
+          printf "    echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ~/.profile && source ~/.profile\n"
+          printf "  then run ${C}gearbox${R}\n"
+          ;;
+      esac
+      exit 0
+    fi
+    rm -f "${BIN_DIR}/gearbox.download"
+    fail "couldn't download the standalone binary (${os}-${arch})" \
+      "check your connection and retry, or install a JavaScript runtime and rerun this installer:" \
+      "  Node.js:  brew install node   (macOS)  ·  sudo apt install nodejs npm  (Debian/Ubuntu)  ·  https://nodejs.org" \
+      "  Bun:      curl -fsSL https://bun.sh/install | bash"
+  fi
+  fail "Gearbox needs a JavaScript runtime (Node.js or Bun) and no prebuilt binary exists for $(uname -s)/$(uname -m)" \
+    "install one and rerun this installer:" \
+    "  Node.js:  brew install node   (macOS)  ·  sudo apt install nodejs npm  (Debian/Ubuntu)  ·  https://nodejs.org" \
+    "  Bun:      curl -fsSL https://bun.sh/install | bash"
+fi
+
+have curl || fail "the installer needs curl" "macOS ships it; Debian/Ubuntu: sudo apt install curl"
+have tar  || fail "the installer needs tar"  "Debian/Ubuntu: sudo apt install tar"
 
 tmp="$(mktemp -d)"
 cleanup() {
@@ -81,10 +126,12 @@ meta_url="https://registry.npmjs.org/${PACKAGE_NAME}/${VERSION}"
 meta_file="${tmp}/meta.json"
 
 printf "${D}  → fetching ${PACKAGE_NAME}@${VERSION}${R}\n"
-curl -fsSL "$meta_url" -o "$meta_file"
+curl -fsSL "$meta_url" -o "$meta_file" || fail "couldn't reach the npm registry" \
+  "check your connection and retry. Offline alternative (standalone binary, no runtime needed):" \
+  "  curl -fL https://github.com/AnayGarodia/gearbox/releases/latest/download/gearbox-<darwin|linux>-<arm64|x64> -o ~/.local/bin/gearbox && chmod +x ~/.local/bin/gearbox"
 
-resolved_version="$(node -e 'const fs=require("fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(j.version || "")' "$meta_file")"
-tarball_url="$(node -e 'const fs=require("fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(j.dist && j.dist.tarball || "")' "$meta_file")"
+resolved_version="$("$RUNTIME" -e 'const fs=require("fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(j.version || "")' "$meta_file")"
+tarball_url="$("$RUNTIME" -e 'const fs=require("fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); console.log(j.dist && j.dist.tarball || "")' "$meta_file")"
 
 if [[ -z "$resolved_version" || -z "$tarball_url" ]]; then
   echo "Could not resolve ${PACKAGE_NAME}@${VERSION} from npm." >&2
@@ -122,7 +169,7 @@ chmod 0755 "${target_dir}/cli.mjs"
 rm -f "${BIN_DIR}/gearbox"
 cat > "${BIN_DIR}/gearbox" <<EOF
 #!/usr/bin/env sh
-exec node "${target_dir}/cli.mjs" "\$@"
+exec ${RUNTIME} "${target_dir}/cli.mjs" "\$@"
 EOF
 chmod 0755 "${BIN_DIR}/gearbox"
 
