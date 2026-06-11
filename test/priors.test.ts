@@ -117,3 +117,34 @@ test("ROUTER: a model that keeps failing verification HERE stops being routed he
   const after = r.select(task);
   expect(after.model.id).not.toBe("deepseek-v4-pro");
 });
+
+// ── decay: cap-and-halve so old evidence fades ───────────────────────────────
+
+test("counts halve once verified outcomes pass the decay cap", () => {
+  // 30 passes + 11 fails = 41 > 40 → halved to ~15/~6 (rate preserved).
+  for (let i = 0; i < 30; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  for (let i = 0; i < 11; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
+  const p = priorFor("code", "m", "r")!;
+  expect(p.n).toBeLessThan(41); // decay actually fired
+  expect(p.n).toBeGreaterThanOrEqual(8); // never silenced below MIN_N
+});
+
+test("decay preserves the pass rate at the moment of halving", () => {
+  for (let i = 0; i < 30; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  const before = priorFor("code", "m", "r")!.passRate;
+  for (let i = 0; i < 11; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
+  // 41st outcome triggers the halving; the measured rate is still ~30/41 pass.
+  const after = priorFor("code", "m", "r")!.passRate;
+  expect(Math.abs(after - (31 / 43))).toBeLessThan(0.08); // Laplace-smoothed ~0.72, halving keeps it close
+});
+
+test("a model that improved recovers faster after decay than raw accumulation", () => {
+  // 40 old failures, then a genuine improvement streak. With decay, the old
+  // evidence weighs half, so the delta climbs out of the clamp noticeably
+  // sooner than 40-vs-N raw math would allow.
+  for (let i = 0; i < 40; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
+  for (let i = 0; i < 30; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  const decayed = priorFor("code", "m", "r")!;
+  // Raw (no decay) would be 30 passes vs 40 fails → passRate ~0.43 → clamped MIN.
+  expect(decayed.passRate).toBeGreaterThan(0.45);
+});
