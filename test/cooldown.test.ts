@@ -71,3 +71,12 @@ test("a model-scoped park leaves the account's other models live", () => {
 test("classifyFailure: Azure invalid subscription key → auth", () => {
   expect(classifyFailure("Access denied due to invalid subscription key or wrong API endpoint.")).toBe("auth");
 });
+
+test("pre-flight overflow refusal classifies 'other' (no park, no hop) — incl. large k-formatted counts", () => {
+  // the App-level refusal message must never pattern-match exhausted/auth
+  const msg = (t: number, b: number) => `prompt too large for GPT-5: ~${Math.round(t / 1000)}k tokens against a ${Math.round(b / 1000)}k-token input budget, even after compaction and trimming. Shorten or split the message, or /clear to start fresh.`;
+  expect(classifyFailure(msg(178_529, 160_000))).toBe("other");
+  expect(classifyFailure(msg(1_402_000, 429_000))).toBe("other");
+  // the regression this guards: locale comma-grouping leaks \b529\b / \b402\b
+  expect(classifyFailure(`prompt too large: ~${(178_529).toLocaleString("en-US")} tokens`)).not.toBe("other");
+});

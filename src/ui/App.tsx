@@ -2230,7 +2230,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        let { system, messages: ctx, cacheBreak, sections, retrievedFiles } = buildContext({
+        let { system, messages: ctx, cacheBreak, sections, retrievedFiles, overflow } = buildContext({
           history: messages,
           userText: prompt,
           userContent,
@@ -2245,6 +2245,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // the FULL context, not history alone.
         lastContextSectionsRef.current = sections;
         ctxOverheadRef.current = sections.filter((s) => s.name !== "history" && s.name !== "user").reduce((a, s) => a + s.tokens, 0);
+        // Pre-flight overflow refusal: even after every reduction rung the send
+        // can't fit this model's window (a giant paste). Refuse BEFORE the call
+        // — a guaranteed provider 400 spends time and, on some gateways, money.
+        // Surfaced as a normal failure: no park, no hop (the failure isn't the
+        // account's), classified "other" so the loop ends with the message.
+        if (overflow) {
+          return {
+            messages,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            failure: {
+              // k-format, NOT toLocaleString: comma groups like "178,529" match
+              // classifyFailure's \b529\b and would park+hop a refusal that the
+              // comment above promises classifies "other".
+              message: `prompt too large for ${choice.model.label}: ~${Math.round(overflow.tokens / 1000)}k tokens against a ${Math.round(overflow.budget / 1000)}k-token input budget, even after compaction and trimming. Shorten or split the message, or /clear to start fresh.`,
+            },
+            cooldownKey: `env:${choice.model.provider}`, // never parked: overflow classifies "other"
+          };
+        }
         if (agentDef) system = `${system}\n\n# ACTIVE AGENT: ${agentDef.name}\n${agentDef.system}`;
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = account ? await resolveCreds(account) : undefined;
