@@ -27,7 +27,13 @@ export type AuthMethod =
   | { kind: "azure"; resourceName: string; ref: string; apiVersion?: string }
   | { kind: "vertex"; project: string; location: string; serviceAccountRef?: string; adc?: boolean }
   | { kind: "openai-compat"; ref: string } // baseUrl carried on the Account
-  | { kind: "cli"; binary: string; loginProfile?: string }; // binary is an open string
+  // CLI subscription seat. loginProfile = the account's OWN config home
+  // (CODEX_HOME / CLAUDE_CONFIG_DIR) so its OAuth login never races the vendor
+  // app's or another account's (refresh tokens are single-use and rotate).
+  // oauthTokenRef (claude only) = secret-store ref of a 1-year `claude
+  // setup-token` (sk-ant-oat01-…) passed via CLAUDE_CODE_OAUTH_TOKEN — the
+  // collision-free path that works regardless of any keychain login.
+  | { kind: "cli"; binary: string; loginProfile?: string; oauthTokenRef?: string };
 
 export type AuthKind = AuthMethod["kind"];
 

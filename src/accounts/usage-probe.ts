@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { spawnProc, which, type Proc } from "../proc.ts";
 import type { Account } from "./types.ts";
+import { cliOauthToken } from "./onboard.ts";
 import type { RateSnapshot } from "./usage.ts";
 
 const home = () => process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
@@ -241,7 +242,9 @@ export async function probeClaudeUsage(account: Account, opts: { timeoutMs?: num
   const timeoutMs = opts.timeoutMs ?? 30_000; // the probe "hi" turn can think for ~10s
   const timeoutSec = Math.max(8, Math.round(timeoutMs / 1000));
   const configDir = claudeConfigDir(account); // where .claude.json lives (for onboarding)
-  if (!claudeLoggedIn(configDir)) return null; // not authenticated here → don't waste a probe
+  // A stored setup token authenticates by env var — no on-disk login needed.
+  const oauthToken = await cliOauthToken(account);
+  if (!oauthToken && !claudeLoggedIn(configDir)) return null; // not authenticated here → don't waste a probe
   // CLAUDE_CONFIG_DIR env value: ONLY for loginProfile accounts. Empty for the
   // default account so claude finds the default keychain login (see the driver).
   const cfgEnv = account.auth.loginProfile ?? "";
@@ -267,7 +270,10 @@ export async function probeClaudeUsage(account: Account, opts: { timeoutMs?: num
   let proc: Proc;
   try {
     proc = spawnProc([py, driver, cfgEnv, settingsFile, out, opts.model ?? "haiku", String(timeoutSec), workCwd], {
-      stdin: "ignore", stdout: "ignore", stderr: "ignore", env: process.env,
+      stdin: "ignore", stdout: "ignore", stderr: "ignore",
+      // The driver's claude child inherits this env — the setup token (if any)
+      // authenticates the probe the same way it authenticates real turns.
+      env: oauthToken ? { ...process.env, CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : process.env,
     });
   } catch {
     return null;

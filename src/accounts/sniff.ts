@@ -102,7 +102,14 @@ export function sniffCredential(text: string): CredentialGuess {
     };
   }
 
-  // 6) Known API-key prefixes (anthropic, openai, google, openrouter, groq, …).
+  // 6) A Claude Code 1-year setup token (`claude setup-token` → sk-ant-oat01-…):
+  // subscription OAuth, NOT an API key — must be sniffed BEFORE the generic
+  // sk-ant- prefix or it would be stored as an Anthropic API key and fail.
+  if (/^sk-ant-oat/.test(t)) {
+    return { kind: "cli", provider: "claude-cli", fields: { apiKey: t }, missing: [], confidence: "high" };
+  }
+
+  // 7) Known API-key prefixes (anthropic, openai, google, openrouter, groq, …).
   const provider = detectProviderByKey(t);
   if (provider) {
     const cat = catalogProvider(provider);
@@ -110,6 +117,6 @@ export function sniffCredential(text: string): CredentialGuess {
     return { kind, provider, fields: { apiKey: t }, missing: [], confidence: "high" };
   }
 
-  // 7) Unknown.
+  // 8) Unknown.
   return { kind: "unknown", fields: { apiKey: t }, missing: ["provider"], confidence: "low" };
 }

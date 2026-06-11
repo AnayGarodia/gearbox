@@ -10,7 +10,8 @@ import {
 import { CATALOG, catalogProvider, detectProviderByKey } from "../src/accounts/catalog.ts";
 import { importEnvCred, importableEnvCreds } from "../src/accounts/detect.ts";
 import { resolveCreds } from "../src/accounts/resolve.ts";
-import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addCliAccount, addOpenAICompatAccount } from "../src/accounts/onboard.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addByPastedKey, addCliAccount, addClaudeOauthToken, addOpenAICompatAccount, cliAuthStatus } from "../src/accounts/onboard.ts";
+import { sniffCredential } from "../src/accounts/sniff.ts";
 import { subscriptionEnv } from "../src/agent/cli-backend.ts";
 import { detectCloudCreds, importCloudCred } from "../src/accounts/detect.ts";
 import { recordUsage, recordRateLimits, loadUsage, accountUsage, totalSpent, buildUsageView } from "../src/accounts/usage.ts";
@@ -276,16 +277,54 @@ test("accountLabel reads in plain English; list switches by name", async () => {
 
 // ── multiple accounts of the same kind ──
 test("multiple CLI subscription accounts coexist via isolated config dirs", () => {
-  const def = addCliAccount("claude-cli"); // default: system login, no profile
-  const work = addCliAccount("claude-cli", "work"); // additional: own config dir
-  const codex = addCliAccount("codex-cli", "personal");
+  const def = addCliAccount("claude-cli"); // EVERY account gets its own home now —
+  const work = addCliAccount("claude-cli", "work"); // sharing ~/.claude or ~/.codex with the
+  const codex = addCliAccount("codex-cli", "personal"); // vendor app races the single-use refresh token
   expect(def.account!.id).toBe("claude-cli");
-  expect((def.account!.auth as any).loginProfile).toBeUndefined();
+  expect((def.account!.auth as any).loginProfile).toContain("claude-cli");
   expect(work.account!.id).toBe("claude-cli-work");
   expect((work.account!.auth as any).loginProfile).toContain("claude-cli-work");
+  expect((codex.account!.auth as any).loginProfile).toContain("codex-cli-personal");
   // all three are distinct, persisted accounts
   const ids = listAccounts().map((a) => a.id);
   expect(ids).toEqual(expect.arrayContaining(["claude-cli", "claude-cli-work", "codex-cli-personal"]));
+  // re-adding an existing account keeps it (no auth reset), and a legacy
+  // profile-less account is migrated to an isolated home in place
+  const again = addCliAccount("claude-cli");
+  expect(again.ok).toBe(true);
+  expect(again.account!.id).toBe("claude-cli");
+});
+
+test("a pasted claude setup-token is sniffed as subscription auth, not an API key", async () => {
+  const g = sniffCredential("sk-ant-oat01-abc123def");
+  expect(g.kind).toBe("cli");
+  expect(g.provider).toBe("claude-cli");
+  // attaching stores the secret and marks the account
+  const r = await addClaudeOauthToken("sk-ant-oat01-abc123def");
+  expect(r.ok).toBe(true);
+  expect((r.account!.auth as any).oauthTokenRef).toContain("oauth-token");
+  expect((r.account!.auth as any).loginProfile).toBeTruthy(); // isolated home too
+  // a junk paste is refused
+  expect((await addClaudeOauthToken("sk-ant-api03-notthis")).ok).toBe(false);
+});
+
+test("subscriptionEnv carries the setup token for claude only, never inherited", () => {
+  process.env.CLAUDE_CODE_OAUTH_TOKEN = "stale-parent-token";
+  try {
+    const env = subscriptionEnv("claude", "/tmp/a", "sk-ant-oat01-fresh");
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("sk-ant-oat01-fresh");
+    // no token for THIS account → the parent's token must not leak in
+    expect(subscriptionEnv("claude", "/tmp/a").CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(subscriptionEnv("codex", "/tmp/a", "sk-ant-oat01-fresh").CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+  } finally {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  }
+});
+
+test("cliAuthStatus short-circuits to signed-in when a setup token exists", async () => {
+  const st = await cliAuthStatus("claude", undefined, "sk-ant-oat01-x");
+  expect(st.loggedIn).toBe(true);
+  expect(st.detail).toContain("setup token");
 });
 
 test("subscriptionEnv strips the API key and scopes the config dir per account", () => {

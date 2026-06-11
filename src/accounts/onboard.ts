@@ -4,7 +4,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { putAccount, setSecret } from "./store.ts";
+import { putAccount, setSecret, getSecret, getAccount, listAccounts } from "./store.ts";
 import { catalogProvider, CATALOG } from "./catalog.ts";
 import { normalizeProviderId } from "./onboarding.ts";
 import { sniffCredential, type CredentialGuess } from "./sniff.ts";
@@ -208,18 +208,39 @@ export async function addVertexAccount(project: string, location: string, servic
   return { ok: true, account, message: `added ${account.label}${sa ? " (service account)" : " (ADC)"}` };
 }
 
-// Per-account config dir for a named CLI account, so multiple claude (or codex)
-// logins coexist. The unnamed account reuses the system default login.
-function cliProfileDir(id: string): string {
+// Per-account config dir for a CLI account, so multiple claude (or codex)
+// logins coexist — and so Gearbox's login never shares a home with the vendor
+// app's own login (see ensureCliProfile).
+export function cliProfileDir(id: string): string {
   const home = process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
   return join(home, "cli", id);
 }
 
 /**
- * Register a CLI-backed subscription account. With no `name` it's the default
- * account (id = provider, reuses the system `claude`/`codex` login). With a
- * `name` it's an additional, isolated account (its own config dir) — that's how
- * you run MULTIPLE Claude or Codex subscriptions at once.
+ * Make sure a CLI account has its OWN isolated config home, migrating legacy
+ * profile-less accounts in place. Sharing ~/.codex (or the claude default
+ * login) with the vendor app breaks BOTH sides: the OAuth refresh token is
+ * single-use and rotates on every refresh, so two independent users of one
+ * auth file race — whoever refreshes second gets "refresh token was already
+ * used" and is logged out. Isolation means one sign-in into Gearbox's dir and
+ * the vendor CLI keeps it fresh there forever, regardless of what the app is
+ * logged into. (A migrated account needs ONE fresh sign-in — credentials are
+ * deliberately NOT copied, because a copied auth file shares the same
+ * single-use refresh token and detonates on the first refresh.)
+ */
+export function ensureCliProfile(account: Account): Account {
+  if (account.auth.kind !== "cli" || account.auth.loginProfile) return account;
+  const profile = cliProfileDir(account.id);
+  mkdirSync(profile, { recursive: true });
+  const next: Account = { ...account, auth: { ...account.auth, loginProfile: profile } };
+  putAccount(next);
+  return next;
+}
+
+/**
+ * Register a CLI-backed subscription account. EVERY account gets its own
+ * isolated config dir (see ensureCliProfile for why) — the unnamed account is
+ * just the one with the bare provider id; a `name` adds further accounts.
  */
 export function addCliAccount(provider: string, name?: string): AddResult {
   const cat = catalogProvider(provider);
@@ -227,8 +248,14 @@ export function addCliAccount(provider: string, name?: string): AddResult {
   if (!which(cat.binary)) return { ok: false, message: `the ${cat.binary} binary isn't on your PATH — install it first` };
   const slug = name ? name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") : "";
   const id = slug ? `${provider}-${slug}` : provider;
-  const profile = slug ? cliProfileDir(id) : undefined; // named → isolated dir; default → system login
-  if (profile) mkdirSync(profile, { recursive: true });
+  // An already-registered account keeps its existing auth (don't reset a
+  // working login or stored token just because /account add ran again).
+  const existing = getAccount(id);
+  if (existing && existing.auth.kind === "cli") {
+    return { ok: true, account: ensureCliProfile(existing), message: `${existing.label} already registered` };
+  }
+  const profile = cliProfileDir(id); // ALWAYS isolated — never the vendor app's own home
+  mkdirSync(profile, { recursive: true });
   const account: Account = {
     id,
     label: slug ? `${cat.label.replace(/ \(.*\)$/, "")} (${name!.trim()})` : cat.label,
@@ -240,12 +267,48 @@ export function addCliAccount(provider: string, name?: string): AddResult {
     addedAt: Date.now(),
   };
   putAccount(account);
-  return { ok: true, account, message: `${account.label} ready — runs via the ${cat.binary} CLI${profile ? " (separate login)" : ""}` };
+  return { ok: true, account, message: `${account.label} ready — runs via the ${cat.binary} CLI (own isolated login)` };
+}
+
+/** Resolve a CLI account's stored 1-year setup token, if any. */
+export async function cliOauthToken(account: Account | undefined): Promise<string | undefined> {
+  if (!account || account.auth.kind !== "cli" || !account.auth.oauthTokenRef) return undefined;
+  return (await getSecret(account.auth.oauthTokenRef)) ?? undefined;
+}
+
+/**
+ * Attach a pasted `claude setup-token` (sk-ant-oat01-…, valid ~1 year) to a
+ * Claude subscription account — the collision-free auth path: it rides as
+ * CLAUDE_CODE_OAUTH_TOKEN on every spawn, never rotates, and works no matter
+ * what the Claude app (or any other account) is logged into. Attaches to the
+ * first token-less claude account, else registers the default one.
+ */
+export async function addClaudeOauthToken(token: string): Promise<AddResult> {
+  const t = token.trim();
+  if (!/^sk-ant-oat/.test(t)) return { ok: false, message: "that doesn't look like a Claude setup token (sk-ant-oat…)" };
+  let account = listAccounts().find((a) => a.provider === "claude-cli" && a.auth.kind === "cli" && !a.auth.oauthTokenRef)
+    ?? listAccounts().find((a) => a.provider === "claude-cli");
+  if (!account) {
+    const r = addCliAccount("claude-cli");
+    if (!r.ok || !r.account) return r;
+    account = r.account;
+  }
+  const ref = `${account.id}:oauth-token`;
+  await setSecret(ref, t);
+  const next: Account = { ...ensureCliProfile(account), auth: { ...(account.auth as any), oauthTokenRef: ref } };
+  putAccount(next);
+  return { ok: true, account: next, message: `${next.label}: setup token stored — works for ~1 year, independent of any app login` };
 }
 
 // Check whether the vendor CLI is signed in — fast, free, no model call.
 // claude: `claude auth status` (JSON). codex: `codex login status` (text).
-export async function cliAuthStatus(binary: string, profile?: string): Promise<CliAuthStatus> {
+export async function cliAuthStatus(binary: string, profile?: string, oauthToken?: string): Promise<CliAuthStatus> {
+  // A stored setup token IS the auth — it's a 1-year bearer that outranks any
+  // login, so the account is signed in by construction (no probe needed; the
+  // vendor's `auth status` reports the keychain login, not the env token).
+  if (oauthToken && binary.includes("claude")) {
+    return { loggedIn: true, detail: "1-year setup token", identity: undefined, identityLabel: "setup token" };
+  }
   // Strip the API key so we probe the SUBSCRIPTION login, not an env key that would
   // otherwise shadow it (see cli-backend.subscriptionEnv). `profile` scopes the
   // check to a specific account's config dir for multi-account setups.
@@ -308,6 +371,10 @@ export function cliLoginArgs(binary: string): string[] {
  *  precise guided message naming exactly what else is needed). */
 export async function addByPastedKey(key: string): Promise<AddResult> {
   const g = sniffCredential(key);
+  // A pasted `claude setup-token` attaches to a Claude subscription account.
+  if (g.kind === "cli" && g.provider === "claude-cli") {
+    return addClaudeOauthToken(g.fields.apiKey ?? key);
+  }
   if ((g.kind === "api-key" || g.kind === "openai-compat") && g.provider) {
     return addApiKeyAccount(g.provider, g.fields.apiKey ?? key);
   }

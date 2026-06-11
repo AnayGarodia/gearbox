@@ -20,7 +20,7 @@ import { truncate, gitConfirmOpen, diffOpen, diffSetText, type PanelState, type 
 import { listAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
 import type { Account } from "../accounts/types.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
-import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, addVertexAccount, addCliAccount, cliAuthStatus, cliLoginArgs } from "../accounts/onboard.ts";
+import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, addVertexAccount, addCliAccount, cliAuthStatus, cliLoginArgs, cliOauthToken } from "../accounts/onboard.ts";
 import { buildAddGuidance } from "../accounts/add-spec.ts";
 import { discoverModels } from "../accounts/discover.ts";
 import { catalogProvider } from "../accounts/catalog.ts";
@@ -298,7 +298,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         const phaseId = pushPhase(`${accountLabel(res.account)} sign-in`, `checking ${statusCmd}`);
         void (async () => {
           try {
-            let st = await cliAuthStatus(bin, profile);
+            let st = await cliAuthStatus(bin, profile, await cliOauthToken(res.account));
             if (!st.loggedIn) {
               const detail = st.detail ? ` (${st.detail})` : "";
               updatePhase(phaseId, "running", `${accountLabel(res.account!)} sign-in`, `opening ${bin} ${cliLoginArgs(bin).join(" ")}${detail}`);
@@ -311,7 +311,8 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
               st = await cliAuthStatus(bin, profile);
               if (!st.loggedIn) {
                 const retryDetail = st.detail ? ` ${st.detail}.` : "";
-                updatePhase(phaseId, "err", `${accountLabel(res.account!)} sign-in`, `didn't complete.${retryDetail} Run ${bin} ${cliLoginArgs(bin).join(" ")}, then /account add ${bin === "codex" ? "codex" : "claude"}${name ? " " + name : ""}`);
+                const tokenTip = bin === "claude" ? " Or run `claude setup-token` in a terminal and paste the sk-ant-oat… token here as /account add <token> — works for a year, independent of any app login." : "";
+                updatePhase(phaseId, "err", `${accountLabel(res.account!)} sign-in`, `didn't complete.${retryDetail} Run ${bin} ${cliLoginArgs(bin).join(" ")}, then /account add ${bin === "codex" ? "codex" : "claude"}${name ? " " + name : ""}.${tokenTip}`);
                 return;
               }
             }

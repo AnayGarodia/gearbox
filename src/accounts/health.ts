@@ -3,7 +3,7 @@
 // the failover decision (src/agent/failover.ts). No background polling.
 import type { Account, AccountHealth, HealthState } from "./types.ts";
 import { putAccount, getAccount } from "./store.ts";
-import { testAccount, cliAuthStatus } from "./onboard.ts";
+import { testAccount, cliAuthStatus, cliOauthToken } from "./onboard.ts";
 export type { AccountHealth, HealthState } from "./types.ts";
 
 // Credential-class states are the only ones that trigger failover.
@@ -104,7 +104,7 @@ export function checkHealth(account: Account): Promise<AccountHealth> {
       if (account.exec === "cli") {
         const bin = (account.auth as any).binary as string;
         const profile = (account.auth as any).loginProfile as string | undefined;
-        const st = await cliAuthStatus(bin, profile);
+        const st = await cliAuthStatus(bin, profile, await cliOauthToken(account));
         return { state: st.loggedIn ? "ok" : "expired", checkedAt: at, detail: st.detail };
       }
       const r = await testAccount(account);

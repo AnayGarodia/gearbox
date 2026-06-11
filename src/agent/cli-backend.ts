@@ -212,10 +212,15 @@ const KEYS_TO_STRIP: Record<string, string[]> = {
 // several claude (or codex) logins coexist instead of sharing one system login.
 const CONFIG_DIR_VAR: Record<string, string> = { claude: "CLAUDE_CONFIG_DIR", codex: "CODEX_HOME" };
 
-export function subscriptionEnv(binary: string, profile?: string): Record<string, string> {
+export function subscriptionEnv(binary: string, profile?: string, oauthToken?: string): Record<string, string> {
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
   for (const k of KEYS_TO_STRIP[binary] ?? []) delete env[k];
   if (profile && CONFIG_DIR_VAR[binary]) env[CONFIG_DIR_VAR[binary]!] = profile;
+  // A stored 1-year setup token (claude) rides as CLAUDE_CODE_OAUTH_TOKEN — it
+  // outranks the keychain login, never rotates, and is immune to the macOS
+  // shared-keychain collision between accounts (claude-code issue #20553).
+  if (oauthToken && binary.includes("claude")) env.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+  else delete env.CLAUDE_CODE_OAUTH_TOKEN; // never inherit another account's token
   return env;
 }
 
@@ -332,6 +337,7 @@ export async function runCliTask(opts: {
   sessionId?: string;
   autoApprove?: boolean;
   readOnly?: boolean; // headless one-shot without --yolo: plan mode / read-only sandbox
+  oauthToken?: string; // claude 1-year setup token → CLAUDE_CODE_OAUTH_TOKEN (collision-free auth)
   modelId?: string;
   effort?: string;
   cwd?: string;
@@ -352,7 +358,7 @@ export async function runCliTask(opts: {
 
   let proc: Proc;
   try {
-    proc = spawnProc([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd(), env: subscriptionEnv(binary, opts.profile) });
+    proc = spawnProc([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd(), env: subscriptionEnv(binary, opts.profile, opts.oauthToken) });
   } catch (e: any) {
     fail(`couldn't start ${binary}: ${e?.message ?? e}`);
     if (!opts.deferTerminal) onEvent({ type: "done", usage: state.usage });
