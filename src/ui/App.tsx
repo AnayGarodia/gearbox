@@ -2249,7 +2249,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             messages,
             usage: { inputTokens: 0, outputTokens: 0 },
             failure: {
-              message: `prompt too large for ${choice.model.label}: ~${overflow.tokens.toLocaleString()} tokens against a ${overflow.budget.toLocaleString()}-token input budget, even after compaction and trimming. Shorten or split the message, or /clear to start fresh.`,
+              // k-format, NOT toLocaleString: comma groups like "178,529" match
+              // classifyFailure's \b529\b and would park+hop a refusal that the
+              // comment above promises classifies "other".
+              message: `prompt too large for ${choice.model.label}: ~${Math.round(overflow.tokens / 1000)}k tokens against a ${Math.round(overflow.budget / 1000)}k-token input budget, even after compaction and trimming. Shorten or split the message, or /clear to start fresh.`,
             },
             cooldownKey: `env:${choice.model.provider}`, // never parked: overflow classifies "other"
           };
