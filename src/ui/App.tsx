@@ -2134,7 +2134,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        let { system, messages: ctx, cacheBreak, sections } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan, cwd: rootRef.current });
+        let { system, messages: ctx, cacheBreak, sections } = buildContext({ history: messages, userText: prompt, userContent, model: choice.model, plan, verifyMode: verifyRef.current, cwd: rootRef.current });
         // Remember this turn's non-history context overhead (system + memory +
         // repomap + retrieval + git) so the auto-compact trigger can budget on
         // the FULL context, not history alone.
