@@ -13,6 +13,8 @@
 import type { ModelMessage } from "ai";
 import type { OnEvent, Usage } from "./events.ts";
 import { spawnProc } from "../proc.ts";
+import { readFileSync, statSync } from "node:fs";
+import { join, dirname, resolve as resolvePath } from "node:path";
 import type { Proc } from "../proc.ts";
 
 export interface CliRate {
@@ -240,7 +242,28 @@ function cliModelArg(binary: string, modelId?: string): string | undefined {
   return modelId;
 }
 
-export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; readOnly?: boolean; modelId?: string; effort?: string } = {}): string[] {
+/** In a git WORKTREE the real git dir lives OUTSIDE the workspace (.git here is
+ *  a pointer file: "gitdir: <main>/.git/worktrees/<name>"). Codex's
+ *  workspace-write sandbox therefore blocks every git mutation (branch/commit/
+ *  push all write through that pointer) — the exact "permissions are never
+ *  there in worktrees" failure. Resolve the main .git dir so it can be added
+ *  to the sandbox's writable roots. Returns [] for a normal repo (its .git is
+ *  a directory inside the workspace) or a non-repo. */
+export function worktreeGitRoots(cwd: string): string[] {
+  try {
+    const dotGit = join(cwd, ".git");
+    if (!statSync(dotGit).isFile()) return [];
+    const m = readFileSync(dotGit, "utf8").match(/^gitdir:\s*(.+)\s*$/m);
+    if (!m) return [];
+    const gitdir = resolvePath(cwd, m[1]!.trim()); // <main>/.git/worktrees/<name>
+    const mainGit = dirname(dirname(gitdir)); // <main>/.git
+    return [mainGit];
+  } catch {
+    return [];
+  }
+}
+
+export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; readOnly?: boolean; modelId?: string; effort?: string; writableRoots?: string[] } = {}): string[] {
   const model = cliModelArg(binary, opts.modelId);
   if (binary.includes("codex")) {
     // Auth still comes from CODEX_HOME, but user config can contain hooks/MCP
@@ -262,7 +285,13 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
     else if (opts.autoApprove) {
       if (resume) flags.push("-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`);
       else flags.push("--dangerously-bypass-approvals-and-sandbox");
-    } else flags.push(...(resume ? ["-c", `sandbox_mode="workspace-write"`] : ["--sandbox", "workspace-write"]), "-c", `approval_policy="never"`);
+    } else {
+      flags.push(...(resume ? ["-c", `sandbox_mode="workspace-write"`] : ["--sandbox", "workspace-write"]), "-c", `approval_policy="never"`);
+      // Worktree tabs: the real .git lives outside the workspace — without
+      // this, every git mutation dies on the sandbox wall (JSON string arrays
+      // are valid TOML, which -c expects).
+      if (opts.writableRoots?.length) flags.push("-c", `sandbox_workspace_write.writable_roots=${JSON.stringify(opts.writableRoots)}`);
+    }
     // `resume` is a subcommand that must immediately follow `exec`
     // (codex exec resume <SESSION_ID> [OPTS] [PROMPT]) — it was appended AFTER the
     // flags, so it was parsed as a prompt arg and resume never worked.
@@ -347,7 +376,8 @@ export async function runCliTask(opts: {
   deferTerminal?: boolean; // suppress terminal error/done + return `failure` instead (caller drives failover)
 }): Promise<CliResult> {
   const { binary, prompt, messages, onEvent, signal } = opts;
-  const args = buildCliArgs(binary, prompt, { sessionId: opts.sessionId, autoApprove: opts.autoApprove, readOnly: opts.readOnly, modelId: opts.modelId, effort: opts.effort });
+  const wr = binary.includes("codex") ? worktreeGitRoots(opts.cwd ?? process.cwd()) : [];
+  const args = buildCliArgs(binary, prompt, { writableRoots: wr, sessionId: opts.sessionId, autoApprove: opts.autoApprove, readOnly: opts.readOnly, modelId: opts.modelId, effort: opts.effort });
   const state = newState();
   let failureMessage: string | undefined;
   const fail = (message: string) => {

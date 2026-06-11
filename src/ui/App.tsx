@@ -2056,6 +2056,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         sessionId: cliSessionRef.current,
         autoApprove: isYolo(),
         profile,
+        cwd: rootRef.current, // THIS tab's tree — process.cwd() belongs to whichever tab is active
         oauthToken: await cliOauthToken(activeAccount), // claude setup-token → collision-free auth
         modelId,
         effort: cliEffort,

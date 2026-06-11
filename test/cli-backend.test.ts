@@ -199,3 +199,31 @@ test("captures the model the claude stream reports (for the status bar)", () => 
   const r = parseCliLines("claude", lines, () => {});
   expect(r.model).toBe("claude-sonnet-4-6");
 });
+
+// ── worktrees: codex's sandbox must include the main .git dir ────────────────
+import { worktreeGitRoots } from "../src/agent/cli-backend.ts";
+import { mkdtempSync as mkTmp, writeFileSync as writeF, mkdirSync as mkDir } from "node:fs";
+import { tmpdir as osTmp } from "node:os";
+import { join as pjoin } from "node:path";
+
+test("worktreeGitRoots resolves the main .git for a worktree, [] otherwise", () => {
+  const main = mkTmp(pjoin(osTmp(), "gbx-wt-"));
+  mkDir(pjoin(main, ".git", "worktrees", "cowboy"), { recursive: true });
+  const wt = pjoin(main, "tabs", "cowboy");
+  mkDir(wt, { recursive: true });
+  writeF(pjoin(wt, ".git"), `gitdir: ${pjoin(main, ".git", "worktrees", "cowboy")}\n`);
+  expect(worktreeGitRoots(wt)).toEqual([pjoin(main, ".git")]);
+  // a normal repo (.git is a directory) and a non-repo both yield nothing
+  expect(worktreeGitRoots(main)).toEqual([]);
+  expect(worktreeGitRoots(osTmp())).toEqual([]);
+});
+
+test("codex args include the worktree's git dir as a writable sandbox root", () => {
+  const w = buildCliArgs("codex", "x", { writableRoots: ["/repo/.git"] });
+  expect(w.join(" ")).toContain('sandbox_workspace_write.writable_roots=["/repo/.git"]');
+  // resume path carries it too (as -c, which exec resume accepts)
+  const r = buildCliArgs("codex", "x", { sessionId: "s1", writableRoots: ["/repo/.git"] });
+  expect(r.join(" ")).toContain('writable_roots=["/repo/.git"]');
+  // yolo (full bypass) and read-only don't need it
+  expect(buildCliArgs("codex", "x", { autoApprove: true, writableRoots: ["/repo/.git"] }).join(" ")).not.toContain("writable_roots");
+});
