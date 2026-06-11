@@ -41,7 +41,7 @@ import { loadProjectMemory } from "./memory.ts";
 import { repoMap } from "./repomap.ts";
 import { retrieveFiles } from "./retrieve.ts";
 import { gitContext } from "./git.ts";
-import { detectVerificationCommands } from "../verify.ts";
+import { detectVerificationCommands, type VerifyMode } from "../verify.ts";
 
 export const BASE_SYSTEM = `You are Gearbox, a precise terminal coding agent.
 Work in small, verifiable steps. Use the tools to read before you write, and
@@ -127,6 +127,10 @@ const PER_MESSAGE_OVERHEAD = 4;
 // the budget loop tries before dropping whole turns.
 const RECENT_TOOL_RESULT_CAP = 3_000;
 const TIGHT_TOOL_RESULT_CAP = 1_500;
+
+// Sessions longer than this turn count get a compact reminder block injected
+// into the last user message to counter instruction fade-out in long sessions.
+const REMINDER_TURN_THRESHOLD = 8;
 
 export interface ContextSection {
   name: string;
@@ -434,6 +438,36 @@ export function dedupeFileReads(messages: ModelMessage[]): ModelMessage[] {
   });
 }
 
+/** Returns a ~20-token reminder block reflecting the current mode and verify
+ *  setting. Injected into long sessions to counter instruction fade-out. */
+export function buildReminderBlock(plan: boolean, verifyMode: VerifyMode): string {
+  if (plan) return "[mode: plan (read-only) — investigate only, do not modify files]";
+  const hint = verifyMode === "auto"
+    ? "after edits state which tier passed (tests > types > none)"
+    : "verify is off";
+  return `[mode: normal | verify: ${verifyMode} — ${hint}]`;
+}
+
+function injectReminder(msg: ModelMessage, reminder: string): ModelMessage {
+  if (typeof msg.content === "string") {
+    return { ...msg, content: `${msg.content}\n\n${reminder}` };
+  }
+  if (Array.isArray(msg.content)) {
+    const parts = msg.content as any[];
+    let lastTextIdx = -1;
+    for (let i = parts.length - 1; i >= 0; i--) {
+      if ((parts[i] as any)?.type === "text") { lastTextIdx = i; break; }
+    }
+    if (lastTextIdx >= 0) {
+      const newParts = [...parts];
+      newParts[lastTextIdx] = { ...parts[lastTextIdx] as object, text: `${(parts[lastTextIdx] as any).text}\n\n${reminder}` };
+      return { ...msg, content: newParts as any };
+    }
+    return { ...msg, content: [...parts, { type: "text" as const, text: reminder }] as any };
+  }
+  return msg;
+}
+
 /**
  * Build the complete context for one model turn.
  *
@@ -459,6 +493,7 @@ export function buildContext(opts: {
   userContent?: any;
   model: ModelSpec;
   plan?: boolean;
+  verifyMode?: VerifyMode;
   cwd?: string;
   recentTurns?: number;
 }): BuiltContext {
@@ -646,6 +681,16 @@ export function buildContext(opts: {
   // where the agent never received the tool result). Sanitize before sending so
   // the request is always structurally valid.
   const finalMessages = sanitizeToolPairs([...flat, userMsg]);
+
+  if (Math.floor(history.length / 2) >= REMINDER_TURN_THRESHOLD) {
+    const last = finalMessages[finalMessages.length - 1];
+    if (last?.role === "user") {
+      finalMessages[finalMessages.length - 1] = injectReminder(
+        last,
+        buildReminderBlock(Boolean(plan), opts.verifyMode ?? "auto"),
+      );
+    }
+  }
 
   // ── Step 5: compute the cache breakpoint ───────────────────────────────────
 

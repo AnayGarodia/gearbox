@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countTokens, baseTokens } from "../src/model/tokens.ts";
-import { buildContext, sanitizeToolPairs, dedupeFileReads, distillToolCalls, elideTurn, capToolResults, recentlyReadPaths } from "../src/context/builder.ts";
+import { buildContext, buildReminderBlock, sanitizeToolPairs, dedupeFileReads, distillToolCalls, elideTurn, capToolResults, recentlyReadPaths } from "../src/context/builder.ts";
 import { repoMap } from "../src/context/repomap.ts";
 import { rankFiles, retrieveFiles, resetRetrievalIndex } from "../src/context/retrieve.ts";
 import { appendFact, loadFacts } from "../src/context/memory.ts";
@@ -478,6 +478,77 @@ test("estimateHistoryTokens grows with history", () => {
   const a = estimateHistoryTokens([...toolTurn(1)]);
   const b = estimateHistoryTokens([...toolTurn(1), ...toolTurn(2)]);
   expect(b).toBeGreaterThan(a);
+});
+
+// ── system prompt reminders ──
+function makeHistory(turnCount: number): ModelMessage[] {
+  const h: ModelMessage[] = [];
+  for (let i = 0; i < turnCount; i++) {
+    h.push({ role: "user", content: `question ${i}` });
+    h.push({ role: "assistant", content: `answer ${i}` });
+  }
+  return h;
+}
+
+test("buildReminderBlock returns plan-mode reminder when plan=true", () => {
+  const r = buildReminderBlock(true, "auto");
+  expect(r).toContain("plan (read-only)");
+  expect(r).toContain("do not modify files");
+});
+
+test("buildReminderBlock returns normal-mode reminder with tier hint", () => {
+  const r = buildReminderBlock(false, "auto");
+  expect(r).toContain("mode: normal");
+  expect(r).toContain("tests > types > none");
+});
+
+test("buildReminderBlock notes verify-off when disabled", () => {
+  const r = buildReminderBlock(false, "off");
+  expect(r).toContain("verify is off");
+});
+
+// Helper: extract just the last text part of a user message (the actual user
+// input, after context injection). The reminder is appended to THIS part, not
+// to the CONTEXT_FOR_THIS_TURN block, so checking here avoids false positives
+// from BM25 retrieval injecting the test file (which now contains reminder text).
+function lastTextPart(m: ModelMessage): string {
+  if (typeof m.content === "string") return m.content;
+  const parts = m.content as any[];
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (parts[i]?.type === "text") return parts[i].text ?? "";
+  }
+  return "";
+}
+
+test("short sessions (<8 turns) do not inject a reminder", () => {
+  const history = makeHistory(4);
+  const { messages } = buildContext({ history, userText: "do something", model: sonnet, verifyMode: "auto" });
+  const last = messages[messages.length - 1]!;
+  expect(lastTextPart(last)).not.toContain("[mode:");
+});
+
+test("long sessions (>=8 turns) inject reminder into last user message", () => {
+  const history = makeHistory(9);
+  const { messages } = buildContext({ history, userText: "do something", model: sonnet, verifyMode: "auto" });
+  const last = messages[messages.length - 1]!;
+  const text = lastTextPart(last);
+  expect(text).toContain("[mode: normal |");
+  expect(text).toContain("do something");
+});
+
+test("reminder in long sessions reflects plan mode", () => {
+  const history = makeHistory(9);
+  const { messages } = buildContext({ history, userText: "plan this", model: sonnet, plan: true, verifyMode: "auto" });
+  const last = messages[messages.length - 1]!;
+  expect(lastTextPart(last)).toContain("plan (read-only)");
+});
+
+test("no verifyMode provided defaults to auto hint", () => {
+  const history = makeHistory(9);
+  const { messages } = buildContext({ history, userText: "x", model: sonnet });
+  const text = lastTextPart(messages[messages.length - 1]!);
+  expect(text).toContain("[mode: normal |");
+  expect(text).toContain("tests > types > none");
 });
 
 afterAll(() => resetRetrievalIndex());
