@@ -93,6 +93,23 @@ test("buildCliArgs uses each binary's stream-json flags", () => {
   expect(buildCliArgs("claude", "x", { modelId: "opus-4.8" })).toContain("opus");
   expect(buildCliArgs("codex", "x", { modelId: "gpt-5.5" })).toContain("gpt-5.5");
   expect(buildCliArgs("codex", "x", { effort: "xhigh" })).toContain('model_reasoning_effort="xhigh"');
+
+  // `codex exec resume` rejects --sandbox/--model/--dangerously-* outright
+  // ("unexpected argument '--sandbox'") — on resume everything rides as -c
+  // config overrides, which both subcommands accept.
+  const r = buildCliArgs("codex", "x", { sessionId: "s1", modelId: "gpt-5.5", autoApprove: false });
+  expect(r.slice(0, 3)).toEqual(["exec", "resume", "s1"]);
+  expect(r).not.toContain("--sandbox");
+  expect(r).not.toContain("--model");
+  expect(r).toContain('sandbox_mode="workspace-write"');
+  expect(r).toContain('model="gpt-5.5"');
+  expect(r).toContain('approval_policy="never"');
+  const ry = buildCliArgs("codex", "x", { sessionId: "s1", autoApprove: true });
+  expect(ry).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+  expect(ry).toContain('sandbox_mode="danger-full-access"');
+  const rr = buildCliArgs("codex", "x", { sessionId: "s1", readOnly: true });
+  expect(rr).not.toContain("--sandbox");
+  expect(rr).toContain('sandbox_mode="read-only"');
 });
 
 // A fresh conversation (/clear) or a resumed session clears cliSessionRef to

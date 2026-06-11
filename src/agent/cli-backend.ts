@@ -242,11 +242,22 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
     // settings that are stale or unsafe for this subprocess. Keep Gearbox's
     // subscription bridge clean and let the Codex CLI own the actual turn.
     const flags: string[] = ["--json", "--skip-git-repo-check", "--ignore-user-config"];
-    if (model) flags.push("--model", model);
+    // `codex exec resume` accepts ONLY --json/--skip-git-repo-check/
+    // --ignore-user-config/--config — passing --sandbox/--model there is a
+    // hard CLI error ("unexpected argument '--sandbox'"). Express model,
+    // effort, and sandbox/approval as -c config overrides, which BOTH
+    // subcommands accept, and keep the flag spellings for fresh `exec` only.
+    const resume = Boolean(opts.sessionId);
+    if (model) {
+      if (resume) flags.push("-c", `model="${model}"`);
+      else flags.push("--model", model);
+    }
     if (opts.effort) flags.push("-c", `model_reasoning_effort="${opts.effort}"`);
-    if (opts.readOnly) flags.push("--sandbox", "read-only", "-c", `approval_policy="never"`);
-    else if (opts.autoApprove) flags.push("--dangerously-bypass-approvals-and-sandbox");
-    else flags.push("--sandbox", "workspace-write", "-c", `approval_policy="never"`);
+    if (opts.readOnly) flags.push(...(resume ? ["-c", `sandbox_mode="read-only"`] : ["--sandbox", "read-only"]), "-c", `approval_policy="never"`);
+    else if (opts.autoApprove) {
+      if (resume) flags.push("-c", `sandbox_mode="danger-full-access"`, "-c", `approval_policy="never"`);
+      else flags.push("--dangerously-bypass-approvals-and-sandbox");
+    } else flags.push(...(resume ? ["-c", `sandbox_mode="workspace-write"`] : ["--sandbox", "workspace-write"]), "-c", `approval_policy="never"`);
     // `resume` is a subcommand that must immediately follow `exec`
     // (codex exec resume <SESSION_ID> [OPTS] [PROMPT]) — it was appended AFTER the
     // flags, so it was parsed as a prompt arg and resume never worked.
