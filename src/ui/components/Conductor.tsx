@@ -116,15 +116,20 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     // instead of "tab-2". A name is taken if an open tab uses it OR its worktree
     // dir already exists on disk (reattaching to old work should be a choice —
     // `/tab new wizard` — not a surprise).
-    const slug = name
-      ? tabSlug(name, id)
-      : nextTabName(
-          [
-            ...tabsRef.current.map((t) => t.name),
-            ...TAB_NAMES.filter((n) => home && existsSync(join(home, ".gearbox", "tabs", n))),
-          ],
-          id,
-        );
+    const taken = new Set(tabsRef.current.map((t) => t.name.toLowerCase()));
+    const onDisk = (n: string) => !!home && existsSync(join(home, ".gearbox", "tabs", n));
+    let slug: string;
+    if (name) slug = tabSlug(name, id);
+    else if (opts?.fork) {
+      // An unnamed fork is named after its source: wizard → wizard-fork
+      // (→ wizard-fork-2 …) — visibly related, never identical.
+      const base = tabsRef.current[activeIdxRef.current]?.name ?? "fork";
+      let cand = `${base}-fork`;
+      for (let k = 2; taken.has(cand.toLowerCase()) || onDisk(cand); k++) cand = `${base}-fork-${k}`;
+      slug = tabSlug(cand, id);
+    } else {
+      slug = nextTabName([...taken, ...TAB_NAMES.filter(onDisk)], id);
+    }
     const root = home;
     let dir = process.cwd();
     if (root) {

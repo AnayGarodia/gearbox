@@ -631,10 +631,13 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           return;
         }
         case "tab": {
-          echo(text);
-          if (!tabs) { notice("tabs need fullscreen multi-session mode (run gearbox without --inline)"); return; }
+          if (!tabs) { echo(text); notice("tabs need fullscreen multi-session mode (run gearbox without --inline)"); return; }
           const [sub, ...restWords] = arg.split(/\s+/).filter(Boolean);
           const rest = restWords.join(" ");
+          // No echo for fork: it's also dispatched by the in-stream ⑂ fork
+          // click, and the echoed command would pollute BOTH transcripts (the
+          // snapshot copies it into the forked history too).
+          if (sub !== "fork") echo(text);
           if (!sub || sub === "list") {
             const rows = tabs.list().map((t, i) => `${t.active ? "●" : " "} ${i + 1}  ${t.title}${t.status !== "idle" ? `  · ${t.status}` : ""}\n     ${t.dir}`);
             notice(`tabs (⌃T next · click the bar · /tab new|run|fork|merge|close)\n${rows.join("\n")}`);
@@ -651,9 +654,14 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           if (sub === "fork") {
             // Fork THIS conversation into a new tab: full history rides along,
             // then the two sessions diverge in separate worktrees.
-            tabs.create(rest || `${sessionRef.current.title || "fork"}`, {
+            // Unnamed → the conductor derives "<source-tab>-fork" (deduped);
+            // passing the session title here made the fork tab a clone of the
+            // source tab's name.
+            tabs.create(rest || undefined, {
               fork: {
-                title: sessionRef.current.title ? `${sessionRef.current.title} (fork)` : "forked session",
+                // ⑂ at the FRONT: a "(fork)" suffix vanished under the tab
+                // cell's 14-col truncation, leaving two identical-looking tabs.
+                title: sessionRef.current.title ? `⑂ ${sessionRef.current.title}` : "forked session",
                 messages: msgRef.current,
                 items: itemsRef.current,
                 turns: sessionRef.current.turns,
