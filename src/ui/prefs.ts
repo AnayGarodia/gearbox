@@ -20,6 +20,8 @@ export interface Prefs {
   theme?: string; // color palette name (/theme); "dark" is the default — see theme.ts THEMES
   editor?: string; // editor scheme for clickable file links (vscode default · cursor · windsurf · zed · off)
   offerTests?: boolean; // false = never offer the characterization test (/verify test off)
+  sandbox?: "off" | "read-only" | "workspace-write"; // OS sandbox for agent shell commands (/sandbox); default workspace-write on macOS
+  sandboxNetwork?: boolean; // allow network inside the sandbox (/sandbox network on); default off
 }
 
 function file(): string {

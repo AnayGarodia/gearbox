@@ -63,3 +63,37 @@ describe("buildAutofixCaveat", () => {
     expect(buildAutofixCaveat(2, [], ["src/a.ts"])).toContain("2 autofix attempts");
   });
 });
+
+// ── Same-failure early stop ──────────────────────────────────────────────────
+import { failureFingerprint } from "../src/verify.ts";
+
+test("failureFingerprint normalizes whitespace and order but keeps counts", () => {
+  expect(failureFingerprint(["a  failed\n", " a failed"])).toBe(failureFingerprint(["a failed", "a failed"]));
+  expect(failureFingerprint(["b failed", "a failed"])).toBe(failureFingerprint(["a failed", "b failed"]));
+  // progress (different counts) must change the fingerprint
+  expect(failureFingerprint(["3 tests failed"])).not.toBe(failureFingerprint(["2 tests failed"]));
+});
+
+test("identical consecutive failure stops the auto-fix loop early", () => {
+  const base = { mode: "auto" as const, changedFiles: ["a.ts"], failures: ["bun test: x is not defined"] };
+  const fp = failureFingerprint(base.failures);
+  // attempt 1 with a DIFFERENT previous failure → keep going
+  expect(shouldAutoFix({ ...base, attempt: 1, prevFingerprint: failureFingerprint(["other"]) })).toBe(true);
+  // attempt 1 reproducing the SAME failure → stop, despite budget remaining
+  expect(shouldAutoFix({ ...base, attempt: 1, prevFingerprint: fp })).toBe(false);
+  // no previous fingerprint (first attempt) → unaffected
+  expect(shouldAutoFix({ ...base, attempt: 1 })).toBe(true);
+});
+
+test("failureFingerprint strips run-variable tokens (durations, addresses, tmp paths)", () => {
+  // bun/vitest-style duration in the fail line must not read as progress
+  expect(failureFingerprint(['error: expect(received).toBe(expected) [12.43ms]'])).toBe(failureFingerprint(['error: expect(received).toBe(expected) [9.01ms]']));
+  expect(failureFingerprint(["Ran all test suites in 3.2s"])).toBe(failureFingerprint(["Ran all test suites in 4.7s"]));
+  // panic addresses
+  expect(failureFingerprint(["panicked at 0x7f3a91b2"])).toBe(failureFingerprint(["panicked at 0x7f000001"]));
+  // tmp paths
+  expect(failureFingerprint(["ENOENT /var/folders/xx/T/build-1234/out"])).toBe(failureFingerprint(["ENOENT /var/folders/yy/T/build-9999/out"]));
+  // counts and line numbers survive the stripping
+  expect(failureFingerprint(["3 tests failed at a.ts:42"])).not.toBe(failureFingerprint(["2 tests failed at a.ts:42"]));
+  expect(failureFingerprint(["fail at a.ts:42"])).not.toBe(failureFingerprint(["fail at a.ts:43"]));
+});

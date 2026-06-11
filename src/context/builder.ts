@@ -157,6 +157,12 @@ export interface BuiltContext {
   // remain a byte-identical cacheable prefix across turns. Set to -1 when there
   // is no settled history yet (first turn), meaning only the system block caches.
   cacheBreak: number;
+  // Pre-flight overflow: set when the final send STILL exceeds the model's
+  // input budget after every reduction rung (tight caps, elision, whole-turn
+  // drops, retrieval shed) — i.e. the irreducible system + user content alone
+  // can't fit (a giant paste). The caller should refuse the turn with a clear
+  // message instead of sending a request the provider will reject.
+  overflow?: { tokens: number; budget: number };
 }
 
 // ── token helpers ──────────────────────────────────────────────────────────────
@@ -733,6 +739,9 @@ export function buildContext(opts: {
   // dropped orphan part cannot shift the index. -1 means no settled history
   // exists yet (the first turn), so only the system block is cached.
   const cacheBreak = finalMessages.length - 2;
+  // Final pre-flight check on the ACTUAL send: every reduction rung above has
+  // run, so anything still over budget is irreducible here.
+  const sendTokens = systemTokens + historyTokens + userTokens;
   return {
     system,
     messages: finalMessages,
@@ -740,6 +749,7 @@ export function buildContext(opts: {
     retrievedFiles: hits.map((h) => ({ file: h.file, pointer: Boolean(h.pointer) })),
     retrievedArchives: archiveHits.map((h) => ({ archiveId: h.archiveId, title: h.title })),
     cacheBreak,
+    overflow: sendTokens > inputBudget ? { tokens: sendTokens, budget: inputBudget } : undefined,
   };
 }
 

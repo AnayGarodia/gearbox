@@ -71,8 +71,9 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
+import { resolveSandboxPolicy, sandboxAvailable } from "../sandbox/index.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, reloadMcpConnections, removeMcpServer, shellSplit } from "../mcp.ts";
@@ -531,7 +532,13 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const escRef = useRef(0); // timestamp of the last esc, for double-esc rewind
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
   const verifyRef = useRef<VerifyMode>(loadPrefs().verify === "off" ? "off" : "auto"); // post-edit checks + auto-iterate-to-green
+  // Effective OS-sandbox mode for the status chip. Availability is folded in
+  // (darwin without sandbox-exec honestly reads "off"); sbxAvail distinguishes
+  // "off by choice" (warn chip) from "no backend on this platform" (no chip).
+  const sbxAvail = sandboxAvailable();
+  const [sandboxMode, setSandboxMode] = useState(() => (sandboxAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, rootRef.current).mode : "off" as const));
   const charTestOfferedRef = useRef(false); // characterization-test offer: once per session
+  const autofixFpRef = useRef<string | undefined>(undefined); // last auto-fix attempt's failure fingerprint (same-failure early stop)
   const lastChangedFilesRef = useRef<string[]>([]); // most recent edited-turn file list (/verify test targets these)
   // /commit + /pr: regeneration inputs for the confirm panel's ⌃R, and the
   // inline-mode draft awaiting `/commit go` · `/pr go`.
@@ -2223,7 +2230,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
-        let { system, messages: ctx, cacheBreak, sections, retrievedFiles } = buildContext({
+        let { system, messages: ctx, cacheBreak, sections, retrievedFiles, overflow } = buildContext({
           history: messages,
           userText: prompt,
           userContent,
@@ -2238,6 +2245,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // the FULL context, not history alone.
         lastContextSectionsRef.current = sections;
         ctxOverheadRef.current = sections.filter((s) => s.name !== "history" && s.name !== "user").reduce((a, s) => a + s.tokens, 0);
+        // Pre-flight overflow refusal: even after every reduction rung the send
+        // can't fit this model's window (a giant paste). Refuse BEFORE the call
+        // — a guaranteed provider 400 spends time and, on some gateways, money.
+        // Surfaced as a normal failure: no park, no hop (the failure isn't the
+        // account's), classified "other" so the loop ends with the message.
+        if (overflow) {
+          return {
+            messages,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            failure: {
+              // k-format, NOT toLocaleString: comma groups like "178,529" match
+              // classifyFailure's \b529\b and would park+hop a refusal that the
+              // comment above promises classifies "other".
+              message: `prompt too large for ${choice.model.label}: ~${Math.round(overflow.tokens / 1000)}k tokens against a ${Math.round(overflow.budget / 1000)}k-token input budget, even after compaction and trimming. Shorten or split the message, or /clear to start fresh.`,
+            },
+            cooldownKey: `env:${choice.model.provider}`, // never parked: overflow classifies "other"
+          };
+        }
         if (agentDef) system = `${system}\n\n# ACTIVE AGENT: ${agentDef.name}\n${agentDef.system}`;
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = account ? await resolveCreds(account) : undefined;
@@ -2298,19 +2323,28 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       let routedSource = "plan mode"; // only plan pre-sets routedKind; otherwise the classifier below decides
       if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
-        const cls = await classifyTask(prompt, signal);
+        // routedKindRef still holds the PREVIOUS turn's verdict here (it is
+        // overwritten just below) — a short anaphoric follow-up ("yes do it")
+        // inherits it instead of being classified in isolation as chat.
+        const cls = await classifyTask(prompt, signal, { prevKind: routedKindRef.current?.kind });
         routedKind = cls.kind;
         routedSource = cls.source;
       }
       routedKindRef.current = routedKind ? { kind: routedKind, source: routedSource } : null;
+      // Honest working-set estimate: the previous turn's REAL input token count.
+      // Sessions grow slowly turn-over-turn, so last turn's input is the best
+      // call-free predictor of this one; without it every turn scored at the
+      // router's 16k nominal and the context-window fit filter never engaged
+      // with real numbers. First turn has no prior → undefined → nominal.
+      const estTokens = sessionRef.current.turns.at(-1)?.inputTokens || undefined;
       let choice: ModelChoice;
       try {
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true, estTokens });
       } catch {
-        choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
+        choice = sel.select({ prompt, kind: routedKind, requires, estTokens }); // directive model unavailable → fall back to routing
       }
       if (sel instanceof RoutingSelector && !directiveId) noteBackendSwitch(choice);
       // When the user explicitly chose the model (a directive or a /model pin),
@@ -2371,7 +2405,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires, estTokens }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         // Bail only when the router hands back the exact pick we just parked
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
@@ -3088,10 +3122,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Auto-iterate to green: if checks failed on a turn that edited files,
           // feed the failure back and re-run, bounded by MAX_AUTOFIX_ATTEMPTS.
           // `/verify off` disables this (verifyRef === "off").
-          if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed })) {
+          // Same-failure early stop: a fix attempt that reproduced the exact
+          // failure it was given isn't converging — don't burn the remaining
+          // attempt budget re-asking the same question.
+          const prevFp = attempt > 0 ? autofixFpRef.current : undefined;
+          const sameFailure = Boolean(prevFp && failed.length && prevFp === failureFingerprint(failed));
+          if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed, prevFingerprint: prevFp })) {
+            autofixFpRef.current = failureFingerprint(failed);
             notice(`checks failed — fixing (attempt ${attempt + 1}/${MAX_AUTOFIX_ATTEMPTS})`);
             const fixPrompt = buildFixPrompt(failed);
             setTimeout(() => void runTurnRef.current?.(fixPrompt, attempt + 1), 0);
+          } else if (verifyRef.current === "auto" && sameFailure && attempt < MAX_AUTOFIX_ATTEMPTS) {
+            notice(`the fix attempt reproduced the same failure — stopping early, over to you`);
           } else if (verifyRef.current === "auto" && attempt >= MAX_AUTOFIX_ATTEMPTS && failed.length) {
             notice(`still failing after ${MAX_AUTOFIX_ATTEMPTS} fix attempts — over to you`);
           } else {
@@ -3162,7 +3204,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // state setters
         setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
         setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
-        setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
+        setSandboxMode, setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
         // helper callbacks
         applyEffortClamp, buildAccountView, buildPanelModelRows, cliModelChoices, cliModelLabel,
         cliSupportsModel, compactNow, echo, effortTarget, exit, findAccountRef, flashMood,
@@ -3209,6 +3251,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         push({ kind: "tool", id, callId: `direct:${id}`, name: "run_shell", arg: cmd, status: "running", summary: "", startedAt });
         void (async () => {
           const r = await runShellStream(cmd, {
+            sandbox: false, // user-typed `!cmd` — the user is the principal, never sandboxed
             onChunk: (c) => {
               setItems((prev) =>
                 prev.map((i) => {
@@ -4566,7 +4609,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
           assumes y === termRows; change in lockstep. */}
       <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
-        <StatusBar model={modelDisplay} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} providerColor={provHue} providerFlash={provFlash} frameHue={setupRequired ? null : provHue} epoch={themeEpochState} />
+        <StatusBar model={modelDisplay} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} sandbox={sbxAvail ? sandboxMode : undefined} width={pageW} online={online} cwd={rootRef.current} branch={branch} providerColor={provHue} providerFlash={provFlash} frameHue={setupRequired ? null : provHue} epoch={themeEpochState} />
       </Box>
     </>
   );

@@ -1,5 +1,5 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
-import { setPermissionHandler, requestPermission, resetPermissions } from "../src/permission.ts";
+import { setPermissionHandler, requestPermission, resetPermissions, setYolo } from "../src/permission.ts";
 
 beforeEach(() => {
   setPermissionHandler(null);
@@ -31,4 +31,31 @@ test("always → granted for that kind, not asked again", async () => {
   // a different kind is still gated
   expect(await requestPermission({ kind: "write", title: "", detail: "z" })).toBe(true);
   expect(calls).toBe(2);
+});
+
+test("forceAsk prompts even under yolo and standing grants", async () => {
+  const { setYolo } = await import("../src/permission.ts");
+  let calls = 0;
+  setPermissionHandler(async () => (calls++, "deny"));
+  setYolo(true);
+  // yolo auto-approves a normal request without prompting…
+  expect(await requestPermission({ kind: "shell", title: "", detail: "ls" })).toBe(true);
+  expect(calls).toBe(0);
+  // …but a forceAsk request still reaches the handler and can be denied.
+  expect(await requestPermission({ kind: "shell", title: "sandbox escape", detail: "curl x", forceAsk: true })).toBe(false);
+  expect(calls).toBe(1);
+});
+
+test("forceAsk approval works, and rules-free default approval path is unchanged", async () => {
+  setPermissionHandler(async () => "once");
+  expect(await requestPermission({ kind: "shell", title: "sandbox escape", detail: "bun install", forceAsk: true })).toBe(true);
+});
+
+test("forceAsk with no handler denies (headless escalation is not auto-approved)", async () => {
+  setPermissionHandler(null);
+  setYolo(true);
+  expect(await requestPermission({ kind: "shell", title: "sandbox escape", detail: "curl x", forceAsk: true })).toBe(false);
+  // ordinary requests keep the headless allow default
+  expect(await requestPermission({ kind: "shell", title: "normal", detail: "ls" })).toBe(true);
+  setYolo(false);
 });

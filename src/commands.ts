@@ -76,6 +76,7 @@ export const COMMANDS: CommandMeta[] = [
   { name: "/plan", usage: "/plan", desc: "plan mode: read-only, no edits (also shift+tab)", group: "modes" },
   { name: "/yolo", usage: "/yolo", desc: "run edits and commands without asking", group: "modes" },
   { name: "/verify", usage: "/verify [off|auto|test]", desc: "checks after edits + auto-fix to green · /verify test writes a characterization test when none exist", group: "modes" },
+  { name: "/sandbox", usage: "/sandbox [off|read-only|workspace-write|network on|off]", desc: "OS sandbox around agent shell commands — writes stay in the workspace, network off unless allowed (macOS)", group: "modes" },
   // settings
   { name: "/config", usage: "/config", desc: "view or change saved settings", group: "settings" },
   { name: "/theme", usage: "/theme [name]", desc: "palette gallery with live preview · dark · light · gruvbox · catppuccin · solarized · contrast", group: "settings" },

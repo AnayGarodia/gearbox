@@ -305,12 +305,13 @@ export interface RetrievedFile {
 // Calibrated against this repo: real code queries ("where is the cooldown
 // logic", "fix the failing verify gate") put their true files at 3.4–5.0 with
 // path/symbol boosts; conversational prompts that merely share English words
-// with code bodies ("thanks for the help", "explain promises") top out ≤2.2.
+// with code bodies ("thanks for the help", "explain promises") top out ≤2.5
+// (drifts upward as the corpus grows — "help" path-boosts src/help/).
 //   ≥ FULL (and boosted: the query names something the file IS) → content push.
 //   ≥ POINTER → a one-line path pointer; the model pulls it if it matters.
 //   below → nothing; the repo map already covers ambient awareness.
 const FULL_COVERAGE = 3.0;
-const POINTER_COVERAGE = 2.4;
+const POINTER_COVERAGE = 2.6;
 // And a relative floor: a hit scoring under 30% of the top hit is tail noise
 // regardless of absolute coverage.
 const REL_FLOOR = 0.3;
