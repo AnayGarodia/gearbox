@@ -10,6 +10,24 @@ import { selectionRange, wrapMap, wrapCaret, type Edit } from "../input.ts";
 export const composerWrapW = (width: number): number => Math.max(8, Math.max(width - 2, 8) - 4);
 export const composerRows = (value: string, width: number): number => wrapMap(value, composerWrapW(width)).length;
 
+// The input never grows past this many display rows — beyond it the box keeps
+// its height and SCROLLS internally (a cursor-following window), instead of
+// expanding until it shoves the transcript off the screen.
+export const MAX_INPUT_ROWS = 8;
+/** Display rows the composer actually OCCUPIES (capped) — the number every
+ *  layout consumer (footer budget, mouse hit-test) must use. */
+export const composerVisibleRows = (value: string, width: number): number => Math.min(wrapMap(value, composerWrapW(width)).length, MAX_INPUT_ROWS);
+/** The visible window of wrapped rows: keeps the cursor row in view, pinned to
+ *  the window bottom once the input outgrows MAX_INPUT_ROWS. Shared by the
+ *  renderer and App's click → text-offset math so they cannot drift. */
+export function composerWindow(value: string, width: number, cursor: number): { start: number; count: number; total: number } {
+  const total = wrapMap(value, composerWrapW(width)).length;
+  if (total <= MAX_INPUT_ROWS) return { start: 0, count: total, total };
+  const { row } = wrapCaret(value, composerWrapW(width), cursor);
+  const start = Math.min(Math.max(0, row - MAX_INPUT_ROWS + 1), total - MAX_INPUT_ROWS);
+  return { start, count: MAX_INPUT_ROWS, total };
+}
+
 // The opencode editor look: the input sits on the element layer (color.elementBg)
 // between a thick LEFT and RIGHT edge (┃) in a quiet border gray, with a bold `❯`
 // prompt in the accent. Bash mode keeps the pink `!` prompt + shell-colored edges.
@@ -80,7 +98,16 @@ function ComposerImpl({
   const wrapW = composerWrapW(width);
   const rows = wrapMap(value, wrapW);
   const { row: curRow, col: curCol } = wrapCaret(value, wrapW, cursor);
-  const prefix = (i: number) => (i === 0 ? " " + promptGlyph + " " : "   ");
+  // The cursor-following window: long input scrolls inside a fixed-height box.
+  const win = composerWindow(value, width, cursor);
+  const clippedAbove = win.start > 0;
+  const clippedBelow = win.start + win.count < win.total;
+  // ⋮ in the gutter marks clipped content (top/bottom edge rows of the window).
+  const prefix = (i: number) =>
+    i === 0 ? " " + promptGlyph + " "
+    : clippedAbove && i === win.start ? " ⋮ "
+    : clippedBelow && i === win.start + win.count - 1 ? " ⋮ "
+    : "   ";
   const bgPad = (used: number) => (used < innerW ? <Text backgroundColor={color.elementBg}>{" ".repeat(innerW - used)}</Text> : null);
   const renderRow = (r: { start: number; len: number }, i: number) => {
     const ln = value.substr(r.start, r.len);
@@ -167,7 +194,7 @@ function ComposerImpl({
           // Non-empty: render the live editable input WITH the cursor, even while
           // busy — what you type queues and sends when the turn finishes.
           <Box flexDirection="column" width={innerW}>
-            {rows.map((r, i) => (
+            {rows.slice(win.start, win.start + win.count).map((r, vi) => { const i = vi + win.start; return (
               <Box key={i} width={innerW}>
                 <Text backgroundColor={color.elementBg}>
                   <Text color={accent} bold>{prefix(i)}</Text>
@@ -175,7 +202,7 @@ function ComposerImpl({
                 </Text>
                 {bgPad(usedCols(r, i))}
               </Box>
-            ))}
+            ); })}
           </Box>
         )}
         <Box width={innerW}>{bgPad(0)}</Box>

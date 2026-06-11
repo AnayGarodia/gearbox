@@ -7,7 +7,7 @@ import { StatusBar, statusBarHit, statusBarLayout, formatStatusCost, collapsePat
 import { StatusStrip } from "./components/StatusStrip.tsx";
 import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx";
 import { FilePalette } from "./components/FilePalette.tsx";
-import { Composer, composerRows, composerWrapW } from "./components/Composer.tsx";
+import { Composer, composerRows, composerVisibleRows, composerWindow, composerWrapW } from "./components/Composer.tsx";
 import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type GhostLook, type MascotState } from "./components/Mascot.tsx";
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working, workingRows } from "./components/Working.tsx";
@@ -1116,12 +1116,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const home = homeScreenRef.current ? homeGeomRef.current : null;
       if (home == null && homeScreenRef.current) return null;
       const w = home ? home.width : pageWRef.current;
-      const rowCount = composerRows(value, w); // display rows (soft wrap — same map the renderer uses)
+      const rowCount = composerVisibleRows(value, w); // display rows (capped — same window the renderer uses)
       const firstInputRow = home ? home.firstInputRow : rows - 4 - rowCount;
       const lastInputRow = firstInputRow + rowCount - 1;
       const left = home ? home.left : pageLeftRef.current;
       if (y < firstInputRow || y > lastInputRow) return null;
-      const row = y - firstInputRow;
+      // Visible row → wrapped row through the same cursor-following window the
+      // renderer uses (long input scrolls inside the fixed-height box).
+      const row = y - firstInputRow + composerWindow(value, w, editRef.current.cursor).start;
       // 1 border + space + prompt + space, SGR coords are 1-based — plus the
       // column's left offset (page column in-session, centered box on home).
       const col = Math.max(0, x - 5 - left);
@@ -4130,7 +4132,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
   if (perm) footer += 5; // consent block: marginTop + title + command + options + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
-  else if (!panel && !homeScreen) footer += 4 + composerRows(edit.value, pageW); // composer (marginTop + pad + WRAPPED input rows + pad + footer hint · Composer.tsx row contract)
+  else if (!panel && !homeScreen) footer += 4 + composerVisibleRows(edit.value, pageW); // composer (marginTop + pad + CAPPED input rows + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
   // The now block (marginTop + verb row + activity row while busy; 2 on the
   // post-turn linger beat) — Working.tsx row contract.
@@ -4376,7 +4378,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // "none" = wordmark+tagline = 3). PTY-verified; keep in lockstep with homeJsx
   // below and MascotSplash.
   {
-    const homeLineCount = composerRows(edit.value, homeW); // display rows (soft wrap)
+    const homeLineCount = composerVisibleRows(edit.value, homeW); // display rows (capped window)
     const splashH = homeRoom >= 4 ? (homeSplashSize === "none" ? 3 : 15) : 0;
     const readinessH = homeRoom >= 8 ? 2 : 0;
     const commandsH = showHomeCommands ? 1 + HOME_COMMANDS.length : 0;
