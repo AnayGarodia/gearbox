@@ -71,7 +71,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
@@ -532,6 +532,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const notifyRef = useRef(loadPrefs().notify !== false); // desktop notify on long turns (pref-gated)
   const verifyRef = useRef<VerifyMode>(loadPrefs().verify === "off" ? "off" : "auto"); // post-edit checks + auto-iterate-to-green
   const charTestOfferedRef = useRef(false); // characterization-test offer: once per session
+  const autofixFpRef = useRef<string | undefined>(undefined); // last auto-fix attempt's failure fingerprint (same-failure early stop)
   const lastChangedFilesRef = useRef<string[]>([]); // most recent edited-turn file list (/verify test targets these)
   // /commit + /pr: regeneration inputs for the confirm panel's ⌃R, and the
   // inline-mode draft awaiting `/commit go` · `/pr go`.
@@ -3088,10 +3089,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Auto-iterate to green: if checks failed on a turn that edited files,
           // feed the failure back and re-run, bounded by MAX_AUTOFIX_ATTEMPTS.
           // `/verify off` disables this (verifyRef === "off").
-          if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed })) {
+          // Same-failure early stop: a fix attempt that reproduced the exact
+          // failure it was given isn't converging — don't burn the remaining
+          // attempt budget re-asking the same question.
+          const prevFp = attempt > 0 ? autofixFpRef.current : undefined;
+          const sameFailure = Boolean(prevFp && failed.length && prevFp === failureFingerprint(failed));
+          if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed, prevFingerprint: prevFp })) {
+            autofixFpRef.current = failureFingerprint(failed);
             notice(`checks failed — fixing (attempt ${attempt + 1}/${MAX_AUTOFIX_ATTEMPTS})`);
             const fixPrompt = buildFixPrompt(failed);
             setTimeout(() => void runTurnRef.current?.(fixPrompt, attempt + 1), 0);
+          } else if (verifyRef.current === "auto" && sameFailure && attempt < MAX_AUTOFIX_ATTEMPTS) {
+            notice(`the fix attempt reproduced the same failure — stopping early, over to you`);
           } else if (verifyRef.current === "auto" && attempt >= MAX_AUTOFIX_ATTEMPTS && failed.length) {
             notice(`still failing after ${MAX_AUTOFIX_ATTEMPTS} fix attempts — over to you`);
           } else {
