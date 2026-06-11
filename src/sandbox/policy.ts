@@ -3,9 +3,19 @@
 // mechanism (seatbelt.ts on macOS, a future bwrap builder on Linux) renders a
 // policy into an actual sandbox invocation. Keeping the policy separate means
 // the Linux backend reuses every decision here unchanged.
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve, dirname, isAbsolute } from "node:path";
+import { join, resolve, isAbsolute } from "node:path";
+
+// Seatbelt (and Landlock) match RESOLVED paths; /tmp and /var are symlinks on
+// macOS, so an unresolved workspace would silently deny every write inside it.
+const real = (p: string): string => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
 
 export type SandboxMode = "off" | "read-only" | "workspace-write";
 
@@ -47,10 +57,12 @@ export function resolveSandboxPolicy(
 ): SandboxPolicy {
   const platform = opts.platform ?? process.platform;
   const envMode = parseSandboxMode(env.GEARBOX_SANDBOX);
-  const mode: SandboxMode = envMode ?? prefs.sandbox ?? "off";
+  // Default: on (workspace-write) where a backend exists, off elsewhere.
+  const platformDefault: SandboxMode = platform === "darwin" ? "workspace-write" : "off";
+  const mode: SandboxMode = envMode ?? prefs.sandbox ?? platformDefault;
   const envNet = env.GEARBOX_SANDBOX_NETWORK?.trim().toLowerCase();
   const network = envNet === "allow" || envNet === "on" ? true : envNet === "deny" || envNet === "off" ? false : (prefs.sandboxNetwork ?? false);
-  const workspace = resolve(cwd);
+  const workspace = real(cwd);
   // Only darwin has a backend today; anything else degrades to off so callers
   // never spawn a wrapper that does not exist on the host.
   const effective = platform === "darwin" ? mode : "off";
@@ -71,7 +83,10 @@ export function gitDirWritePaths(workspace: string, read: (p: string) => string 
     // Allow the whole common dir (…/.git), not just the worktree subdir — git
     // writes shared refs/objects there too.
     const common = gitdir.includes(`${join("/", ".git", "worktrees")}`) || /\/\.git\/worktrees\//.test(gitdir) ? resolve(gitdir, "..", "..") : gitdir;
-    return [resolve(common)];
+    // Seatbelt matches resolved paths — a main repo under a symlinked prefix
+    // (e.g. /tmp/... → /private/tmp/...) needs the real spelling, same as
+    // workspace/tmp/home.
+    return [real(resolve(common))];
   } catch {
     return []; // regular repo (.git is a directory, inside the workspace) or no repo
   }
@@ -81,7 +96,7 @@ export function gitDirWritePaths(workspace: string, read: (p: string) => string 
 export function baseWritePaths(opts: { gearboxHome?: string; tmp?: string } = {}): string[] {
   const home = opts.gearboxHome || process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
   const t = opts.tmp ?? tmpdir();
-  const set = new Set<string>(["/tmp", "/private/tmp", resolve(t), resolve(home)]);
+  const set = new Set<string>(["/tmp", "/private/tmp", real(t), real(home)]);
   return [...set];
 }
 

@@ -131,6 +131,7 @@ function StatusBarImpl({
   cost = 0,
   ctxPct,
   yolo,
+  sandbox,
   width,
   online = true,
   cwd,
@@ -143,6 +144,7 @@ function StatusBarImpl({
   cost?: number;
   ctxPct: number | null;
   yolo?: boolean;
+  sandbox?: "off" | "read-only" | "workspace-write"; // OS sandbox state; only non-default states earn a chip. undefined = no backend on this platform (off is not a choice there, so no warn chip)
   width: number;
   online?: boolean;
   cwd?: string;
@@ -164,6 +166,10 @@ function StatusBarImpl({
   const chips: { text: string; c: string; bold?: boolean }[] = [];
   if (!online) chips.push({ text: "⚠ offline", c: color.err, bold: true });
   if (yolo) chips.push({ text: "yolo", c: color.err, bold: true });
+  // Sandbox chips are exception-only: workspace-write is the quiet default, so
+  // only "no sandbox" (risk) and "read-only" (explains why writes fail) show.
+  if (sandbox === "off") chips.push({ text: "no sandbox", c: color.warn });
+  if (sandbox === "read-only") chips.push({ text: "sbx ro", c: color.warn });
   const chipLen = chips.reduce((n, c) => n + c.text.length, 0) + Math.max(0, chips.length - 1) * 2 + (chips.length ? 2 : 0);
 
   // Left: cwd:branch + the attention chips (the wordmark lives in the masthead

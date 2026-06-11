@@ -48,12 +48,17 @@ export class ShellSession {
   private onProcExit: ((code: number | null) => void) | null = null;
 
   // `cwd` is the shell's initial working dir (a worktree root for an isolated
-  // sub-agent); subsequent `cd`s within the session move from there.
-  constructor(private cwd?: string) {}
+  // sub-agent); subsequent `cd`s within the session move from there. `argv`
+  // lets the caller wrap the shell (e.g. sandbox-exec) — the session itself
+  // stays sandbox-agnostic.
+  constructor(
+    private cwd?: string,
+    private argv: string[] = ["/bin/sh"],
+  ) {}
 
   private start() {
     if (this.proc || this.closed) return;
-    const proc = spawnProc(["/bin/sh"], { cwd: this.cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    const proc = spawnProc(this.argv, { cwd: this.cwd, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
     this.proc = proc;
     proc.stdout?.on("data", (c: Buffer) => {
       this.outBuf += c.toString("utf8");
