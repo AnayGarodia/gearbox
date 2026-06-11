@@ -22,6 +22,18 @@ test("tabRowsOf: maps status + active flag; falls back to the dir basename", () 
   expect(rows[2]!.needsInput).toBe(true);
 });
 
+test("tabRowsOf: unseen marks done on hidden tabs only (the active tab has no badge to ack)", () => {
+  const rows = tabRowsOf(
+    [
+      { dir: "/x/a", status: status(false), unseen: true },
+      { dir: "/x/b", status: status(false), unseen: true },
+    ],
+    0,
+  );
+  expect(rows[0]!.done).toBe(false); // active: visible on screen, nothing to flag
+  expect(rows[1]!.done).toBe(true);
+});
+
 test("tabSlug: sanitizes names, falls back to tab-<id>", () => {
   expect(tabSlug("Fix Auth!", 4)).toBe("fix-auth");
   expect(tabSlug("  ", 4)).toBe("tab-4");

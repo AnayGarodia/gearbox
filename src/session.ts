@@ -155,9 +155,9 @@ export function updateSessionMeta(id: string, patch: Partial<Pick<Session, "titl
  * Loads a session by id from the current project's session directory.
  * Returns null when the file is missing or cannot be parsed.
  */
-export function loadSession(id: string): Session | null {
+export function loadSession(id: string, cwd?: string): Session | null {
   try {
-    return JSON.parse(readFileSync(join(dir(), `${id}.json`), "utf8")) as Session;
+    return JSON.parse(readFileSync(join(dir(cwd), `${id}.json`), "utf8")) as Session;
   } catch {
     return null;
   }

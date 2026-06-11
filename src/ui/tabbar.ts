@@ -11,6 +11,8 @@ export interface TabRow {
   active: boolean;
   busy: boolean;
   needsInput: boolean;
+  /** finished a turn while hidden and not yet visited — the cell flips green ✓ */
+  done?: boolean;
 }
 
 export type TabAction = { type: "switch"; n: number } | { type: "new" };
@@ -31,8 +33,8 @@ export interface TabSegment {
 const TITLE_MAX = 14;
 const GAP = 1; // columns between cells
 
-/** Status marker rendered after the title: needs-input beats busy. */
-export const tabMark = (r: TabRow): string => (r.needsInput ? "⚠" : r.busy ? "●" : "");
+/** Status marker rendered after the title: needs-input beats done beats busy. */
+export const tabMark = (r: TabRow): string => (r.needsInput ? "⚠" : r.done ? "✓" : r.busy ? "●" : "");
 
 /**
  * Lay the cells out from column `left` (0-based), never past `maxX`. Cells that
