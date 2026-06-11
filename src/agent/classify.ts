@@ -103,7 +103,9 @@ function saveCache(c: Map<string, TaskKind>): void {
 // Classifying it in isolation is the bug — "yes do it" mid-coding-session is
 // code, not chat. The length clause only matters when a previous kind exists
 // (see classifyTask), so cold-start short prompts are unaffected.
-const ANAPHORA = /^(yes|yep|yeah|do it|go ahead|same|continue|keep going|and |also |ok(ay)?\b|sure|please do|now )/i;
+// Bare words need \b: "yesterday the build broke…" or "surely there's a
+// cleaner way…" are fresh prompts, not anaphora, and must not inherit kind.
+const ANAPHORA = /^(yes|yep|yeah|same|sure|continue)\b|^(do it|go ahead|keep going|and |also |ok(ay)?\b|please do|now )/i;
 export function isAnaphoric(prompt: string): boolean {
   const p = prompt.trim();
   return p.length > 0 && (p.length < 30 || ANAPHORA.test(p));

@@ -111,6 +111,10 @@ test("isAnaphoric: short continuations yes, fresh full prompts no", () => {
   expect(isAnaphoric("same for the other file")).toBe(true);
   expect(isAnaphoric("continue where you left off please, thanks a lot")).toBe(true); // anaphora prefix beats length
   expect(isAnaphoric("please write a complete design document for the new caching layer")).toBe(false);
+  // bare words must match as words, not prefixes — these are fresh prompts
+  expect(isAnaphoric("yesterday the build broke, investigate the CI logs and find why")).toBe(false);
+  expect(isAnaphoric("surely there's a cleaner way to restructure the session store")).toBe(false);
+  expect(isAnaphoric("continue where you left off")).toBe(true); // word + boundary still anaphoric
 });
 
 test("an anaphoric follow-up inherits the previous turn's kind", async () => {
