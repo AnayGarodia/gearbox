@@ -129,6 +129,11 @@ export const splitSubject = (msg: string): { subject: string; body: string } => 
  * members ARE the App component's own — do not redesign them here.
  */
 export interface CommandCtx {
+  // The tab's workspace root (rootRef.current). EVERY git verb must use this,
+  // never process.cwd(): with Conductor tabs, cwd belongs to whichever tab is
+  // active — a worktree tab's /commit·/push·/pr·/diff·/checkpoint have to act
+  // on ITS tree or the whole point of worktrees is lost.
+  root: string;
   // ── refs (stable objects) ──
   abortRef: MutableRefObject<AbortController | null>;
   accountStatusCacheRef: MutableRefObject<Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>>;
@@ -238,6 +243,7 @@ export interface CommandCtx {
 }
 
 export function handleCommand(ctx: CommandCtx, text: string): void {
+  const groot = ctx.root || process.cwd(); // the tab's tree — every git verb below runs here
   // Destructure once: the moved body below is byte-identical to its App.tsx
   // original — every former closure variable resolves through the ctx instead.
   const {
@@ -609,11 +615,11 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           // Fullscreen: the full diff view — changed files vs the session
           // baseline (the first turn checkpoint; HEAD before any mutation),
           // with the selected file's unified diff in a scrollable pane.
-          if (fullscreen && gitOps.isRepo()) {
+          if (fullscreen && gitOps.isRepo(groot)) {
             const base = sessionBaseRef.current;
-            const files = gitOps.diffFilesSince(base);
+            const files = gitOps.diffFilesSince(base, groot);
             let p = diffOpen(files, base, base ? "this session" : "working tree vs HEAD");
-            if (files.length) p = diffSetText(p, gitOps.fileDiffSince(base, files[0]!.path));
+            if (files.length) p = diffSetText(p, gitOps.fileDiffSince(base, files[0]!.path, groot));
             setPanel(p);
             return;
           }
@@ -729,9 +735,9 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           // A whole-tree checkpoint covers what per-file snapshots can't: shell
           // deletes, renames, and files the agent mutated outside write/edit.
           if (snap.checkpoint) {
-            const r = gitOps.checkpointRestore(snap.checkpoint);
+            const r = gitOps.checkpointRestore(snap.checkpoint, groot);
             if (r.ok) {
-              gitOps.checkpointDelete(snap.checkpoint);
+              gitOps.checkpointDelete(snap.checkpoint, groot);
               resetRetrievalIndex(); // restored files invalidate the lexical index wholesale
               notice(`undid last turn (whole-tree restore to its start; a __pre-restore__ checkpoint holds what you just left)\n  (files only — the conversation is unchanged)`);
               return;
@@ -763,7 +769,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         }
         case "commit": {
           echo(text);
-          if (!gitOps.isRepo()) { notice("not a git repository"); return; }
+          if (!gitOps.isRepo(groot)) { notice("not a git repository"); return; }
           if (busyRef.current) { notice("busy — wait for the current turn to finish before committing"); return; }
           const a = arg.trim();
           // `/commit go` commits the inline-mode draft and NOTHING else — with
@@ -773,23 +779,23 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             const d = gitDraftRef.current;
             if (d?.mode !== "commit") { notice("no pending draft — run /commit first"); return; }
             gitDraftRef.current = null;
-            const r = gitOps.commit(d.body ? `${d.subject}\n\n${d.body}` : d.subject);
+            const r = gitOps.commit(d.body ? `${d.subject}\n\n${d.body}` : d.subject, groot);
             invalidateGitBranch();
-            notice(r.ok ? `✓ committed · ${gitOps.lastCommits(1)[0] ?? ""}` : `commit failed: ${r.err || r.out}`);
+            notice(r.ok ? `✓ committed · ${gitOps.lastCommits(1, groot)[0] ?? ""}` : `commit failed: ${r.err || r.out}`);
             return;
           }
           if (a && a !== "-a") {
-            if (!gitOps.status().some((e) => e.staged)) { notice("nothing staged · stage files first, or /commit -a"); return; }
-            const r = gitOps.commit(a);
+            if (!gitOps.status(groot).some((e) => e.staged)) { notice("nothing staged · stage files first, or /commit -a"); return; }
+            const r = gitOps.commit(a, groot);
             invalidateGitBranch();
-            notice(r.ok ? `✓ committed · ${gitOps.lastCommits(1)[0] ?? ""}` : `commit failed: ${r.err || r.out}`);
+            notice(r.ok ? `✓ committed · ${gitOps.lastCommits(1, groot)[0] ?? ""}` : `commit failed: ${r.err || r.out}`);
             return;
           }
-          if (a === "-a") gitOps.stageAll();
+          if (a === "-a") gitOps.stageAll(groot);
           // Capture the repo root NOW: generation is async, and /worktree use
           // can chdir the whole session mid-flight — the confirm must commit in
           // the tree the message was written for.
-          const commitRoot = gitOps.repoRoot() ?? process.cwd();
+          const commitRoot = gitOps.repoRoot(groot) ?? groot;
           const staged = gitOps.status(commitRoot).filter((e) => e.staged);
           if (!staged.length) { notice("nothing staged · /commit -a stages everything first"); return; }
           const stat = gitOps.stagedDiff(commitRoot, { stat: true });
@@ -801,7 +807,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             const gen = await generateGitText(COMMIT_MSG_SYSTEM, genPrompt);
             const fallback = `update ${files.slice(0, 3).map((f) => f.split("/").pop()).join(", ")}${files.length > 3 ? ` +${files.length - 3} more` : ""}`;
             const { subject, body: msgBody } = splitSubject(gen ?? fallback);
-            if (gitOps.repoRoot() !== commitRoot) { notice("the workspace moved while the message was being written — run /commit again"); return; }
+            if (gitOps.repoRoot(groot) !== commitRoot) { notice("the workspace moved while the message was being written — run /commit again"); return; }
             gitRegenRef.current = { mode: "commit", system: COMMIT_MSG_SYSTEM, prompt: genPrompt, files, stat: statLine };
             // Don't clobber a panel the user opened while generation ran —
             // fall back to the inline draft flow instead.
@@ -817,9 +823,9 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         }
         case "push": {
           echo(text);
-          if (!gitOps.isRepo()) { notice("not a git repository"); return; }
-          const branch = gitOps.currentBranch();
-          const ab = gitOps.aheadBehind();
+          if (!gitOps.isRepo(groot)) { notice("not a git repository"); return; }
+          const branch = gitOps.currentBranch(groot);
+          const ab = gitOps.aheadBehind(groot);
           if (ab && ab.ahead === 0) { notice(ab.behind ? `nothing to push · ${ab.behind} behind upstream (pull first)` : "nothing to push — up to date with upstream"); return; }
           const needsUpstream = ab === null;
           const cmdLabel = needsUpstream ? `git push -u origin ${branch ?? "HEAD"}` : "git push";
@@ -828,7 +834,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           push({ kind: "tool", id, callId: `git:${id}`, name: "run_shell", arg: cmdLabel, status: "running", summary: "", startedAt });
           void (async () => {
             const r = await gitOps.push({
-              setUpstream: needsUpstream, branch,
+              setUpstream: needsUpstream, branch, cwd: groot,
               onChunk: (c) => setItems((prev) => prev.map((i) => (i.id === id && i.kind === "tool" ? { ...i, outputTail: ((i.outputTail ?? "") + c).slice(-3000) } : i))),
             });
             setItems((prev) => prev.map((i) => (i.id === id && i.kind === "tool" ? { ...i, status: r.ok ? "ok" : "err", summary: r.ok ? `pushed ${branch ?? "HEAD"}` : (r.output.split("\n").find((l) => l.trim()) ?? "push failed"), endedAt: Date.now(), durationMs: Date.now() - startedAt, exitCode: r.exitCode } : i)));
@@ -837,16 +843,16 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         }
         case "pr": {
           echo(text);
-          if (!gitOps.isRepo()) { notice("not a git repository"); return; }
+          if (!gitOps.isRepo(groot)) { notice("not a git repository"); return; }
           const [sub = "list", nArg] = arg.trim().split(/\s+/);
           const action = sub.toLowerCase();
           const ghMissing = () => {
-            const url = gitOps.compareUrl();
+            const url = gitOps.compareUrl(groot);
             notice(`the gh CLI isn't available or signed in — install: brew install gh · then: gh auth login${url ? `\nor open a PR manually: ${url}` : ""}`);
           };
           if (action === "list") {
             if (!gitOps.hasGh()) { ghMissing(); return; }
-            const rows = gitOps.prList();
+            const rows = gitOps.prList(groot);
             if (!rows.length) { notice("no open PRs"); return; }
             const listText = rows.map((p) => `#${String(p.number).padEnd(5)} ${p.title}\n       ${p.branch} · ${p.author} · ${p.state.toLowerCase()}`).join("\n");
             const it: Item = { kind: "notice", id: idRef.current++, text: listText };
@@ -857,7 +863,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           if (action === "view" || action === "diff") {
             if (!gitOps.hasGh()) { ghMissing(); return; }
             const n = nArg ? parseInt(nArg, 10) : undefined;
-            const out = action === "view" ? gitOps.prView(n) : gitOps.prDiff(n);
+            const out = action === "view" ? gitOps.prView(n, groot) : gitOps.prDiff(n, groot);
             if (!out) { notice(`gh returned nothing — is there ${n ? `a PR #${n}` : "a PR for this branch"}?`); return; }
             const it: Item = { kind: "notice", id: idRef.current++, text: out.slice(0, 20_000) };
             if (openInfoPanel(n ? `PR #${n} ${action}` : `PR ${action}`, it)) return;
@@ -869,7 +875,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             if (d?.mode !== "pr") { notice("no pending PR draft — run /pr create first"); return; }
             gitDraftRef.current = null;
             notice("creating the PR…");
-            void gitOps.prCreate({ title: d.subject, body: d.body }).then((r) =>
+            void gitOps.prCreate({ title: d.subject, body: d.body, cwd: groot }).then((r) =>
               notice(r.ok ? `✓ PR created · ${r.output.split("\n").findLast((l) => /https?:\/\//.test(l)) ?? r.output}` : `PR failed: ${r.output}`));
             return;
           }
@@ -877,15 +883,15 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             if (!gitOps.hasGh()) { ghMissing(); return; }
             // Only TRACKED modifications block a PR — untracked scratch files
             // (notes.txt, .env.local) aren't part of it and shouldn't be.
-            const dirty = gitOps.status().filter((e) => !e.untracked);
+            const dirty = gitOps.status(groot).filter((e) => !e.untracked);
             if (dirty.length) { notice(`uncommitted changes (${dirty.length} file${dirty.length === 1 ? "" : "s"}) · /commit first so the PR contains them`); return; }
-            const branch = gitOps.currentBranch();
-            const ab = gitOps.aheadBehind();
+            const branch = gitOps.currentBranch(groot);
+            const ab = gitOps.aheadBehind(groot);
             // The PR's content is branch-vs-BASE (merge-base with origin's
             // default branch) — upstream-relative queries are empty the moment
             // the branch is pushed, which is the most common /pr create state.
-            const contrib = gitOps.branchContribution();
-            const commits = contrib?.commits.length ? contrib.commits : ab ? gitOps.unpushedCommits() : gitOps.lastCommits(20);
+            const contrib = gitOps.branchContribution(groot);
+            const commits = contrib?.commits.length ? contrib.commits : ab ? gitOps.unpushedCommits(groot) : gitOps.lastCommits(20, groot);
             if (!commits.length) { notice("nothing on this branch vs the base — commit something first"); return; }
             const diffstat = contrib?.diffstat ?? "";
             const genPrompt = clipForPrompt(`Commits:\n${commits.join("\n")}\n\nDiffstat:\n${diffstat}`);
@@ -905,7 +911,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             // Unpushed (or upstream-less) work pushes first so the PR sees it.
             if (ab === null || ab.ahead > 0) {
               notice(`pushing ${branch ?? "HEAD"} first…`);
-              void gitOps.push({ setUpstream: ab === null, branch }).then((r) => {
+              void gitOps.push({ setUpstream: ab === null, branch, cwd: groot }).then((r) => {
                 if (!r.ok) { notice(`push failed: ${r.output.split("\n").find((l) => l.trim()) ?? "unknown error"}`); return; }
                 void finishCreate();
               });
@@ -917,10 +923,10 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         }
         case "worktree": {
           echo(text);
-          if (!gitOps.isRepo()) { notice("not a git repository"); return; }
+          if (!gitOps.isRepo(groot)) { notice("not a git repository"); return; }
           const [sub = "list", target] = arg.trim().split(/\s+/);
-          const root = gitOps.repoRoot()!;
-          const list = gitOps.worktreeList();
+          const root = gitOps.repoRoot(groot)!;
+          const list = gitOps.worktreeList(groot);
           if (sub === "list") {
             notice(list.map((w) => `${w.current ? "● " : "  "}${w.branch ?? `(detached ${w.head})`}  ${w.dir}`).join("\n") + "\n  /worktree add <branch> · use <branch> · rm <branch>");
             return;
@@ -928,7 +934,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           if (sub === "add") {
             if (!target) { notice("usage: /worktree add <branch>"); return; }
             const dir = resolve(root, "..", `${root.split("/").pop()}-wt-${target.replace(/[^\w.-]+/g, "-")}`);
-            const r = gitOps.worktreeAdd(dir, target);
+            const r = gitOps.worktreeAdd(dir, target, groot);
             notice(r.ok ? `✓ worktree ready · ${target} at ${dir}\n  /worktree use ${target} — switch this session into it` : `worktree add failed: ${r.err || r.out}`);
             return;
           }
@@ -963,7 +969,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           if (sub === "rm") {
             if (!found) { notice(`no worktree for "${target ?? ""}" · /worktree list`); return; }
             if (found.current) { notice("can't remove the worktree you're in · /worktree use another first"); return; }
-            const r = gitOps.worktreeRemove(found.dir);
+            const r = gitOps.worktreeRemove(found.dir, groot);
             notice(r.ok ? `✓ removed worktree ${found.branch ?? found.dir}` : `remove failed: ${r.err || r.out}`);
             return;
           }
@@ -972,10 +978,10 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         }
         case "checkpoint": {
           echo(text);
-          if (!gitOps.isRepo()) { notice("not a git repository (checkpoints snapshot via git refs)"); return; }
+          if (!gitOps.isRepo(groot)) { notice("not a git repository (checkpoints snapshot via git refs)"); return; }
           const [sub, ...restA] = arg.trim().split(/\s+/).filter(Boolean);
           if (sub === "list") {
-            const rows = gitOps.checkpointList().filter((c) => c.name !== "__pre-restore__");
+            const rows = gitOps.checkpointList(groot).filter((c) => c.name !== "__pre-restore__");
             notice(rows.length
               ? rows.map((c) => `  ${c.name.padEnd(24)} ${c.sha} · ${sessionWhen(c.at)}`).join("\n") + "\n  /checkpoint restore <name> · rm <name>"
               : "no checkpoints yet · /checkpoint [name] saves one");
@@ -987,7 +993,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             if (busyRef.current) { notice("busy — wait for the current turn to finish before restoring"); return; }
             const cpName = restA.join(" ");
             if (!cpName) { notice("usage: /checkpoint restore <name>"); return; }
-            const r = gitOps.checkpointRestore(cpName);
+            const r = gitOps.checkpointRestore(cpName, groot);
             if (r.ok) { invalidateGitBranch(); resetRetrievalIndex(); undoStackRef.current = []; }
             notice(r.ok
               ? `✓ restored "${cpName}" · the pre-restore state is saved as checkpoint "__pre-restore__" if you change your mind`
@@ -997,12 +1003,12 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           if (sub === "rm") {
             const cpName = restA.join(" ");
             if (!cpName) { notice("usage: /checkpoint rm <name>"); return; }
-            const r = gitOps.checkpointDelete(cpName);
+            const r = gitOps.checkpointDelete(cpName, groot);
             notice(r.ok ? `✓ deleted checkpoint "${cpName}"` : `delete failed: ${r.err || r.out}`);
             return;
           }
           const cpName = [sub, ...restA].filter(Boolean).join(" ") || `cp-${new Date().toISOString().slice(5, 16).replace(/[T:]/g, "-")}`;
-          const r = gitOps.checkpointSave(cpName);
+          const r = gitOps.checkpointSave(cpName, groot);
           notice(r.ok
             ? `✓ checkpoint "${r.out}" saved (whole tree, untracked files included) · /checkpoint restore ${r.out}`
             : `checkpoint failed: ${r.err || r.out}`);

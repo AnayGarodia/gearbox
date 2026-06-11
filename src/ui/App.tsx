@@ -3078,6 +3078,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const handleCommand = useCallback(
     (text: string) => {
       const ctx: CommandCtx = {
+        root: rootRef.current, // this tab's tree — git verbs act here, never on whichever tab owns cwd
         // refs (stable objects)
         abortRef, accountStatusCacheRef, activeCliModelRef, activeCliRef, askModeRef, atBottomRef,
         busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
