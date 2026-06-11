@@ -3209,6 +3209,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         push({ kind: "tool", id, callId: `direct:${id}`, name: "run_shell", arg: cmd, status: "running", summary: "", startedAt });
         void (async () => {
           const r = await runShellStream(cmd, {
+            sandbox: false, // user-typed `!cmd` — the user is the principal, never sandboxed
             onChunk: (c) => {
               setItems((prev) =>
                 prev.map((i) => {

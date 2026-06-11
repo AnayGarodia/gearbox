@@ -23,6 +23,8 @@
  */
 import { execSync } from "node:child_process";
 import { ShellSession } from "./shell-session.ts";
+import { resolveSandboxPolicy, wrapWithSandbox, type SandboxPolicy, type SandboxPrefs } from "./sandbox/index.ts";
+import { loadPrefs } from "./ui/prefs.ts";
 
 /** Maximum characters returned to callers. Excess output is truncated. */
 const CAP = 60_000;
@@ -88,14 +90,37 @@ export function runShell(command: string): { ok: boolean; output: string } {
  *     previous command killed the shell (e.g. via `exit` or a timeout kill).
  */
 const sessions = new Map<string, ShellSession>();
-function shellSession(cwd?: string): ShellSession {
+
+/** The effective sandbox policy for a workspace root (env > prefs > off). */
+export function sandboxPolicyFor(root: string, sandbox: boolean): SandboxPolicy {
+  // Prefs gains sandbox fields in the prefs/UI PR; until then only env applies.
+  const policy = resolveSandboxPolicy(loadPrefs() as SandboxPrefs, process.env, root);
+  return sandbox ? policy : { ...policy, mode: "off" };
+}
+
+// Sessions are keyed by cwd AND sandbox shape so a sandboxed and an
+// unsandboxed (or network-allowed) shell for the same root never collide.
+const sessionKey = (root: string, p: SandboxPolicy) => `${root}#${p.mode}${p.mode !== "off" && p.network ? "+net" : ""}`;
+
+function shellSession(cwd: string | undefined, sandbox: boolean): ShellSession {
   const root = cwd ?? process.cwd();
-  let session = sessions.get(root);
+  const policy = sandboxPolicyFor(root, sandbox);
+  const key = sessionKey(root, policy);
+  let session = sessions.get(key);
   if (!session) {
-    session = new ShellSession(root);
-    sessions.set(root, session);
+    session = new ShellSession(root, wrapWithSandbox(["/bin/sh"], policy));
+    sessions.set(key, session);
   }
   return session;
+}
+
+/**
+ * Close and forget every cached session — required after a sandbox mode or
+ * network toggle so the next command spawns a shell under the new profile.
+ */
+export function resetShellSessions(): void {
+  for (const s of sessions.values()) s.close();
+  sessions.clear();
 }
 
 /**
@@ -115,17 +140,18 @@ function shellSession(cwd?: string): ShellSession {
  */
 export async function runShellStream(
   command: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number; onChunk?: (chunk: ShellChunk) => void; cwd?: string } = {},
+  opts: { signal?: AbortSignal; timeoutMs?: number; onChunk?: (chunk: ShellChunk) => void; cwd?: string; sandbox?: boolean } = {},
 ): Promise<ShellResult> {
   const started = Date.now();
   const root = opts.cwd ?? process.cwd();
-  const r = await shellSession(root).run(command, {
+  const sandbox = opts.sandbox ?? true; // agent commands sandbox by policy; `!cmd` opts out (user is the principal)
+  const r = await shellSession(root, sandbox).run(command, {
     timeoutMs: opts.timeoutMs ?? 60_000,
     signal: opts.signal,
     onChunk: opts.onChunk,
   });
   // A dead session (e.g. after a timeout kill) is dropped so the next call starts fresh.
-  if (r.timedOut) sessions.delete(root);
+  if (r.timedOut) sessions.delete(sessionKey(root, sandboxPolicyFor(root, sandbox)));
   return {
     ok: r.ok,
     output: clip(r.output || "(no output)"),
