@@ -147,7 +147,9 @@ export function resetPermissions(): void {
  * Fast-path order (no prompt shown):
  *   1. yolo is true  - unconditionally approved.
  *   2. kind is in the standing `granted` set  - approved without a prompt.
- *   3. No handler is installed  - approved (headless / test mode).
+ *   3. No handler is installed  - approved (headless / test mode), EXCEPT
+ *      forceAsk requests, which deny: an escalation with nobody to ask is not
+ *      an approval.
  *
  * Otherwise the handler is called and blocks until the user responds. The
  * resulting decision is applied to the broker state before returning.
@@ -166,13 +168,21 @@ export async function requestPermission(req: PermRequest): Promise<boolean> {
     if (granted.has(req.kind) && rule !== "ask") return true;
   }
   const route = (req.root && rootHandlers.get(req.root)) || handler;
-  if (!route) return true;
-  // A plugin can resolve the request programmatically (permission.ask hook).
-  try {
-    const hook = await emitHook("permission.ask", { kind: req.kind, title: req.title, detail: req.detail });
-    if (hook?.decision === "allow") return true;
-    if (hook?.decision === "deny") return false;
-  } catch { /* a plugin must never wedge the gate */ }
+  // forceAsk exists so escalations (e.g. dropping the sandbox) stay a
+  // deliberate HUMAN decision: with no handler to ask (headless), deny —
+  // falling through to the allow default would hand out exactly the
+  // auto-approval forceAsk is meant to block.
+  if (!route) return !req.forceAsk;
+  // A plugin can resolve the request programmatically (permission.ask hook) —
+  // but never a forceAsk escalation it didn't opt into knowing about: a plugin
+  // that auto-allows "shell" must not silently approve sandbox escapes.
+  if (!req.forceAsk) {
+    try {
+      const hook = await emitHook("permission.ask", { kind: req.kind, title: req.title, detail: req.detail });
+      if (hook?.decision === "allow") return true;
+      if (hook?.decision === "deny") return false;
+    } catch { /* a plugin must never wedge the gate */ }
+  }
   const decision = await route(req);
   if (decision === "all") {
     yolo = true;

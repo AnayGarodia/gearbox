@@ -548,11 +548,15 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
       if (!r.ok) {
         const policy = sandboxPolicyFor(root, true);
         const denial = policy.mode !== "off" ? looksLikeSandboxDenial(r.output, r.exitCode) : { denied: false, kind: null };
-        if (denial.denied) {
-          const netOnly = denial.kind === "network" && !policy.network;
+        // A network-shaped failure with network already allowed isn't the
+        // sandbox's doing (server down, DNS flake) — escalating to a fully
+        // unsandboxed rerun for it would drop the filesystem sandbox for
+        // nothing. Skip escalation entirely in that case.
+        if (denial.denied && !(denial.kind === "network" && policy.network)) {
+          const netOnly = denial.kind === "network";
           const approved = await requestPermission({
             kind: "shell",
-            title: netOnly ? "Command needs network — allow network for one retry?" : "Command blocked by the sandbox — retry without it?",
+            title: netOnly ? "Command needs network — allow network for one retry?" : "The sandbox may have blocked this — retry unsandboxed? (reruns the whole command)",
             detail: command,
             root,
             forceAsk: true,
