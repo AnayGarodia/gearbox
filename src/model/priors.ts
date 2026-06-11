@@ -113,6 +113,22 @@ export function priorFor(kind: string, modelId: string, repo?: string): Prior | 
   return { n, passRate, delta };
 }
 
+/** The measured failure rate for (kind, model) in this repo, or null below MIN_N.
+ *  Purpose: converts the flywheel's measured outcomes into an EXPECTED-RETRY-COST
+ *  signal for the scorer — a model that fails verification 30% of the time here
+ *  is not cheap, each failure costs iterate-to-green re-runs. Same persisted
+ *  counts and gating philosophy as priorFor: an /undo weighs half a failure,
+ *  and fewer than MIN_N verified outcomes is opinion, not evidence. */
+export function failRateFor(kind: string, modelId: string, cwd?: string): { rate: number; n: number } | null {
+  const c = cached().repos[repoSlug(cwd)]?.[kind]?.[modelId];
+  if (!c) return null;
+  const n = c.passed + c.failed + c.undone;
+  if (n < MIN_N) return null;
+  const fails = c.failed + UNDO_WEIGHT * c.undone;
+  const rate = fails / (c.passed + fails);
+  return { rate, n };
+}
+
 /** Human line for /why: "measured here: 7/9 ✓ (−0.04)". Null when no prior. */
 export function priorLine(kind: string, modelId: string, repo?: string): string | null {
   const p = priorFor(kind, modelId, repo);

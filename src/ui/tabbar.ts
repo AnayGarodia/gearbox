@@ -36,8 +36,10 @@ export interface TabSegment {
 const TITLE_MAX = 14;
 const GAP = 1; // columns between cells
 
-/** Status marker rendered after the title: needs-input beats done beats busy. */
-export const tabMark = (r: TabRow): string => (r.needsInput ? "⚠" : r.done ? "✓" : r.busy ? "●" : "");
+/** Status marker rendered after the title: needs-input beats done beats busy.
+ *  The busy ● shows only on HIDDEN tabs (a background session you can't see
+ *  working) — on the active tab it's noise, the working strip already says it. */
+export const tabMark = (r: TabRow): string => (r.needsInput ? "⚠" : r.done ? "✓" : r.busy && !r.active ? "●" : "");
 
 /**
  * Lay the cells out from column `left` (0-based), never past `maxX`. Cells that

@@ -68,9 +68,14 @@ test("the selector's own last pick acts as the default warm for the next turn", 
   const after = warmed.explain(task);
   const score = (card: ReturnType<RoutingSelector["explain"]>, label: string) =>
     card.entries.find((e) => e.label === label)!.score;
-  // The warm model's score is unchanged; a cold sibling now pays the penalty.
-  expect(score(after, "sonnet-4.6")).toBeGreaterThan(score(cold, "sonnet-4.6"));
-  expect(score(after, "deepseek-v4-pro")).toBeCloseTo(score(cold, "deepseek-v4-pro"), 10);
+  // Warmth now expresses as CACHE ECONOMICS on caching providers: the warm
+  // model gets the cache-read discount (its score drops), while a cold sibling
+  // on a caching provider pays sticker (score unchanged — no double-charged
+  // flat penalty). The warm/cold GAP is what matters, and it must appear.
+  const gapCold = score(cold, "sonnet-4.6") - score(cold, "deepseek-v4-pro");
+  const gapAfter = score(after, "sonnet-4.6") - score(after, "deepseek-v4-pro");
+  expect(gapAfter).toBeGreaterThan(gapCold); // switching away got relatively pricier
+  expect(score(after, "deepseek-v4-pro")).toBeLessThan(score(cold, "deepseek-v4-pro")); // warm = discounted
 });
 
 test("scorecardRows renders a title, a column header, and one row per candidate", () => {

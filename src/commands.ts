@@ -39,7 +39,7 @@ export const COMMANDS: CommandMeta[] = [
   // models & routing · the product's point: pick the right model per task
   { name: "/model", usage: "/model [name]", desc: "list models · /model <name> pins one · /model auto routes per task", group: "models" },
   { name: "/effort", usage: "/effort [level]", desc: "set the active model's reasoning level, e.g. low · high · xhigh · max", group: "models" },
-  { name: "/prefer", usage: "/prefer kind model", desc: "remember a confirmed model preference for a task type", group: "models" },
+  { name: "/prefer", usage: "/prefer [say it in plain words]", desc: "standing routing policy in plain English — \"no chinese models\", \"use claude-work before claude-personal\", \"i have $5k google credits\", \"burn google first\"; bare /prefer lists it; /prefer code <model> pins a task kind", group: "models" },
   { name: "/why", usage: "/why", desc: "show the routing scorecard: every candidate scored, and why this one won", group: "models" },
   { name: "/agents", usage: "/agents", desc: "list agents · run one with @<name> <task> (scout is built in) · add .gearbox/agents/*.md", group: "models" },
   // conversation

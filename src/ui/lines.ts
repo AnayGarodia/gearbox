@@ -302,9 +302,9 @@ function inlineSpans(tokens: any[], base: Style): Span[] {
         break;
       case "codespan":
         // No background box: dense paragraphs of `identifiers` become a wall of
-        // grey boxes with it. Path-blue alone sets inline code apart — never the
-        // bright accent, which is reserved for interactive/now.
-        out.push({ text: t.text, color: color.path });
+        // grey boxes with it. BOLD path-blue sets inline code apart as the
+        // anchors of the prose — never the bright accent (interactive/now).
+        out.push({ text: t.text, color: color.path, bold: true });
         break;
       case "del":
         out.push(...inlineSpans(t.tokens, { ...base, dim: true }));
@@ -601,7 +601,10 @@ export const relPath = (p: string) => (CWD && p.startsWith(CWD + "/") ? p.slice(
 // reads "18m 50s total", not "1130.0s".
 const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
 // Coarse elapsed for a still-running step, ticking every second: "8s" or "1m 24s".
-export const fmtElapsed = (secs: number) => (secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`);
+export const fmtElapsed = (secs: number) =>
+  secs >= 3600 ? `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
+  : secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s`
+  : `${secs}s`;
 const toolColor = (it: Extract<Item, { kind: "tool" }>) =>
   it.name === "AskUserQuestion" ? color.accent :
   it.status === "err" ? color.err :
@@ -706,7 +709,9 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         const name = friendlyTool(it.name);
         const isShell = it.name === "run_shell" || it.name === "command_execution" || it.name === "Bash";
         const isWrite = !isShell && (it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change");
-        const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: it.status === "err" ? color.err : color.dim, bold: true }];
+        // WHERE TO LOOK: mutating tools (write/edit) carry the consequences, so
+        // their verb renders in full ink; read-only steps stay dim and recede.
+        const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: it.status === "err" ? color.err : isWrite ? color.text : color.dim, bold: true }];
         const headUsed = 2 + 1 + 2 + 6; // pad + dot + spaces + name
         if (it.arg) {
           const shownArg = isShell ? it.arg : relPath(it.arg);
@@ -726,7 +731,12 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         if (it.diff?.length) head.push(...diffStatSpans(it.diff));
         // For clean completed tools (no preview, no output, no diff) put the
         // summary inline on the head so consecutive reads render as a tight block.
-        const redundantSummary = it.summary != null && (it.summary === it.name || it.summary.toLowerCase() === name);
+        const redundantSummary = it.summary != null && (
+          it.summary === it.name || it.summary.toLowerCase() === name ||
+          // CLI-backed turns set summary = the arg itself → the same command
+          // printed twice on one line. One copy carries all the information.
+          (!!it.arg && (it.summary === it.arg || it.arg.startsWith(it.summary) || it.summary.startsWith(it.arg)))
+        );
         const hasExtraOutput = !!(it.preview || (it.outputTail ?? it.stream) || it.diff?.length);
         const inlineSummary = it.status !== "running" && it.summary && !redundantSummary && !hasExtraOutput && !(isShell && (it.outputTail ?? it.stream));
         if (inlineSummary) {

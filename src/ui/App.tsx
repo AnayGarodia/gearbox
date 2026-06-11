@@ -579,6 +579,10 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const outCharsRef = useRef(0); // streamed output chars this turn, for a live tok/s estimate
   // Measured from the first output token, not turn start, so thinking time doesn't drag the rate to ~1/s.
   const firstOutputAtRef = useRef(0);
+  // True once THIS turn produced anything (streamed text or a tool call) —
+  // an interrupt before that restores the prompt to the composer instead of
+  // throwing it away (esc'ing a turn that hasn't started is "let me edit that").
+  const turnProducedRef = useRef(false);
   const [, bumpMotion] = useReducer((x: number) => x + 1, 0);
   const [yolo, setYoloState] = useState(isYolo());
   const [perm, setPermState] = useState<PermRequest | null>(null);
@@ -2556,6 +2560,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       let turnUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       outCharsRef.current = 0;
       firstOutputAtRef.current = 0;
+      turnProducedRef.current = false;
       if (lingerRef.current) clearTimeout(lingerRef.current);
       setLinger(false);
       setMascotState("thinking");
@@ -2659,12 +2664,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           push({ kind: "phase", id: idRef.current++, label: e.label, detail: e.detail, state: e.state ?? "running" });
         } else if (e.type === "text") {
           setMascotState("streaming");
+          turnProducedRef.current = true;
           if (firstOutputAtRef.current === 0) firstOutputAtRef.current = Date.now();
           outCharsRef.current += e.text.length;
           pendingText += e.text;
           if (!textFlushTimer) textFlushTimer = setTimeout(flushText, 45);
         } else if (e.type === "tool-start") {
           setMascotState("tool");
+          turnProducedRef.current = true;
           setVerb(toolVerbFromName(e.name)); // the live verb names the running tool
           finishAssistant();
           const id = idRef.current++;
@@ -2920,7 +2927,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         const interrupted = interruptedRef.current;
         if (interrupted) {
-          notice("interrupted");
+          // Nothing was produced yet (no streamed text, no tool ran): the user
+          // esc'd to take their prompt back, not to discard it — put it back in
+          // the composer for editing instead of forcing a retype.
+          if (!turnProducedRef.current && prompt && !editRef.current.value) {
+            setEdit({ value: prompt, cursor: prompt.length });
+            notice("interrupted · prompt restored to the composer");
+          } else {
+            notice("interrupted");
+          }
           interruptedRef.current = false;
         }
         void emitHook("turn.end", { changedFiles: [...changedFiles], hadError }).catch(() => {});

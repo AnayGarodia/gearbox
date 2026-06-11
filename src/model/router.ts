@@ -20,16 +20,16 @@
 // "cheapest model that clears the bar". A proactive shadow-eval version that
 // escalates before the first miss is the intended follow-up.
 import { modelRegistry, providerAvailable, subscriptionSeats, type ModelSpec } from "../providers.ts";
-import { profileFor } from "./profiles.ts";
+import { profileFor, outputFactorFor, cacheReadDiscount } from "./profiles.ts";
 import { pickDefaultModel } from "../config.ts";
 import { accountsForProvider } from "../accounts/store.ts";
 import type { ModelSelector, Task, ModelChoice, Backend, Scorecard, ScorecardEntry } from "./selector.ts";
-import { preferenceFor, globalPreference } from "./preferences.ts";
+import { preferenceFor, globalPreference, policy, type Policy } from "./preferences.ts";
 import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey } from "./cooldown.ts";
-import { priorFor, priorLine } from "./priors.ts";
+import { priorFor, priorLine, failRateFor } from "./priors.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -56,6 +56,18 @@ interface Candidate {
 // model must have to qualify for this task. Bounded sub-tasks (summarize,
 // classify, search) have no bar so the cheapest model wins. Real coding and
 // planning demand a strong model (0.7 clears Sonnet+ but not Haiku).
+// Kind-weighted value of quality ABOVE the bar (scoring.ts qualityWeight):
+// code/plan resolve near-ties toward the stronger model (correctness compounds
+// across a multi-step agent turn); cheap bounded kinds stay pure-cost.
+const KIND_QUALITY_WEIGHT: Record<Kind, number> = {
+  summarize: 0,
+  classify: 0,
+  search: 0,
+  chat: 0.1,
+  plan: 0.3,
+  code: 0.3,
+};
+
 const BAR: Record<Kind, number> = {
   summarize: 0,
   classify: 0,
@@ -145,10 +157,81 @@ function tpsOf(c: Candidate): number {
 // Profile metrics resolve against the canonical model id (a subscription seat
 // mirrors its canonical model's pricing and quality), falling back to the seat's
 // own spec for cost when no profile exists.
-function toScoreCandidate(c: Candidate, kind?: string): ScoreCandidate {
+// Every identity a policy rule might name for this candidate: account id/slug,
+// provider id (both the spec's and — for seats — the account's "claude-cli").
+function policyKeys(c: Candidate): string[] {
+  return [c.state.accountId, c.backend.account?.slug, c.backend.account?.id, c.backend.account?.provider, c.spec.provider, c.state.provider]
+    .filter(Boolean)
+    .map((k) => String(k).toLowerCase());
+}
+
+// Standing-preference bias (a fraction of this turn's cost — scoring.ts
+// preferBias): accountOrder rank gives a decaying nudge (first 0.1, second
+// 0.05, …) so "use claude-work before claude-personal" resolves equivalent
+// candidates in order; useFirst adds a strong drain bias while the named
+// provider/account still has declared or live balance, so "burn the google
+// credits first" actually burns them — and stops the moment they're gone.
+function preferBiasFor(c: Candidate, pol: Policy | undefined): number {
+  if (!pol) return 0;
+  let b = 0;
+  const keys = policyKeys(c);
+  if (pol.accountOrder?.length) {
+    const idx = pol.accountOrder.findIndex((k) => keys.includes(k.toLowerCase()));
+    if (idx >= 0) b += 0.1 / (1 + idx);
+  }
+  if (pol.useFirst?.length && pol.useFirst.some((k) => keys.includes(k.toLowerCase()))) {
+    // "Burn the google credits first" must actually WIN — including against a
+    // flat-rate seat (planBonus ≈ 1.0×cost), or the policy silently does
+    // nothing. 1.5×cost clears the seat bonus with margin while a genuinely
+    // huge cost gap can still override. The off-switch is the balance: a
+    // tracked balance (live, or estimated from /budget — declaring one is what
+    // makes "credits" drainable) at ≤ 0 ends the bias, staleness included (a
+    // stale zero still means the credits ran out; a refresh can only revive it).
+    const drained = !c.state.isSubscription && c.state.balanceRemainingUSD !== undefined && c.state.balanceRemainingUSD <= 0;
+    if (!drained) b += 1.5;
+  }
+  return b;
+}
+
+// Hard avoid-list filter ("no chinese models"): an explicit DON'T is respected
+// even when it would empty the pool — the caller surfaces a clear error naming
+// the rule instead of silently routing to an avoided model.
+function applyAvoid(pool: Candidate[], pol: Policy | undefined): Candidate[] {
+  if (!pol?.avoidProviders?.length && !pol?.avoidModels?.length) return pool;
+  const avoidP = new Set((pol.avoidProviders ?? []).map((x) => x.toLowerCase()));
+  const avoidM = new Set((pol.avoidModels ?? []).map((x) => x.toLowerCase()));
+  return pool.filter((c) => {
+    if (policyKeys(c).some((k) => avoidP.has(k))) return false;
+    const ids = [c.spec.id, c.canonicalId, c.spec.sdkId].filter(Boolean).map((x) => String(x).toLowerCase());
+    return !ids.some((id) => avoidM.has(id));
+  });
+}
+
+function toScoreCandidate(c: Candidate, kind?: string, pol?: Policy, bar?: number): ScoreCandidate {
   const cost = costPair(c);
-  const prior = kind ? priorFor(kind, c.canonicalId ?? c.spec.id) : null;
-  return { id: c.spec.id, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, quality: qualityOf(c) + (prior?.delta ?? 0), tps: tpsOf(c), account: c.state };
+  const canonical = c.canonicalId ?? c.spec.id;
+  return {
+    id: c.spec.id,
+    inUSDPerMtok: cost.inUSDPerMtok,
+    outUSDPerMtok: cost.outUSDPerMtok,
+    // Quality WITHOUT the measured prior delta: the same outcome counts
+    // already (1) sink a failer below the bar (clearsAdj) and (2) surcharge
+    // its expected cost (failRate below) — folding the delta in here as well
+    // charged the same failures a third time through the quality bonus.
+    quality: qualityOf(c),
+    tps: tpsOf(c),
+    account: c.state,
+    // Cost realism (scoring.ts): measured per-repo fail rate → expected-retry
+    // surcharge; provider cache-read pricing → warm discount (CLI seats manage
+    // their own caching inside the vendor binary, so they carry none here);
+    // per-model output verbosity; kind-weighted quality-above-bar value.
+    failRate: kind ? failRateFor(kind, canonical)?.rate : undefined,
+    cacheReadDiscount: c.backend.kind === "cli" ? undefined : cacheReadDiscount(c.spec.provider) ?? undefined,
+    outputFactor: outputFactorFor(canonical),
+    qualityWeight: kind ? KIND_QUALITY_WEIGHT[kind as Kind] : 0,
+    qualityBar: bar,
+    preferBias: preferBiasFor(c, pol),
+  };
 }
 
 export class RoutingSelector implements ModelSelector {
@@ -209,6 +292,7 @@ export class RoutingSelector implements ModelSelector {
   private prepare(task: Task): {
     kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
     pool: Candidate[]; clears: Candidate[]; eligible: Candidate[]; estInputTokens: number;
+    pol?: Policy;
     fallback?: ModelSpec;
   } {
     const kind = task.kind ?? classify(task.prompt);
@@ -241,7 +325,16 @@ export class RoutingSelector implements ModelSelector {
     // preference narrows it: an explicit per-kind /prefer is searched against
     // THIS set, so "/prefer code haiku" wins even when a global preference
     // (e.g. "subscription only") would have filtered haiku out of the pool.
-    const eligible = fits.length ? fits : capable;
+    // The AVOID lists apply even earlier and even to /prefer: an explicit
+    // "don't use X" beats every other instruction, and if it excludes every
+    // model the turn fails LOUDLY (naming the rule) rather than betraying it.
+    const pol = policy();
+    const allowed = applyAvoid(fits.length ? fits : capable, pol);
+    if (!allowed.length) {
+      const rules = [...(pol?.avoidProviders ?? []), ...(pol?.avoidModels ?? [])].join(", ");
+      throw new Error(`Your policy avoids every available model (avoiding: ${rules}) — this blocks every routed turn, including delegates and compaction. /prefer allow <name> lifts a rule (/prefer shows the policy), or add an account.`);
+    }
+    const eligible = allowed;
     const pool = applyGlobalPreference(eligible);
     // Seats with no quality profile clear the bar unconditionally (do not
     // penalise them on a 0.5 guess). Seats with a known-weak quality (e.g.
@@ -262,7 +355,7 @@ export class RoutingSelector implements ModelSelector {
       const top = Math.max(...pool.map(qualityOf));
       clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= top - 1e-9);
     }
-    return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens };
+    return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens, pol };
   }
 
   // Return the per-kind remembered preference if it is present in the given
@@ -298,7 +391,7 @@ export class RoutingSelector implements ModelSelector {
     }
 
     // Score all bar-clearing candidates and pick the winner.
-    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) });
+    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, p.bar)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) });
     const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
     this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
@@ -328,10 +421,10 @@ export class RoutingSelector implements ModelSelector {
     // scoreCandidate ignores input.candidates (it scores one candidate against
     // the flags only), so the empty array here is inert — it just satisfies the
     // ScoreInput shape without re-listing the pool per call.
-    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
+    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind, p.pol, p.bar), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
       ? preferred.spec.id
-      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), ...flags }).candidate.id;
+      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, p.bar)), ...flags }).candidate.id;
 
     // Mirror prepare()'s prior-adjusted predicate so the scorecard verdict
     // matches what the router actually did (seat with unknown quality clears;

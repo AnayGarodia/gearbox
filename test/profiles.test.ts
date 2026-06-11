@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { PROFILES, profileFor, PROVIDER_CALIBRATION } from "../src/model/profiles.ts";
+import { PROFILES, profileFor, PROVIDER_CALIBRATION, outputFactorFor, OUTPUT_FACTOR_DEFAULT, cacheReadDiscount } from "../src/model/profiles.ts";
 
 // ── 1. profileFor('claude-sonnet-4-6') returns the correct profile fields ─────
 
@@ -264,4 +264,65 @@ test("profileFor returns the same object that appears in PROFILES", () => {
   for (const p of PROFILES) {
     expect(profileFor(p.id)).toBe(p);
   }
+});
+
+// ── outputFactorFor ────────────────────────────────────────────────────────────
+
+describe("outputFactorFor", () => {
+  test("defaults to 0.2 for a plain model with no override (haiku)", () => {
+    expect(outputFactorFor("claude-haiku-4-5")).toBe(OUTPUT_FACTOR_DEFAULT);
+    expect(OUTPUT_FACTOR_DEFAULT).toBe(0.2);
+  });
+
+  test("defaults to 0.2 for an unknown model id", () => {
+    expect(outputFactorFor("unknown-model-xyz")).toBe(0.2);
+  });
+
+  test("reasoning-heavy models carry higher factors", () => {
+    expect(outputFactorFor("claude-opus-4-8")).toBe(0.5);
+    expect(outputFactorFor("claude-sonnet-4-6")).toBe(0.35);
+    expect(outputFactorFor("gpt-5.5")).toBe(0.5);
+    expect(outputFactorFor("gemini-3.1-pro-preview")).toBe(0.4);
+    expect(outputFactorFor("deepseek-v4-pro")).toBe(0.6);
+  });
+
+  test("bedrock/vertex mirrors match their direct-provider entries", () => {
+    expect(outputFactorFor("bedrock/anthropic.claude-opus-4-20250514-v1:0")).toBe(outputFactorFor("claude-opus-4-8"));
+    expect(outputFactorFor("vertex/gemini-3.1-pro-preview")).toBe(outputFactorFor("gemini-3.1-pro-preview"));
+  });
+
+  test("every override in the corpus is a sane fraction (0 < f <= 1)", () => {
+    for (const p of PROFILES) {
+      if (p.outputFactor !== undefined) {
+        expect(p.outputFactor).toBeGreaterThan(0);
+        expect(p.outputFactor).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+});
+
+// ── cacheReadDiscount ──────────────────────────────────────────────────────────
+
+describe("cacheReadDiscount", () => {
+  test("known providers return the researched discount fractions", () => {
+    expect(cacheReadDiscount("anthropic")).toBe(0.1);
+    expect(cacheReadDiscount("openai")).toBe(0.1);
+    expect(cacheReadDiscount("deepseek")).toBe(0.1);
+    expect(cacheReadDiscount("google")).toBe(0.25);
+    expect(cacheReadDiscount("vertex")).toBe(0.25);
+    expect(cacheReadDiscount("bedrock")).toBe(0.1);
+  });
+
+  test("unknown provider returns null (scorer treats as no-cache)", () => {
+    expect(cacheReadDiscount("not-a-provider")).toBeNull();
+    expect(cacheReadDiscount("")).toBeNull();
+  });
+
+  test("every known discount is a fraction strictly between 0 and 1", () => {
+    for (const provider of ["anthropic", "openai", "deepseek", "google", "vertex", "bedrock"]) {
+      const d = cacheReadDiscount(provider)!;
+      expect(d).toBeGreaterThan(0);
+      expect(d).toBeLessThan(1);
+    }
+  });
 });

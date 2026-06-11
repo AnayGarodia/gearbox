@@ -3,7 +3,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordTurnOutcome, priorFor, priorLine, clearPriorsCache } from "../src/model/priors.ts";
+import { recordTurnOutcome, priorFor, priorLine, failRateFor, clearPriorsCache } from "../src/model/priors.ts";
 import { RoutingSelector } from "../src/model/router.ts";
 import { clearCooldowns } from "../src/model/cooldown.ts";
 
@@ -76,6 +76,32 @@ test("priorLine renders the /why note", () => {
   for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
   expect(priorLine("code", "m", "r")).toContain("measured here");
   expect(priorLine("code", "nope", "r")).toBeNull();
+});
+
+test("failRateFor: rate math counts an /undo as half a failure", () => {
+  // 6 passed + 2 failed + 2 undone → fails = 2 + 0.5*2 = 3; rate = 3/(6+3).
+  for (let i = 0; i < 6; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  for (let i = 0; i < 2; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
+  for (let i = 0; i < 2; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "undone", repo: "r" });
+  const fr = failRateFor("code", "m", "r")!;
+  expect(fr.rate).toBeCloseTo(3 / 9, 10);
+  expect(fr.n).toBe(10); // passed + failed + undone
+});
+
+test("failRateFor stays silent below MIN_N verified outcomes (opinion is not evidence)", () => {
+  for (let i = 0; i < 7; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
+  expect(failRateFor("code", "m", "r")).toBeNull();
+  recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
+  const fr = failRateFor("code", "m", "r")!;
+  expect(fr.rate).toBe(1); // all red — every turn would cost an iterate-to-green
+  expect(fr.n).toBe(8);
+});
+
+test("failRateFor: unknown model / kind / repo → null", () => {
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  expect(failRateFor("code", "nope", "r")).toBeNull();
+  expect(failRateFor("summarize", "m", "r")).toBeNull();
+  expect(failRateFor("code", "m", "other-repo")).toBeNull();
 });
 
 test("ROUTER: a model that keeps failing verification HERE stops being routed here", () => {

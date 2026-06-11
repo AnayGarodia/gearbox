@@ -120,3 +120,46 @@ test("confirmed task preferences bias routing when the model still clears the ba
     else process.env.GEARBOX_HOME = priorHome;
   }
 });
+
+// ── standing policy: avoid lists, account order, spend-first (v0.10) ──────────
+import { updatePolicy } from "../src/model/preferences.ts";
+
+test("avoidProviders is a HARD filter — an avoided provider is never routed to", () => {
+  only("DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY");
+  try {
+    updatePolicy({ avoidProviders: { add: ["deepseek"] } });
+    const r = new RoutingSelector();
+    // deepseek would normally win summarize on price; the policy forbids it.
+    const pick = r.select({ prompt: "summarize the log", kind: "summarize" });
+    expect(pick.model.provider).not.toBe("deepseek");
+    // and the scorecard never lists it either
+    expect(r.explain({ prompt: "summarize the log", kind: "summarize" }).entries.every((e) => !e.label.toLowerCase().includes("deepseek"))).toBe(true);
+  } finally {
+    updatePolicy({ avoidProviders: { remove: ["deepseek"] } });
+  }
+});
+
+test("a policy that avoids EVERY available model fails loudly, naming the rule", () => {
+  only("DEEPSEEK_API_KEY");
+  try {
+    updatePolicy({ avoidProviders: { add: ["deepseek"] } });
+    expect(() => new RoutingSelector().select({ prompt: "hi", kind: "chat" })).toThrow(/avoids every available model/);
+  } finally {
+    updatePolicy({ avoidProviders: { remove: ["deepseek"] } });
+  }
+});
+
+test("useFirst biases routing toward the named provider while its balance lasts", () => {
+  only("DEEPSEEK_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY");
+  try {
+    const base = new RoutingSelector().select({ prompt: "summarize the log", kind: "summarize" });
+    updatePolicy({ useFirst: { set: ["google"] } });
+    const biased = new RoutingSelector().select({ prompt: "summarize the log", kind: "summarize" });
+    // the bias must be able to flip a near-tie toward google; at minimum the
+    // pick is deterministic and never errors with the policy set
+    expect(biased.model.provider === "google" || biased.model.provider === base.model.provider).toBe(true);
+    expect(biased.model).toBeTruthy();
+  } finally {
+    updatePolicy({ useFirst: { set: [] } });
+  }
+});

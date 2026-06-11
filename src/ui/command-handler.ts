@@ -13,7 +13,8 @@ import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
-import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, type PreferenceKind } from "../model/preferences.ts";
+import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, type PreferenceKind, updatePolicy, describePolicy } from "../model/preferences.ts";
+import { parsePolicyFast, parsePolicyNL } from "../model/policy-nl.ts";
 import { effortLevels, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { truncate, gitConfirmOpen, diffOpen, diffSetText, type PanelState, type PanelModelRow } from "./panel.ts";
@@ -1288,10 +1289,45 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           return;
         case "prefer": {
           echo(text);
+          // Bare /prefer: the whole standing policy in plain English, with undo
+          // commands — the single place preferences live.
+          if (!arg.trim()) {
+            notice(describePolicy().join("\n"));
+            return;
+          }
           const [kindRaw, modelRaw] = arg.split(/\s+/);
           const allowed = new Set(["code", "search", "summarize", "classify", "plan", "chat"]);
           if (!kindRaw || !modelRaw || !allowed.has(kindRaw)) {
-            notice("usage: /prefer <code|plan|search|summarize|classify|chat> <model>");
+            // Not the structured per-kind form → PLAIN ENGLISH policy. A
+            // deterministic parse handles the common phrasings instantly
+            // ("no chinese models", "use claude-work before claude-personal",
+            // "i have $5k of google credits", "burn google first"); anything
+            // else falls to a cheap-model parse. Either way the structured
+            // interpretation is echoed back, so nothing is applied silently.
+            const pctx = {
+              providers: [...new Set([...listAccounts().map((a) => a.provider), ...modelRegistry().map((m) => m.provider)])],
+              models: [...new Set(modelRegistry().flatMap((m) => [m.id, m.sdkId]))],
+              accounts: listAccounts().map((a) => ({ id: a.id, slug: a.slug ?? a.id })),
+            };
+            void (async () => {
+              const ops = parsePolicyFast(arg, pctx) ?? (await parsePolicyNL(arg, pctx));
+              if (!ops) {
+                notice([
+                  `couldn't turn that into a policy. Say it like:`,
+                  `  /prefer no chinese models`,
+                  `  /prefer don't use deepseek`,
+                  `  /prefer use claude-work before claude-personal`,
+                  `  /prefer i have $5000 of google credits`,
+                  `  /prefer burn google credits first`,
+                  `  /prefer subscriptions only · /prefer no preference`,
+                  `or pin a task kind: /prefer code <model>`,
+                ].join("\n"));
+                return;
+              }
+              updatePolicy(ops);
+              if (selectorRef.current instanceof RoutingSelector) setSelector(new RoutingSelector()); // pick up the new policy now
+              notice(`✓ policy updated\n` + describePolicy().join("\n"));
+            })();
             return;
           }
           const r = resolveModelSwitch(modelRaw);

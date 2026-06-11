@@ -10,7 +10,11 @@ import {
   setGlobalPreference,
   preferenceFor,
   confirmRoutingPreference,
+  policy,
+  updatePolicy,
+  describePolicy,
 } from '../src/model/preferences.ts';
+import { writeFileSync, mkdirSync } from 'node:fs';
 
 // Point GEARBOX_HOME at a fresh temp dir before every test so each test starts
 // with a completely empty preferences file (the module reads the file on every
@@ -123,4 +127,111 @@ test('confirmRoutingPreference for summarize does not affect the code preference
   expect(summarizePref).toBeDefined();
   expect(summarizePref!.modelId).toBe('claude-haiku-4-5');
   expect(summarizePref!.count).toBe(1);
+});
+
+// ── POLICY ─────────────────────────────────────────────────────────────────
+
+// ── 15. policy() is empty when nothing is set ──────────────────────────────
+test('policy() returns an empty object when no file exists', () => {
+  expect(policy()).toEqual({});
+});
+
+// ── 16. updatePolicy round-trips through the file ──────────────────────────
+test('updatePolicy persists and policy() reads it back (round-trip)', () => {
+  updatePolicy({
+    avoidProviders: { add: ['deepseek', 'moonshot'] },
+    avoidModels: { add: ['gpt-4o-mini'] },
+    accountOrder: { set: ['claude-work', 'openai-personal'] },
+    useFirst: { set: ['deepseek'] },
+    prefer: 'subscription',
+  });
+  const p = policy();
+  expect(p.avoidProviders).toEqual(['deepseek', 'moonshot']);
+  expect(p.avoidModels).toEqual(['gpt-4o-mini']);
+  expect(p.accountOrder).toEqual(['claude-work', 'openai-personal']);
+  expect(p.useFirst).toEqual(['deepseek']);
+  expect(p.prefer).toBe('subscription');
+});
+
+// ── 17. op application: add dedupes, remove deletes, empty list drops field ─
+test('updatePolicy applies add/remove ops with dedupe and drops empty lists', () => {
+  updatePolicy({ avoidProviders: { add: ['deepseek', 'deepseek', 'moonshot'] } });
+  expect(policy().avoidProviders).toEqual(['deepseek', 'moonshot']);
+  updatePolicy({ avoidProviders: { remove: ['deepseek'] } });
+  expect(policy().avoidProviders).toEqual(['moonshot']);
+  updatePolicy({ avoidProviders: { remove: ['moonshot'] } });
+  expect(policy().avoidProviders).toBeUndefined();
+});
+
+// ── 18. prefer: null clears; set ops with [] clear their field ──────────────
+test('updatePolicy clears prefer with null and ordered lists with empty set', () => {
+  updatePolicy({ prefer: 'api', accountOrder: { set: ['a', 'b'] } });
+  updatePolicy({ prefer: null, accountOrder: { set: [] } });
+  const p = policy();
+  expect(p.prefer).toBeUndefined();
+  expect(p.accountOrder).toBeUndefined();
+});
+
+// ── 19. budget op routes through setBudget ──────────────────────────────────
+test('updatePolicy budget op stores via setBudget and clears with null amount', () => {
+  updatePolicy({ budget: { key: 'deepseek', amountUSD: 20, period: 'monthly' } });
+  expect(budgetFor('any', 'deepseek')).toEqual({ amountUSD: 20, period: 'monthly' });
+  updatePolicy({ budget: { key: 'deepseek', amountUSD: null } });
+  expect(budgetFor('any', 'deepseek')).toBeUndefined();
+});
+
+// ── 20. policy preserves the existing GlobalPreference fields (merge) ───────
+test('updatePolicy merges over an existing global preference instead of replacing it', () => {
+  setGlobalPreference({ prefer: 'subscription', provider: 'anthropic' });
+  updatePolicy({ avoidModels: { add: ['gpt-5-nano'] } });
+  const p = policy();
+  expect(p.prefer).toBe('subscription');
+  expect(p.provider).toBe('anthropic');
+  expect(p.avoidModels).toEqual(['gpt-5-nano']);
+});
+
+// ── 21. back-compat: a version-1 file without the new fields still loads ────
+test('a pre-policy version-1 file loads cleanly and policy() shows only old fields', () => {
+  const home = process.env.GEARBOX_HOME!;
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    join(home, 'routing-preferences.json'),
+    JSON.stringify({
+      version: 1,
+      byKind: { code: { kind: 'code', modelId: 'm', count: 3, source: 'confirmed', updatedAt: 1 } },
+      global: { prefer: 'api' },
+      budgets: { openai: { amountUSD: 10, period: 'total' } },
+    }),
+  );
+  expect(preferenceFor('code')!.count).toBe(3);
+  expect(policy()).toEqual({ prefer: 'api' });
+  expect(budgetFor('x', 'openai')).toEqual({ amountUSD: 10, period: 'total' });
+  // and writing a policy on top keeps the old data intact
+  updatePolicy({ avoidProviders: { add: ['xai'] } });
+  expect(preferenceFor('code')!.count).toBe(3);
+  expect(policy().prefer).toBe('api');
+});
+
+// ── 22. describePolicy: empty → the single hint line ────────────────────────
+test('describePolicy returns the hint line when no policy is set', () => {
+  expect(describePolicy()).toEqual(['no standing preferences — /prefer <say it in plain words>']);
+});
+
+// ── 23. describePolicy: each rule is a plain-English line with an undo ──────
+test('describePolicy renders every rule with its undo command', () => {
+  updatePolicy({
+    prefer: 'subscription',
+    avoidProviders: { add: ['deepseek', 'moonshot'] },
+    avoidModels: { add: ['gpt-4o-mini'] },
+    accountOrder: { set: ['claude-work', 'openai-personal'] },
+    useFirst: { set: ['deepseek'] },
+    budget: { key: 'deepseek', amountUSD: 20, period: 'monthly' },
+  });
+  const lines = describePolicy();
+  expect(lines).toContain('preferring subscription seats · undo: /prefer clear');
+  expect(lines).toContain('avoiding providers: deepseek, moonshot · undo: /prefer allow deepseek moonshot');
+  expect(lines).toContain('avoiding models: gpt-4o-mini · undo: /prefer allow gpt-4o-mini');
+  expect(lines).toContain('account order: claude-work > openai-personal · undo: /prefer account order clear');
+  expect(lines).toContain('draining first: deepseek (while declared budget lasts) · undo: /prefer use first clear');
+  expect(lines).toContain('budget for deepseek: $20/month · undo: /budget deepseek clear');
 });

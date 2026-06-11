@@ -128,7 +128,9 @@ function ComposerImpl({
     return (
       <Text color={color.text}>
         {ln.slice(0, selStart)}
-        <Text inverse>{ln.slice(selStart, selEnd)}</Text>
+        {/* Explicit accent-on-ink selection: `inverse` over the dark element
+            background gave nearly no contrast — this is unmistakable. */}
+        <Text color={color.navy} backgroundColor={color.accent}>{ln.slice(selStart, selEnd)}</Text>
         {ln.slice(selEnd)}
       </Text>
     );

@@ -96,7 +96,7 @@ function Inline({ tokens }: { tokens: any[] }): React.ReactElement {
             // calm) — mirrors the fullscreen lines.ts codespan path. Path-blue, not
             // the bright accent: accent is reserved for interactive/now.
             return (
-              <Text key={i} color={color.path}>
+              <Text key={i} color={color.path} bold>
                 {decode(t.text)}
               </Text>
             );

@@ -114,3 +114,63 @@ test("identical scores resolve by tps→quality→id for a total order", () => {
   // drop z: x and y tie on everything but id → "x" (asc)
   expect(pickBest(input([y, x])).candidate.id).toBe("x");
 });
+
+// ── cost-realism terms (v0.10 routing upgrades) ──────────────────────────────
+const acct = (id: string, sub = false) => ({ accountId: id, provider: "p", exec: "in-loop" as const, isSubscription: sub });
+const base = { id: "m", inUSDPerMtok: 1, outUSDPerMtok: 4, quality: 0.8, tps: 100, account: acct("a") };
+const flags = { candidates: [], now: 1_000_000, estInputTokens: 100_000 };
+
+test("failure-adjusted cost: a measured fail rate raises expected cost", () => {
+  const clean = scoreCandidate({ ...base }, flags);
+  const flaky = scoreCandidate({ ...base, failRate: 0.3 }, flags);
+  expect(flaky.terms.retryPenalty).toBeGreaterThan(0);
+  expect(flaky.costEst).toBeCloseTo(clean.costEst * (1 + 1.5 * 0.3), 6);
+});
+
+test("cache-aware cost: the warm model on a caching provider gets the read discount; cold pays sticker", () => {
+  const warm = { accountId: "a", modelId: "m" };
+  const hot = scoreCandidate({ ...base, cacheReadDiscount: 0.1 }, { ...flags, warm });
+  const cold = scoreCandidate({ ...base, cacheReadDiscount: 0.1, account: acct("b") }, { ...flags, warm });
+  expect(hot.terms.cacheSavings).toBeGreaterThan(0);
+  expect(cold.terms.cacheSavings).toBe(0);
+  expect(hot.costEst).toBeLessThan(cold.costEst);
+  // EVERY cold candidate pays the same flat stickiness nudge (symmetric —
+  // exempting caching providers skewed cold-vs-cold comparisons toward them);
+  // the warm model's cache discount rides on top.
+  expect(cold.terms.switchPenalty).toBeGreaterThan(0);
+  const coldNoCache = scoreCandidate({ ...base, account: acct("b") }, { ...flags, warm });
+  expect(coldNoCache.terms.switchPenalty).toBeGreaterThan(0);
+});
+
+test("output realism: a reasoning model's outputFactor raises its cost", () => {
+  const terse = scoreCandidate({ ...base }, flags);
+  const thinky = scoreCandidate({ ...base, outputFactor: 1.0 }, flags);
+  expect(thinky.costEst).toBeGreaterThan(terse.costEst);
+  expect(thinky.terms.stickerCost).toBeCloseTo((100_000 / 1e6) * 1 + (100_000 / 1e6) * 4, 6);
+});
+
+test("quality SURPLUS above the bar wins a near-tie only when the kind values it", () => {
+  const weak = { ...base, id: "weak", quality: 0.71, qualityBar: 0.7 };
+  const strong = { ...base, id: "strong", quality: 0.85, qualityBar: 0.7, inUSDPerMtok: 1.02 }; // 2% pricier
+  // cheap kind (no quality weight): cheapest wins
+  expect(pickBest({ ...flags, candidates: [weak, strong] }).candidate.id).toBe("weak");
+  // code/plan (quality weighted): the stronger model takes the near-tie
+  const w = (c: typeof weak) => ({ ...c, qualityWeight: 0.3 });
+  expect(pickBest({ ...flags, candidates: [w(weak), w(strong)] }).candidate.id).toBe("strong");
+  // but a CLEARLY cheaper model still wins on cost
+  const cheap = { ...weak, inUSDPerMtok: 0.2, qualityWeight: 0.3 };
+  expect(pickBest({ ...flags, candidates: [cheap, w(strong)] }).candidate.id).toBe("weak");
+  // the bonus pays for SURPLUS only: at-bar quality earns nothing extra
+  const atBar = scoreCandidate({ ...weak, quality: 0.7, qualityWeight: 0.3 }, flags);
+  expect(atBar.terms.qualityBonus).toBe(0);
+});
+
+test("preferBias resolves near-ties toward the preferred account, never beats real cost gaps", () => {
+  const a = { ...base, id: "x", account: acct("first") };
+  const b = { ...base, id: "x2", account: acct("second") };
+  // equal cost → the biased one wins
+  expect(pickBest({ ...flags, candidates: [{ ...a, preferBias: 0.1 }, b] }).candidate.id).toBe("x");
+  // a 3x cheaper rival still wins over a 0.1 bias
+  const cheap = { ...b, inUSDPerMtok: 0.3, outUSDPerMtok: 1.2 };
+  expect(pickBest({ ...flags, candidates: [{ ...a, preferBias: 0.1 }, cheap] }).candidate.id).toBe("x2");
+});

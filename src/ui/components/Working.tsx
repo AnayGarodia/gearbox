@@ -1,5 +1,6 @@
 import React from "react";
 import { Box, Text } from "ink";
+import { fmtElapsed } from "../lines.ts";
 import { color } from "../theme.ts";
 import { shimmer, shimmerFrame } from "../shimmer.ts";
 import type { MascotState } from "./Mascot.tsx";
@@ -54,7 +55,7 @@ export function Working({
         {labelJsx}
         {live ? (
           <Text>
-            <Text color={color.accentDim}>{elapsed}s</Text>
+            <Text color={color.accentDim}>{fmtElapsed(elapsed)}</Text>
             <Text color={color.faint}> · esc interrupt</Text>
           </Text>
         ) : (

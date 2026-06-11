@@ -40,6 +40,12 @@ export interface ModelProfile {
   // the Artificial Analysis composite; the router normalises it to 0..1 as a
   // fallback when sweBenchVerified is absent.
   quality: { sweBenchVerified?: number; intelligenceIndex?: number; src: Provenance };
+  // Expected output tokens as a FRACTION of input tokens for a typical agent
+  // turn. Cost estimates that price only the input systematically flatter
+  // reasoning-heavy models, whose billed output (visible text + thinking
+  // tokens) can run several times a plain model's. Absent → OUTPUT_FACTOR_DEFAULT
+  // (0.2: agent turns are input-heavy — big context in, a diff or short answer out).
+  outputFactor?: number;
   strengths: string[];
   weaknesses: string[];
   asOf: string; // YYYY-MM snapshot date for these figures
@@ -69,6 +75,10 @@ export const PROFILES: ModelProfile[] = [
     cost: { inUSDPerMtok: 5, outUSDPerMtok: 25, src: "researched" },
     latency: { ttftMs: 2400, tps: 70, src: "seeded" },
     quality: { sweBenchVerified: 0.83, intelligenceIndex: 64, src: "seeded" },
+    // Adaptive thinking bills its reasoning tokens as OUTPUT (Anthropic extended-
+    // thinking docs: https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking),
+    // and the quality-ceiling tier thinks longest — ~2-3x a plain model's output.
+    outputFactor: 0.5,
     strengths: ["most capable", "long-horizon agentic work", "hard multi-step reasoning", "adaptive thinking"],
     weaknesses: ["most expensive", "slower than sonnet/haiku"],
     asOf: "2026-06",
@@ -79,6 +89,9 @@ export const PROFILES: ModelProfile[] = [
     cost: { inUSDPerMtok: 3, outUSDPerMtok: 15, src: "researched" },
     latency: { ttftMs: 1800, tps: 94, src: "measured" },
     quality: { sweBenchVerified: 0.77, intelligenceIndex: 50, src: "researched" },
+    // Adaptive thinking (billed as output) but interleaved/shorter than opus on
+    // typical agent turns — modestly above the 0.2 plain-model default.
+    outputFactor: 0.35,
     strengths: ["agentic coding", "tool use", "instruction-following", "long-horizon tasks", "adaptive thinking"],
     weaknesses: ["slower + pricier than haiku for simple work"],
     asOf: "2026-06",
@@ -104,6 +117,11 @@ export const PROFILES: ModelProfile[] = [
     cost: { inUSDPerMtok: 2.5, outUSDPerMtok: 10, src: "seeded" },
     latency: { ttftMs: 0, tps: 0, src: "seeded" },
     quality: { sweBenchVerified: 0.78, intelligenceIndex: 58, src: "seeded" },
+    // o-series lineage: reasoning tokens are billed as output (OpenAI reasoning
+    // guide, https://platform.openai.com/docs/guides/reasoning — "reasoning tokens
+    // ... are billed as output tokens"); at the default medium+ efforts the hidden
+    // chain often exceeds the visible answer.
+    outputFactor: 0.5,
     strengths: ["strong reasoning (effort: none to xhigh)", "broad knowledge", "tool use"],
     weaknesses: ["pricier output", "reasoning latency at high effort"],
     asOf: "2026-06",
@@ -118,6 +136,10 @@ export const PROFILES: ModelProfile[] = [
     cost: { inUSDPerMtok: 2, outUSDPerMtok: 12, src: "seeded" },
     latency: { ttftMs: 0, tps: 0, src: "seeded" },
     quality: { sweBenchVerified: 0.76, intelligenceIndex: 60, src: "seeded" },
+    // Gemini thinking variant: thinking tokens are billed at the output rate
+    // (https://ai.google.dev/gemini-api/docs/thinking — "thinking tokens ...
+    // charged as output"); the pro tier defaults to a generous thinking budget.
+    outputFactor: 0.4,
     strengths: ["huge 1M context", "strong reasoning", "thinking config"],
     weaknesses: ["preview", "agentic tool-use historically behind Claude"],
     asOf: "2026-06",
@@ -142,6 +164,10 @@ export const PROFILES: ModelProfile[] = [
     cost: { inUSDPerMtok: 0.4, outUSDPerMtok: 1.75, src: "seeded" },
     latency: { ttftMs: 0, tps: 0, src: "seeded" },
     quality: { sweBenchVerified: 0.81, intelligenceIndex: 55, src: "seeded" },
+    // R1/reasoner lineage: DeepSeek's reasoner emits a long visible CoT billed as
+    // output — historically the chattiest of the reasoning models (R1 averaged
+    // thousands of CoT tokens per answer; https://api-docs.deepseek.com/quick_start/pricing).
+    outputFactor: 0.6,
     strengths: ["far cheaper than frontier", "strong coding for the price", "reasoning"],
     weaknesses: ["smaller context", "slower hosted latency"],
     asOf: "2026-06",
@@ -157,6 +183,7 @@ export const PROFILES: ModelProfile[] = [
     cost: { inUSDPerMtok: 3.3, outUSDPerMtok: 16.5, src: "seeded" },
     latency: { ttftMs: 1900, tps: 90, src: "seeded" },
     quality: { sweBenchVerified: 0.77, intelligenceIndex: 50, src: "seeded" },
+    outputFactor: 0.35, // same thinking Sonnet as the anthropic-direct entry
     strengths: ["agentic coding", "tool use", "instruction-following", "AWS-native deployment", "extended thinking"],
     weaknesses: ["10% pricier than Anthropic direct", "Bedrock model enablement required"],
     asOf: "2026-06",
@@ -177,6 +204,7 @@ export const PROFILES: ModelProfile[] = [
     cost: { inUSDPerMtok: 5.5, outUSDPerMtok: 27.5, src: "seeded" },
     latency: { ttftMs: 2500, tps: 65, src: "seeded" },
     quality: { sweBenchVerified: 0.83, intelligenceIndex: 64, src: "seeded" },
+    outputFactor: 0.5, // same thinking Opus as the anthropic-direct entry
     strengths: ["most capable", "long-horizon agentic work", "AWS-native deployment", "extended thinking"],
     weaknesses: ["most expensive", "slower", "10% premium over Anthropic direct"],
     asOf: "2026-06",
@@ -243,6 +271,7 @@ export const PROFILES: ModelProfile[] = [
     cost: { inUSDPerMtok: 2, outUSDPerMtok: 12, src: "seeded" },
     latency: { ttftMs: 0, tps: 0, src: "seeded" },
     quality: { sweBenchVerified: 0.76, intelligenceIndex: 60, src: "seeded" },
+    outputFactor: 0.4, // same Gemini pro thinking model as the google entry above
     strengths: ["1M context", "strong reasoning", "thinking config", "GCP-native deployment"],
     weaknesses: ["preview", "agentic tool-use behind Claude"],
     asOf: "2026-06",
@@ -274,6 +303,54 @@ export const PROFILES: ModelProfile[] = [
 const BY_ID = new Map(PROFILES.map((p) => [p.id, p]));
 export function profileFor(id: string): ModelProfile | undefined {
   return BY_ID.get(id);
+}
+
+// ── Output factor ─────────────────────────────────────────────────────────────
+// Plain (non-reasoning) agent turns are input-heavy: a large assembled context in,
+// a diff or short answer out — output runs ~1/5 of input on typical turns, so 0.2
+// is the conservative default for any model without a measured/researched override.
+export const OUTPUT_FACTOR_DEFAULT = 0.2;
+
+// Expected output tokens as a fraction of input for an agent turn. Pure lookup:
+// the profile's override (set for reasoning-heavy models whose billed output
+// includes thinking tokens) or the plain-model default. Unknown ids get the
+// default too — same philosophy as PROVIDER_CALIBRATION's safe fallback.
+export function outputFactorFor(modelId: string): number {
+  return BY_ID.get(modelId)?.outputFactor ?? OUTPUT_FACTOR_DEFAULT;
+}
+
+// ── Prompt-cache economics ────────────────────────────────────────────────────
+// Fraction of the NORMAL input price charged for CACHE-READ tokens, per provider.
+// The scorer multiplies the expected cached share of input by this to stop the
+// cost estimate from overcharging providers with cheap cache reads. null = the
+// provider exposes no prompt caching (the scorer treats every input token as
+// full-price). Verified against official pricing pages, 2026-06:
+//   anthropic: cache reads cost 10% of base input (cache writes +25%) —
+//     https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+//   openai:    cached input is 10% of base for current models (gpt-5 family:
+//     $0.125 vs $1.25/Mtok — https://platform.openai.com/docs/pricing); the older
+//     4o-era 50% discount is deliberately NOT used here.
+//   deepseek:  cache HIT price is ~10% of the miss price, automatic, no write fee —
+//     https://api-docs.deepseek.com/quick_start/pricing
+//   google/vertex: implicit caching bills cached tokens at 25% of input
+//     (https://ai.google.dev/gemini-api/docs/caching); explicit caches add a
+//     per-hour storage fee we don't model here.
+//   bedrock:   Claude prompt caching on Bedrock mirrors Anthropic's 10% reads —
+//     https://aws.amazon.com/bedrock/pricing/
+const CACHE_READ_DISCOUNT: Record<string, number> = {
+  anthropic: 0.1,
+  openai: 0.1,
+  deepseek: 0.1,
+  google: 0.25,
+  vertex: 0.25,
+  bedrock: 0.1,
+};
+
+// null (not 1.0) for an unknown provider: the scorer reads null as "no caching",
+// which is the honest neutral — we'd rather slightly overestimate cost than
+// invent a discount a provider never grants.
+export function cacheReadDiscount(provider: string): number | null {
+  return CACHE_READ_DISCOUNT[provider] ?? null;
 }
 
 // Per-provider calibration fallback: used when a model id is not in PROFILES

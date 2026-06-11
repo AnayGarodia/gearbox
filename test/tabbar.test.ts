@@ -90,3 +90,8 @@ test("mastheadAccountZone right-aligns to the padding and yields to a crowded ba
   expect(mastheadAccountZone("claude · Max · a@b.co", [row("alpha"), row("bravo"), row("charlie", { active: true })], 46)).toBeNull();
   expect(mastheadAccountZone(null, rows, 100)).toBeNull();
 });
+
+test("the busy ● shows only on hidden tabs — never on the active one", () => {
+  expect(tabMark(row("x", { busy: true, active: true }))).toBe("");
+  expect(tabMark(row("x", { busy: true, active: false }))).toBe("●");
+});
