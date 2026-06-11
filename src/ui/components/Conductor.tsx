@@ -30,6 +30,11 @@ export interface ConductorProps {
 
 interface TabState {
   id: number;
+  /** The tab's own name (slug / wardrobe pick). The display fallback when the
+   *  session has no title yet — NOT basename(dir): a same-dir tab (launch dir
+   *  not a repo → no worktree) would otherwise show the launch folder's name
+   *  on every tab ("Desktop", "Desktop", …). */
+  name: string;
   dir: string;
   selector: ModelSelector;
   resumeId?: string;
@@ -41,9 +46,9 @@ interface TabState {
 
 /** Pure: the masthead tab-bar rows for a tab set (always shown, even with one
  *  tab — the + cell is how parallel sessions are discovered). */
-export function tabRowsOf(tabs: { dir: string; status: SessionStatus; unseen?: boolean }[], activeIdx: number): TabRow[] {
+export function tabRowsOf(tabs: { dir: string; name?: string; status: SessionStatus; unseen?: boolean }[], activeIdx: number): TabRow[] {
   return tabs.map((t, i) => ({
-    title: t.status.title || basename(t.dir),
+    title: t.status.title || t.name || basename(t.dir),
     active: i === activeIdx,
     busy: t.status.busy,
     needsInput: t.status.needsInput,
@@ -60,14 +65,16 @@ export function tabSlug(name: string | undefined, id: number): string {
 let nextTabId = 2; // tab 1 is the launch session
 
 export function Conductor({ selector, makeSelector, fullscreen, resumeId }: ConductorProps) {
-  const idleStatus = (dir: string): SessionStatus => ({ busy: false, needsInput: false, title: basename(dir) });
+  // title stays EMPTY until the session earns one (first turn's auto-title):
+  // the tab's own `name` is the display fallback, never the directory.
+  const idleStatus = (_dir: string): SessionStatus => ({ busy: false, needsInput: false, title: "" });
   // ONE state object for {tabs, active}: a tab create/switch/close must be a
   // SINGLE setState. Two separate states rendered an intermediate frame when
   // called from the raw mouse handler (no React event batching there), and
   // that extra frame scrolled the alt screen by one row — permanently shifting
   // the whole UI off its mouse maps.
   const [tabState, setTabState] = useState<{ tabs: TabState[]; active: number }>(() => ({
-    tabs: [{ id: 1, dir: process.cwd(), selector, resumeId, status: idleStatus(process.cwd()) }],
+    tabs: [{ id: 1, name: basename(process.cwd()), dir: process.cwd(), selector, resumeId, status: idleStatus(process.cwd()) }],
     active: 0,
   }));
   const tabs = tabState.tabs;
@@ -113,7 +120,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
       ? tabSlug(name, id)
       : nextTabName(
           [
-            ...tabsRef.current.map((t) => basename(t.dir)),
+            ...tabsRef.current.map((t) => t.name),
             ...TAB_NAMES.filter((n) => home && existsSync(join(home, ".gearbox", "tabs", n))),
           ],
           id,
@@ -153,7 +160,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
       saveSession(snap, dir);
       resumeId = snap.id;
     }
-    const tab: TabState = { id, dir, selector: makeSelector(), resumeId, initialPrompt: opts?.task, status: idleStatus(dir) };
+    const tab: TabState = { id, name: slug, dir, selector: makeSelector(), resumeId, initialPrompt: opts?.task, status: idleStatus(dir) };
     try { process.chdir(dir); } catch { /* keep going; the App pins its own root */ }
     setTabState((s) => ({ tabs: [...s.tabs, tab], active: s.tabs.length })); // the new tab lands at the end
   }, [makeSelector]);
@@ -186,7 +193,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     cycle,
     list: () =>
       tabsRef.current.map((t, i) => ({
-        title: t.status.title || basename(t.dir),
+        title: t.status.title || t.name,
         dir: t.dir,
         active: i === activeIdxRef.current,
         status: t.status.needsInput ? "needs input" : t.status.busy ? "working" : "idle",
@@ -228,7 +235,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
             tabs={control}
             tabRows={rows}
             initialPrompt={t.initialPrompt}
-            ghostLook={i === 0 ? undefined : lookForTabName(basename(t.dir)) ?? undefined}
+            ghostLook={i === 0 ? undefined : lookForTabName(t.name) ?? undefined}
           />
         </Box>
       ))}

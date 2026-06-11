@@ -713,9 +713,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   }, [busy, active]);
 
   // Report up to the conductor's tab strip: busy spinner, the needs-input badge
-  // (a permission prompt is waiting), and this session's display title.
+  // (a permission prompt is waiting), and this session's display title. NO
+  // basename(root) fallback here: same-dir tabs (launch dir not a repo → no
+  // worktree) all share one dir, so the dir name labeled every tab identically
+  // ("Desktop"). The conductor falls back to the tab's own name instead.
   useEffect(() => {
-    onStatus?.({ busy, needsInput: perm != null, title: sessionRef.current.title || basename(rootRef.current) });
+    onStatus?.({ busy, needsInput: perm != null, title: sessionRef.current.title });
   }, [busy, perm, onStatus]);
 
   // Sticky bash mode: `!` on an empty composer enters it (the ! is consumed), each

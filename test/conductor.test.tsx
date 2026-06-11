@@ -74,3 +74,15 @@ test("pre-mutation hooks route by root too (each tab checkpoints its own tree)",
     resetPermissions();
   }
 });
+
+test("tabRowsOf: a tab's own name beats the dir basename (same-dir tabs aren't all 'Desktop')", () => {
+  const rows = tabRowsOf(
+    [
+      { dir: "/Users/me/Desktop", name: "gearbox", status: status(false, false, "") },
+      { dir: "/Users/me/Desktop", name: "wizard", status: status(false, false, "") },
+      { dir: "/Users/me/Desktop", name: "skater", status: status(false, false, "say PLUM") },
+    ],
+    0,
+  );
+  expect(rows.map((r) => r.title)).toEqual(["gearbox", "wizard", "say PLUM"]); // session title still wins
+});
