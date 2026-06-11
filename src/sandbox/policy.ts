@@ -81,7 +81,10 @@ export function gitDirWritePaths(workspace: string, read: (p: string) => string 
     // Allow the whole common dir (…/.git), not just the worktree subdir — git
     // writes shared refs/objects there too.
     const common = gitdir.includes(`${join("/", ".git", "worktrees")}`) || /\/\.git\/worktrees\//.test(gitdir) ? resolve(gitdir, "..", "..") : gitdir;
-    return [resolve(common)];
+    // Seatbelt matches resolved paths — a main repo under a symlinked prefix
+    // (e.g. /tmp/... → /private/tmp/...) needs the real spelling, same as
+    // workspace/tmp/home.
+    return [real(resolve(common))];
   } catch {
     return []; // regular repo (.git is a directory, inside the workspace) or no repo
   }
