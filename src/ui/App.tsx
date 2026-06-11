@@ -4302,7 +4302,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // panel and let esc (the panel-close key) silently DENY the unseen request.
   const composerPlaceholder = setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything";
   const composerAt = (w: number, lift: boolean) => (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} auraHue={setupRequired ? null : provHue} auraMetered={!activeCli} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} auraHue={setupRequired ? null : provHue} />
   );
   // Inline keeps full width; fullscreen renders these inside the page column
   // (fsComposerJsx below) so the consent line / composer share the transcript's

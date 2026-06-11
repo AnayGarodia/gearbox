@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { selectionRange, wrapMap, wrapCaret, type Edit } from "../input.ts";
-import { Aura } from "./Aura.tsx";
+import { Aura, hexMix } from "./Aura.tsx";
 
 // The soft-wrap column budget for a composer of `width` total columns:
 // 2 box edges + 3-col prompt prefix + 1 slack cell for the end-of-line cursor.
@@ -44,7 +44,6 @@ function ComposerImpl({
   model,
   lift = false,
   auraHue = null,
-  auraMetered = false,
   onEdit,
 }: {
   value: string;
@@ -62,8 +61,7 @@ function ComposerImpl({
   provider?: string | null; // footer-right: the live provider (dim)
   model?: string | null; // footer-right: the live model name (bold)
   lift?: boolean; // fullscreen only: a 1-row bottom margin so the input sits off the screen's bottom edge. Inline has no edge to lift off (the terminal owns the rows below), so it stays flush — no stray trailing blank.
-  auraHue?: string | null; // provider brand hue — the breathing glow row above the box (null → plain blank row)
-  auraMetered?: boolean; // API key (metered) → segmented ticking glow; subscription seat → continuous band
+  auraHue?: string | null; // provider brand hue — the static halo behind/around the box (null → no tint)
   onEdit?: (edit: Edit) => void;
 }) {
   const selected = selectionRange({ value, cursor, selectionAnchor });
@@ -74,7 +72,11 @@ function ComposerImpl({
   // The MODE wears the box: plan = ok-green edges (read-only, safe), auto-accept
   // = warn-amber (writes apply unasked). Shell pink wins (it's about THIS line).
   const modeColor = mode === "plan" ? color.ok : mode === "auto-accept" ? color.warn : null;
-  const edge = shellMode ? color.shell : modeColor ?? color.faint;
+  // Default edges pick up the provider hue (part of the halo); mode/shell wins.
+  const edge = shellMode ? color.shell : modeColor ?? (auraHue ? hexMix(color.faint, auraHue, 0.4) : color.faint);
+  // The box surface itself carries a faint provider wash — the glow reads as
+  // emanating from the input (the Gemini look), not a stripe above it.
+  const boxBg = auraHue ? hexMix(color.elementBg, auraHue, 0.08) : color.elementBg;
   const promptGlyph = bashMode ? "!" : glyph.prompt;
   // Columns inside the two ┃ edges; each row is padded to this so the element
   // layer reads as one solid surface, not text-shaped patches.
@@ -86,7 +88,7 @@ function ComposerImpl({
   const rows = wrapMap(value, wrapW);
   const { row: curRow, col: curCol } = wrapCaret(value, wrapW, cursor);
   const prefix = (i: number) => (i === 0 ? " " + promptGlyph + " " : "   ");
-  const bgPad = (used: number) => (used < innerW ? <Text backgroundColor={color.elementBg}>{" ".repeat(innerW - used)}</Text> : null);
+  const bgPad = (used: number) => (used < innerW ? <Text backgroundColor={boxBg}>{" ".repeat(innerW - used)}</Text> : null);
   const renderRow = (r: { start: number; len: number }, i: number) => {
     const ln = value.substr(r.start, r.len);
     const selStart = selected ? Math.max(selected[0], r.start) - r.start : -1;
@@ -144,9 +146,9 @@ function ComposerImpl({
     <Box flexDirection="column" width={width} marginBottom={lift ? 1 : 0} flexShrink={0}>
       {/* The provider AURA replaces the old blank marginTop row (row count
           unchanged — the contract above still reads marginTop + …, where this
-          IS that row): a breathing glow in the active provider's hue,
-          continuous on a subscription seat, segmented/ticking on an API key. */}
-      <Aura hue={auraHue ?? null} metered={!!auraMetered} width={width} />
+          IS that row): a static halo in the active provider's hue, brightest
+          behind the input, fading outward. */}
+      <Aura hue={auraHue ?? null} width={width} />
       {/* The editor box: thick left + right edges only, element-layer rows inside. */}
       <Box
         flexDirection="column"
@@ -166,7 +168,7 @@ function ComposerImpl({
         {value === "" ? (
           // Empty composer: idle placeholder. While busy, the cue is "type to queue".
           <Box width={innerW}>
-            <Text backgroundColor={color.elementBg}>
+            <Text backgroundColor={boxBg}>
               <Text color={busy ? color.faint : accent} bold>{" " + promptGlyph + " "}</Text>
               {!busy ? <Text inverse> </Text> : null}
               <Text color={color.faint}>{busy ? "" : bashMode ? "shell command · esc exits bash mode" : suggestion ?? placeholder}</Text>
@@ -179,7 +181,7 @@ function ComposerImpl({
           <Box flexDirection="column" width={innerW}>
             {rows.map((r, i) => (
               <Box key={i} width={innerW}>
-                <Text backgroundColor={color.elementBg}>
+                <Text backgroundColor={boxBg}>
                   <Text color={accent} bold>{prefix(i)}</Text>
                   {renderRow(r, i)}
                 </Text>
