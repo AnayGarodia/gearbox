@@ -614,3 +614,40 @@ test("no verifyMode provided defaults to auto hint", () => {
 });
 
 afterAll(() => resetRetrievalIndex());
+
+// ── pre-flight overflow refusal ────────────────────────────────────────────
+// Hermetic temp cwd: keeps retrieval from indexing the real repo in this test.
+const overflowDir = mkdtempSync(join(tmpdir(), "gbx-overflow-"));
+afterAll(() => rmSync(overflowDir, { recursive: true, force: true }));
+
+test("overflow is set when the irreducible send exceeds the input budget", () => {
+  // Tiny-window spec: the input budget floors at 8k tokens, so a ~15k-token
+  // prompt overflows without megabyte-scale token counting slowing the suite.
+  const tiny: ModelSpec = { ...sonnet, contextWindow: 9_000 };
+  const giant = "lorem ipsum dolor sit amet ".repeat(2_000);
+  const r = buildContext({ history: [], userText: giant, model: tiny, cwd: overflowDir });
+  expect(r.overflow).toBeDefined();
+  expect(r.overflow!.tokens).toBeGreaterThan(r.overflow!.budget);
+});
+
+test("overflow is absent for a normal send", () => {
+  const r = buildContext({ history: [], userText: "hello", model: sonnet, cwd: overflowDir });
+  expect(r.overflow).toBeUndefined();
+});
+
+// ── single mega-turn never invokes the summarizer ──────────────────────────
+test("compactHistory with ≤1 turn shrinks in-window without calling the summarizer", async () => {
+  let called = 0;
+  const summarizer: Summarizer = async () => (called++, "should never run");
+  const big = "const value = compute(input); // line of code\n".repeat(800);
+  const history: ModelMessage[] = [
+    { role: "user", content: "do the thing" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "t1", toolName: "read_file", input: { path: "a.ts" } }] as any },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "t1", toolName: "read_file", output: big }] as any },
+    { role: "assistant", content: "done" },
+  ];
+  const r = await compactHistory({ history, summarize: summarizer });
+  expect(called).toBe(0);
+  expect(r).not.toBeNull();
+  expect(r!.after).toBeLessThan(r!.before);
+});
