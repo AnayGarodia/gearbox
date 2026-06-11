@@ -34,7 +34,7 @@ export function mastheadAccountZone(account: string | null | undefined, tabRows:
 
 // Memoized: props are stable while scrolling/streaming. `epoch` exists solely so
 // /theme invalidates the memo (setTheme mutates `color` in place).
-function MastheadImpl({ account, width, tabRows }: { account?: string | null; width: number; epoch?: number; tabRows?: TabRow[] | null }) {
+function MastheadImpl({ account, accountColor, width, tabRows }: { account?: string | null; accountColor?: string; width: number; epoch?: number; tabRows?: TabRow[] | null }) {
   if (tabRows?.length) {
     const segs = tabBarSegments(tabRows, TABBAR_LEFT, width - 1);
     const spans: React.ReactNode[] = [];
@@ -74,7 +74,7 @@ function MastheadImpl({ account, width, tabRows }: { account?: string | null; wi
           <Text>{"  "}</Text>
           {spans}
           <Box flexGrow={1} justifyContent="flex-end">
-            {account && acctRoom > 8 ? <Text color={color.faint} wrap="truncate-end">{account.slice(0, acctRoom)}</Text> : null}
+            {account && acctRoom > 8 ? <Text color={accountColor ?? color.faint} wrap="truncate-end">{account.slice(0, acctRoom)}</Text> : null}
           </Box>
         </Box>
         <Box paddingX={1}>
@@ -88,7 +88,7 @@ function MastheadImpl({ account, width, tabRows }: { account?: string | null; wi
     <Box flexDirection="column" marginTop={1}>
       <Box width={width} paddingX={1} justifyContent="space-between">
         <Text color={color.accent} bold>{WORDMARK}</Text>
-        {account ? <Text color={color.faint} wrap="truncate-end">{account.slice(0, acctRoom)}</Text> : null}
+        {account ? <Text color={accountColor ?? color.faint} wrap="truncate-end">{account.slice(0, acctRoom)}</Text> : null}
       </Box>
       <Box paddingX={1}>
         <Text color={color.faint}>{glyph.rule.repeat(Math.max(width - 2, 8))}</Text>

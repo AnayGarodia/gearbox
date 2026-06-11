@@ -135,6 +135,8 @@ function StatusBarImpl({
   online = true,
   cwd,
   branch,
+  providerColor,
+  providerFlash = false,
 }: {
   model: string;
   cost?: number;
@@ -144,6 +146,8 @@ function StatusBarImpl({
   online?: boolean;
   cwd?: string;
   branch?: string | null;
+  providerColor?: string; // brand hue of the active provider — tints the ● identity dot
+  providerFlash?: boolean; // briefly true after a provider switch → the whole label pulses in the brand hue
   epoch?: number; // /theme invalidates the memo (setTheme mutates `color` in place)
 }) {
   const costText = formatStatusCost(cost);
@@ -176,7 +180,19 @@ function StatusBarImpl({
         ))}
       </Text>
       <Text wrap="truncate-end">
-        <Text color={color.text}>{model}</Text>
+        {/* Identity dot + label: the ● always carries the provider's brand hue;
+            on a switch the WHOLE label flashes in that hue for a beat so a
+            provider change is visible without reading. The model string itself
+            (incl. any "● " prefix) comes from App — statusBarLayout hit-tests
+            the same string, so the zone can't drift. */}
+        {model.startsWith("● ") ? (
+          <>
+            <Text color={providerColor ?? color.accent} bold={providerFlash}>{"● "}</Text>
+            <Text color={providerFlash ? (providerColor ?? color.accent) : color.text} bold={providerFlash}>{model.slice(2)}</Text>
+          </>
+        ) : (
+          <Text color={color.text}>{model}</Text>
+        )}
         {gauge ? (
           <>
             <Text color={color.faint}>{SEP}</Text>

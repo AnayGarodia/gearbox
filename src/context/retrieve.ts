@@ -227,10 +227,16 @@ function countOcc(haystack: string, needle: string): number {
  *     like a model-selection question and the file is a known selector/router.
  *     Without this, generic terms like "model" swamp the routing files.
  */
-export function rankFiles(query: string, cwd = process.cwd()): { file: string; score: number }[] {
+export function rankFiles(query: string, cwd = process.cwd()): { file: string; score: number; coverage: number; boosted: boolean }[] {
   const idx = index(cwd);
   const qt = terms(query);
   if (!qt.length) return [];
+  // Total idf mass of the query: the yardstick for `coverage` below. A file
+  // matching every query term once scores ≈ 1.0×qIdf from the body term alone;
+  // path/symbol boosts push well past it. Conversational English that happens
+  // to appear in code bodies tops out around 1× with no boosts — that contrast
+  // (not the raw score) is what separates a real code query from small talk.
+  const qIdf = qt.reduce((s, t) => s + idf(idx, t), 0) || 1;
 
   // Detect a model-selection query so we can apply the hardcoded routing boost.
   const asksModelSelection = qt.includes("model") && (qt.includes("default") || qt.includes("used") || qt.includes("change"));
@@ -240,25 +246,41 @@ export function rankFiles(query: string, cwd = process.cwd()): { file: string; s
     const fl = f.toLowerCase();
     const defs = idx.fileDefs.get(f)!;
     let s = 0;
+    let boosted = false; // any path/symbol hit — the query names something this file IS, not just words it contains
     for (const t of qt) {
       const tf = countOcc(lc, t);
       if (tf) s += idf(idx, t) * (tf * 2.2) / (tf + 1.2); // BM25 tf saturation: tf*(k1+1)/(tf+k1), k1 = 1.2
-      if (fl.includes(t)) s += 4 * idf(idx, t); // path match: rewards files named after the query
-      if (defs.some((d) => d.includes(t))) s += 3 * idf(idx, t); // symbol match: rewards defining files
+      if (fl.includes(t)) { s += 4 * idf(idx, t); boosted = true; } // path match: rewards files named after the query
+      if (defs.some((d) => d.includes(t))) { s += 3 * idf(idx, t); boosted = true; } // symbol match: rewards defining files
     }
     // Routing boost: model-selection queries should surface selector/router/config
     // even if those files score low on raw term frequency.
-    if (asksModelSelection && /(^|\/)(model\/selector|model\/router|config)\.ts$/.test(fl)) s += 8 * idf(idx, "model");
-    return { file: f, score: s };
+    if (asksModelSelection && /(^|\/)(model\/selector|model\/router|config)\.ts$/.test(fl)) { s += 8 * idf(idx, "model"); boosted = true; }
+    return { file: f, score: s, coverage: s / qIdf, boosted };
   });
   return scored.filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
 }
 
 export interface RetrievedFile {
   file: string;
-  content: string;
+  content: string; // "" for a pointer hit (the model read_files it on demand)
   tokens: number;
+  pointer?: boolean; // medium-confidence hit: pushed as a path pointer, not content
 }
+
+// Tiered push thresholds, in units of `coverage` (score / query idf mass).
+// Calibrated against this repo: real code queries ("where is the cooldown
+// logic", "fix the failing verify gate") put their true files at 3.4–5.0 with
+// path/symbol boosts; conversational prompts that merely share English words
+// with code bodies ("thanks for the help", "explain promises") top out ≤2.2.
+//   ≥ FULL (and boosted: the query names something the file IS) → content push.
+//   ≥ POINTER → a one-line path pointer; the model pulls it if it matters.
+//   below → nothing; the repo map already covers ambient awareness.
+const FULL_COVERAGE = 3.0;
+const POINTER_COVERAGE = 2.4;
+// And a relative floor: a hit scoring under 30% of the top hit is tail noise
+// regardless of absolute coverage.
+const REL_FLOOR = 0.3;
 
 /**
  * Return the top-k most relevant files for `query`, packed within `budget` tokens.
@@ -279,25 +301,37 @@ export function retrieveFiles(
   modelId?: string,
 ): RetrievedFile[] {
   const idx = index(cwd);
-  // Slice to top-k candidates before token-packing to keep the loop bounded.
-  const ranked = rankFiles(query, cwd).slice(0, k);
+  const rankedAll = rankFiles(query, cwd);
+  const topScore = rankedAll[0]?.score ?? 0;
+  // Tier the candidates: floors first (relative + absolute), then slice to
+  // top-k before token-packing to keep the loop bounded.
+  const ranked = rankedAll
+    .filter((r) => r.score >= topScore * REL_FLOOR && r.coverage >= POINTER_COVERAGE)
+    .slice(0, k);
   const out: RetrievedFile[] = [];
   let used = 0;
   let topOversize: { file: string; content: string } | null = null;
-  for (const { file } of ranked) {
-    const content = idx.raw.get(file);
+  for (const r of ranked) {
+    // Medium-confidence: push the path, not the content.
+    if (r.coverage < FULL_COVERAGE || !r.boosted) {
+      out.push({ file: r.file, content: "", tokens: countTokens(r.file, modelId), pointer: true });
+      continue;
+    }
+    const content = idx.raw.get(r.file);
     if (content == null) continue;
     const tokens = countTokens(content, modelId);
     // Skip files that would overflow the remaining budget, but keep trying
-    // smaller files that might still fit.
+    // smaller files that might still fit. An unfit full-tier hit still rides
+    // as a pointer — the model knows it matters even when it can't be inlined.
     if (used + tokens > budget) {
-      if (!out.length && !topOversize) topOversize = { file, content };
+      if (!out.some((o) => !o.pointer) && !topOversize) topOversize = { file: r.file, content };
+      else out.push({ file: r.file, content: "", tokens: countTokens(r.file, modelId), pointer: true });
       continue;
     }
-    out.push({ file, content, tokens });
+    out.push({ file: r.file, content, tokens });
     used += tokens;
   }
-  if (!out.length && topOversize && budget > 200) {
+  if (!out.some((o) => !o.pointer) && topOversize && budget > 200) {
     // Head-truncate the best match to the budget, marked clearly so the model
     // knows to read_file for the rest. Start from a ~4 chars/token estimate and
     // shrink once if the real count still overflows (code tokenizes denser).

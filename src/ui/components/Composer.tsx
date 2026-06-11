@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { selectionRange, wrapMap, wrapCaret, type Edit } from "../input.ts";
+import { Aura } from "./Aura.tsx";
 
 // The soft-wrap column budget for a composer of `width` total columns:
 // 2 box edges + 3-col prompt prefix + 1 slack cell for the end-of-line cursor.
@@ -42,6 +43,8 @@ function ComposerImpl({
   provider,
   model,
   lift = false,
+  auraHue = null,
+  auraMetered = false,
   onEdit,
 }: {
   value: string;
@@ -59,6 +62,8 @@ function ComposerImpl({
   provider?: string | null; // footer-right: the live provider (dim)
   model?: string | null; // footer-right: the live model name (bold)
   lift?: boolean; // fullscreen only: a 1-row bottom margin so the input sits off the screen's bottom edge. Inline has no edge to lift off (the terminal owns the rows below), so it stays flush — no stray trailing blank.
+  auraHue?: string | null; // provider brand hue — the breathing glow row above the box (null → plain blank row)
+  auraMetered?: boolean; // API key (metered) → segmented ticking glow; subscription seat → continuous band
   onEdit?: (edit: Edit) => void;
 }) {
   const selected = selectionRange({ value, cursor, selectionAnchor });
@@ -136,7 +141,12 @@ function ComposerImpl({
     // flexShrink=0: when the frame is over-full, Yoga must squeeze the flexible
     // transcript/hero region — never the input box (a shrunk border box paints
     // its footer over the input row).
-    <Box flexDirection="column" width={width} marginTop={1} marginBottom={lift ? 1 : 0} flexShrink={0}>
+    <Box flexDirection="column" width={width} marginBottom={lift ? 1 : 0} flexShrink={0}>
+      {/* The provider AURA replaces the old blank marginTop row (row count
+          unchanged — the contract above still reads marginTop + …, where this
+          IS that row): a breathing glow in the active provider's hue,
+          continuous on a subscription seat, segmented/ticking on an API key. */}
+      <Aura hue={auraHue ?? null} metered={!!auraMetered} width={width} />
       {/* The editor box: thick left + right edges only, element-layer rows inside. */}
       <Box
         flexDirection="column"

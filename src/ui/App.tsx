@@ -24,7 +24,7 @@ import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLef
 import { setPermissionHandler, registerPermissionHandler, registerPreMutationHook, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
 import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName } from "./character.ts";
-import { color, glyph, setTheme, activeTheme, THEMES } from "./theme.ts";
+import { color, glyph, setTheme, activeTheme, THEMES, providerColor } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
@@ -1736,17 +1736,41 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const composerProvider = setupRequired || activeCli || fullscreen ? null : model?.provider ?? null;
   const composerModelName = setupRequired || fullscreen ? null : modelLabel;
   // Compact identity for the top-right corner: "claude · Max · you@host" for a
-  // subscription (id stays the slug under the hood), else nothing.
+  // subscription, "google-gemini · API key" for a metered key — the masthead
+  // always answers "whose dime is this running on?", not only on subscriptions.
   const bannerAccount = (() => {
-    if (setupRequired || !activeCli) return null;
-    const a = getAccount(activeCli.id);
-    const name = (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude");
-    const idy = a?.identity?.label ?? "";
-    const tier = (idy.match(/\b(Max|Pro|Plus|Team|Enterprise)\b/i) ?? activeCli.label.match(/\b(Max|Pro|Plus|Team|Enterprise)\b/i))?.[1];
-    const email = idy.match(/[^\s·]+@[^\s·]+/)?.[0];
-    return [name, tier, email].filter(Boolean).join(" · ");
+    if (setupRequired) return null;
+    if (activeCli) {
+      const a = getAccount(activeCli.id);
+      const name = (activeCliRef.current?.binary?.includes("codex") ? "chatgpt" : "claude");
+      const idy = a?.identity?.label ?? "";
+      const tier = (idy.match(/\b(Max|Pro|Plus|Team|Enterprise)\b/i) ?? activeCli.label.match(/\b(Max|Pro|Plus|Team|Enterprise)\b/i))?.[1];
+      const email = idy.match(/[^\s·]+@[^\s·]+/)?.[0];
+      return [name, tier, email].filter(Boolean).join(" · ") + " · subscription";
+    }
+    if (!model) return null;
+    const a = usedAccountRef.current ? getAccount(usedAccountRef.current) : null;
+    const name = a && a.provider === model.provider ? accountName(a) : model.provider;
+    return `${name} · API key`;
   })();
   bannerAccountRef.current = bannerAccount;
+  // The live backend's provider — drives the identity hue across the chrome
+  // (status-bar ●, masthead account, usage-strip api row) and the switch flash.
+  const activeProvider = setupRequired ? null : activeCli ? (activeCliRef.current?.binary?.includes("codex") ? "codex-cli" : "claude-cli") : model?.provider ?? null;
+  const provHue = providerColor(activeProvider);
+  // Flash the status-bar label in the brand hue for a beat after a provider
+  // switch, so changing gemini → anthropic → openai is visible without hunting.
+  const [provFlash, setProvFlash] = useState(false);
+  const prevProviderRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeProvider || prevProviderRef.current === activeProvider) return;
+    const first = prevProviderRef.current === null;
+    prevProviderRef.current = activeProvider;
+    if (first || process.env.GEARBOX_NO_MOTION) return; // boot isn't a switch
+    setProvFlash(true);
+    const t = setTimeout(() => setProvFlash(false), 2200);
+    return () => clearTimeout(t);
+  }, [activeProvider]);
   const routing = setupRequired || activeCli ? null : (lastPick?.reason ?? choice?.reason ?? null);
   // Context window of whatever's actually answering: the in-loop model, or — on a
   // subscription — the CLI's window. Claude Code Max runs a 200k window (NOT the
@@ -1760,7 +1784,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const sbWhere = collapsePath(rootRef.current) + (branch ? `:${branch}` : "");
   const sbChips = [...(!online ? ["⚠ offline"] : []), ...(yolo ? ["yolo"] : [])];
   const sbChipLen = sbChips.reduce((n, c) => n + c.length, 0) + Math.max(0, sbChips.length - 1) * 2 + (sbChips.length ? 2 : 0);
-  statusBarRenderRef.current = { model: modelLabel, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), ctxPct, width, where: sbWhere, chipLen: sbChipLen };
+  // The status-bar identity string: a provider-hue ● ahead of the label. The
+  // SAME string feeds the render and the click hit-test (statusBarLayout), so
+  // the model zone can't drift by the dot's 2 cols.
+  const modelDisplay = setupRequired ? modelLabel : `● ${modelLabel}`;
+  statusBarRenderRef.current = { model: modelDisplay, costText: formatStatusCost(estimateCost(sessionRef.current.turns)), ctxPct, width, where: sbWhere, chipLen: sbChipLen };
 
   const push = (it: Item) => setItems((prev) => [...prev, it]);
   const pushPhase = (label: string, detail?: string) => {
@@ -4102,11 +4130,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Match the ACTIVE subscription by account id (labels can drift — e.g. a boot
   // restore once set it to the bare binary), so the strip never shows a different
   // account's usage. Only fall back to the first entry if there's no active sub.
-  const stripSub = stripView ? (stripView.subscriptions.find((s) => s.id === activeCli?.id) ?? (activeCli ? null : stripView.subscriptions[0]) ?? null) : null;
+  // Without an active sub, only show a subscription's 5h/7d bars when that sub
+  // actually ran the last turn (a routed seat). Falling back to subscriptions[0]
+  // showed Claude's plan windows while a Gemini API key was doing the work.
+  const stripSub = stripView
+    ? (stripView.subscriptions.find((s) => s.id === (activeCli?.id ?? usedAccountRef.current))
+        ?? (activeCli || usedAccountRef.current ? null : stripView.subscriptions[0])
+        ?? null)
+    : null;
   // Prefer the account that actually ran the last turn (usedAccountRef) over the
   // top-spend default, so switching between GPT / Azure / DeepSeek / etc. shows
   // the right account's data immediately without waiting for spend to accumulate.
   const stripApi = stripView ? ((usedAccountRef.current ? stripView.apiKeys.find((a) => a.id === usedAccountRef.current) : null) ?? stripView.apiKeys[0] ?? null) : null;
+  // The strip's header identity chip — memoized (the strip is React.memo'd, a
+  // fresh object every render would defeat it).
+  const stripActive = useMemo(
+    () => (statusPinned && bannerAccount ? { label: bannerAccount, hue: provHue } : null),
+    [statusPinned, bannerAccount, provHue],
+  );
   // Same hot-path rule as stripView: turnsLeftForecast calls totalSpentToday(),
   // which reads usage.json from disk — computing it inline in the strip JSX ran
   // that read on every render (every scroll frame while the strip is pinned).
@@ -4261,7 +4302,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // panel and let esc (the panel-close key) silently DENY the unseen request.
   const composerPlaceholder = setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything";
   const composerAt = (w: number, lift: boolean) => (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} auraHue={setupRequired ? null : provHue} auraMetered={!activeCli} />
   );
   // Inline keeps full width; fullscreen renders these inside the page column
   // (fsComposerJsx below) so the consent line / composer share the transcript's
@@ -4396,7 +4437,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           </Box>
         ) : null}
         {quickPickerJsx}
-        {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} forecast={stripForecast!} width={pageW} epoch={themeEpochState} /> : null}
+        {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} apiHue={stripApi ? providerColor(getAccount(stripApi.id)?.provider) : undefined} active={stripActive} forecast={stripForecast!} width={pageW} epoch={themeEpochState} /> : null}
       </Box>
       {/* The command/file palette sits in the page column, aligned with the composer above it. */}
       {homeScreen ? null : <Box height={PALETTE_ROWS} flexDirection="column" marginLeft={pageLeft} width={pageW} flexShrink={0}>{paletteAt(pageW - 2)}</Box>}
@@ -4405,7 +4446,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
           assumes y === termRows; change in lockstep. */}
       <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
-        <StatusBar model={modelLabel} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} epoch={themeEpochState} />
+        <StatusBar model={modelDisplay} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} providerColor={provHue} providerFlash={provFlash} epoch={themeEpochState} />
       </Box>
     </>
   );
@@ -4431,7 +4472,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
-        <Masthead account={bannerAccount} width={width} epoch={themeEpochState} tabRows={tabRows} />
+        <Masthead account={bannerAccount} accountColor={bannerAccount ? provHue : undefined} width={width} epoch={themeEpochState} tabRows={tabRows} />
         {/* flexGrow pins the footer (and the composer with it) to the bottom row,
             so however the footer height is estimated, the input bar is always at
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}

@@ -204,6 +204,42 @@ export function setTheme(name: string): boolean {
 // (Captured at import; startup-only, so a runtime theme switch doesn't apply.)
 export const wordmarkGradient = [dark.accent, "#7178D9", "#565CAD"];
 
+// ── Provider identity hues ────────────────────────────────────────────────────
+// One recognizable brand hue per provider so the chrome answers "what am I
+// running on?" at a glance: the status-bar ● + model label, the masthead
+// account, and the usage strip's api row all tint with this. Deliberately
+// OUTSIDE the semantic vocabulary above (these mean identity, not severity),
+// and theme-independent — anthropic is clay in every palette. Unknown
+// providers fall back to the live accent.
+const PROVIDER_HUES: Record<string, string> = {
+  anthropic: "#E08D6D", // Claude clay
+  "claude-cli": "#E08D6D",
+  bedrock: "#FFA94D", // AWS orange
+  openai: "#74C99E", // OpenAI teal-green
+  "codex-cli": "#74C99E",
+  azure: "#4FA3E3", // Azure blue
+  "azure-foundry": "#4FA3E3",
+  google: "#7CB3F5", // Google blue
+  gemini: "#7CB3F5",
+  vertex: "#7CB3F5",
+  deepseek: "#6A8EFF",
+  mistral: "#FF8A3D",
+  groq: "#FF6B5E",
+  xai: "#B8BCC4",
+  moonshot: "#9B7CF7",
+  zai: "#6FD6C8",
+  openrouter: "#A78BFA",
+};
+/** Brand hue for a provider id (case-insensitive, tolerant of suffixed ids like
+ *  "azure-foundry"); falls back to the current theme accent. */
+export function providerColor(provider: string | null | undefined): string {
+  if (!provider) return color.accent;
+  const p = provider.toLowerCase();
+  if (PROVIDER_HUES[p]) return PROVIDER_HUES[p]!;
+  for (const [k, v] of Object.entries(PROVIDER_HUES)) if (p.startsWith(k) || k.startsWith(p)) return v;
+  return color.accent;
+}
+
 // A considered set, not emoji: a quarter-block spine for your turns, a filled
 // circle + result connector for tool calls (status shown by the circle's COLOR,
 // not a tick), an angle prompt, a hairline rule. Restraint over decoration.

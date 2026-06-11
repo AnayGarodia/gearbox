@@ -51,11 +51,34 @@ test("rankFiles surfaces the model-selection files for a routing query", () => {
   expect(top5.some((f) => f.includes("selector") || f.includes("config"))).toBe(true);
 });
 
-test("retrieveFiles packs file bodies within the token budget", () => {
+test("retrieveFiles packs full-tier file bodies within the token budget", () => {
   const hits = retrieveFiles("how does the agent stream events", process.cwd(), 6, 6000);
-  const total = hits.reduce((s, h) => s + h.tokens, 0);
+  const full = hits.filter((h) => !h.pointer);
+  expect(full.length).toBeGreaterThan(0);
+  const total = full.reduce((s, h) => s + h.tokens, 0);
   expect(total).toBeLessThanOrEqual(6000);
-  for (const h of hits) expect(h.content.length).toBeGreaterThan(0);
+  for (const h of full) expect(h.content.length).toBeGreaterThan(0);
+  for (const h of hits.filter((x) => x.pointer)) expect(h.content).toBe(""); // pointers carry no content
+});
+
+// ── the envelope: harness context tagged, user words last and outside it ──
+test("buildContext wraps injected context in <harness-context> with the user text after it", () => {
+  const { messages } = buildContext({ history: [], userText: "hi", model: sonnet });
+  const last = messages[messages.length - 1]! as any;
+  const text = Array.isArray(last.content) ? last.content.map((p: any) => p.text ?? "").join("\n") : String(last.content);
+  expect(text).toContain("<harness-context>");
+  // the user's words come AFTER the envelope closes — highest priority by recency
+  expect(text.indexOf("</harness-context>")).toBeLessThan(text.lastIndexOf("hi"));
+  // a greeting pushes no file content and no pointers
+  expect(text).not.toContain("# RELEVANT FILES");
+  expect(text).not.toContain("# POSSIBLY RELEVANT FILES");
+});
+
+// ── tiered push: conversational prompts retrieve nothing ──
+test("retrieveFiles returns nothing for prompts that merely share English words with code", () => {
+  expect(retrieveFiles("thanks for the help", process.cwd(), 6, 12_000)).toEqual([]);
+  expect(retrieveFiles("tell me about your day", process.cwd(), 6, 12_000)).toEqual([]);
+  expect(retrieveFiles("hi", process.cwd(), 6, 12_000)).toEqual([]);
 });
 
 // ── builder: assembly order, current user always last ──
@@ -69,7 +92,7 @@ test("buildContext keeps the stable prefix in system and ends with the user turn
   expect(system).toContain("REPO MAP"); // repo map stays in the cached system prefix
   // The volatile turn-context (git + retrieved files) is NOT in system (it busted
   // the cache); its header only ever appears in the user turn.
-  expect(system).not.toContain("CONTEXT FOR THIS TURN");
+  expect(system).not.toContain("Reference material injected by Gearbox");
   const last = messages[messages.length - 1]!;
   expect(last.role).toBe("user");
   expect(userMsgText(last)).toContain("fix the off-by-one in the pager");
@@ -383,9 +406,12 @@ test("a recent turn with one giant tool result is capped, not dropped (turn surv
 // ── retrieval: the top hit is included head-truncated instead of vanishing ──
 test("retrieveFiles head-truncates the top hit when nothing fits the budget", () => {
   const hits = retrieveFiles("how does the agent stream events", process.cwd(), 6, 250);
-  expect(hits.length).toBe(1);
-  expect(hits[0]!.content).toContain("[truncated — file continues");
-  expect(hits[0]!.tokens).toBeLessThanOrEqual(250);
+  const full = hits.filter((h) => !h.pointer);
+  expect(full.length).toBe(1);
+  expect(full[0]!.content).toContain("[truncated — file continues");
+  expect(full[0]!.tokens).toBeLessThanOrEqual(250);
+  // unfit full-tier siblings degrade to pointers rather than vanishing
+  for (const h of hits.filter((x) => x.pointer)) expect(h.content).toBe("");
 });
 
 // ── don't re-inject a file the model just read ──

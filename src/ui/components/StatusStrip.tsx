@@ -34,6 +34,8 @@ function StatusStripImpl({
   sub,
   subProbing = false,
   api,
+  apiHue,
+  active,
   forecast,
   width,
 }: {
@@ -44,6 +46,8 @@ function StatusStripImpl({
   sub?: { name: string; limits?: LimitWindow[]; limitNote?: string } | null;
   subProbing?: boolean; // a usage probe is in flight for this account → show "checking…" not "ok"
   api?: UsageAcct | null;
+  apiHue?: string; // provider brand hue for the api account row label
+  active?: { label: string; hue: string } | null; // the live backend identity chip ("● google · API key")
   forecast?: string | null; // "≈N turns left today …" when a daily cap is set
   width: number;
   epoch?: number; // /theme invalidates the memo (setTheme mutates `color` in place)
@@ -54,16 +58,21 @@ function StatusStripImpl({
   // wrap="truncate-end": every strip row must stay exactly ONE terminal row —
   // the footer height budget counts rows, and a wrapped line would push the
   // frame past the screen (the expensive clearTerminal path).
-  const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
+  const Row = ({ label, labelColor, children }: { label: string; labelColor?: string; children: React.ReactNode }) => (
     <Text wrap="truncate-end">
-      <Text color={color.faint}>{label.padEnd(pad)} </Text>
+      <Text color={labelColor ?? color.faint}>{label.padEnd(pad)} </Text>
       {children}
     </Text>
   );
   return (
     <Box width={width} flexDirection="column" paddingX={1} marginTop={1}>
       <Box justifyContent="space-between">
-        <Text color={color.accent} bold>usage</Text>
+        <Text>
+          <Text color={color.accent} bold>usage</Text>
+          {/* The live backend identity, right where you look when asking "what
+              is this running on?" — provider-hue dot + name + seat/API kind. */}
+          {active ? <Text color={active.hue}>{"   ● "}{active.label}</Text> : null}
+        </Text>
         <Text color={color.faint}>/usage to hide</Text>
       </Box>
       {ctxPct != null ? (
@@ -108,7 +117,9 @@ function StatusStripImpl({
         </Row>
       ) : null}
       {api?.spend ? (
-        <Row label={api.name.slice(0, pad)}>
+        // Full name (padEnd pads, never clips) in the provider's brand hue —
+        // "Google Gemini" was truncating to "Google Ge" and reading as noise.
+        <Row label={api.name} labelColor={apiHue}>
           <Text color={api.spendPos ? color.text : color.faint}>{api.spend}</Text>
           {api.balanceLeft ? <Text color={color.faint}>  ·  {api.balanceLeft}</Text> : null}
           {!api.balanceLeft && api.balanceNote ? <Text color={color.faint}>  ·  {api.balanceNote}</Text> : null}

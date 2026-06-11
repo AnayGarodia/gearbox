@@ -87,6 +87,8 @@ const MUTATION = /\b(fix|implement|refactor|edit|modif|debug|rewrite|replace|add
 export function confidentKeywordKind(prompt: string): Kind | null {
   const p = prompt.toLowerCase().trim();
   if (!p) return null;
+  // A bare greeting/ack never needs the LLM classifier hop — it's chat by definition.
+  if (/^(hi|hiya|hello|hey|yo|sup|howdy|thanks?|thank you|ty|ok(ay)?|cool|nice|lol|good (morning|afternoon|evening))[\s!.?]*$/.test(p)) return "chat";
   if (MUTATION.test(p)) return "code"; // a real change is requested, use a strong model
   if (/\b(summari[sz]e|tl;?dr|recap|condense|digest|gist)\b/.test(p)) return "summarize";
   if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b/.test(p)) return "classify";
