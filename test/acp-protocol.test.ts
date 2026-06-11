@@ -99,7 +99,7 @@ describe("prompt + permissions + init", () => {
   test("initializeResult advertises version 1 and honest capabilities", () => {
     const r = initializeResult("0.11.4") as any;
     expect(r.protocolVersion).toBe(ACP_PROTOCOL_VERSION);
-    expect(r.agentCapabilities.loadSession).toBe(false);
+    expect(r.agentCapabilities.loadSession).toBe(true);
     expect(r.agentInfo.name).toBe("gearbox");
     expect(r.authMethods).toEqual([]);
   });

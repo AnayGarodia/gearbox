@@ -21,7 +21,8 @@ import { resolveCreds } from "../accounts/resolve.ts";
 import { defaultAccount } from "../accounts/store.ts";
 import { recordSpend, resolveTurnCost } from "../accounts/ledger.ts";
 import { setPermissionHandler, type PermRequest } from "../permission.ts";
-import { newSessionId, saveSession, type Session } from "../session.ts";
+import { newSessionId, saveSession, loadSession, type Session } from "../session.ts";
+import { clientFsTools, type ClientFsCaps } from "./client-fs.ts";
 import type { ModelMessage } from "ai";
 import {
   ACP_PROTOCOL_VERSION,
@@ -33,6 +34,7 @@ import {
   newEventMapState,
   outcomeToDecision,
   promptText,
+  replayUpdates,
   type ContentBlock,
   type RpcMessage,
 } from "./protocol.ts";
@@ -53,9 +55,11 @@ export type TurnRunner = (opts: {
   cwd: string;
   signal: AbortSignal;
   onEvent: (e: AgentEvent) => void;
+  /** Tool overrides (editor-buffer fs); merged last over the built-in set. */
+  extraTools?: Record<string, any>;
 }) => Promise<{ messages: ModelMessage[]; failure?: { message: string } }>;
 
-const defaultRunner: TurnRunner = async ({ prompt, history, cwd, signal, onEvent }) => {
+const defaultRunner: TurnRunner = async ({ prompt, history, cwd, signal, onEvent, extraTools }) => {
   let choice;
   try {
     choice = new RoutingSelector().select({ prompt, requires: ["tools"] });
@@ -74,6 +78,7 @@ const defaultRunner: TurnRunner = async ({ prompt, history, cwd, signal, onEvent
     root: cwd,
     onEvent,
     signal,
+    extraTools,
     maxRetries: 2,
     deferTerminal: true, // failures come back in the result; the wire owns the outcome
   });
@@ -99,6 +104,7 @@ export class AcpServer {
   private nextOutboundId = 1;
   private pending = new Map<string | number, (msg: RpcMessage) => void>();
   private initialized = false;
+  private fsCaps: ClientFsCaps = {};
 
   constructor(
     private write: (line: string) => void,
@@ -178,6 +184,7 @@ export class AcpServer {
       switch (msg.method) {
         case "initialize": {
           this.initialized = true;
+          this.fsCaps = msg.params?.clientCapabilities?.fs ?? {};
           this.respond(id!, initializeResult(pkg.version));
           return;
         }
@@ -186,10 +193,23 @@ export class AcpServer {
           return;
         case "session/new": {
           const cwd: string = msg.params?.cwd || process.cwd();
-          const sid = `gbx-sess-${newSessionId()}`;
-          const record: Session = { id: newSessionId(), cwd, createdAt: Date.now(), updatedAt: Date.now(), title: "", messages: [], items: [], turns: [] };
+          const recordId = newSessionId();
+          // The record id IS the ACP suffix, so session/load can find it again.
+          const sid = `gbx-sess-${recordId}`;
+          const record: Session = { id: recordId, cwd, createdAt: Date.now(), updatedAt: Date.now(), title: "", messages: [], items: [], turns: [] };
           this.sessions.set(sid, { id: sid, cwd, messages: [], abort: null, record });
           this.respond(id!, { sessionId: sid });
+          return;
+        }
+        case "session/load": {
+          const cwd: string = msg.params?.cwd || process.cwd();
+          const sid: string = msg.params?.sessionId ?? "";
+          const record = loadSession(sid.replace(/^gbx-sess-/, ""), cwd);
+          if (!record) return this.fail(id!, -32602, `unknown session: ${sid}`);
+          this.sessions.set(sid, { id: sid, cwd, messages: record.messages, abort: null, record });
+          // Contract: replay the whole conversation as updates, THEN return null.
+          for (const update of replayUpdates(record.messages as any)) this.notify("session/update", { sessionId: sid, update });
+          this.respond(id!, null);
           return;
         }
         case "session/prompt": {
@@ -203,8 +223,12 @@ export class AcpServer {
           const onEvent = (e: AgentEvent) => {
             for (const update of eventToUpdates(e, mapState)) this.notify("session/update", { sessionId: session.id, update });
           };
+          // Editor-buffer fs: when the client advertises fs methods, reads see
+          // unsaved buffers and writes land in the open tab.
+          const fsTools = clientFsTools({ sessionId: session.id, cwd: session.cwd, caps: this.fsCaps, request: (m, p) => this.request(m, p) });
+          const extraTools = Object.keys(fsTools).length ? fsTools : undefined;
           try {
-            const r = await this.runner({ prompt, history: session.messages, cwd: session.cwd, signal: abort.signal, onEvent });
+            const r = await this.runner({ prompt, history: session.messages, cwd: session.cwd, signal: abort.signal, onEvent, extraTools });
             session.messages = r.messages;
             this.persist(session, prompt);
             if (abort.signal.aborted) return this.respond(id!, { stopReason: "cancelled" });

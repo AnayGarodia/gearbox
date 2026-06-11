@@ -202,6 +202,55 @@ export function eventToUpdates(e: AgentEvent, state: EventMapState): SessionUpda
   }
 }
 
+// ── session/load replay ────────────────────────────────────────────────────
+
+/** Flatten any ModelMessage content shape to plain text. */
+function contentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((p: any) => (p?.type === "text" ? p.text : ""))
+    .filter(Boolean)
+    .join("");
+}
+
+/**
+ * Replay a persisted conversation as session/update payloads (the protocol's
+ * session/load contract: stream the whole history, then return null). User
+ * turns become user_message_chunks, assistant prose agent_message_chunks, and
+ * historical tool calls compact completed tool_call entries — enough for the
+ * editor to render a faithful transcript without re-running anything.
+ */
+export function replayUpdates(messages: { role: string; content: unknown }[]): SessionUpdate[] {
+  const out: SessionUpdate[] = [];
+  let toolSeq = 0;
+  for (const m of messages) {
+    if (m.role === "user") {
+      const text = contentText(m.content);
+      if (text) out.push({ sessionUpdate: "user_message_chunk", content: { type: "text", text } });
+    } else if (m.role === "assistant") {
+      const text = contentText(m.content);
+      if (text) out.push({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+      if (Array.isArray(m.content)) {
+        for (const p of m.content as any[]) {
+          if (p?.type !== "tool-call") continue;
+          const arg = typeof p.input?.path === "string" ? p.input.path : typeof p.input?.command === "string" ? p.input.command : "";
+          out.push({
+            sessionUpdate: "tool_call",
+            toolCallId: `replay-${++toolSeq}`,
+            title: arg ? `${p.toolName}: ${arg}` : String(p.toolName ?? "tool"),
+            kind: toolKind(String(p.toolName ?? "")),
+            status: "completed",
+          });
+        }
+      }
+    }
+    // tool-result messages carry no extra render value in a replay: the call
+    // entries above already say what ran and that it completed.
+  }
+  return out;
+}
+
 // ── prompt content ─────────────────────────────────────────────────────────
 
 /**
@@ -248,7 +297,7 @@ export function initializeResult(version: string): unknown {
   return {
     protocolVersion: ACP_PROTOCOL_VERSION,
     agentCapabilities: {
-      loadSession: false, // v1: fresh sessions only
+      loadSession: true, // persisted gearbox sessions replay into the editor
       promptCapabilities: { image: false, audio: false, embeddedContext: true },
       mcpCapabilities: { http: false, sse: false },
     },

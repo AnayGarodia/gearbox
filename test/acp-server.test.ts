@@ -131,3 +131,108 @@ describe("AcpServer", () => {
     expect(server2.out.find((m) => m.id === 10).error.code).toBe(-32602);
   });
 });
+
+describe("client fs + session/load", () => {
+  test("fs capabilities inject editor-backed read/write tool overrides", async () => {
+    let gotTools: Record<string, any> | undefined;
+    const runner: TurnRunner = async ({ extraTools }) => {
+      gotTools = extraTools;
+      return { messages: [] };
+    };
+    const { out, send } = makeServer(runner);
+    await send({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: true, writeTextFile: true } } } });
+    await send(newSession);
+    const sessionId = out[1].result.sessionId;
+    const turn = send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "x" }] } });
+    await turn;
+    expect(gotTools).toBeDefined();
+    expect(Object.keys(gotTools!)).toEqual(["read_file", "write_file"]);
+
+    // Drive the injected read tool: it must issue fs/read_text_file to the
+    // client and return the buffer content (the unsaved-buffer path).
+    const readPromise = gotTools!.read_file.execute({ path: "src/a.ts", offset: 2 }, {} as any);
+    let req: any;
+    for (let i = 0; i < 50 && !req; i++) {
+      req = out.find((m) => m.method === "fs/read_text_file");
+      if (!req) await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(req.params).toMatchObject({ sessionId, line: 2 });
+    expect(req.params.path.endsWith("/src/a.ts")).toBe(true); // absolutized against cwd
+    await send({ jsonrpc: "2.0", id: req.id, result: { content: "unsaved buffer text" } });
+    expect(await readPromise).toBe("unsaved buffer text");
+  });
+
+  test("no fs capabilities → no overrides (disk tools stay)", async () => {
+    let gotTools: Record<string, any> | undefined | null = null;
+    const runner: TurnRunner = async ({ extraTools }) => {
+      gotTools = extraTools;
+      return { messages: [] };
+    };
+    const { out, send } = makeServer(runner);
+    await send(init);
+    await send(newSession);
+    await send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId: out[1].result.sessionId, prompt: [{ type: "text", text: "x" }] } });
+    expect(gotTools).toBeUndefined();
+  });
+
+  test("session/load replays a persisted session and continues with its history", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const home = mkdtempSync(join(tmpdir(), "gbx-acp-load-"));
+    const prevHome = process.env.GEARBOX_HOME;
+    process.env.GEARBOX_HOME = home;
+    try {
+      let lastHistory: any[] = [];
+      const runner: TurnRunner = async ({ history, prompt }) => {
+        lastHistory = history;
+        return { messages: [...history, { role: "user", content: prompt }, { role: "assistant", content: "continued" }] };
+      };
+      // First server: create a session and run one turn (persists the record).
+      const a = makeServer(runner);
+      await a.send(init);
+      await a.send({ jsonrpc: "2.0", id: 2, method: "session/new", params: { cwd: "/tmp", mcpServers: [] } });
+      const sessionId = a.out[1].result.sessionId;
+      await a.send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "first" }] } });
+
+      // Second server (fresh process, same disk): load the same session.
+      const b = makeServer(runner);
+      await b.send(init);
+      await b.send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId, cwd: "/tmp", mcpServers: [] } });
+      const loadResp = b.out.find((m) => m.id === 2);
+      expect(loadResp.result).toBeNull();
+      const replays = b.out.filter((m) => m.method === "session/update").map((m) => m.params.update);
+      expect(replays.some((u) => u.sessionUpdate === "user_message_chunk" && u.content.text === "first")).toBe(true);
+      expect(replays.some((u) => u.sessionUpdate === "agent_message_chunk" && u.content.text === "continued")).toBe(true);
+      // A follow-up prompt sees the loaded history.
+      await b.send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "second" }] } });
+      expect(lastHistory.length).toBe(2);
+    } finally {
+      if (prevHome === undefined) delete process.env.GEARBOX_HOME;
+      else process.env.GEARBOX_HOME = prevHome;
+    }
+  });
+
+  test("session/load with an unknown id fails with -32602", async () => {
+    const { out, send } = makeServer(async () => ({ messages: [] }));
+    await send(init);
+    await send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId: "gbx-sess-nope", cwd: "/tmp" } });
+    expect(out.find((m) => m.id === 2).error.code).toBe(-32602);
+  });
+});
+
+describe("replay mapping", () => {
+  test("replayUpdates renders user/assistant prose and completed tool calls", async () => {
+    const { replayUpdates } = await import("../src/acp/protocol.ts");
+    const updates = replayUpdates([
+      { role: "user", content: "fix the bug" },
+      { role: "assistant", content: [{ type: "text", text: "looking" }, { type: "tool-call", toolCallId: "x", toolName: "read_file", input: { path: "a.ts" } }] },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "x", output: "..." }] },
+      { role: "assistant", content: "fixed" },
+    ] as any);
+    expect(updates[0]).toMatchObject({ sessionUpdate: "user_message_chunk", content: { text: "fix the bug" } });
+    expect(updates[1]).toMatchObject({ sessionUpdate: "agent_message_chunk", content: { text: "looking" } });
+    expect(updates[2]).toMatchObject({ sessionUpdate: "tool_call", kind: "read", status: "completed", title: "read_file: a.ts" });
+    expect(updates[3]).toMatchObject({ sessionUpdate: "agent_message_chunk", content: { text: "fixed" } });
+  });
+});
