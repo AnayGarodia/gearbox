@@ -29,7 +29,14 @@ import type { AccountState } from "./routing-context.ts";
 // a (ModelSpec, profile, AccountState) triple into this shape, keeping the
 // scorer free of any dependency on the model registry or profile corpus.
 export interface ScoreCandidate {
-  id: string; // model id for tie-breaking and logging; subscription seats use cli:<account>:<sdkId>
+  // Unique candidate identity for tie-breaking, winner lookup, and logging.
+  // Two accounts can serve the SAME model, so the router builds this as
+  // `<accountId>::<modelId>` — keying on the bare model id collapsed those
+  // candidates and could hand the win to the wrong account.
+  id: string;
+  // Bare registry model id when `id` is a composite. Warm matching compares
+  // against this (warm.modelId is a bare spec id), never the composite.
+  modelId?: string;
   inUSDPerMtok: number;
   outUSDPerMtok: number;
   quality: number; // normalised 0..1; arrives prior-adjusted (router adds the per-repo measured delta)
@@ -168,7 +175,7 @@ export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCand
   // Sticker cost: plain tokens × price for this turn's token budget.
   const stickerCost = (inTok / 1e6) * c.inUSDPerMtok + (outTok / 1e6) * c.outUSDPerMtok;
   const a = c.account;
-  const isWarm = !!input.warm && input.warm.accountId === a.accountId && input.warm.modelId === c.id;
+  const isWarm = !!input.warm && input.warm.accountId === a.accountId && input.warm.modelId === (c.modelId ?? c.id);
 
   // Cache-aware input cost: the WARM model re-reads the stable prefix
   // (~cachedShare of input) at the provider's cache-read fraction. This is the

@@ -25,7 +25,7 @@ const KINDS = new Set<TaskKind>(["summarize", "classify", "search", "chat", "pla
 
 /** Where the kind came from — surfaced in /why so a fallback default ("code"
  *  because the classifier was unavailable) is never mistaken for a real verdict. */
-export type ClassifySource = "keyword" | "cache" | "llm" | "fallback";
+export type ClassifySource = "keyword" | "cache" | "llm" | "fallback" | "context";
 export interface Classification { kind: TaskKind; source: ClassifySource }
 
 const SYSTEM = [
@@ -98,17 +98,36 @@ function saveCache(c: Map<string, TaskKind>): void {
   } catch { /* best-effort */ }
 }
 
+// Anaphoric prompt: a short continuation that only makes sense in the context
+// of the previous turn ("yes do it", "same for the other file", "continue").
+// Classifying it in isolation is the bug — "yes do it" mid-coding-session is
+// code, not chat. The length clause only matters when a previous kind exists
+// (see classifyTask), so cold-start short prompts are unaffected.
+const ANAPHORA = /^(yes|yep|yeah|do it|go ahead|same|continue|keep going|and |also |ok(ay)?\b|sure|please do|now )/i;
+export function isAnaphoric(prompt: string): boolean {
+  const p = prompt.trim();
+  return p.length > 0 && (p.length < 30 || ANAPHORA.test(p));
+}
+
 /** Classify a prompt into a routing kind (+ where the verdict came from).
  *  Fast path: a confident keyword match (mutation → code, summarize/classify/
  *  search markers) skips the model call entirely — only genuinely ambiguous
  *  prompts (bare questions/explanations) pay the ~1-2s LLM hop. Cached across
- *  runs; falls back to keyword on any failure. */
-export async function classifyTask(prompt: string, signal?: AbortSignal): Promise<Classification> {
+ *  runs; falls back to keyword on any failure.
+ *  opts.prevKind = the previous turn's kind: a short anaphoric continuation
+ *  inherits it (source "context") instead of being classified in isolation. */
+export async function classifyTask(prompt: string, signal?: AbortSignal, opts?: { prevKind?: TaskKind }): Promise<Classification> {
   const key = prompt.trim();
   if (!key) return { kind: "code", source: "fallback" };
-  // Fast path: clear signal → no model call.
+  // Fast path: clear signal → no model call. Keyword confidence beats context:
+  // "fix it" is code via the mutation verb even when the previous turn was chat.
   const confident = confidentKeywordKind(prompt);
   if (confident) return { kind: confident, source: "keyword" };
+  // Context stickiness, checked BEFORE the cache: a cached isolated verdict for
+  // "yes do it" (chat) is exactly the failure mode. Context verdicts are never
+  // WRITTEN to the cache either — they depend on the conversation, and the
+  // persistent cache must stay a pure function of the prompt text.
+  if (opts?.prevKind && isAnaphoric(prompt)) return { kind: opts.prevKind, source: "context" };
   const c = loadCache();
   const cached = c.get(key);
   if (cached) return { kind: cached, source: "cache" };
