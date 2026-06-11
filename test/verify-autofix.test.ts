@@ -63,3 +63,24 @@ describe("buildAutofixCaveat", () => {
     expect(buildAutofixCaveat(2, [], ["src/a.ts"])).toContain("2 autofix attempts");
   });
 });
+
+// ── Same-failure early stop ──────────────────────────────────────────────────
+import { failureFingerprint } from "../src/verify.ts";
+
+test("failureFingerprint normalizes whitespace and order but keeps counts", () => {
+  expect(failureFingerprint(["a  failed\n", " a failed"])).toBe(failureFingerprint(["a failed", "a failed"]));
+  expect(failureFingerprint(["b failed", "a failed"])).toBe(failureFingerprint(["a failed", "b failed"]));
+  // progress (different counts) must change the fingerprint
+  expect(failureFingerprint(["3 tests failed"])).not.toBe(failureFingerprint(["2 tests failed"]));
+});
+
+test("identical consecutive failure stops the auto-fix loop early", () => {
+  const base = { mode: "auto" as const, changedFiles: ["a.ts"], failures: ["bun test: x is not defined"] };
+  const fp = failureFingerprint(base.failures);
+  // attempt 1 with a DIFFERENT previous failure → keep going
+  expect(shouldAutoFix({ ...base, attempt: 1, prevFingerprint: failureFingerprint(["other"]) })).toBe(true);
+  // attempt 1 reproducing the SAME failure → stop, despite budget remaining
+  expect(shouldAutoFix({ ...base, attempt: 1, prevFingerprint: fp })).toBe(false);
+  // no previous fingerprint (first attempt) → unaffected
+  expect(shouldAutoFix({ ...base, attempt: 1 })).toBe(true);
+});

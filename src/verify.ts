@@ -102,15 +102,35 @@ export type VerifyMode = "auto" | "off";
 
 export const MAX_AUTOFIX_ATTEMPTS = 3;
 
+/**
+ * Stable fingerprint of a failure set, for detecting a fix attempt that
+ * changed nothing. Whitespace-normalized and length-capped so cosmetic
+ * differences (wrapping, trailing spaces, ordering) don't read as progress;
+ * counts and line numbers are kept — "2 tests failed" after "3 tests failed"
+ * IS progress and must produce a different fingerprint.
+ */
+export function failureFingerprint(failures: string[]): string {
+  return failures
+    .map((f) => f.replace(/\s+/g, " ").trim().slice(0, 400))
+    .sort()
+    .join("\u0000");
+}
+
 export function shouldAutoFix(input: {
   mode: VerifyMode;
   attempt: number;
   failures: string[];
   changedFiles: string[];
+  /** failureFingerprint() of the PREVIOUS attempt's failures, if any. */
+  prevFingerprint?: string;
 }): boolean {
   if (input.mode !== "auto") return false;
   if (input.failures.length === 0) return false;
   if (input.changedFiles.length === 0) return false; // not our regression to chase
+  // A fix attempt that reproduced the exact same failure didn't move — feeding
+  // the identical error back a third time just burns money on the same answer.
+  // Stop early and report honestly instead of exhausting the attempt budget.
+  if (input.prevFingerprint && input.prevFingerprint === failureFingerprint(input.failures)) return false;
   return input.attempt < MAX_AUTOFIX_ATTEMPTS;
 }
 
