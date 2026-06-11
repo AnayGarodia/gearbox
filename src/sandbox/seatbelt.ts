@@ -51,8 +51,13 @@ export function generateSeatbeltProfile(policy: SandboxPolicy, opts: { gearboxHo
     lines.push("(allow network*)", "(allow system-socket)");
   } else {
     lines.push("(deny network*)");
-    // Local DNS/mDNSResponder lookups still resolve through mach, already denied
-    // by (deny default); nothing extra needed.
+    // The blanket (allow mach-lookup) above would still let a process reach
+    // mDNSResponder & friends, which do DNS on its behalf — a covert network
+    // channel under (deny network*). SBPL is last-match-wins, so deny the
+    // network-helper services explicitly here.
+    lines.push(
+      '(deny mach-lookup (global-name "com.apple.mDNSResponder") (global-name "com.apple.dnssd.service") (global-name "com.apple.networkd") (global-name "com.apple.nehelper") (global-name "com.apple.nesessionmanager") (global-name "com.apple.usymptomsd"))',
+    );
   }
   return lines.join("\n");
 }
