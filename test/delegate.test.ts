@@ -1,5 +1,14 @@
 import { test, expect, afterEach } from "bun:test";
-import { makeDelegateTools } from "../src/agent/delegate.ts";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// HERMETIC: isolate from the developer's real ~/.gearbox BEFORE the delegate
+// module loads its account/usage stores. With a live Claude subscription on
+// the machine, the sub-task router picked the CLI seat and the tests timed
+// out trying to spawn the real `claude` binary.
+process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-delegate-test-"));
+const { makeDelegateTools } = await import("../src/agent/delegate.ts");
 
 const origKey = process.env.ANTHROPIC_API_KEY;
 afterEach(() => {
