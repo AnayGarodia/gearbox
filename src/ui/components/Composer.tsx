@@ -128,9 +128,9 @@ function ComposerImpl({
     return (
       <Text color={color.text}>
         {ln.slice(0, selStart)}
-        {/* Explicit accent-on-ink selection: `inverse` over the dark element
-            background gave nearly no contrast — this is unmistakable. */}
-        <Text color={color.navy} backgroundColor={color.accent}>{ln.slice(selStart, selEnd)}</Text>
+        {/* The theme's dedicated selection band (selBg/selInk) — same treatment
+            as transcript selection, one vocabulary everywhere. */}
+        <Text color={color.selInk} backgroundColor={color.selBg}>{ln.slice(selStart, selEnd)}</Text>
         {ln.slice(selEnd)}
       </Text>
     );

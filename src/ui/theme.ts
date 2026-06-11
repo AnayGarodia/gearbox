@@ -32,6 +32,11 @@ export interface Theme {
   panelBg: string;
   elementBg: string; // input/chips/modal elements — one layer above panelBg
   accentBg: string;
+  // SELECTION: the one bg that must be unmissable. accentBg was tried and is
+  // near-invisible against the dark canvas — selection gets its own, clearly
+  // brighter pair (band + ink) tuned per palette.
+  selBg: string;
+  selInk: string;
   codeKeyword: string;
   codeString: string;
   codeNumber: string;
@@ -63,7 +68,7 @@ export const dark: Theme = {
   // `user` is the light-indigo ink on turn headings/indexes — your turns anchor
   // the page in the brand hue, one step softer than the live accent.
   user: "#B9BDF9", ok: "#5FD39A", warn: "#E5B567", err: "#E06C75", run: "#8B93F8", shell: "#E8A2C8", navy: "#0B0B10",
-  userBg: "#15141A", codeBg: "#15141A", panelBg: "#15141A", elementBg: "#1E1D26", accentBg: "#232238",
+  userBg: "#15141A", codeBg: "#15141A", panelBg: "#15141A", elementBg: "#1E1D26", accentBg: "#232238", selBg: "#3D4578", selInk: "#F2F2F7",
   path: "#8FB6E8",
   // Distinct hues so a code block isn't a wall of one blue: keyword violet,
   // function blue, type teal, string green, number amber, comment gray. Amber (not
@@ -83,7 +88,7 @@ export const dark: Theme = {
 export const light: Theme = {
   accent: "#0E7C8C", accentDim: "#3C95A3", text: "#2A2E37", dim: "#6B7280", faint: "#9CA3AF",
   user: "#155E89", ok: "#1A7F4B", warn: "#9A6700", err: "#C2362B", run: "#4F46E5", shell: "#B83280", navy: "#0B0B10",
-  userBg: "#E3F0F9", codeBg: "#F3F4F6", panelBg: "#F3F4F6", elementBg: "#E9EBEE", accentBg: "#DFF3F6",
+  userBg: "#E3F0F9", codeBg: "#F3F4F6", panelBg: "#F3F4F6", elementBg: "#E9EBEE", accentBg: "#DFF3F6", selBg: "#B5D5F0", selInk: "#16191F",
   path: "#1E6091",
   codeKeyword: "#7C3AED", codeString: "#3F7B27", codeNumber: "#9A6700",
   codeComment: "#6E7781", codePunct: "#57606A",
@@ -101,7 +106,7 @@ export const light: Theme = {
 export const gruvbox: Theme = {
   accent: "#8EC07C", accentDim: "#689D6A", text: "#EBDBB2", dim: "#A89984", faint: "#7C6F64",
   user: "#83A598", ok: "#B8BB26", warn: "#FABD2F", err: "#FB4934", run: "#83A598", shell: "#D3869B", navy: "#1D2021",
-  userBg: "#3C3836", codeBg: "#32302F", panelBg: "#32302F", elementBg: "#3C3836", accentBg: "#2E3B33",
+  userBg: "#3C3836", codeBg: "#32302F", panelBg: "#32302F", elementBg: "#3C3836", accentBg: "#2E3B33", selBg: "#665C54", selInk: "#FBF1C7",
   path: "#83A598",
   codeKeyword: "#D3869B", codeString: "#B8BB26", codeNumber: "#FABD2F",
   codeComment: "#928374", codePunct: "#A89984",
@@ -114,7 +119,7 @@ export const gruvbox: Theme = {
 export const catppuccin: Theme = {
   accent: "#94E2D5", accentDim: "#6BB0A8", text: "#CDD6F4", dim: "#A6ADC8", faint: "#6C7086",
   user: "#89B4FA", ok: "#A6E3A1", warn: "#F9E2AF", err: "#F38BA8", run: "#B4BEFE", shell: "#F5C2E7", navy: "#11111B",
-  userBg: "#202A3C", codeBg: "#313244", panelBg: "#313244", elementBg: "#45475A", accentBg: "#203437",
+  userBg: "#202A3C", codeBg: "#313244", panelBg: "#313244", elementBg: "#45475A", accentBg: "#203437", selBg: "#585B70", selInk: "#F5F7FF",
   path: "#89B4FA",
   codeKeyword: "#CBA6F7", codeString: "#A6E3A1", codeNumber: "#FAB387",
   codeComment: "#6C7086", codePunct: "#9399B2",
@@ -127,7 +132,7 @@ export const catppuccin: Theme = {
 export const solarized: Theme = {
   accent: "#2AA198", accentDim: "#1E7D76", text: "#93A1A1", dim: "#657B83", faint: "#586E75",
   user: "#268BD2", ok: "#859900", warn: "#B58900", err: "#DC322F", run: "#6C71C4", shell: "#D33682", navy: "#002B36",
-  userBg: "#073642", codeBg: "#073642", panelBg: "#073642", elementBg: "#0A4150", accentBg: "#0A3C41",
+  userBg: "#073642", codeBg: "#073642", panelBg: "#073642", elementBg: "#0A4150", accentBg: "#0A3C41", selBg: "#657B83", selInk: "#FDF6E3",
   path: "#268BD2",
   codeKeyword: "#6C71C4", codeString: "#859900", codeNumber: "#B58900",
   codeComment: "#586E75", codePunct: "#657B83",
@@ -140,7 +145,7 @@ export const solarized: Theme = {
 export const contrast: Theme = {
   accent: "#00FFFF", accentDim: "#00B3B3", text: "#FFFFFF", dim: "#C0C0C0", faint: "#808080",
   user: "#80D4FF", ok: "#00FF66", warn: "#FFD700", err: "#FF4040", run: "#8C9EFF", shell: "#FF7AD9", navy: "#000000",
-  userBg: "#002B40", codeBg: "#101010", panelBg: "#101010", elementBg: "#1C1C1C", accentBg: "#003A3A",
+  userBg: "#002B40", codeBg: "#101010", panelBg: "#101010", elementBg: "#1C1C1C", accentBg: "#003A3A", selBg: "#0066CC", selInk: "#FFFFFF",
   path: "#66B3FF",
   codeKeyword: "#DDA0FF", codeString: "#99FF99", codeNumber: "#FFD700",
   codeComment: "#9E9E9E", codePunct: "#C0C0C0",
