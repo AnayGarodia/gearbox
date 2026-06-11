@@ -23,7 +23,7 @@
  */
 import { execSync } from "node:child_process";
 import { ShellSession } from "./shell-session.ts";
-import { resolveSandboxPolicy, wrapWithSandbox, type SandboxPolicy, type SandboxPrefs } from "./sandbox/index.ts";
+import { resolveSandboxPolicy, wrapWithSandbox, type SandboxPolicy } from "./sandbox/index.ts";
 import { loadPrefs } from "./ui/prefs.ts";
 
 /** Maximum characters returned to callers. Excess output is truncated. */
@@ -93,8 +93,7 @@ const sessions = new Map<string, ShellSession>();
 
 /** The effective sandbox policy for a workspace root (env > prefs > off). */
 export function sandboxPolicyFor(root: string, sandbox: boolean): SandboxPolicy {
-  // Prefs gains sandbox fields in the prefs/UI PR; until then only env applies.
-  const policy = resolveSandboxPolicy(loadPrefs() as SandboxPrefs, process.env, root);
+  const policy = resolveSandboxPolicy(loadPrefs(), process.env, root);
   return sandbox ? policy : { ...policy, mode: "off" };
 }
 

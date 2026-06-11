@@ -10,6 +10,8 @@ import { setYolo, isYolo } from "../permission.ts";
 import { newSessionId, type Session, type TurnMeta, type CompactionArchive } from "../session.ts";
 import { setTheme, activeTheme, THEMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
+import { resolveSandboxPolicy, parseSandboxMode, sandboxAvailable } from "../sandbox/index.ts";
+import { resetShellSessions } from "../shell.ts";
 import type { AccountView, Item } from "./types.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
@@ -191,6 +193,7 @@ export interface CommandCtx {
   setThemeEpochState: Dispatch<SetStateAction<number>>;
   setTokens: Dispatch<SetStateAction<number>>;
   setVerb: Dispatch<SetStateAction<string>>;
+  setSandboxMode: (m: "off" | "read-only" | "workspace-write") => void;
   setVim: (v: "off" | "insert" | "normal") => void;
   setYoloState: Dispatch<SetStateAction<boolean>>;
   // ── helper callbacks (App-owned; passed through, not redesigned) ──
@@ -254,7 +257,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
     routedKindRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
     setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
     setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
-    setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
+    setSandboxMode, setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
     applyEffortClamp, buildAccountView, buildPanelModelRows, cliModelChoices, cliModelLabel,
     cliSupportsModel, compactNow, echo, effortTarget, exit, findAccountRef, flashMood,
     flashStatus, formatCliModelList, generateGitText, handleAddResult, leaveSubscription, loadInto, notice,
@@ -554,6 +557,44 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
                 `\n  /verify off  ·  /verify auto  ·  /verify test (write a characterization test)`,
             );
           }
+          return;
+        }
+        case "sandbox": {
+          echo(text);
+          const a = arg.trim().toLowerCase();
+          const showStatus = () => {
+            const p = resolveSandboxPolicy(loadPrefs(), process.env, ctx.root);
+            const avail = sandboxAvailable();
+            const state = !avail && p.mode !== "off" ? `${p.mode} (unavailable on this system — running unsandboxed)` : p.mode;
+            notice(
+              `sandbox: ${state}${p.mode !== "off" ? ` · network ${p.network ? "allowed" : "off"}` : ""}` +
+                `\n  /sandbox workspace-write  writes stay in the workspace (default)` +
+                `\n  /sandbox read-only        no writes at all` +
+                `\n  /sandbox off              no OS sandbox` +
+                `\n  /sandbox network on|off   allow network inside the sandbox`,
+            );
+          };
+          if (!a) return showStatus();
+          if (a === "network on" || a === "network off") {
+            updatePrefs({ sandboxNetwork: a.endsWith("on") });
+            resetShellSessions();
+            toast(`sandbox network ${a.endsWith("on") ? "allowed" : "off"}`);
+            return;
+          }
+          const mode = parseSandboxMode(a);
+          if (!mode) return showStatus();
+          if (process.env.GEARBOX_SANDBOX) notice(`note: GEARBOX_SANDBOX=${process.env.GEARBOX_SANDBOX} overrides this setting for this run`);
+          updatePrefs({ sandbox: mode });
+          resetShellSessions();
+          setSandboxMode(resolveSandboxPolicy(loadPrefs(), process.env, ctx.root).mode); // effective, env may override
+          toast(
+            mode === "off"
+              ? "sandbox off · agent shell commands run unconfined"
+              : mode === "read-only"
+                ? "sandbox read-only · agent shell commands cannot write files"
+                : "sandbox workspace-write · writes confined to the workspace, network off unless allowed",
+            mode === "off" ? "info" : undefined,
+          );
           return;
         }
         case "agents": {
