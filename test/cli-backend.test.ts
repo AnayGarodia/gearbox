@@ -227,3 +227,29 @@ test("codex args include the worktree's git dir as a writable sandbox root", () 
   // yolo (full bypass) and read-only don't need it
   expect(buildCliArgs("codex", "x", { autoApprove: true, writableRoots: ["/repo/.git"] }).join(" ")).not.toContain("writable_roots");
 });
+
+// ── seat switch: the conversation must survive a fresh vendor session ────────
+import { handoffDigest } from "../src/agent/cli-backend.ts";
+
+test("handoffDigest carries the conversation text, newest-first under the budget", () => {
+  const messages = [
+    { role: "user", content: "design the parser" },
+    { role: "assistant", content: [{ type: "text", text: "Parser design: use a recursive descent approach." }, { type: "tool-call", toolCallId: "t1", toolName: "read_file", input: {} }] },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "t1", output: "file body" }] },
+    { role: "user", content: "now add error recovery" },
+  ] as any;
+  const d = handoffDigest(messages);
+  expect(d).toContain("<conversation-so-far>");
+  expect(d).toContain("User: design the parser");
+  expect(d).toContain("recursive descent"); // assistant text kept
+  expect(d).not.toContain("file body"); // tool results don't translate — dropped
+  expect(d).toContain("continue it");
+  // budget: newest survives, oldest elided with an honest marker
+  const many = Array.from({ length: 100 }, (_, i) => ({ role: "user", content: `message number ${i} ` + "x".repeat(400) })) as any;
+  const small = handoffDigest(many, 4000);
+  expect(small).toContain("message number 99");
+  expect(small).not.toContain("message number 0 ");
+  expect(small).toMatch(/\d+ earlier messages elided/);
+  // empty ledger → no digest block at all
+  expect(handoffDigest([] as any)).toBe("");
+});

@@ -263,6 +263,45 @@ export function worktreeGitRoots(cwd: string): string[] {
   }
 }
 
+/** Render the conversation ledger as a compact plain-text transcript for a
+ *  FRESH vendor-CLI session (a seat switch: codex hit its limit → claude takes
+ *  over). The vendor binary keeps its own history per session, so without this
+ *  the new seat starts with ZERO context — the ledger gearbox carried across
+ *  the whole conversation never reached it. Tool exchanges don't translate
+ *  across binaries; text does. Newest turns win the budget (taken from the
+ *  end), each message clipped so one giant paste can't evict the rest. */
+export function handoffDigest(messages: ModelMessage[], maxChars = 12_000): string {
+  const parts: string[] = [];
+  for (const m of messages) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    const c = (m as any).content;
+    const text = typeof c === "string"
+      ? c
+      : Array.isArray(c) ? c.map((p: any) => (typeof p === "string" ? p : p?.type === "text" ? p.text ?? "" : "")).join(" ") : "";
+    const t = text.trim();
+    if (!t) continue;
+    const clipped = t.length > 1_200 ? t.slice(0, 1_200) + " …[clipped]" : t;
+    parts.push(`${m.role === "user" ? "User" : "Assistant"}: ${clipped}`);
+  }
+  if (!parts.length) return "";
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const cost = parts[i]!.length + 1;
+    if (used + cost > maxChars && kept.length) break;
+    kept.unshift(parts[i]!);
+    used += cost;
+  }
+  const dropped = parts.length - kept.length;
+  return (
+    `<conversation-so-far>\n` +
+    (dropped ? `[${dropped} earlier message${dropped === 1 ? "" : "s"} elided]\n` : "") +
+    kept.join("\n") +
+    `\n</conversation-so-far>\n` +
+    `The conversation above happened in THIS session on a different model/account — continue it; do not start over or re-ask answered questions.`
+  );
+}
+
 export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; readOnly?: boolean; modelId?: string; effort?: string; writableRoots?: string[] } = {}): string[] {
   const model = cliModelArg(binary, opts.modelId);
   if (binary.includes("codex")) {

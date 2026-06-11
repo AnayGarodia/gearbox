@@ -51,7 +51,7 @@ import { discoverModels } from "../accounts/discover.ts";
 import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDeployment, type AzureDeploymentInfo } from "../accounts/manage.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
-import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
+import { runCliTask, handoffDigest, subscriptionEnv } from "../agent/cli-backend.ts";
 import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
 import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend, readAuxSpendToday } from "../accounts/ledger.ts";
 import * as gitOps from "../git/ops.ts";
@@ -802,7 +802,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // path. cliSessionRef keeps the binary's session id for resume.
   const activeCliRef = useRef<{ id: string; binary: string; profile?: string } | null>(null);
   const activeCliModelRef = useRef<string | undefined>(undefined);
-  const cliSessionRef = useRef<string | undefined>(undefined);
+  // Scoped to the ACCOUNT that minted it: handing claude a stale codex thread
+  // id (or vice versa) after a seat switch broke resume entirely.
+  const cliSessionRef = useRef<{ account: string; id: string } | undefined>(undefined);
   const activeImagesRef = useRef<ImageAttachment[]>([]);
   const imageChipPathsRef = useRef<Map<string, string>>(new Map());
   const accountStatusCacheRef = useRef<Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>>({});
@@ -2025,9 +2027,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // waste tool calls discovering structure. The CLI backend bypasses gearbox's
       // context engine entirely, so this is the only upfront structural context.
       let cliPrompt = prompt;
-      if (!cliSessionRef.current) {
+      const resumeId = cliSessionRef.current?.account === accountId ? cliSessionRef.current.id : undefined;
+      if (!resumeId) {
         try {
-          const cwd = process.cwd();
+          const cwd = rootRef.current; // THIS tab's tree, not whichever tab owns process.cwd()
           const allFiles = listProjectFiles(cwd).slice(0, 300);
           const map = repoMap(cwd, 3000);
           const fileList = allFiles.join("\n");
@@ -2037,6 +2040,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             (map ? `<signatures>\n${map}\n</signatures>\n` : "") +
             `</project-context>\n\n` +
             prompt;
+          // A seat switch mid-conversation: the new vendor session has no
+          // memory — carry the conversation across as plain text (the ledger's
+          // tool exchanges don't translate between binaries; the text does).
+          const digest = messages.length ? handoffDigest(messages) : "";
+          if (digest) cliPrompt = `${digest}\n\n${cliPrompt}`;
         } catch {
           // non-critical · proceed with plain prompt
         }
@@ -2053,7 +2061,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         messages,
         onEvent,
         signal,
-        sessionId: cliSessionRef.current,
+        sessionId: resumeId,
         autoApprove: isYolo(),
         profile,
         cwd: rootRef.current, // THIS tab's tree — process.cwd() belongs to whichever tab is active
@@ -2064,7 +2072,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         reloginCommand,
         deferTerminal: args.deferTerminal,
       });
-      cliSessionRef.current = r.sessionId ?? cliSessionRef.current;
+      cliSessionRef.current = r.sessionId ? { account: accountId, id: r.sessionId } : cliSessionRef.current;
       cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
       // Surface the model the subscription CLI actually used (claude reports it in
       // its stream) when the user hasn't pinned one, so the status bar shows e.g.
