@@ -137,6 +137,7 @@ function StatusBarImpl({
   branch,
   providerColor,
   providerFlash = false,
+  frameHue,
 }: {
   model: string;
   cost?: number;
@@ -148,6 +149,7 @@ function StatusBarImpl({
   branch?: string | null;
   providerColor?: string; // brand hue of the active provider — tints the ● identity dot
   providerFlash?: boolean; // briefly true after a provider switch → the whole label pulses in the brand hue
+  frameHue?: string | null; // BOTTOM pane edge: the blank row above the meter renders as a full-width rule in the provider hue
   epoch?: number; // /theme invalidates the memo (setTheme mutates `color` in place)
 }) {
   const costText = formatStatusCost(cost);
@@ -171,7 +173,14 @@ function StatusBarImpl({
   const { whereShown } = statusBarLayout({ model, costText, ctxPct, width, where, chipLen });
 
   return (
-    <Box width={width} paddingX={1} marginTop={1} justifyContent="space-between">
+    // Row contract unchanged: the old marginTop blank row is now the bottom
+    // pane-edge rule; the meter itself stays the LAST row (statusBarHit's
+    // y === termRows still lands on it).
+    <Box width={width} flexDirection="column">
+      <Box width={width}>
+        {frameHue ? <Text color={frameHue}>{"▁".repeat(Math.max(width, 8))}</Text> : <Text> </Text>}
+      </Box>
+      <Box width={width} paddingX={1} justifyContent="space-between">
       <Text wrap="truncate-end">
         {whereShown ? <Text color={color.faint}>{whereShown}</Text> : null}
         {chips.length ? <Text>{"  "}</Text> : null}
@@ -202,6 +211,7 @@ function StatusBarImpl({
         ) : null}
         {costText ? <Text color={color.faint}>{SEP + costText}</Text> : null}
       </Text>
+      </Box>
     </Box>
   );
 }

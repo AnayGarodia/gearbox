@@ -42,7 +42,6 @@ function ComposerImpl({
   provider,
   model,
   lift = false,
-  auraHue = null,
   onEdit,
 }: {
   value: string;
@@ -60,7 +59,6 @@ function ComposerImpl({
   provider?: string | null; // footer-right: the live provider (dim)
   model?: string | null; // footer-right: the live model name (bold)
   lift?: boolean; // fullscreen only: a 1-row bottom margin so the input sits off the screen's bottom edge. Inline has no edge to lift off (the terminal owns the rows below), so it stays flush — no stray trailing blank.
-  auraHue?: string | null; // provider brand hue — colors the box edges (null → quiet gray)
   onEdit?: (edit: Edit) => void;
 }) {
   const selected = selectionRange({ value, cursor, selectionAnchor });
@@ -71,10 +69,7 @@ function ComposerImpl({
   // The MODE wears the box: plan = ok-green edges (read-only, safe), auto-accept
   // = warn-amber (writes apply unasked). Shell pink wins (it's about THIS line).
   const modeColor = mode === "plan" ? color.ok : mode === "auto-accept" ? color.warn : null;
-  // The composer's border wears the PROVIDER: its ┃ edges render in the active
-  // provider's brand hue, so which backend you're on is one glance at the box.
-  // Mode/shell still wins (plan green / auto-accept amber / bash pink).
-  const edge = shellMode ? color.shell : modeColor ?? auraHue ?? color.faint;
+  const edge = shellMode ? color.shell : modeColor ?? color.faint;
   const promptGlyph = bashMode ? "!" : glyph.prompt;
   // Columns inside the two ┃ edges; each row is padded to this so the element
   // layer reads as one solid surface, not text-shaped patches.

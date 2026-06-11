@@ -34,7 +34,15 @@ export function mastheadAccountZone(account: string | null | undefined, tabRows:
 
 // Memoized: props are stable while scrolling/streaming. `epoch` exists solely so
 // /theme invalidates the memo (setTheme mutates `color` in place).
-function MastheadImpl({ account, accountColor, width, tabRows }: { account?: string | null; accountColor?: string; width: number; epoch?: number; tabRows?: TabRow[] | null }) {
+function MastheadImpl({ account, accountColor, frameHue, width, tabRows }: { account?: string | null; accountColor?: string; frameHue?: string | null; width: number; epoch?: number; tabRows?: TabRow[] | null }) {
+  // The TOP EDGE of the pane: the old blank marginTop row becomes a full-width
+  // rule in the active provider's hue — the frame wears the backend. Row count
+  // unchanged (MASTHEAD_ROW contract holds).
+  const topEdge = (
+    <Box width={width}>
+      {frameHue ? <Text color={frameHue}>{"▔".repeat(Math.max(width, 8))}</Text> : <Text> </Text>}
+    </Box>
+  );
   if (tabRows?.length) {
     const segs = tabBarSegments(tabRows, TABBAR_LEFT, width - 1);
     const spans: React.ReactNode[] = [];
@@ -68,7 +76,8 @@ function MastheadImpl({ account, accountColor, width, tabRows }: { account?: str
     // Same math as mastheadAccountZone — render and click zone cannot drift.
     const acctRoom = Math.max(0, width - x - 4);
     return (
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column">
+        {topEdge}
         <Box width={width} paddingX={1}>
           <Text color={color.accent} bold>{WORDMARK}</Text>
           <Text>{"  "}</Text>
@@ -85,7 +94,8 @@ function MastheadImpl({ account, accountColor, width, tabRows }: { account?: str
   }
   const acctRoom = Math.max(0, width - WORDMARK.length - 4);
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column">
+      {topEdge}
       <Box width={width} paddingX={1} justifyContent="space-between">
         <Text color={color.accent} bold>{WORDMARK}</Text>
         {account ? <Text color={accountColor ?? color.faint} wrap="truncate-end">{account.slice(0, acctRoom)}</Text> : null}

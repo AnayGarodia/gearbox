@@ -4323,7 +4323,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // panel and let esc (the panel-close key) silently DENY the unseen request.
   const composerPlaceholder = setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything";
   const composerAt = (w: number, lift: boolean) => (
-    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} auraHue={setupRequired ? null : provHue} />
+    <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
   );
   // Inline keeps full width; fullscreen renders these inside the page column
   // (fsComposerJsx below) so the consent line / composer share the transcript's
@@ -4467,7 +4467,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           of truth below everything (cwd:branch · model · ctx · $). statusBarHit
           assumes y === termRows; change in lockstep. */}
       <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
-        <StatusBar model={modelDisplay} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} providerColor={provHue} providerFlash={provFlash} epoch={themeEpochState} />
+        <StatusBar model={modelDisplay} cost={estimateCost(sessionRef.current.turns)} ctxPct={ctxPct} yolo={yolo} width={pageW} online={online} cwd={rootRef.current} branch={branch} providerColor={provHue} providerFlash={provFlash} frameHue={setupRequired ? null : provHue} epoch={themeEpochState} />
       </Box>
     </>
   );
@@ -4493,7 +4493,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (fullscreen) {
     return (
       <Box flexDirection="column" width={width} height={rows}>
-        <Masthead account={bannerAccount} accountColor={bannerAccount ? provHue : undefined} width={width} epoch={themeEpochState} tabRows={tabRows} />
+        <Masthead account={bannerAccount} accountColor={bannerAccount ? provHue : undefined} frameHue={setupRequired ? null : provHue} width={width} epoch={themeEpochState} tabRows={tabRows} />
         {/* flexGrow pins the footer (and the composer with it) to the bottom row,
             so however the footer height is estimated, the input bar is always at
             row `rows` — which is what the mouse hit-test (composerOffset) assumes. */}

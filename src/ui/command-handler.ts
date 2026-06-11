@@ -17,7 +17,7 @@ import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, typ
 import { effortLevels, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { truncate, gitConfirmOpen, diffOpen, diffSetText, type PanelState, type PanelModelRow } from "./panel.ts";
-import { listAccounts, setDefaultAccount, removeAccount, getAccount, putAccount } from "../accounts/store.ts";
+import { listAccounts, setDefaultAccount, removeAccount, getAccount, putAccount , uniqueSlug } from "../accounts/store.ts";
 import type { Account } from "../accounts/types.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
 import { addApiKeyAccount, addAzureAccount, addAzureFoundryAccount, addBedrockAccount, addByPastedKey, addOpenAICompatAccount, addVertexAccount, addCliAccount, cliAuthStatus, cliLoginArgs, cliOauthToken } from "../accounts/onboard.ts";
@@ -334,7 +334,17 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
                   return;
                 }
               }
-              putAccount({ ...res.account!, identity: signed });
+              // AUTO-NAME from the signed-in identity: an unnamed account takes
+              // the email's local part as its nickname ("Claude (anay)" →
+              // /account claude-anay), so accounts never pile up as anonymous
+              // "claude-cli" entries and nobody has to invent a name up front.
+              // An explicit name always wins; the slug re-derives from the new
+              // label (the id — and every secret/usage ref on it — is untouched).
+              const email = (signed.label ?? st.detail ?? "").match(/[^\s·]+@[^\s·]+/)?.[0];
+              const local = email?.split("@")[0]?.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+              const autoName = !name && local ? `${res.account!.label.replace(/ \(.*\)$/, "")} (${local})` : null;
+              const autoSlug = autoName ? uniqueSlug(autoName, listAccounts().filter((a) => a.id !== acctId).map((a) => a.slug ?? "").filter(Boolean)) : undefined;
+              putAccount({ ...res.account!, ...(autoName ? { label: autoName, slug: autoSlug } : {}), identity: signed });
               accountStatusCacheRef.current[acctId] = { signedIn: true, detail: st.detail, identity: signed.key };
             } else {
               accountStatusCacheRef.current[acctId] = { signedIn: true, detail: st.detail };
