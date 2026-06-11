@@ -83,3 +83,21 @@ test("hearts always ride the love face", () => {
     if (show.patch.face === "love") expect(show.overlay).toBe("hearts");
   }
 });
+
+// ── per-tab looks ─────────────────────────────────────────────────────────────
+import { lookForTabName, lookToCfg, isGhostLook } from "../src/ui/components/Mascot.tsx";
+import { TAB_NAMES } from "../src/ui/tabbar.ts";
+
+test("every wardrobe tab name maps to a valid Boo look", () => {
+  for (const n of TAB_NAMES) {
+    const look = lookForTabName(n)!;
+    expect(look).toBeTruthy();
+    expect(isGhostLook(look)).toBe(true);
+    expect(lookToCfg(look)).toBeDefined();
+  }
+  expect(lookForTabName("wizard")).toBe("persona:wizard");
+  expect(lookForTabName("mint")).toBe("mint");
+  expect(lookForTabName("ember")).toBe("palette:ember");
+  expect(lookForTabName("crown")).toBe("accessory:crown");
+  expect(lookForTabName("fix-auth")).toBeNull(); // non-wardrobe names keep the pref
+});

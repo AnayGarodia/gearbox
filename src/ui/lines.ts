@@ -211,6 +211,18 @@ export function marginLine(body: Span[], figures: Span[], width: number): Line {
   return [...clipped, { text: " ".repeat(pad) }, ...figLine];
 }
 
+/** The span link under a CHARACTER offset in a line (the transcript mouse
+ *  handler's col is char-based), or undefined. Powers clickable in-stream
+ *  affordances (gearbox:fork) and file links. */
+export function linkAt(line: Line, col: number): string | undefined {
+  let pos = 0;
+  for (const s of line) {
+    if (col >= pos && col < pos + s.text.length) return s.link;
+    pos += s.text.length;
+  }
+  return undefined;
+}
+
 /** Word-wrap a run of styled spans to `width`, preserving each span's style. */
 export function wrapSpans(spans: Span[], width: number): Line[] {
   if (width < 1) width = 1;
@@ -801,11 +813,15 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         // reason for the three "surprising" cases (escalation, fallback, cap hit).
         const head = it.surprising ? color.warn : color.faint;
         const body = it.surprising ? color.warn : color.dim;
-        const spans = [
+        const spans: Span[] = [
           { text: "  ↳ ", color: head },
           { text: it.provider + " · " + it.model, color: body },
         ];
         if (it.surprising && it.reason) spans.push({ text: " · " + it.reason, color: color.warn });
+        // A clickable fork affordance rides the provenance line: clicking it
+        // clones this conversation into a new tab (/tab fork). Carried as a
+        // gearbox: link so App's transcript click handler can hit-test it.
+        spans.push({ text: "   ⑂ fork", color: color.accentDim, link: "gearbox:fork" });
         out.push(marginLine(spans, it.costText ? [{ text: it.costText, color: head }] : [], width));
         break;
       }

@@ -16,6 +16,7 @@ import { basename, join } from "node:path";
 import { existsSync } from "node:fs";
 import { App, type AppProps, type ForkPayload, type SessionStatus, type TabControl } from "../App.tsx";
 import { newSessionId, saveSession, type Session } from "../../session.ts";
+import { lookForTabName } from "./Mascot.tsx";
 import { nextTabName, TAB_NAMES, type TabRow } from "../tabbar.ts";
 import type { ModelSelector } from "../../model/selector.ts";
 import { repoRoot, worktreeAdd } from "../../git/ops.ts";
@@ -227,6 +228,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
             tabs={control}
             tabRows={rows}
             initialPrompt={t.initialPrompt}
+            ghostLook={i === 0 ? undefined : lookForTabName(basename(t.dir)) ?? undefined}
           />
         </Box>
       ))}

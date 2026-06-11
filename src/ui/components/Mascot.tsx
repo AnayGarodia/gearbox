@@ -3,7 +3,7 @@ import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import { GHOSTS, type SpriteCell } from "../mascot-sprite.ts";
 import { getImageMode, imageId, idColor, placeholderRows, type GhostSize } from "../image.ts";
-import { renderGhost, EYES_CLOSED, TALK, PERSONAS, PERSONA_ORDER, type GhostCfg, type OverlayKind } from "../ghost/engine.ts";
+import { renderGhost, EYES_CLOSED, TALK, PERSONAS, PERSONA_ORDER, PALETTES, ACCESSORIES, type GhostCfg, type OverlayKind } from "../ghost/engine.ts";
 
 // Boo · the ghost in the gearbox. Built parametrically (src/ui/ghost/engine.ts):
 // a 20x20 pixel sprite composited from layers (body + face + palette + accessory
@@ -47,12 +47,38 @@ export function lookToCfg(look: GhostLook): GhostCfg {
     const per = PERSONAS[p];
     if (per) return { palette: per.palette, face: per.face, persona: p };
   }
+  if (look.startsWith("palette:")) {
+    const p = look.slice("palette:".length);
+    if (PALETTES[p]) return { palette: p, face: "happy" };
+  }
+  if (look.startsWith("accessory:")) {
+    const a = look.slice("accessory:".length);
+    if (ACCESSORIES[a]) return { palette: "default", face: "happy", accessory: a };
+  }
   return skinToCfg((SKINS as string[]).includes(look) ? (look as GhostSkin) : "base");
 }
 
 /** True for any value /ghost (or a stored pref) should accept. */
 export function isGhostLook(look: string): boolean {
-  return (SKINS as string[]).includes(look) || (look.startsWith("persona:") && !!PERSONAS[look.slice("persona:".length)]);
+  return (
+    (SKINS as string[]).includes(look) ||
+    (look.startsWith("persona:") && !!PERSONAS[look.slice("persona:".length)]) ||
+    (look.startsWith("palette:") && !!PALETTES[look.slice("palette:".length)]) ||
+    (look.startsWith("accessory:") && !!ACCESSORIES[look.slice("accessory:".length)])
+  );
+}
+
+/** A tab name → the matching Boo look (a wardrobe tab wears its own costume:
+ *  tab "wizard" → the wizard persona, "mint" → the mint palette). null when the
+ *  name isn't from the wardrobe (named tabs like "fix-auth" keep the user's
+ *  configured ghost). */
+export function lookForTabName(name: string): GhostLook | null {
+  const n = name.toLowerCase();
+  if (PERSONAS[n]) return "persona:" + n;
+  if ((SKINS as string[]).includes(n)) return n;
+  if (PALETTES[n]) return "palette:" + n;
+  if (ACCESSORIES[n]) return "accessory:" + n;
+  return null;
 }
 
 const SKIN_HINTS: Record<GhostSkin, string> = {
@@ -201,7 +227,10 @@ export function AnimatedGhost({ cfg, scale, anim }: { cfg: GhostCfg; scale: 1 | 
   const tick = useTick(240, !!(anim.blink || anim.talk || anim.shake || anim.overlay || anim.show));
   const slow = Math.floor(tick / 2); // calmer cadence for talk + overlays
   const frameCfg: GhostCfg = { ...cfg, scale };
-  const show = anim.show ? homeShow(tick) : null;
+  // A costume RESTING look (a persona tab's wizard, an accessory) stays in
+  // character: no homeShow costume-cycling on top — it animates (blink/talk/
+  // overlay) in that one look only.
+  const show = anim.show && !cfg.persona && !cfg.accessory ? homeShow(tick) : null;
   if (show) Object.assign(frameCfg, show.patch);
   if (anim.blink && tick % 26 === 0 && tick !== 0 && !show) frameCfg.eyesOverride = EYES_CLOSED;
   if (anim.talk) frameCfg.mouthOverride = TALK[slow % TALK.length]!;

@@ -8,7 +8,7 @@ const row = (title: string, o: Partial<TabRow> = {}): TabRow => ({ title, active
 test("segments lay out left to right with a + cell last", () => {
   const segs = tabBarSegments([row("main", { active: true }), row("fix", { busy: true })], 10, 80);
   expect(segs).toHaveLength(3);
-  expect(segs[0]!.text).toBe(" 1 main ");
+  expect(segs[0]!.text).toBe(" 1 main × "); // active cell carries the close ×
   expect(segs[1]!.text).toBe(" 2 fix● ");
   expect(segs[2]!.text).toBe(" + ");
   expect(segs[0]!.x0).toBe(10);
@@ -55,7 +55,21 @@ test("nextTabName falls back to the counter when the wardrobe is exhausted", () 
 test("segments expose styled parts that concatenate to the hit-test text", () => {
   const segs = tabBarSegments([{ title: "wizard", active: true, busy: true, needsInput: false }], 10, 120);
   const cell = segs[0]!;
-  expect(`${cell.num}${cell.title}${cell.mark} `).toBe(cell.text);
+  expect(`${cell.num}${cell.title}${cell.mark}${cell.close}`).toBe(cell.text);
+  expect(cell.close).toBe(" "); // single tab: nothing to close, no ×
+  expect(cell.closeX0).toBeUndefined();
+});
+
+test("the active cell's × closes; the rest of the cell still switches", () => {
+  const segs = tabBarSegments([row("main"), row("wizard", { active: true })], 10, 120);
+  const active = segs[1]!;
+  expect(active.text.endsWith(" × ")).toBe(true);
+  expect(active.closeX0).toBeGreaterThan(active.x0);
+  expect(tabBarHit(segs, active.x0)).toEqual({ type: "switch", n: 2 }); // title area
+  expect(tabBarHit(segs, active.closeX0! + 1)).toEqual({ type: "close" }); // the ×
+  // inactive cells never grow a close zone
+  expect(segs[0]!.closeX0).toBeUndefined();
+  expect(segs[0]!.text).toBe(" 1 main ");
 });
 
 test("done (finished-while-hidden) shows ✓ and is outranked only by needs-input", () => {
