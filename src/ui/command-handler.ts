@@ -576,6 +576,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           };
           if (!a) return showStatus();
           if (a === "network on" || a === "network off") {
+            if (process.env.GEARBOX_SANDBOX_NETWORK) notice(`note: GEARBOX_SANDBOX_NETWORK=${process.env.GEARBOX_SANDBOX_NETWORK} overrides this setting for this run`);
             updatePrefs({ sandboxNetwork: a.endsWith("on") });
             resetShellSessions();
             toast(`sandbox network ${a.endsWith("on") ? "allowed" : "off"}`);
@@ -586,7 +587,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           if (process.env.GEARBOX_SANDBOX) notice(`note: GEARBOX_SANDBOX=${process.env.GEARBOX_SANDBOX} overrides this setting for this run`);
           updatePrefs({ sandbox: mode });
           resetShellSessions();
-          setSandboxMode(resolveSandboxPolicy(loadPrefs(), process.env, ctx.root).mode); // effective, env may override
+          setSandboxMode(sandboxAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, ctx.root).mode : "off"); // effective: env may override, no backend reads off
           toast(
             mode === "off"
               ? "sandbox off · agent shell commands run unconfined"
