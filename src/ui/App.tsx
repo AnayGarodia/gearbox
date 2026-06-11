@@ -12,7 +12,7 @@ import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type Gho
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working, workingRows } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
-import { itemsToLines, relPath, friendlyTool, fmtElapsed, type Line } from "./lines.ts";
+import { itemsToLines, relPath, friendlyTool, fmtElapsed, linkAt, type Line } from "./lines.ts";
 import { collapseTurn, collapseDelegateGroups } from "./collapse.ts";
 import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
@@ -413,9 +413,13 @@ export interface AppProps {
   tabRows?: TabRow[] | null;
   /** submit this prompt as the session's first turn on mount (/tab run) */
   initialPrompt?: string;
+  /** This tab's Boo look (a wardrobe tab wears its namesake costume — tab
+   *  "wizard" → the wizard persona). Overrides the ghost pref for this
+   *  instance; /ghost still re-dresses it live. */
+  ghostLook?: GhostLook;
 }
 
-export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows, initialPrompt }: AppProps) {
+export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows, initialPrompt, ghostLook }: AppProps) {
   const { exit } = useApp();
   // The instance's workspace, FIXED at mount: per-turn root capture, the
   // session-save slug, and permission routing key off this — never off the
@@ -458,7 +462,13 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [effort, setEffortState] = useState<Effort>("medium");
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
-  const [ghostSkin, setGhostSkinState] = useState<GhostLook>(() => { const g = loadPrefs().ghost; return g && isGhostLook(g) ? g : "base"; });
+  // A conductor tab named from the wardrobe dresses Boo in its namesake costume;
+  // otherwise the persisted /ghost pref applies.
+  const [ghostSkin, setGhostSkinState] = useState<GhostLook>(() => {
+    if (ghostLook && isGhostLook(ghostLook)) return ghostLook;
+    const g = loadPrefs().ghost;
+    return g && isGhostLook(g) ? g : "base";
+  });
   // One-shot splash moods (wink after a pin, hearts after a theme switch,
   // sleepy when idle on home). flashMood decays back to the base face; a real
   // state change (typing, a turn starting) always wins because the splash only
@@ -758,7 +768,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const cliMetaRef = useRef<{ costUSD?: number; rates?: { utilization?: number; status?: string; resetsAt?: number; type?: string }[] } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
-  const ghostSkinRef = useRef<GhostLook>(loadPrefs().ghost && isGhostLook(loadPrefs().ghost!) ? loadPrefs().ghost! : "base");
+  const ghostSkinRef = useRef<GhostLook>(
+    ghostLook && isGhostLook(ghostLook) ? ghostLook
+    : loadPrefs().ghost && isGhostLook(loadPrefs().ghost!) ? loadPrefs().ghost! : "base",
+  );
   const permRef = useRef<PermRequest | null>(null);
   const permQueue = useRef<{ req: PermRequest; resolve: (d: PermDecision) => void }[]>([]);
   const scrollTopRef = useRef(0);
@@ -1160,6 +1173,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const act = tabBarHit(segs, x - 1);
             if (act) {
               if (act.type === "new") tabsCtlRef.current.create();
+              else if (act.type === "close") tabsCtlRef.current.close();
               else tabsCtlRef.current.switchTo(act.n);
               continue;
             }
@@ -1271,6 +1285,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           } else if (point && isPrimary && !isDrag) {
             const shift = (b & 4) !== 0;
             const clickCount = transcriptClickCount(x, y);
+            // In-stream affordances: a span carrying a gearbox: link is a button,
+            // not text — a plain click on `⑂ fork` forks this conversation into a
+            // new tab instead of starting a selection.
+            if (!shift && clickCount === 1) {
+              const lk = linkAt(linesRef.current[point.line] ?? [], point.col);
+              if (lk === "gearbox:fork" && tabsCtlRef.current) {
+                handleCommandRef.current?.("/tab fork");
+                continue;
+              }
+            }
             mouseAnchorRef.current = null;
             setEdit({ ...editRef.current, selectionAnchor: undefined });
             if (shift) {

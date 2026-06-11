@@ -15,7 +15,7 @@ export interface TabRow {
   done?: boolean;
 }
 
-export type TabAction = { type: "switch"; n: number } | { type: "new" };
+export type TabAction = { type: "switch"; n: number } | { type: "new" } | { type: "close" };
 
 export interface TabSegment {
   text: string; // rendered cell text (marker included) — the hit-test width truth
@@ -28,6 +28,9 @@ export interface TabSegment {
   num?: string; // " 1 "
   title?: string; // truncated title
   mark?: string; // "" | "●" | "⚠"
+  close?: string; // trailing cell text: " " normally, " × " on the active cell (multi-tab)
+  /** 0-based column where the close (`×`) zone starts, when the cell has one */
+  closeX0?: number;
 }
 
 const TITLE_MAX = 14;
@@ -43,11 +46,15 @@ export const tabMark = (r: TabRow): string => (r.needsInput ? "⚠" : r.done ? "
  * when space runs out, trailing inactive tabs go first.
  */
 export function tabBarSegments(rows: TabRow[], left: number, maxX: number): TabSegment[] {
-  const cells: { text: string; action: TabAction; row: TabRow | null; num?: string; title?: string; mark?: string }[] = rows.map((r, i) => {
+  const cells: { text: string; action: TabAction; row: TabRow | null; num?: string; title?: string; mark?: string; close?: string }[] = rows.map((r, i) => {
     const title = r.title.length > TITLE_MAX ? r.title.slice(0, TITLE_MAX - 1) + "…" : r.title;
     const num = ` ${i + 1} `;
     const mark = tabMark(r);
-    return { text: `${num}${title}${mark} `, action: { type: "switch", n: i + 1 }, row: r, num, title, mark };
+    // The active cell (when there's more than one tab) carries a close ×; the
+    // trailing space is part of the `close` part so the four parts always
+    // concatenate to exactly `text`.
+    const close = r.active && rows.length > 1 ? " × " : " ";
+    return { text: `${num}${title}${mark}${close}`, action: { type: "switch", n: i + 1 }, row: r, num, title, mark, close };
   });
   const plus = { text: " + ", action: { type: "new" } as TabAction, row: null };
 
@@ -81,7 +88,12 @@ export function tabBarSegments(rows: TabRow[], left: number, maxX: number): TabS
   for (const c of kept) {
     const w = displayWidth(c.text);
     if (x + w > maxX) break;
-    segs.push({ text: c.text, x0: x, x1: x + w, action: c.action, row: c.row, num: c.num, title: c.title, mark: c.mark });
+    const hasClose = !!c.close && c.close.includes("×");
+    segs.push({
+      text: c.text, x0: x, x1: x + w, action: c.action, row: c.row,
+      num: c.num, title: c.title, mark: c.mark, close: c.close,
+      closeX0: hasClose ? x + displayWidth(`${c.num}${c.title}${c.mark}`) : undefined,
+    });
     x += w + GAP;
   }
   return segs;
@@ -89,7 +101,12 @@ export function tabBarSegments(rows: TabRow[], left: number, maxX: number): TabS
 
 /** The segment under a 0-based column, if any. */
 export function tabBarHit(segs: TabSegment[], x: number): TabAction | null {
-  for (const s of segs) if (x >= s.x0 && x < s.x1) return s.action;
+  for (const s of segs) {
+    if (x < s.x0 || x >= s.x1) continue;
+    // The active cell's trailing ` × ` closes the tab instead of re-selecting it.
+    if (s.closeX0 != null && x >= s.closeX0) return { type: "close" };
+    return s.action;
+  }
   return null;
 }
 

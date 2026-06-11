@@ -198,3 +198,20 @@ test("a tool whose summary just repeats its name omits the redundant result line
   const t2 = itemsToLines(useful, 110).map((l) => l.map((s) => s.text).join("")).join("\n");
   expect(t2).toContain("42 lines"); // a real summary IS kept
 });
+
+// ── the in-stream fork affordance ─────────────────────────────────────────────
+import { linkAt } from "../src/ui/lines.ts";
+
+test("the routed-model line carries a clickable ⑂ fork (gearbox:fork link)", () => {
+  const items: Item[] = [{ kind: "model", id: 9, model: "deepseek-v4", provider: "deepseek", costText: "seat ~$0" }];
+  const lines = itemsToLines(items, 110);
+  const modelLine = lines.find((l) => l.some((s) => s.text.includes("fork")))!;
+  expect(modelLine).toBeDefined();
+  const forkSpan = modelLine.find((s) => s.link === "gearbox:fork")!;
+  expect(forkSpan.text).toContain("⑂ fork");
+  // linkAt resolves the char column under the fork text to the link
+  let pos = 0;
+  for (const s of modelLine) { if (s.link === "gearbox:fork") break; pos += s.text.length; }
+  expect(linkAt(modelLine, pos + 2)).toBe("gearbox:fork");
+  expect(linkAt(modelLine, 0)).toBeUndefined();
+});

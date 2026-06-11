@@ -57,7 +57,7 @@ function MastheadImpl({ account, width, tabRows }: { account?: string | null; wi
             <Text color={ink(color.faint)}>{s.num}</Text>
             <Text color={ink(alert ? color.err : color.dim)}>{s.title}</Text>
             <Text color={ink(alert ? color.err : color.run)}>{s.mark}</Text>
-            <Text color={ink(color.dim)}>{" "}</Text>
+            <Text color={ink(color.dim)}>{s.close ?? " "}</Text>
           </Text>,
         );
       } else {
