@@ -316,17 +316,24 @@ function retrievalUseMeta(
   if (!injected.length) return undefined;
   const touched = new Set<string>();
   const norm = (p: string): string => relative(cwd, resolve(cwd, p)).replace(/\\/g, "/");
+  let prose = "";
   for (const m of produced) {
     const content = (m as any).content;
-    if (m.role !== "assistant" || !Array.isArray(content)) continue;
+    if (m.role !== "assistant") continue;
+    if (typeof content === "string") { prose += "\n" + content; continue; }
+    if (!Array.isArray(content)) continue;
     for (const part of content) {
+      if (part?.type === "text") prose += "\n" + (part.text ?? "");
       if (part?.type !== "tool-call") continue;
       const input = part.input ?? part.args ?? {};
       const raw = input.path ?? input.file;
       if (typeof raw === "string" && raw) touched.add(norm(raw));
     }
   }
-  const used = injected.filter((f) => touched.has(norm(f)));
+  // Used = touched by a tool, OR cited in the answer. The model often answers
+  // FROM injected content without re-reading the file — counting that as
+  // "unused" would sink exactly the injections that worked best.
+  const used = injected.filter((f) => touched.has(norm(f)) || prose.includes(f) || prose.includes(basename(f)));
   const unused = injected.filter((f) => !touched.has(norm(f)));
   return { injected, used, unused };
 }

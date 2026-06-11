@@ -63,7 +63,10 @@ function recompute(p: RetrievalPrior): RetrievalPrior {
   const total = Math.max(1, p.injected);
   const precision = p.used / total;
   const waste = p.unused / total;
-  const score = Math.max(-2, Math.min(3, precision * 3 - waste * 1.5 + Math.log1p(p.used) * 0.25));
+  // "Unused" is a NOISY negative (the model can use injected content without
+  // re-touching the file), so waste sinks gently while real use lifts harder;
+  // the floor keeps even a chronic miss from blacklisting a file outright.
+  const score = Math.max(-1.5, Math.min(3, precision * 3 - waste * 1.0 + Math.log1p(p.used) * 0.25));
   return { ...p, score: Number(score.toFixed(4)) };
 }
 

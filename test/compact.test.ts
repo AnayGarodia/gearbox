@@ -173,3 +173,41 @@ test("truncateToolResults caps only oversized results and counts them", () => {
   // a fully-small history passes through with zero truncations
   expect(truncateToolResults([...toolTurn(3)], 2000).truncated).toBe(0);
 });
+
+// ── THE FULL LOOP: compact → archive → a later prompt recalls it ─────────────
+// The integration seam none of the unit tests covered: a real compactHistory
+// result's archive, fed back through buildContext, must resurface when a
+// future prompt resembles the archived work — and stay silent when it doesn't.
+test("a compaction archive is recalled by a later related prompt (end to end)", async () => {
+  const { buildContext } = await import("../src/context/builder.ts");
+  const { findModel } = await import("../src/providers.ts");
+  const sonnet = findModel("sonnet-4.6")!;
+  const history: ModelMessage[] = [
+    { role: "user", content: "fix the oauth refresh rotation bug in src/accounts/health.ts" },
+    // padded so the summary is genuinely SMALLER than the turns it replaces
+    // (compactHistory falls back to mechanical elision otherwise — no archive)
+    { role: "assistant", content: "Edited src/accounts/health.ts to re-read auth before refresh. Ran bun test test/health.test.ts — passed. " + "Investigated the refresh flow in detail. ".repeat(200) },
+    { role: "user", content: "now the unrelated thing" },
+    { role: "assistant", content: "done" },
+  ];
+  const summarize: Summarizer = async () => JSON.stringify({
+    goals: ["fix oauth refresh rotation"],
+    decisions: [],
+    files: [{ path: "src/accounts/health.ts", change: "re-read auth before refresh" }],
+    commands: [{ command: "bun test test/health.test.ts", outcome: "passed" }],
+    facts: [], openThreads: [],
+    topics: [{ title: "oauth refresh rotation", notes: ["refresh tokens are single-use"], files: ["src/accounts/health.ts"] }],
+  });
+  const res = await compactHistory({ history, summarize, keepRecent: 1, archiveId: "arc-oauth" });
+  expect(res?.archive).toBeTruthy();
+  expect(res!.archive!.summary).toContain("src/accounts/health.ts"); // anchor survived (verified)
+
+  // A related later prompt recalls the archive…
+  const recalled = buildContext({ history: [], userText: "continue the oauth refresh rotation work", model: sonnet, compactions: [{ ...res!.archive!, at: 1 } as any] });
+  const text = JSON.stringify(recalled.messages[recalled.messages.length - 1]!.content);
+  expect(text).toContain("RELEVANT ARCHIVED CONTEXT");
+  expect(text).toContain("arc-oauth");
+  // …an unrelated prompt does not.
+  const quiet = buildContext({ history: [], userText: "what color should the mascot be", model: sonnet, compactions: [{ ...res!.archive!, at: 1 } as any] });
+  expect(JSON.stringify(quiet.messages[quiet.messages.length - 1]!.content)).not.toContain("RELEVANT ARCHIVED CONTEXT");
+});

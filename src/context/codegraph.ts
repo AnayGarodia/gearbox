@@ -47,6 +47,11 @@ export function codeGraph(cwd = process.cwd()): CodeGraph {
   const fileSet = new Set(files);
   const graph: CodeGraph = { files: new Map(), symbolDefs: new Map() };
 
+  // TWO passes: collect every project-defined symbol first, then keep only
+  // REFERENCES to those symbols. REF_RE alone matches every call-shaped
+  // identifier (console, JSON, map, …) — noise that made the reference boost
+  // fire on files that merely use the standard library.
+  const sources = new Map<string, string>();
   for (const file of files) {
     let src = "";
     try {
@@ -54,16 +59,22 @@ export function codeGraph(cwd = process.cwd()): CodeGraph {
     } catch {
       continue;
     }
+    sources.set(file, src);
     const defs = [...src.matchAll(DEF_RE)].map((m) => m[1]!.toLowerCase());
-    const refs = [...new Set([...src.matchAll(REF_RE)].map((m) => m[1]!.toLowerCase()))];
-    const imports = [...src.matchAll(IMPORT_RE)].map((m) => m[1] ?? m[2] ?? m[3]).filter(Boolean) as string[];
-    const importedFiles = imports.map((spec) => resolveImport(spec, file, cwd, fileSet)).filter((x): x is string => Boolean(x));
-    graph.files.set(file, { file, defs, refs, imports, importedFiles, importers: [] });
     for (const d of defs) {
       const current = graph.symbolDefs.get(d) ?? [];
       current.push(file);
       graph.symbolDefs.set(d, current);
     }
+  }
+  for (const [file, src] of sources) {
+    const defs = [...src.matchAll(DEF_RE)].map((m) => m[1]!.toLowerCase());
+    const own = new Set(defs);
+    const refs = [...new Set([...src.matchAll(REF_RE)].map((m) => m[1]!.toLowerCase()))]
+      .filter((r) => graph.symbolDefs.has(r) && !own.has(r)); // project symbols defined ELSEWHERE
+    const imports = [...src.matchAll(IMPORT_RE)].map((m) => m[1] ?? m[2] ?? m[3]).filter(Boolean) as string[];
+    const importedFiles = imports.map((spec) => resolveImport(spec, file, cwd, fileSet)).filter((x): x is string => Boolean(x));
+    graph.files.set(file, { file, defs, refs, imports, importedFiles, importers: [] });
   }
 
   for (const f of graph.files.values()) {
