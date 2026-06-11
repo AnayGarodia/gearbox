@@ -59,6 +59,11 @@ export interface PermRequest {
    *  multiple sessions mounted (conductor tabs), this routes the prompt to the
    *  tab that owns the workspace instead of whichever registered last. */
   root?: string;
+  /** Always show the prompt, even under yolo or a standing grant. Used for
+   *  sandbox-escape escalation: auto-approving everything is exactly when the
+   *  sandbox is the only guardrail left, so leaving it must stay a deliberate
+   *  human decision. A written rules "deny" still refuses outright. */
+  forceAsk?: boolean;
 }
 
 /**
@@ -155,9 +160,11 @@ export async function requestPermission(req: PermRequest): Promise<boolean> {
   // the prompt, "ask" forces one. Unmatched falls through to the broker.
   const rule = ruleFor(loadPermissionRules(), req.kind, req.detail);
   if (rule === "deny") return false;
-  if (yolo) return true;
-  if (rule === "allow") return true;
-  if (granted.has(req.kind) && rule !== "ask") return true;
+  if (!req.forceAsk) {
+    if (yolo) return true;
+    if (rule === "allow") return true;
+    if (granted.has(req.kind) && rule !== "ask") return true;
+  }
   const route = (req.root && rootHandlers.get(req.root)) || handler;
   if (!route) return true;
   // A plugin can resolve the request programmatically (permission.ask hook).

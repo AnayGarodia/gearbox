@@ -52,7 +52,8 @@ import { resolve, relative, isAbsolute, dirname, basename, join } from "node:pat
 import { computeDiff, diffStat } from "./diff.ts";
 import { applyEdit } from "./edit.ts";
 import { updateRetrievalFile } from "./context/retrieve.ts";
-import { runShellStream } from "./shell.ts";
+import { runShellStream, sandboxPolicyFor } from "./shell.ts";
+import { looksLikeSandboxDenial } from "./sandbox/index.ts";
 import { appendFact } from "./context/memory.ts";
 import { emitHook } from "./plugins.ts";
 import { requestPermission } from "./permission.ts";
@@ -532,17 +533,46 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
       if (!(await requestPermission({ kind: "shell", title: "Run a shell command", detail: command, root }))) throw new Error(DENIED);
       const id = `run_shell:${command}`;
       const statusBefore = gitStatusSnapshot(root); // null = not a repo / git failed → skip
-      const r = await runShellStream(command, {
+      const onChunk = (c: { stream: "stdout" | "stderr"; text: string }) => onEvent?.({ type: "tool-output", id, name: "run_shell", arg: command, stream: c.stream, text: c.text });
+      let r = await runShellStream(command, {
         cwd: root, // sub-agents in a fan-out run shell in their own worktree
-        onChunk: (c) => onEvent?.({ type: "tool-output", id, name: "run_shell", arg: command, stream: c.stream, text: c.text }),
+        onChunk,
       });
+      // Sandbox escalation (Codex-style): when a failure looks like the OS
+      // sandbox blocked it, offer ONE prompt-gated retry — network-only allow
+      // for a network-shaped failure (the lesser escape), fully unsandboxed
+      // otherwise. forceAsk: the prompt shows even under yolo/grants, because
+      // auto-approve is exactly when the sandbox is the only guardrail left.
+      // A written rules "deny" still refuses outright.
+      let sandboxNote = "";
+      if (!r.ok) {
+        const policy = sandboxPolicyFor(root, true);
+        const denial = policy.mode !== "off" ? looksLikeSandboxDenial(r.output, r.exitCode) : { denied: false, kind: null };
+        if (denial.denied) {
+          const netOnly = denial.kind === "network" && !policy.network;
+          const approved = await requestPermission({
+            kind: "shell",
+            title: netOnly ? "Command needs network — allow network for one retry?" : "Command blocked by the sandbox — retry without it?",
+            detail: command,
+            root,
+            forceAsk: true,
+          });
+          if (approved) {
+            r = await runShellStream(command, netOnly ? { cwd: root, sandboxNetwork: true, onChunk } : { cwd: root, sandbox: false, onChunk });
+            sandboxNote = `[sandbox] retried ${netOnly ? "with network allowed" : "unsandboxed"} after a sandbox denial, with the user's permission.\n`;
+          } else {
+            sandboxNote = `[sandbox] this command was likely blocked by the gearbox sandbox (${denial.kind === "network" ? "network is off in the sandbox" : "write outside the workspace"}) and the user declined to lift it. Work within the workspace${denial.kind === "network" ? ", or the user can run /sandbox network on" : ""}.\n`;
+          }
+        }
+      }
       emitShellFileChanges(onEvent, root, statusBefore); // /undo coverage for shell-side mutations
       if (/\b(bun|npm|pnpm|yarn)\s+(test|run\s+typecheck|typecheck|build)\b|\b(tsc|pytest|cargo\s+test|go\s+test)\b/.test(command)) {
         // The auto-fix loop needs the actual failure line, not the word "failed".
         onEvent?.({ type: "verification", command, ok: r.ok, summary: r.ok ? "passed" : summarize(r.output) });
       }
-      // Tail truncation: the END of build/test output is what matters.
-      return capToolOutput("run-shell", r.output, { direction: "tail" });
+      // Tail truncation: the END of build/test output is what matters — the
+      // sandbox note rides at the end so it survives the cap.
+      return capToolOutput("run-shell", sandboxNote ? `${r.output}\n${sandboxNote.trimEnd()}` : r.output, { direction: "tail" });
     },
   }),
   remember: tool({

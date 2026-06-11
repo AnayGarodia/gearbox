@@ -92,18 +92,19 @@ export function runShell(command: string): { ok: boolean; output: string } {
 const sessions = new Map<string, ShellSession>();
 
 /** The effective sandbox policy for a workspace root (env > prefs > off). */
-export function sandboxPolicyFor(root: string, sandbox: boolean): SandboxPolicy {
+export function sandboxPolicyFor(root: string, sandbox: boolean, networkOverride?: boolean): SandboxPolicy {
   const policy = resolveSandboxPolicy(loadPrefs(), process.env, root);
-  return sandbox ? policy : { ...policy, mode: "off" };
+  const network = networkOverride ?? policy.network;
+  return sandbox ? { ...policy, network } : { ...policy, mode: "off" };
 }
 
 // Sessions are keyed by cwd AND sandbox shape so a sandboxed and an
 // unsandboxed (or network-allowed) shell for the same root never collide.
 const sessionKey = (root: string, p: SandboxPolicy) => `${root}#${p.mode}${p.mode !== "off" && p.network ? "+net" : ""}`;
 
-function shellSession(cwd: string | undefined, sandbox: boolean): ShellSession {
+function shellSession(cwd: string | undefined, sandbox: boolean, networkOverride?: boolean): ShellSession {
   const root = cwd ?? process.cwd();
-  const policy = sandboxPolicyFor(root, sandbox);
+  const policy = sandboxPolicyFor(root, sandbox, networkOverride);
   const key = sessionKey(root, policy);
   let session = sessions.get(key);
   if (!session) {
@@ -139,18 +140,18 @@ export function resetShellSessions(): void {
  */
 export async function runShellStream(
   command: string,
-  opts: { signal?: AbortSignal; timeoutMs?: number; onChunk?: (chunk: ShellChunk) => void; cwd?: string; sandbox?: boolean } = {},
+  opts: { signal?: AbortSignal; timeoutMs?: number; onChunk?: (chunk: ShellChunk) => void; cwd?: string; sandbox?: boolean; sandboxNetwork?: boolean } = {},
 ): Promise<ShellResult> {
   const started = Date.now();
   const root = opts.cwd ?? process.cwd();
   const sandbox = opts.sandbox ?? true; // agent commands sandbox by policy; `!cmd` opts out (user is the principal)
-  const r = await shellSession(root, sandbox).run(command, {
+  const r = await shellSession(root, sandbox, opts.sandboxNetwork).run(command, {
     timeoutMs: opts.timeoutMs ?? 60_000,
     signal: opts.signal,
     onChunk: opts.onChunk,
   });
   // A dead session (e.g. after a timeout kill) is dropped so the next call starts fresh.
-  if (r.timedOut) sessions.delete(sessionKey(root, sandboxPolicyFor(root, sandbox)));
+  if (r.timedOut) sessions.delete(sessionKey(root, sandboxPolicyFor(root, sandbox, opts.sandboxNetwork)));
   return {
     ok: r.ok,
     output: clip(r.output || "(no output)"),
