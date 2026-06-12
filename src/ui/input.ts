@@ -185,6 +185,16 @@ export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boole
   }
   // Newline: modifier+Enter or ⌃J. Checked before plain Enter (submit).
   if ((key.return && (key.shift || key.meta)) || (key.ctrl && input === "j")) return insert(s, NL);
+  // Terminals with modifyOtherKeys / kitty keyboard protocol send modified
+  // Enter as a CSI sequence Ink can't parse — it arrives here as literal input
+  // text ("[27;2;13~" after Ink consumed the ESC, possibly repeated when keys
+  // were buffered) and was being TYPED into the composer (user-reported).
+  // xterm form: CSI 27;<mod>;13~ · kitty form: CSI 13;<mod>u. Any modified
+  // Enter means newline; swallow every repeat in the chunk.
+  if (/^(?:\x1b?\[(?:27;\d+;13~|13;\d+u))+$/.test(input)) {
+    const count = (input.match(/27;\d+;13~|13;\d+u/g) ?? []).length;
+    return insert(s, NL.repeat(Math.max(1, count)));
+  }
   // Backslash-Enter = newline (the Claude Code convention). Most terminals send
   // a bare CR for shift+enter — Ink never sees `shift` — so the modifier path
   // above only fires under the kitty keyboard protocol. A `\` immediately

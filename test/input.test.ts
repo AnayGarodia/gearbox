@@ -212,3 +212,17 @@ test("double backslash + enter submits with one literal backslash", () => {
   expect(a.type).toBe("submit");
   if (a.type === "submit") expect(a.value).toBe("the path is C:\\temp\\");
 });
+
+// modifyOtherKeys / kitty-protocol modified Enter: Ink can't parse the CSI
+// sequence and hands it over as literal input text (user saw "[27;2;13~"
+// typed into the composer). Any modified-Enter sequence is a newline.
+test("modified-Enter CSI sequences insert newlines instead of literal text", () => {
+  // xterm modifyOtherKeys shift+enter, ESC stripped by Ink
+  expect(applyKey({ value: "ab", cursor: 2 }, "[27;2;13~", K())).toEqual({ type: "edit", state: { value: "ab\n", cursor: 3 } });
+  // with the ESC still attached
+  expect(applyKey({ value: "", cursor: 0 }, "\x1b[27;2;13~", K())).toEqual({ type: "edit", state: { value: "\n", cursor: 1 } });
+  // kitty CSI-u form, ctrl modifier
+  expect(applyKey({ value: "", cursor: 0 }, "[13;5u", K())).toEqual({ type: "edit", state: { value: "\n", cursor: 1 } });
+  // buffered repeats collapse to that many newlines, not garbage
+  expect(applyKey({ value: "", cursor: 0 }, "[27;2;13~[27;2;13~[27;2;13~", K())).toEqual({ type: "edit", state: { value: "\n\n\n", cursor: 3 } });
+});
