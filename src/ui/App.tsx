@@ -73,7 +73,7 @@ import { missingRequirements, capabilitySummary, type ModelRequirement } from ".
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { resolveSandboxPolicy, sandboxAvailable } from "../sandbox/index.ts";
+import { resolveSandboxPolicy, sandboxBackendAvailable } from "../sandbox/index.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, reloadMcpConnections, removeMcpServer, shellSplit } from "../mcp.ts";
@@ -536,8 +536,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Effective OS-sandbox mode for the status chip. Availability is folded in
   // (darwin without sandbox-exec honestly reads "off"); sbxAvail distinguishes
   // "off by choice" (warn chip) from "no backend on this platform" (no chip).
-  const sbxAvail = sandboxAvailable();
-  const [sandboxMode, setSandboxMode] = useState(() => (sandboxAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, rootRef.current).mode : "off" as const));
+  const sbxAvail = sandboxBackendAvailable();
+  const [sandboxMode, setSandboxMode] = useState(() => (sandboxBackendAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, rootRef.current).mode : "off" as const));
   const charTestOfferedRef = useRef(false); // characterization-test offer: once per session
   const autofixFpRef = useRef<string | undefined>(undefined); // last auto-fix attempt's failure fingerprint (same-failure early stop)
   const lastChangedFilesRef = useRef<string[]>([]); // most recent edited-turn file list (/verify test targets these)

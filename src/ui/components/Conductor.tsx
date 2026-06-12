@@ -140,7 +140,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
       // Repo-local ignore for the nest dir (info/exclude, shared by all
       // worktrees): without it, a repo that doesn't ignore .gearbox/ lets the
       // base tab's `git add -A` / checkpoints sweep the nested worktrees.
-      ensureExcluded(".gearbox/", root);
+      ensureExcluded(".gearbox/tabs/", root); // tabs ONLY — .gearbox/ also holds committable project config (permissions.json, mcp.json, plugins/)
       const r = worktreeAdd(wtDir, `tab/${slug}`, root);
       if (r.ok) dir = wtDir;
       // Closing a tab never deletes its worktree, so a reused name finds the

@@ -88,3 +88,13 @@ describe("looksLikeSandboxDenial", () => {
     expect(looksLikeSandboxDenial("error TS2304: Cannot find name 'x'", 2).denied).toBe(false);
   });
 });
+
+import { sandboxBackendAvailable } from "../src/sandbox/index.ts";
+
+test("sandboxBackendAvailable dispatches per platform (UI surfaces share ONE check)", () => {
+  // win32 has no backend; darwin/linux answers depend on the host binaries —
+  // the contract under test is the dispatch itself, not the host setup.
+  expect(sandboxBackendAvailable("win32")).toBe(false);
+  expect(typeof sandboxBackendAvailable("darwin")).toBe("boolean");
+  expect(typeof sandboxBackendAvailable("linux")).toBe("boolean");
+});

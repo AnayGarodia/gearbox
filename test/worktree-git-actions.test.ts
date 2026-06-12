@@ -20,19 +20,24 @@ function makeRepo(): string {
 }
 
 describe("tab worktree git actions", () => {
-  test("ensureExcluded hides .gearbox/ from the base tree; idempotent", () => {
+  test("ensureExcluded hides .gearbox/tabs/ from the base tree; idempotent", () => {
     const repo = makeRepo();
     try {
-      expect(ensureExcluded(".gearbox/", repo)).toBe(true);
-      expect(ensureExcluded(".gearbox/", repo)).toBe(true); // no duplicate line
+      expect(ensureExcluded(".gearbox/tabs/", repo)).toBe(true);
+      expect(ensureExcluded(".gearbox/tabs/", repo)).toBe(true); // no duplicate line
       const excl = readFileSync(join(repo, ".git", "info", "exclude"), "utf8");
-      expect(excl.split("\n").filter((l) => l.trim() === ".gearbox/")).toHaveLength(1);
+      expect(excl.split("\n").filter((l) => l.trim() === ".gearbox/tabs/")).toHaveLength(1);
 
       // Nest a tab-style worktree, then dirty it — the BASE tree must stay clean.
       const wt = join(repo, ".gearbox", "tabs", "wizard");
       expect(worktreeAdd(wt, "tab/wizard", repo).ok).toBe(true);
       writeFileSync(join(wt, "tab-work.txt"), "wip\n");
       expect(status(repo)).toEqual([]); // nothing untracked leaks into the base
+
+      // Committable project config OUTSIDE tabs/ must stay VISIBLE to git —
+      // excluding all of .gearbox/ hid permissions.json/mcp.json (review).
+      writeFileSync(join(repo, ".gearbox", "permissions.json"), "{}\n");
+      expect(status(repo).some((e) => e.path.startsWith(".gearbox/"))).toBe(true);
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
@@ -41,7 +46,7 @@ describe("tab worktree git actions", () => {
   test("commit on the tab branch from inside the worktree; base branch untouched", () => {
     const repo = makeRepo();
     try {
-      ensureExcluded(".gearbox/", repo);
+      ensureExcluded(".gearbox/tabs/", repo);
       const wt = join(repo, ".gearbox", "tabs", "skater");
       expect(worktreeAdd(wt, "tab/skater", repo).ok).toBe(true);
       expect(currentBranch(wt)).toBe("tab/skater");

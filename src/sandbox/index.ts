@@ -2,8 +2,8 @@
 // seatbelt.ts is the macOS backend, bwrap.ts the Linux one. wrapWithSandbox
 // here is the platform dispatcher — callers never pick a backend.
 import type { SandboxPolicy } from "./policy.ts";
-import { wrapWithSandbox as wrapWithSeatbelt } from "./seatbelt.ts";
-import { wrapWithBwrap } from "./bwrap.ts";
+import { wrapWithSandbox as wrapWithSeatbelt, sandboxAvailable as seatbeltAvailable } from "./seatbelt.ts";
+import { wrapWithBwrap, bwrapAvailable } from "./bwrap.ts";
 
 export type { SandboxMode, SandboxPolicy, SandboxPrefs } from "./policy.ts";
 export { resolveSandboxPolicy, parseSandboxMode, looksLikeSandboxDenial, gitDirWritePaths, baseWritePaths } from "./policy.ts";
@@ -15,6 +15,17 @@ export { wrapWithBwrap, generateBwrapArgs, bwrapAvailable } from "./bwrap.ts";
  * when the policy is off or the platform lacks a backend — callers can use it
  * unconditionally.
  */
+/**
+ * Does THIS platform have a working sandbox backend? The one availability
+ * check every UI surface (status chip, /sandbox status, mode toggles) must
+ * share — seatbelt's darwin-only check lied on Linux+bwrap (review).
+ */
+export function sandboxBackendAvailable(platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === "darwin") return seatbeltAvailable(platform);
+  if (platform === "linux") return bwrapAvailable(platform);
+  return false;
+}
+
 export function wrapWithSandbox(
   argv: string[],
   policy: SandboxPolicy,

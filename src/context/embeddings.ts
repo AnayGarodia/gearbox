@@ -8,8 +8,10 @@
 //   · The index builds in the BACKGROUND (refreshEmbeddingsIndex, fired from
 //     App once per session) and is incremental: only new/changed files (by
 //     content hash) are re-embedded. Cost is tiny (a repo of 2 000 files ≈
-//     $0.04 once on text-embedding-3-small, $0 on Google) but real, so the
-//     pref gate (prefs.embeddings === false) turns the whole layer off.
+//     $0.04 once on text-embedding-3-small, $0 on Google) but real, and the
+//     build SENDS FILE CONTENTS to the embedding provider — so the layer is
+//     OPT-IN (prefs.embeddings === true via /config embeddings on; review).
+//     Every embedding call records through the ledger's single spend writer.
 //   · Pure math (cosine, blending) is exported separately for fixture tests.
 //
 // Index file: ~/.gearbox/embeddings/<repo-slug>.json
@@ -20,6 +22,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { embedMany, embed } from "ai";
 import { embeddingModelFor } from "../providers.ts";
+import { recordSpend } from "../accounts/ledger.ts";
 import { listProjectFiles } from "../ui/files.ts";
 
 const CODE = /\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs|java|rb|c|h|cpp|hpp)$/;
@@ -34,6 +37,25 @@ interface IndexFile {
 }
 
 const sha = (s: string) => createHash("sha1").update(s).digest("hex").slice(0, 16);
+
+/** Spend truth: embedding tokens flow through the SAME single writer as every
+ *  other dollar (ledger invariant) — /usage, /cost and /cap stay honest. */
+function recordEmbedSpend(backend: { provider: string; modelId: string; usdPerMtok: number }, tokens: number): void {
+  try {
+    recordSpend({
+      accountId: `env:${backend.provider}`,
+      model: backend.modelId,
+      source: "aux",
+      inputTokens: tokens,
+      outputTokens: 0,
+      costUSD: (tokens / 1_000_000) * backend.usdPerMtok,
+      estimated: false,
+      at: Date.now(),
+    });
+  } catch {
+    /* spend recording must never break retrieval */
+  }
+}
 
 function home(): string {
   return process.env.GEARBOX_HOME || join(homedir(), ".gearbox");
@@ -108,7 +130,8 @@ export async function refreshEmbeddingsIndex(
   opts: { prefs?: { embeddings?: boolean }; maxFiles?: number } = {},
 ): Promise<{ embedded: number; total: number; note?: string }> {
   try {
-    if (opts.prefs?.embeddings === false) return { embedded: 0, total: 0, note: "embeddings off (prefs)" };
+    // OPT-IN: building the index uploads file heads to the embedding provider.
+    if (opts.prefs?.embeddings !== true) return { embedded: 0, total: 0, note: "embeddings off — /config embeddings on to enable" };
     const backend = embeddingModelFor();
     if (!backend) return { embedded: 0, total: 0, note: "no embedding-capable provider configured" };
 
@@ -136,7 +159,8 @@ export async function refreshEmbeddingsIndex(
     const todo = [...want.entries()];
     for (let i = 0; i < todo.length; i += BATCH) {
       const batch = todo.slice(i, i + BATCH);
-      const { embeddings } = await embedMany({ model: backend.model, values: batch.map(([, v]) => v.text) });
+      const { embeddings, usage } = await embedMany({ model: backend.model, values: batch.map(([, v]) => v.text) });
+      recordEmbedSpend(backend, usage?.tokens ?? batch.reduce((a, [, v]) => a + Math.ceil(v.text.length / 4), 0));
       batch.forEach(([f, v], j) => {
         const vec = embeddings[j];
         if (vec) idx.files[f] = { hash: v.hash, vec: [...vec] };
@@ -166,7 +190,7 @@ export async function semanticScores(
   opts: { timeoutMs?: number; prefs?: { embeddings?: boolean } } = {},
 ): Promise<Map<string, number> | null> {
   try {
-    if (opts.prefs?.embeddings === false) return null;
+    if (opts.prefs?.embeddings !== true) return null; // opt-in, same gate as the index build
     if (lastQuery && lastQuery.query === query && lastQuery.cwd === cwd) return lastQuery.result;
     const idx = loadIndex(cwd);
     if (!idx || Object.keys(idx.files).length === 0) return null;
@@ -175,7 +199,10 @@ export async function semanticScores(
 
     const timeoutMs = opts.timeoutMs ?? 800;
     const q = await Promise.race([
-      embed({ model: backend.model, value: query.slice(0, HEAD_CHARS) }).then((r) => r.embedding),
+      embed({ model: backend.model, value: query.slice(0, HEAD_CHARS) }).then((r) => {
+        recordEmbedSpend(backend, r.usage?.tokens ?? Math.ceil(Math.min(query.length, HEAD_CHARS) / 4));
+        return r.embedding;
+      }),
       new Promise<null>((res) => setTimeout(() => res(null), timeoutMs)),
     ]);
     const result = q ? scoreAgainstIndex([...q], idx) : null;
