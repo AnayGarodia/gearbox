@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { Cache } from "../src/cache.ts";
 
 // Trap: the spec requires contradictory behaviour — re-set must both evict
