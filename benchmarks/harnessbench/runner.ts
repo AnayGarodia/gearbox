@@ -5,8 +5,8 @@
 // Deliberately imports nothing from gearbox src — a benchmark must not share
 // code with a contestant.
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
@@ -320,6 +320,14 @@ export interface RunOpts {
 export async function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: HarnessSpec, trial: number, opts: RunOpts = {}): Promise<RunRow> {
   const work = mkdtempSync(join(tmpdir(), `hbench-${task.id}-`));
   const home = mkdtempSync(join(tmpdir(), `hbench-home-`)); // isolated per run: no priors/spend leakage
+  // Seed accounts so the harness can authenticate. We copy the real accounts.json
+  // into the isolated GEARBOX_HOME — secrets stay in the OS keychain (unaffected
+  // by HOME isolation) so a plain file copy is sufficient.
+  const realGearboxHome = process.env.GEARBOX_HOME ?? join(homedir(), ".gearbox");
+  const realAccountsPath = join(realGearboxHome, "accounts.json");
+  if (existsSync(realAccountsPath)) {
+    copyFileSync(realAccountsPath, join(home, "accounts.json"));
+  }
   try {
     cpSync(join(taskDir, "repo"), work, { recursive: true });
     await sh(["git", "init", "-qb", "main"], work);
