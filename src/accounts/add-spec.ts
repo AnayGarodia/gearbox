@@ -97,10 +97,20 @@ function subscriptionSpec(id: string, label: string, summary: string): AddSpec {
     group: "subscription",
     signupUrl: catalogProvider(`${word}-cli`)?.signupUrl,
     paletteCommand: `/account add ${word}`,
-    fields: [],
-    // Subscriptions sign in via the vendor CLI; the App key-handler routes them to
-    // signInCli before calling build(). This is only a safety fallback.
-    build: async () => ({ ok: false, message: `use /account add ${word} to sign in` }),
+    fields: [
+      {
+        key: "name",
+        label: "Nickname (optional)",
+        placeholder: "e.g. work · max — leave empty for one account",
+        hint: "Give a nickname when adding a second account on a different email",
+        required: false,
+        validate: () => null,
+      },
+    ],
+    // Subscriptions sign in via the vendor CLI; the App key-handler intercepts
+    // the field-complete phase and dispatches /account add <word> [name] instead
+    // of calling build(). This is only a safety fallback.
+    build: async (f) => ({ ok: false, message: `use /account add ${word}${f.name ? ` ${f.name}` : ""} to sign in` }),
   };
 }
 

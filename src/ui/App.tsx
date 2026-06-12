@@ -3893,8 +3893,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const s = specs[clampIndex(ph.index, specs.length)];
             if (s) {
               if (s.group === "subscription") {
-                setPanel(null);
-                handleCommand(`/account add ${s.id.replace("-subscription", "")}`);
+                // Go through field phase so the user can supply a nickname
+                // (needed when adding a second account on a different email).
+                setPanel(wizardPickConfirm(p, s.id));
               } else if (!s.fields.length) {
                 setPanel(null);
                 handleCommand(s.paletteCommand);
@@ -3924,10 +3925,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (wizardIsComplete(next, wSpec)) {
             const filledPhase = next.wizardPhase as Extract<typeof next.wizardPhase, { phase: "field" }>;
             setPanel(null);
-            void wSpec.build(filledPhase.filled).then((res: AddResult) => {
-              if (res.ok && res.account) void handleAddResult(res.account, res.message);
-              else notice(buildAddGuidance(wSpec.id, res.message));
-            });
+            if (wSpec.group === "subscription") {
+              // Subscriptions sign in via the vendor CLI — dispatch the command
+              // with the optional nickname so a second account gets its own profile.
+              const name = (filledPhase.filled.name ?? "").trim();
+              handleCommand(`/account add ${wSpec.id.replace("-subscription", "")}${name ? ` ${name}` : ""}`);
+            } else {
+              void wSpec.build(filledPhase.filled).then((res: AddResult) => {
+                if (res.ok && res.account) void handleAddResult(res.account, res.message);
+                else notice(buildAddGuidance(wSpec.id, res.message));
+              });
+            }
           } else {
             setPanel(next);
           }
