@@ -44,6 +44,11 @@ export interface Task {
   // re-running the same too-weak one. 0 (the default) is the normal path;
   // FixedSelector ignores this field entirely.
   escalate?: number;
+  // The caller cannot dispatch vendor-CLI subscription seats (e.g. the ACP
+  // server, which has no seat machinery): restrict candidates to in-loop
+  // (model, account) pairs so a ~free seat never wins a turn the caller
+  // would then silently re-run against a metered API key.
+  inLoopOnly?: boolean;
   // Latency class: true when the user is WAITING on this turn (a foreground
   // request), so the router pulls faster models forward among bar-clearing
   // candidates (done > fast > cheap when waiting). Omit for background work

@@ -197,8 +197,12 @@ export function eventToUpdates(e: AgentEvent, state: EventMapState): SessionUpda
         },
       ];
     }
+    case "error":
+      // No dedicated ACP slot — surface as prose so the editor shows WHY the
+      // turn degraded instead of going silent (ACP has no failover hop-loop).
+      return e.message ? [{ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n⚠ ${e.message}` } }] : [];
     default:
-      return []; // phase, model-pick, file-change, preference-suggestion, done, error: no ACP slot
+      return []; // phase, model-pick, file-change, preference-suggestion, done: no ACP slot
   }
 }
 

@@ -25,7 +25,6 @@ import { newSessionId, saveSession, loadSession, type Session } from "../session
 import { clientFsTools, type ClientFsCaps } from "./client-fs.ts";
 import type { ModelMessage } from "ai";
 import {
-  ACP_PROTOCOL_VERSION,
   PERMISSION_OPTIONS,
   decodeLines,
   encodeMessage,
@@ -61,10 +60,13 @@ export type TurnRunner = (opts: {
 
 const defaultRunner: TurnRunner = async ({ prompt, history, cwd, signal, onEvent, extraTools }) => {
   let choice;
+  // inLoopOnly: the ACP server has no seat (vendor-CLI) dispatch machinery, so
+  // a ~free subscription seat must never win the pick — it would silently be
+  // re-run against a metered API key (wrong economics, wrong account).
   try {
-    choice = new RoutingSelector().select({ prompt, requires: ["tools"] });
+    choice = new RoutingSelector().select({ prompt, requires: ["tools"], inLoopOnly: true });
   } catch {
-    choice = new RoutingSelector().select({ prompt });
+    choice = new RoutingSelector().select({ prompt, inLoopOnly: true });
   }
   const acct = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
   const creds = acct ? await resolveCreds(acct) : undefined;
@@ -102,6 +104,7 @@ export class AcpServer {
   private sessions = new Map<string, AcpSession>();
   private buffer = "";
   private nextOutboundId = 1;
+  private permSeq = 0;
   private pending = new Map<string | number, (msg: RpcMessage) => void>();
   private initialized = false;
   private fsCaps: ClientFsCaps = {};
@@ -109,36 +112,49 @@ export class AcpServer {
   constructor(
     private write: (line: string) => void,
     private runner: TurnRunner = defaultRunner,
+    private opts: { requestTimeoutMs?: number } = {},
   ) {
     // Route gearbox permission prompts to the editor. One client per process,
     // so the global handler slot is exactly right.
     setPermissionHandler(async (req: PermRequest) => {
-      const session = this.sessionForRoot(req.root) ?? [...this.sessions.values()].at(-1);
+      const session = this.sessionFor(req.root);
       if (!session) return "deny"; // a request outside any session has no one to ask
-      const result = await this.request("session/request_permission", {
-        sessionId: session.id,
-        toolCall: {
-          toolCallId: `perm-${this.nextOutboundId}`,
-          title: `${req.title}: ${req.detail}`,
-          kind: req.kind === "shell" ? "execute" : "edit",
-          status: "pending",
-          rawInput: { detail: req.detail },
-        },
-        options: PERMISSION_OPTIONS,
-      });
-      return outcomeToDecision(result?.outcome);
+      try {
+        const result = await this.request("session/request_permission", {
+          sessionId: session.id,
+          toolCall: {
+            toolCallId: `perm-${++this.permSeq}`,
+            title: `${req.title}: ${req.detail}`,
+            kind: req.kind === "shell" ? "execute" : "edit",
+            status: "pending",
+            rawInput: { detail: req.detail },
+          },
+          options: PERMISSION_OPTIONS,
+        });
+        return outcomeToDecision(result?.outcome);
+      } catch {
+        return "deny"; // client never answered (timeout) — an unanswered escalation is a refusal
+      }
     });
   }
 
-  private sessionForRoot(root?: string): AcpSession | undefined {
-    if (!root) return undefined;
-    return [...this.sessions.values()].find((s) => s.cwd === root);
+  /** Resolve which session a permission request belongs to. Root-stamped
+   *  requests match on cwd (preferring the one mid-turn — two editor windows
+   *  can share a project); rootless requests (MCP tools) belong to the
+   *  session whose turn is running. No running turn + no root match → nobody
+   *  to ask, and the caller denies. */
+  private sessionFor(root?: string): AcpSession | undefined {
+    const all = [...this.sessions.values()];
+    const pool = root ? all.filter((s) => s.cwd === root) : all;
+    return pool.filter((s) => s.abort).at(-1) ?? (root ? pool.at(-1) : undefined);
   }
 
   /** Feed raw stdin bytes; complete lines are dispatched in arrival order. */
   async feed(chunk: string): Promise<void> {
     const { messages, rest } = decodeLines(this.buffer + chunk);
-    this.buffer = rest;
+    // A peer streaming bytes with no newline must not grow the buffer without
+    // bound. ACP frames are single lines; 8MB is far past any real frame.
+    this.buffer = rest.length > 8_000_000 ? "" : rest;
     for (const msg of messages) {
       if ("parseError" in msg) {
         this.write(encodeMessage({ jsonrpc: "2.0", id: null as any, error: { code: -32700, message: "parse error" } }));
@@ -152,11 +168,20 @@ export class AcpServer {
     this.write(encodeMessage({ jsonrpc: "2.0", method, params }));
   }
 
-  /** Agent → client request (permissions). Resolves with the client's response. */
-  private request(method: string, params: unknown): Promise<any> {
+  /** Agent → client request (permissions, editor fs). Resolves with the
+   *  client's response; REJECTS after `timeoutMs` so a client that never
+   *  answers can't park a turn (and its model call) forever. */
+  private request(method: string, params: unknown, timeoutMs = this.opts.requestTimeoutMs ?? 600_000): Promise<any> {
     const id = `gbx-${this.nextOutboundId++}`;
-    return new Promise((resolve) => {
-      this.pending.set(id, (msg) => resolve(msg.result));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`client did not answer ${method} within ${Math.round(timeoutMs / 1000)}s`));
+      }, timeoutMs);
+      this.pending.set(id, (msg) => {
+        clearTimeout(timer);
+        resolve(msg.result);
+      });
       this.write(encodeMessage({ jsonrpc: "2.0", id, method, params }));
     });
   }
@@ -180,6 +205,12 @@ export class AcpServer {
       return;
     }
     const id = msg.id;
+    // Everything but initialize requires the handshake first (notifications
+    // are silently ignored — there is no id to answer on).
+    if (!this.initialized && msg.method !== "initialize") {
+      if (id !== undefined) this.fail(id, -32002, "agent not initialized: send initialize first");
+      return;
+    }
     try {
       switch (msg.method) {
         case "initialize": {
@@ -204,6 +235,10 @@ export class AcpServer {
         case "session/load": {
           const cwd: string = msg.params?.cwd || process.cwd();
           const sid: string = msg.params?.sessionId ?? "";
+          // The suffix feeds a filesystem join — validate the exact shape we
+          // mint (newSessionId: "s" + base36) so a hostile client id can never
+          // traverse out of the sessions dir.
+          if (!/^gbx-sess-s[a-z0-9]+$/.test(sid)) return this.fail(id!, -32602, `unknown session: ${sid}`);
           const record = loadSession(sid.replace(/^gbx-sess-/, ""), cwd);
           if (!record) return this.fail(id!, -32602, `unknown session: ${sid}`);
           this.sessions.set(sid, { id: sid, cwd, messages: record.messages, abort: null, record });
@@ -215,37 +250,18 @@ export class AcpServer {
         case "session/prompt": {
           const session = this.sessions.get(msg.params?.sessionId);
           if (!session) return this.fail(id!, -32602, `unknown session: ${msg.params?.sessionId}`);
+          // One turn per session at a time (the ACP contract). A second prompt
+          // mid-turn would clobber the abort controller and race the history.
+          if (session.abort) return this.fail(id!, -32600, "a prompt is already running for this session");
           const prompt = promptText((msg.params?.prompt ?? []) as ContentBlock[]);
           if (!prompt) return this.respond(id!, { stopReason: "end_turn" });
-          const abort = new AbortController();
-          session.abort = abort;
-          const mapState = newEventMapState();
-          const onEvent = (e: AgentEvent) => {
-            for (const update of eventToUpdates(e, mapState)) this.notify("session/update", { sessionId: session.id, update });
-          };
-          // Editor-buffer fs: when the client advertises fs methods, reads see
-          // unsaved buffers and writes land in the open tab.
-          const fsTools = clientFsTools({ sessionId: session.id, cwd: session.cwd, caps: this.fsCaps, request: (m, p) => this.request(m, p) });
-          const extraTools = Object.keys(fsTools).length ? fsTools : undefined;
-          try {
-            const r = await this.runner({ prompt, history: session.messages, cwd: session.cwd, signal: abort.signal, onEvent, extraTools });
-            session.messages = r.messages;
-            this.persist(session, prompt);
-            if (abort.signal.aborted) return this.respond(id!, { stopReason: "cancelled" });
-            if (r.failure) {
-              // Surface the failure as prose (editors render it inline), then
-              // end the turn as a refusal rather than a JSON-RPC error — the
-              // protocol reserves errors for protocol-level problems.
-              this.notify("session/update", {
-                sessionId: session.id,
-                update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n${r.failure.message}` } },
-              });
-              return this.respond(id!, { stopReason: "refusal" });
-            }
-            return this.respond(id!, { stopReason: "end_turn" });
-          } finally {
-            session.abort = null;
-          }
+          // DELIBERATELY NOT AWAITED: the stdio read loop awaits dispatch, and
+          // this turn cannot finish until the client's permission / editor-fs
+          // RESPONSES arrive on that same loop. Awaiting here would deadlock
+          // the first write in a real editor and make session/cancel
+          // unreachable. runPrompt answers `id` itself and never throws.
+          void this.runPrompt(session, id!, prompt);
+          return;
         }
         case "session/cancel": {
           const session = this.sessions.get(msg.params?.sessionId);
@@ -257,6 +273,43 @@ export class AcpServer {
       }
     } catch (e: any) {
       if (id !== undefined) this.fail(id, -32603, e?.message ?? String(e));
+    }
+  }
+
+  /** The body of a session/prompt turn. Owns answering `id` (including on
+   *  throw) — the dispatcher fire-and-forgets this so the read loop stays
+   *  free to deliver permission responses and session/cancel mid-turn. */
+  private async runPrompt(session: AcpSession, id: string | number, prompt: string): Promise<void> {
+    const abort = new AbortController();
+    session.abort = abort;
+    const mapState = newEventMapState();
+    const onEvent = (e: AgentEvent) => {
+      for (const update of eventToUpdates(e, mapState)) this.notify("session/update", { sessionId: session.id, update });
+    };
+    // Editor-buffer fs: when the client advertises fs methods, reads see
+    // unsaved buffers and writes land in the open tab.
+    const fsTools = clientFsTools({ sessionId: session.id, cwd: session.cwd, caps: this.fsCaps, request: (m, p) => this.request(m, p) });
+    const extraTools = Object.keys(fsTools).length ? fsTools : undefined;
+    try {
+      const r = await this.runner({ prompt, history: session.messages, cwd: session.cwd, signal: abort.signal, onEvent, extraTools });
+      session.messages = r.messages;
+      this.persist(session, prompt);
+      if (abort.signal.aborted) return this.respond(id, { stopReason: "cancelled" });
+      if (r.failure) {
+        // Surface the failure as prose (editors render it inline), then
+        // end the turn as a refusal rather than a JSON-RPC error — the
+        // protocol reserves errors for protocol-level problems.
+        this.notify("session/update", {
+          sessionId: session.id,
+          update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `\n${r.failure.message}` } },
+        });
+        return this.respond(id, { stopReason: "refusal" });
+      }
+      return this.respond(id, { stopReason: "end_turn" });
+    } catch (e: any) {
+      this.fail(id, -32603, e?.message ?? String(e));
+    } finally {
+      session.abort = null;
     }
   }
 

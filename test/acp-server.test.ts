@@ -6,11 +6,23 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { AcpServer, type TurnRunner } from "../src/acp/server.ts";
 import { requestPermission, resetPermissions, setPermissionHandler } from "../src/permission.ts";
 
-function makeServer(runner: TurnRunner) {
+function makeServer(runner: TurnRunner, opts: { requestTimeoutMs?: number } = {}) {
   const out: any[] = [];
-  const server = new AcpServer((line) => out.push(JSON.parse(line)), runner);
+  const server = new AcpServer((line) => out.push(JSON.parse(line)), runner, opts);
   const send = (msg: any) => server.feed(JSON.stringify(msg) + "\n");
   return { out, send };
+}
+
+/** Wait for a message matching `pred` — session/prompt responses arrive
+ *  asynchronously now that the dispatcher doesn't block the read loop on a turn. */
+async function waitFor(out: any[], pred: (m: any) => boolean, ms = 2000): Promise<any> {
+  const t0 = Date.now();
+  for (;;) {
+    const m = out.find(pred);
+    if (m) return m;
+    if (Date.now() - t0 > ms) throw new Error("waitFor timeout");
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 
 const init = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1, clientCapabilities: {} } };
@@ -37,6 +49,7 @@ describe("AcpServer", () => {
     const sessionId = out[1].result.sessionId;
     expect(sessionId).toMatch(/^gbx-sess-/);
     await send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "hi" }] } });
+    await waitFor(out, (m) => m.id === 3 && m.result);
 
     const updates = out.filter((m) => m.method === "session/update").map((m) => m.params.update);
     expect(updates.some((u) => u.sessionUpdate === "agent_message_chunk" && u.content.text === "hello ")).toBe(true);
@@ -57,7 +70,9 @@ describe("AcpServer", () => {
     await send(newSession);
     const sessionId = out[1].result.sessionId;
     await send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "one" }] } });
+    await waitFor(out, (m) => m.id === 3 && m.result);
     await send({ jsonrpc: "2.0", id: 4, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "two" }] } });
+    await waitFor(out, (m) => m.id === 4 && m.result);
     expect(seen).toEqual([0, 2]); // second prompt sees the first turn's two messages
   });
 
@@ -68,7 +83,7 @@ describe("AcpServer", () => {
     await send(newSession);
     const sessionId = out[1].result.sessionId;
     await send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "x" }] } });
-    const final = out.find((m) => m.id === 3);
+    const final = await waitFor(out, (m) => m.id === 3);
     expect(final.result).toEqual({ stopReason: "refusal" });
     expect(final.error).toBeUndefined();
     const updates = out.filter((m) => m.method === "session/update").map((m) => m.params.update);
@@ -87,11 +102,12 @@ describe("AcpServer", () => {
     await send(init);
     await send(newSession);
     const sessionId = out[1].result.sessionId;
-    const promptDone = send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "x" }] } });
+    // Both frames go through the read loop in order — the prompt dispatch must
+    // NOT block it, or cancel could never arrive (the production deadlock).
+    await send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "x" }] } });
     await send({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } });
     release!();
-    await promptDone;
-    const final = out.find((m) => m.id === 3);
+    const final = await waitFor(out, (m) => m.id === 3);
     expect(final.result).toEqual({ stopReason: "cancelled" });
   });
 
@@ -106,29 +122,62 @@ describe("AcpServer", () => {
     await send(init);
     await send(newSession);
     const sessionId = out[1].result.sessionId;
-    const promptDone = send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "x" }] } });
+    await send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "x" }] } });
 
-    // Wait for the outbound permission request to appear, then answer "deny".
-    let req: any;
-    for (let i = 0; i < 50 && !req; i++) {
-      req = out.find((m) => m.method === "session/request_permission");
-      if (!req) await new Promise((r) => setTimeout(r, 10));
-    }
+    // Wait for the outbound permission request to appear, then answer "deny"
+    // THROUGH THE READ LOOP — exactly the round-trip that used to deadlock.
+    const req = await waitFor(out, (m) => m.method === "session/request_permission");
     expect(req.params.sessionId).toBe(sessionId);
     expect(req.params.options.map((o: any) => o.kind)).toEqual(["allow_once", "allow_always", "reject_once"]);
     await send({ jsonrpc: "2.0", id: req.id, result: { outcome: { outcome: "selected", optionId: "deny" } } });
-    await promptDone;
-    const final = out.find((m) => m.id === 3);
+    const final = await waitFor(out, (m) => m.id === 3);
     expect(final.result.stopReason).toBe("end_turn");
   });
 
-  test("unknown method → -32601; malformed line → -32700; unknown session → -32602", async () => {
+  test("uninitialized → -32002; unknown method → -32601; unknown session → -32602", async () => {
     const { out, send } = makeServer(async () => ({ messages: [] }));
+    await send({ jsonrpc: "2.0", id: 8, method: "session/new", params: { cwd: "/tmp" } });
+    expect(out.find((m) => m.id === 8).error.code).toBe(-32002); // handshake required first
+    await send(init);
     await send({ jsonrpc: "2.0", id: 9, method: "bogus/method" });
     expect(out.find((m) => m.id === 9).error.code).toBe(-32601);
-    const server2 = makeServer(async () => ({ messages: [] }));
-    await server2.send({ jsonrpc: "2.0", id: 10, method: "session/prompt", params: { sessionId: "nope", prompt: [] } });
-    expect(server2.out.find((m) => m.id === 10).error.code).toBe(-32602);
+    await send({ jsonrpc: "2.0", id: 10, method: "session/prompt", params: { sessionId: "nope", prompt: [] } });
+    expect(out.find((m) => m.id === 10).error.code).toBe(-32602);
+  });
+
+  test("a second prompt mid-turn is rejected (one turn per session)", async () => {
+    let release: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const runner: TurnRunner = async () => {
+      await gate;
+      return { messages: [] };
+    };
+    const { out, send } = makeServer(runner);
+    await send(init);
+    await send(newSession);
+    const sessionId = out[1].result.sessionId;
+    await send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "x" }] } });
+    await send({ jsonrpc: "2.0", id: 4, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "y" }] } });
+    expect(out.find((m) => m.id === 4).error.code).toBe(-32600); // rejected, didn't clobber turn 1
+    release!();
+    const final = await waitFor(out, (m) => m.id === 3);
+    expect(final.result).toEqual({ stopReason: "end_turn" });
+  });
+
+  test("an unanswered permission request times out → deny (turn ends, no eternal park)", async () => {
+    const runner: TurnRunner = async ({ cwd }) => {
+      const allowed = await requestPermission({ kind: "shell", title: "t", detail: "rm x", root: cwd });
+      return { messages: [{ role: "assistant", content: allowed ? "ran" : "declined" }] as any };
+    };
+    const { out, send } = makeServer(runner, { requestTimeoutMs: 50 });
+    await send(init);
+    await send(newSession);
+    const sessionId = out[1].result.sessionId;
+    await send({ jsonrpc: "2.0", id: 3, method: "session/prompt", params: { sessionId, prompt: [{ type: "text", text: "x" }] } });
+    await waitFor(out, (m) => m.method === "session/request_permission");
+    // ... and the client never answers.
+    const final = await waitFor(out, (m) => m.id === 3);
+    expect(final.result.stopReason).toBe("end_turn"); // turn completed with the tool denied
   });
 });
 
@@ -216,8 +265,20 @@ describe("client fs + session/load", () => {
   test("session/load with an unknown id fails with -32602", async () => {
     const { out, send } = makeServer(async () => ({ messages: [] }));
     await send(init);
-    await send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId: "gbx-sess-nope", cwd: "/tmp" } });
+    await send({ jsonrpc: "2.0", id: 2, method: "session/load", params: { sessionId: "gbx-sess-snope9", cwd: "/tmp" } });
     expect(out.find((m) => m.id === 2).error.code).toBe(-32602);
+  });
+
+  test("session/load rejects ids that don't match the minted shape (path traversal)", async () => {
+    const { out, send } = makeServer(async () => ({ messages: [] }));
+    await send(init);
+    let n = 100;
+    for (const sid of ["gbx-sess-../../../../etc/passwd", "gbx-sess-s1/../../x", "gbx-sess-SHOUT", "../../x"]) {
+      n += 1;
+      await send({ jsonrpc: "2.0", id: n, method: "session/load", params: { sessionId: sid, cwd: "/tmp" } });
+      const resp = out.find((m) => m.id === n);
+      expect(resp.error?.code).toBe(-32602);
+    }
   });
 });
 
