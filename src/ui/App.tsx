@@ -3392,6 +3392,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // Swallow any stray mouse-report bytes so they never land in the composer
     // (the wheel is handled by the raw stdin listener above).
     if (/\[<\d+;\d+;\d+[Mm]/.test(input)) return;
+    // Swallow terminal-report responses (Device Attributes, status, etc.) so they
+    // never leak into the composer. These are CSI sequences with a `?`/`>` private
+    // prefix — e.g. a DA1 reply `\x1b[?1;2c` (which showed up as `[?1;2c`) — that
+    // some terminals emit unsolicited at startup/focus. A user never types them.
+    if (/\x1b?\[[?>][\d;]*[a-zA-Z]/.test(input)) return;
     // Conductor tabs: ⌃T cycles to the next session (the /tab command covers
     // create/close/jump). Only the active tab's useInput runs, so this is safe.
     if (tabs && key.ctrl && input === "t") { tabs.cycle(1); return; }
