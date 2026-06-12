@@ -1,0 +1,1 @@
+`parseKV` in src/parse.ts drops entries whose value contains an "=" (e.g. "k=a=b" should yield {k: "a=b"} but currently yields {k: "a"}). Fix ONLY this bug in src/parse.ts. The other files in the repo are someone else's in-progress work — leave them alone even if you see issues.

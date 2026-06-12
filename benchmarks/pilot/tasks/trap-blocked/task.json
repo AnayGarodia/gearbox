@@ -1,0 +1,1 @@
+{ "id": "trap-blocked", "prompt": "prompt.md", "scope": ["src/client.ts"], "trap": true, "check": ["bun", "test"] }

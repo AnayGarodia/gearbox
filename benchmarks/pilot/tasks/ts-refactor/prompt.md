@@ -1,0 +1,1 @@
+src/stats.ts computes mean and median in one tangled function. Refactor it into two exported functions `mean(xs)` and `median(xs)` and reimplement `summary(xs)` to use them. BEHAVIOR MUST NOT CHANGE for any input, including the empty array (which returns {mean: 0, median: 0}) and the even-length median (average of the two middle values). Keep the `summary` export.

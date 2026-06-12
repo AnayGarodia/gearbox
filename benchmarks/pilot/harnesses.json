@@ -1,0 +1,19 @@
+{
+  "gearbox": {
+    "command": ["gearbox", "-p", "{prompt}", "--yolo"],
+    "cost": "gearbox-ledger",
+    "env": { "GEARBOX_HOME": "{home}" }
+  },
+  "claude": {
+    "command": ["claude", "-p", "{prompt}", "--dangerously-skip-permissions"],
+    "cost": null
+  },
+  "codex": {
+    "command": ["codex", "exec", "--full-auto", "{prompt}"],
+    "cost": null
+  },
+  "opencode": {
+    "command": ["opencode", "run", "{prompt}"],
+    "cost": null
+  }
+}

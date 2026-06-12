@@ -1,0 +1,1 @@
+Implement `slugify(s)` in src/slugify.ts per its doc comment: lowercase; spaces and underscores become single hyphens; strip every other non-alphanumeric character; collapse repeated hyphens; trim leading/trailing hyphens. Examples: "Hello, World!" => "hello-world"; "  a_b -- c  " => "a-b-c"; "" => "". Keep the existing export.
