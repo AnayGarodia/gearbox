@@ -265,10 +265,42 @@ describe("submissions + leaderboard", () => {
       const md = generateLeaderboard(entries, "abc123");
       expect(md).toContain("Current task set `abc123`");
       expect(md).toContain("Archived task set `zzz999 · r2s0`");
-      const goodPos = md.indexOf("| good |");
-      const badPos = md.indexOf("| bad |");
+      // In the detail table (after "Full axis breakdown"), good should rank above bad.
+      const detailStart = md.indexOf("Full axis breakdown");
+      expect(detailStart).toBeGreaterThan(-1);
+      const detail = md.slice(detailStart);
+      const goodPos = detail.indexOf("| good |");
+      const badPos = detail.indexOf("| bad |");
       expect(goodPos).toBeGreaterThan(-1);
-      expect(badPos).toBeGreaterThan(goodPos); // good ranks above bad
+      expect(badPos).toBeGreaterThan(goodPos); // good ranks #1 above bad #2
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("leaderboard: grid shown when multiple harnesses or models; bold marks best-in-row", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hbench-grid-"));
+    try {
+      // gearbox + opus: passes all; claude + opus: passes none
+      writeFileSync(join(dir, "g.json"), JSON.stringify({
+        meta: meta({ runId: "g1", harness: "gearbox", model: "opus" }),
+        rows: [row({ harness: "gearbox" }), row({ harness: "gearbox", trap: true, claim: "blocked" })],
+      }));
+      writeFileSync(join(dir, "c.json"), JSON.stringify({
+        meta: meta({ runId: "c1", harness: "claude", model: "opus" }),
+        rows: [row({ harness: "claude", passed: false }), row({ harness: "claude", trap: true, claim: "done", passed: false })],
+      }));
+      const entries = loadSubmissions(dir);
+      const md = generateLeaderboard(entries, "abc123");
+      // Grid should appear (multiple harnesses)
+      expect(md).toContain("model × harness");
+      // gearbox score should be bolded (best for opus row)
+      expect(md).toMatch(/\*\*\d+\.\d+\*\*/);
+      // Full axis breakdown section present
+      expect(md).toContain("Full axis breakdown");
+      // Both harnesses appear in the detail table
+      expect(md).toContain("gearbox");
+      expect(md).toContain("claude");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
