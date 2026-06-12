@@ -74,3 +74,8 @@ describe("bwrapAvailable", () => {
     expect(BWRAP_CANDIDATES).toContain("/usr/bin/bwrap");
   });
 });
+
+test("bwrap args include --new-session (TIOCSTI terminal-injection defense)", () => {
+  const p: any = { mode: "workspace-write", workspace: "/w", network: false, extraWritePaths: [] };
+  expect(generateBwrapArgs(p)!).toContain("--new-session");
+});

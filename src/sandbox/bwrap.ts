@@ -34,6 +34,11 @@ export function generateBwrapArgs(policy: SandboxPolicy, opts: { gearboxHome?: s
     "--proc", "/proc",
     "--tmpfs", "/run",
     "--die-with-parent",
+    // TIOCSTI defense: without a new session a sandboxed process can inject
+    // keystrokes into the controlling terminal (bwrap's own manpage warning) —
+    // an escape seatbelt has no analogue for. Interactive REPLs inside the
+    // sandbox lose job control, which run_shell never offers anyway.
+    "--new-session",
   ];
   if (policy.mode === "workspace-write") {
     const paths = [...new Set([policy.workspace, ...baseWritePaths(opts), ...policy.extraWritePaths])]

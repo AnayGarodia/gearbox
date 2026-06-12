@@ -10,7 +10,7 @@ import { setYolo, isYolo } from "../permission.ts";
 import { newSessionId, type Session, type TurnMeta, type CompactionArchive } from "../session.ts";
 import { setTheme, activeTheme, THEMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
-import { resolveSandboxPolicy, parseSandboxMode, sandboxAvailable } from "../sandbox/index.ts";
+import { resolveSandboxPolicy, parseSandboxMode, sandboxBackendAvailable } from "../sandbox/index.ts";
 import { resetShellSessions } from "../shell.ts";
 import type { AccountView, Item } from "./types.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
@@ -569,7 +569,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           const a = arg.trim().toLowerCase();
           const showStatus = () => {
             const p = resolveSandboxPolicy(loadPrefs(), process.env, ctx.root);
-            const avail = sandboxAvailable();
+            const avail = sandboxBackendAvailable();
             const state = !avail && p.mode !== "off" ? `${p.mode} (unavailable on this system — running unsandboxed)` : p.mode;
             notice(
               `sandbox: ${state}${p.mode !== "off" ? ` · network ${p.network ? "allowed" : "off"}` : ""}` +
@@ -592,7 +592,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           if (process.env.GEARBOX_SANDBOX) notice(`note: GEARBOX_SANDBOX=${process.env.GEARBOX_SANDBOX} overrides this setting for this run`);
           updatePrefs({ sandbox: mode });
           resetShellSessions();
-          setSandboxMode(sandboxAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, ctx.root).mode : "off"); // effective: env may override, no backend reads off
+          setSandboxMode(sandboxBackendAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, ctx.root).mode : "off"); // effective: env may override, no backend reads off
           toast(
             mode === "off"
               ? "sandbox off · agent shell commands run unconfined"
@@ -1135,7 +1135,8 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
                 `  verify  ${p.verify === "off" ? "off" : "auto"}        run checks after edits and auto-fix to green (also /verify)\n` +
                 `  theme   ${p.theme ?? "dark"}        color palette for dark or light terminals (also /theme)\n` +
                 `  editor  ${p.editor ?? "vscode"}      clickable file links open here (vscode · cursor · windsurf · zed · off)\n` +
-                `  change one: /config <vim|notify|inline|verify|theme|editor> <value>`,
+                `  embeddings ${p.embeddings === true ? "on" : "off"}      semantic retrieval — embeds file heads via your OpenAI/Google key (opt-in)\n` +
+                `  change one: /config <vim|notify|inline|verify|theme|editor|embeddings> <value>`,
             );
             return;
           }
@@ -1155,6 +1156,13 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             verifyRef.current = on ? "auto" : "off";
             updatePrefs({ verify: on ? "auto" : "off" });
             notice(`verification ${on ? "auto" : "off"}`);
+          } else if (key === "embeddings") {
+            updatePrefs({ embeddings: on });
+            notice(
+              on
+                ? "semantic retrieval on — file heads (first ~4k chars of code files) are embedded via your OpenAI/Google key.\n  one-time index ≈ $0.04 per 2k files (free on Google), then one tiny query embed per turn. /config embeddings off to stop."
+                : "semantic retrieval off — retrieval is pure BM25 (no file contents leave this machine).",
+            );
           } else if (key === "editor") {
             const want = (val ?? "").toLowerCase();
             if (!editorNames().includes(want)) { notice(`editor: /config editor <${editorNames().join("|")}> — where clickable file links open`); return; }
