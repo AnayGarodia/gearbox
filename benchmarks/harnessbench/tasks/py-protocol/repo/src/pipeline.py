@@ -8,10 +8,8 @@ class Pipeline(Generic[T]):
     def __init__(self) -> None:
         self._steps: list[Step] = []
 
-    def pipe(self, fn: Step) -> None:  # Bug: should return self
         self._steps.append(fn)
 
     def run(self, value: T) -> T:
-        for step in reversed(self._steps):  # Bug: should be forward order
             value = step(value)
         return value

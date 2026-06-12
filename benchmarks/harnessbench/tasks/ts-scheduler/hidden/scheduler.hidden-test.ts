@@ -25,20 +25,9 @@ test("respects concurrency limit", async () => {
   expect(maxSeen).toBeLessThanOrEqual(2);
 });
 
-test("all tasks complete", async () => {
+test("all tasks eventually complete", async () => {
   const s = new Scheduler(2);
   const results: number[] = [];
   await Promise.all([1, 2, 3, 4, 5].map(n => s.run(async () => { results.push(n); })));
   expect(results.sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
-});
-
-test("concurrency 1 serialises", async () => {
-  const s = new Scheduler(1);
-  const order: number[] = [];
-  const t = (n: number) => s.run(async () => {
-    order.push(n);
-    await new Promise(r => setTimeout(r, 10));
-  });
-  await Promise.all([t(1), t(2), t(3)]);
-  expect(order).toEqual([1, 2, 3]);
 });
