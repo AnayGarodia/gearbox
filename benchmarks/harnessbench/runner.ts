@@ -313,6 +313,8 @@ export interface RunOpts {
   /** Where to write per-run artifacts (transcript, diff). Absent = skip. */
   artifactsDir?: string;
   timeoutMs?: number;
+  /** Pin the model via {model} substitution in the harness command/env. */
+  model?: string | null;
 }
 
 export async function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: HarnessSpec, trial: number, opts: RunOpts = {}): Promise<RunRow> {
@@ -328,8 +330,8 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     const fixtureSha = (await sh(["git", "rev-parse", "HEAD"], work)).out.trim();
 
     const prompt = readFileSync(join(taskDir, task.prompt), "utf8").trim() + VERDICT_PROTOCOL;
-    const subst = (s: string) => s.replaceAll("{prompt}", prompt).replaceAll("{home}", home);
-    const cmd = harness.command.map(subst);
+    const subst = (s: string) => s.replaceAll("{prompt}", prompt).replaceAll("{home}", home).replaceAll("{model}", opts.model ?? "");
+    const cmd = harness.command.map(subst).filter((s) => s !== "");
     const env = buildCellEnv(harness, Object.fromEntries(Object.entries(harness.env ?? {}).map(([k, v]) => [k, subst(v)])), home);
 
     const t0 = Date.now();

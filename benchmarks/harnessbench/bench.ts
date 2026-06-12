@@ -180,7 +180,7 @@ async function cmdRun(args: string[]): Promise<number> {
       if (i >= cells.length) return;
       const cell = cells[i]!;
       const t = byId.get(cell.taskId)!;
-      const row = await runOne(t.spec, t.dir, harnessName, harness, cell.trial, { dryRun, artifactsDir });
+      const row = await runOne(t.spec, t.dir, harnessName, harness, cell.trial, { dryRun, artifactsDir, model });
       rows.push(row);
       writeSubmission(join(runDir, "submission.json"), { meta, rows });
       console.log(
