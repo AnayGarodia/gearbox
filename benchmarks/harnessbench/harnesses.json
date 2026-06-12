@@ -11,7 +11,8 @@
     "cost": "gearbox-ledger",
     "tokens": "gearbox-ledger",
     "env": {
-      "GEARBOX_HOME": "{home}"
+      "GEARBOX_HOME": "{home}",
+      "CLAUDE_CONFIG_DIR": "{real_home}/.claude"
     },
     "version": [
       "gearbox",

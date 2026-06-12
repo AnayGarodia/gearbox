@@ -341,7 +341,7 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     const fixtureSha = (await sh(["git", "rev-parse", "HEAD"], work)).out.trim();
 
     const prompt = readFileSync(join(taskDir, task.prompt), "utf8").trim() + VERDICT_PROTOCOL;
-    const subst = (s: string) => s.replaceAll("{prompt}", prompt).replaceAll("{home}", home).replaceAll("{model}", opts.model ?? "");
+    const subst = (s: string) => s.replaceAll("{prompt}", prompt).replaceAll("{home}", home).replaceAll("{real_home}", homedir()).replaceAll("{model}", opts.model ?? "");
     const cmd = harness.command.map(subst).filter((s) => s !== "");
     const env = buildCellEnv(harness, Object.fromEntries(Object.entries(harness.env ?? {}).map(([k, v]) => [k, subst(v)])), home);
 
