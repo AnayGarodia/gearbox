@@ -12,7 +12,7 @@
     "tokens": "gearbox-ledger",
     "env": {
       "GEARBOX_HOME": "{home}",
-      "CLAUDE_CONFIG_DIR": "{real_home}/.claude"
+      "HOME": "{real_home}"
     },
     "version": [
       "gearbox",
