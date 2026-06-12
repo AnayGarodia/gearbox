@@ -398,7 +398,7 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     const tokensUsed = harness.tokens === "gearbox-ledger"
       ? ledgerTokens(home)
       : harness.tokens
-        ? (() => { const m = new RegExp(harness.tokens as string).exec(run.out); return m ? parseInt(m[1]!, 10) || null : null; })()
+        ? (() => { try { const m = new RegExp(harness.tokens as string).exec(run.out); return m ? (parseInt(m[1]!, 10) || null) : null; } catch { return null; } })()
         : null;
     const linesChanged = countLinesChanged(diff);
 
