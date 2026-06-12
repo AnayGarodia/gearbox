@@ -320,8 +320,10 @@ export class RoutingSelector implements ModelSelector {
       const m = pickDefaultModel(this.fallbackId);
       return { kind, bar, escalate, required, ctx, pool: [], clears: [], eligible: [], estInputTokens, fallback: m ?? undefined };
     }
+    // Callers without seat dispatch machinery opt out of cli-backend candidates.
+    const dispatchable = task.inLoopOnly ? all.filter((c) => c.backend.kind === "in-loop") : all;
     // Filter to models that satisfy every required capability.
-    const capable = required.length ? all.filter((c) => supportsRequirements(c.spec, required)) : all;
+    const capable = required.length ? dispatchable.filter((c) => supportsRequirements(c.spec, required)) : dispatchable;
     if (capable.length === 0) {
       const missing = all.slice(0, 4).map((c) => `${c.spec.label}: ${missingRequirements(c.spec, required).join(", ")}`).join("; ");
       throw new Error(`No configured model supports this turn (${required.join(", ")} required). ${missing}`);

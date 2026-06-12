@@ -273,6 +273,7 @@ export async function runTask(opts: {
   root?: string; // workspace root for file/shell tools (a parallel sub-agent gets its own git worktree)
   maxRetries?: number; // SDK retry budget; set to 0 when offline so a no-network turn fails in one connect-timeout instead of the default 3-attempt storm
   pinnedModelId?: string; // when the user explicitly chose a model (via /model or "use opus"), delegated sub-tasks inherit it instead of re-routing to the cheapest
+  extraTools?: Record<string, any>; // caller-supplied tool OVERRIDES merged last (after the delegate tools) — the ACP server swaps read_file/write_file for editor-buffer-aware versions
   cacheBreak?: number; // index of the last settled-history message (from the context engine), cache that prefix; the volatile turn-context tail rides after it
   onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; // backgrounded delegate reports (host injects them into the conversation)
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
@@ -321,7 +322,9 @@ export async function runTask(opts: {
     const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content: p.prompt }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries });
     return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
   };
-  const extraTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground }) : undefined;
+  const delegateTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground }) : undefined;
+  // Caller overrides merge LAST so they can replace built-ins by name.
+  const extraTools = delegateTools || opts.extraTools ? { ...delegateTools, ...opts.extraTools } : undefined;
   // Loop guard: the 3rd/4th consecutive identical tool call is blocked with a
   // readable error result; the 5th flips loopStop, which stopWhen reads to end
   // the turn (reported below as a structured failure).

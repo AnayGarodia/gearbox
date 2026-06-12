@@ -110,3 +110,11 @@ test("global preference 'api' removes the seat from routing", () => {
   setGlobalPreference({ prefer: "api" });
   expect(new RoutingSelector().select({ prompt: "refactor the parser" }).backend?.kind).toBe("in-loop");
 });
+
+test("inLoopOnly excludes seats: callers without seat dispatch never get a cli backend", () => {
+  putAccount({ id: "claude-max-acp", label: "Claude Max", provider: "claude-cli", exec: "cli", auth: { kind: "cli", binary: "claude" }, enabled: true, addedAt: 0 });
+  // Without the flag the ~free seat wins this cheap task (asserted above);
+  // with it, the pick must be a dispatchable in-loop (model, account) pair.
+  const choice = new RoutingSelector().select({ prompt: "summarize this transcript", kind: "summarize", inLoopOnly: true });
+  expect(choice.backend?.kind ?? "in-loop").toBe("in-loop");
+});

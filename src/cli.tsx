@@ -427,6 +427,7 @@ Usage:
   gearbox mcp list        show configured MCP servers
   gearbox mcp add <name> <command> [args...]
   gearbox doctor models   show provider/model capability matrix
+  gearbox acp             ACP agent mode for editors (Zed/JetBrains/Neovim spawn this over stdio)
   gearbox upgrade         pull the latest version + reinstall deps
 
 Options:
@@ -460,6 +461,15 @@ if (args.includes("--version") || args.includes("-v")) {
 
 if (args[0] === "onboard" || args[0] === "setup") {
   await runCliOnboarding();
+  process.exit(0);
+}
+
+// ACP agent mode: an editor (Zed, JetBrains, Neovim) spawns `gearbox acp` and
+// speaks the Agent Client Protocol over stdio. STDOUT IS THE WIRE — this path
+// must never reach Ink, onboarding, or any console.log.
+if (args[0] === "acp") {
+  const { runAcpStdio } = await import("./acp/server.ts");
+  await runAcpStdio();
   process.exit(0);
 }
 
