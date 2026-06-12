@@ -159,11 +159,13 @@ export interface ThemeEntry {
   label: string;
   hint: string; // one-line description in the picker
   palette: Theme;
+  /** Tuned for a white/light terminal canvas (drives the ghost's ink-on-white palette swap). */
+  lightCanvas?: boolean;
 }
 
 export const THEMES: ThemeEntry[] = [
   { name: "dark", label: "ghost", hint: "ghost indigo on warm charcoal · the default", palette: dark },
-  { name: "light", label: "gearbox light", hint: "the same vocabulary tuned for white terminals", palette: light },
+  { name: "light", label: "gearbox light", hint: "the same vocabulary tuned for white terminals", palette: light, lightCanvas: true },
   { name: "gruvbox", label: "gruvbox", hint: "warm retro groove · aqua accent", palette: gruvbox },
   { name: "catppuccin", label: "catppuccin mocha", hint: "soft pastels on a deep base", palette: catppuccin },
   { name: "solarized", label: "solarized dark", hint: "the precise low-contrast classic", palette: solarized },
@@ -185,6 +187,11 @@ let currentTheme = "dark";
 
 export function activeTheme(): string {
   return currentTheme;
+}
+
+/** Is the active palette tuned for a light terminal canvas? */
+export function isLightCanvas(): boolean {
+  return Boolean(THEMES.find((t) => t.name === currentTheme)?.lightCanvas);
 }
 
 export function themeByName(name: string): ThemeEntry | undefined {

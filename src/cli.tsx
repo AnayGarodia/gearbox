@@ -691,7 +691,17 @@ if (process.stdout.isTTY && imageMode === "kitty") process.stdout.write(transmit
 // Use --inline or /config inline on for terminal-scrollback mode.
 const uiPrefs = loadPrefs();
 // Apply the saved palette BEFORE the first paint so even the banner is themed.
-if (uiPrefs.theme) setTheme(uiPrefs.theme);
+// No saved choice → ask the TERMINAL what its background is (OSC 11, bounded
+// at ~150ms) and default to the light palette on a white terminal — the dark
+// palette is unreadable there (user-reported). An explicit /theme choice
+// always wins and skips the probe entirely.
+if (uiPrefs.theme) {
+  setTheme(uiPrefs.theme);
+} else if (process.stdout.isTTY) {
+  const { queryTerminalBackground } = await import("./ui/term-bg.ts");
+  const bg = await queryTerminalBackground();
+  if (bg === "light") setTheme("light");
+}
 const explicitInline = args.includes("--inline") || process.env.GEARBOX_INLINE === "1" || process.env.GEARBOX_FULLSCREEN === "0";
 const explicitFullscreen = args.includes("--fullscreen") || process.env.GEARBOX_FULLSCREEN === "1";
 const wantsInline = explicitInline || (!explicitFullscreen && uiPrefs.fullscreen === false);

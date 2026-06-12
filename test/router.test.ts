@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoutingSelector, classify } from "../src/model/router.ts";
+import { RoutingSelector, classify, confidentKeywordKind } from "../src/model/router.ts";
 import { confirmRoutingPreference } from "../src/model/preferences.ts";
 
 // Isolate the account store to an empty dir so provider availability depends
@@ -162,4 +162,16 @@ test("useFirst biases routing toward the named provider while its balance lasts"
   } finally {
     updatePolicy({ useFirst: { set: [] } });
   }
+});
+
+// "summarize" + workspace-work markers must NOT fast-path to the 0-bar
+// summarize kind (user-reported: "read the files and summarize" routed to the
+// cheapest model, which misunderstood the task). Mixed prompts defer (null).
+test("summarize keyword defers to the LLM classifier when workspace work is involved", () => {
+  expect(confidentKeywordKind("read the files and summarize them")).toBeNull();
+  expect(confidentKeywordKind("summarize the codebase")).toBeNull();
+  expect(confidentKeywordKind("go through the repo and give me a summary, tl;dr")).toBeNull();
+  // pure summarize of pasted/abstract content still fast-paths
+  expect(confidentKeywordKind("summarize this paragraph for me")).toBe("summarize");
+  expect(confidentKeywordKind("tl;dr of the above")).toBe("summarize");
 });

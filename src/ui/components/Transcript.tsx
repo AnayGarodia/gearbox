@@ -288,8 +288,11 @@ function noticeParts(text: string): TinySpan[] {
 }
 
 function NoticeText({ text }: { text: string }) {
+  // wrap explicitly: long single-line notices (the /model auto explanation)
+  // must fold at the terminal edge instead of clipping — the inline path has
+  // no lines.ts pre-wrap doing it for us.
   return (
-    <Text>
+    <Text wrap="wrap">
       {noticeParts(text).map((s, i) => (
         <Text key={i} color={s.color} bold={s.bold} backgroundColor={s.bg}>{s.text}</Text>
       ))}

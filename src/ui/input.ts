@@ -185,6 +185,15 @@ export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boole
   }
   // Newline: modifier+Enter or ⌃J. Checked before plain Enter (submit).
   if ((key.return && (key.shift || key.meta)) || (key.ctrl && input === "j")) return insert(s, NL);
+  // Backslash-Enter = newline (the Claude Code convention). Most terminals send
+  // a bare CR for shift+enter — Ink never sees `shift` — so the modifier path
+  // above only fires under the kitty keyboard protocol. A `\` immediately
+  // before the cursor is an explicit, terminal-agnostic continuation: swallow
+  // it and insert the newline instead of submitting.
+  if (key.return && s.cursor > 0 && s.value[s.cursor - 1] === "\\") {
+    const value = s.value.slice(0, s.cursor - 1) + NL + s.value.slice(s.cursor);
+    return { type: "edit", state: { value, cursor: s.cursor } };
+  }
   if (key.return) return { type: "submit" };
   if (key.escape) return { type: "interrupt" };
 

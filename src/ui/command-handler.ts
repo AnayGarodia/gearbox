@@ -245,6 +245,10 @@ export interface CommandCtx {
   statusPinned: boolean;
 }
 
+// /yolo two-step confirm: timestamp of the first (arming) invocation. Module
+// scope is deliberate — one per process matches one permission broker.
+let yoloArmedAt = 0;
+
 export function handleCommand(ctx: CommandCtx, text: string): void {
   const groot = ctx.root || process.cwd(); // the tab's tree — every git verb below runs here
   // Destructure once: the moved body below is byte-identical to its App.tsx
@@ -1170,6 +1174,19 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         case "yolo": {
           echo(text);
           const next = !isYolo();
+          // Turning yolo ON is the most dangerous toggle in the app (every
+          // write and shell command auto-approves; only written `deny` rules
+          // and the sandbox still hold). Don't let it happen on a typo:
+          // require a second /yolo within 15s (user feedback).
+          if (next) {
+            const now = Date.now();
+            if (now - yoloArmedAt > 15_000) {
+              yoloArmedAt = now;
+              notice("yolo runs EVERY file write and shell command without asking, until you /yolo again.\n  type /yolo once more within 15s to confirm.");
+              return;
+            }
+            yoloArmedAt = 0;
+          }
           setYolo(next);
           setYoloState(next);
           notice(next ? "yolo mode ON · all file writes and shell commands run without asking" : "yolo mode off · back to asking before writes/edits/shell");

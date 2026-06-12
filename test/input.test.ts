@@ -188,3 +188,21 @@ test("wrapOffset is the inverse mouse map (clamped to the row)", () => {
   expect(wrapOffset(v, 10, 3, 1)).toBe(27); // second logical line
   expect(wrapOffset(v, 10, 99, 0)).toBe(26); // row clamp
 });
+
+// Backslash-Enter = newline (terminal-agnostic shift+enter substitute: most
+// terminals send bare CR for shift+enter, so Ink never sees the modifier).
+test("backslash before the cursor + enter inserts a newline instead of submitting", () => {
+  const s = { value: "first line\\", cursor: 11 };
+  const a = applyKey(s, "", { return: true } as any);
+  expect(a.type).toBe("edit");
+  if (a.type === "edit") {
+    expect(a.state.value).toBe("first line\n");
+    expect(a.state.cursor).toBe(11);
+  }
+});
+
+test("plain enter without a trailing backslash still submits", () => {
+  expect(applyKey({ value: "no continuation", cursor: 15 }, "", { return: true } as any).type).toBe("submit");
+  // backslash elsewhere in the text (not at the cursor) does not block submit
+  expect(applyKey({ value: "a\\b", cursor: 1 }, "", { return: true } as any).type).toBe("submit");
+});

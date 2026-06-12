@@ -102,7 +102,15 @@ export function confidentKeywordKind(prompt: string): Kind | null {
   // A bare greeting/ack never needs the LLM classifier hop — it's chat by definition.
   if (/^(hi|hiya|hello|hey|yo|sup|howdy|thanks?|thank you|ty|ok(ay)?|cool|nice|lol|good (morning|afternoon|evening))[\s!.?]*$/.test(p)) return "chat";
   if (MUTATION.test(p)) return "code"; // a real change is requested, use a strong model
-  if (/\b(summari[sz]e|tl;?dr|recap|condense|digest|gist)\b/.test(p)) return "summarize";
+  // "summarize" is a confident pure-summarize signal only when the prompt isn't
+  // ALSO asking for tool work over the workspace: "read the files and summarize"
+  // needs a model that drives tools across many files, but the summarize bar is
+  // 0 and routes to the cheapest model, which then misunderstands the task
+  // (user-reported). Mixed prompts fall through to the LLM classifier.
+  if (/\b(summari[sz]e|tl;?dr|recap|condense|digest|gist)\b/.test(p)) {
+    const workspaceWork = /\b(files?|codebase|repo(sitor(y|ies))?|director(y|ies)|folders?|read|scan|look (at|through)|go through|examine|analy[sz]e)\b/.test(p);
+    return workspaceWork ? null : "summarize";
+  }
   if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b/.test(p)) return "classify";
   if (/^(find|search|locate|grep)\b|\bwhere is\b|\bwhich file\b/.test(p)) return "search";
   return null;
@@ -292,8 +300,15 @@ export class RoutingSelector implements ModelSelector {
     const live = out.filter(
       (c) => !coolingDown(c.state.accountId, ctx.now) && !coolingDown(modelScopedKey(c.state.accountId, c.spec.id), ctx.now),
     );
+    // Remember what cooldown removed: select() names a skipped subscription
+    // seat in its reason, so a silent seat→API switch (user-reported) becomes
+    // a visible, explained one.
+    this.cooledOut = live.length ? out.filter((c) => !live.includes(c)) : [];
     return live.length ? live : out;
   }
+
+  // Candidates excluded by cooldown in the most recent enumerate() pass.
+  private cooledOut: Candidate[] = [];
 
   // Shared setup for select() and explain(). Builds the account snapshot,
   // enumerates all candidates, filters by capability and context window, applies
@@ -414,7 +429,15 @@ export class RoutingSelector implements ModelSelector {
     const winner = candidates.find((c) => scoreId(c) === best.candidate.id)!;
     this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
+    // Transparency: when a subscription seat serving this same model sat out
+    // the race on a cooldown, say so — the user sees a seat turn silently
+    // become a metered-API turn otherwise and reads it as a routing bug.
+    const skippedSeat =
+      winner.backend?.kind !== "cli"
+        ? this.cooledOut.find((c) => c.backend?.kind === "cli" && (c.canonicalId ?? c.spec.id) === (winner.canonicalId ?? winner.spec.id))
+        : undefined;
+    const seatNote = skippedSeat ? ` · ${skippedSeat.state.accountId} seat cooling down (rate limited) — back automatically when it clears` : "";
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + seatNote, backend: winner.backend };
   }
 
   // Build the full ranked scorecard for the "/why" UI panel. Scores the entire
