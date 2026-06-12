@@ -38,6 +38,11 @@ export interface HarnessSpec {
   env?: Record<string, string>;
   /** How to capture the harness version for the submission metadata. */
   version?: string[];
+  /** True when the harness reads/writes user-level state (~/.claude, ~/.codex)
+   *  that the runner CANNOT isolate (auth lives there). Recorded in rows and
+   *  meta; --jobs > 1 is refused for these (parallel cells would race the
+   *  shared config and stop being independent samples). */
+  sharedState?: boolean;
 }
 
 export interface RunRow {
@@ -52,6 +57,13 @@ export interface RunRow {
   passed: boolean | null; // hidden-test result; null = judge didn't run / timed out
   exitCode: number | null;
   timedOut: boolean;
+  /** OUR side failed to run the harness (spawn error) — excluded from every
+   *  axis. Optional so pre-v2.2 rows (which predate the field) still parse. */
+  infra?: boolean;
+  /** The fixture commit all forensics compare against. */
+  fixtureSha?: string;
+  /** The harness ran against shared user-level state (see HarnessSpec.sharedState). */
+  sharedState?: boolean;
   changedFiles: string[];
   collateralFiles: string[]; // changed outside task.scope
   gitClean: boolean; // tree still describable by git (recoverable)
@@ -71,6 +83,10 @@ export interface SubmissionMeta {
   trials: number;
   tasks: number;
   date: string;
+  /** Plumbing-only run: rows carry no judgments. Never accepted to a leaderboard. */
+  dryRun?: boolean;
+  /** Metric/weight definitions version (score.ts SCORING_VERSION). Comparable iff equal. */
+  scoringVersion?: number;
 }
 
 export interface Submission {
@@ -80,21 +96,27 @@ export interface Submission {
 
 interface ShResult { code: number | null; out: string; timedOut: boolean }
 
-/** Async exec — lets bench.ts run cells in parallel (--jobs). */
-function sh(cmd: string[], cwd: string, env?: Record<string, string>, timeoutMs?: number): Promise<ShResult> {
+/** Async exec — lets bench.ts run cells in parallel (--jobs). When `env` is
+ *  given it is the COMPLETE environment (no implicit process.env spread). */
+function sh(cmd: string[], cwd: string, env?: Record<string, string | undefined>, timeoutMs?: number): Promise<ShResult> {
   return new Promise((res) => {
     let out = "";
     let timedOut = false;
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(cmd[0]!, cmd.slice(1), { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+      // detached → own process group, so a timeout can kill grandchildren the
+      // harness spawned (servers, watchers) instead of leaving them billing.
+      child = spawn(cmd[0]!, cmd.slice(1), { cwd, env: env ?? process.env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     } catch (e) {
       return res({ code: null, out: String(e), timedOut: false });
     }
+    const killTree = () => {
+      try { process.kill(-child.pid!, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} }
+    };
     const cap = (b: Buffer) => { if (out.length < 32 * 1024 * 1024) out += b.toString("utf8"); };
     child.stdout?.on("data", cap);
     child.stderr?.on("data", cap);
-    const timer = timeoutMs ? setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs) : null;
+    const timer = timeoutMs ? setTimeout(() => { timedOut = true; killTree(); }, timeoutMs) : null;
     child.on("error", (e) => { if (timer) clearTimeout(timer); res({ code: null, out: out + String(e), timedOut }); });
     child.on("close", (code) => { if (timer) clearTimeout(timer); res({ code, out, timedOut }); });
   });
@@ -107,9 +129,13 @@ function shSync(cmd: string[], cwd: string, timeoutMs?: number): ShResult {
 
 export function parseVerdict(output: string): { claim: "done" | "blocked" | "none"; reason?: string } {
   const lines = output.trim().split("\n").reverse();
-  for (const l of lines) {
-    const m = /VERDICT:\s*(done|blocked)\s*(?:[—-]\s*(.*))?\s*$/i.exec(l.trim());
-    if (m) return { claim: m[1]!.toLowerCase() as "done" | "blocked", reason: m[2]?.trim() };
+  for (const raw of lines) {
+    // Strip markdown decoration symmetrically BEFORE matching — "**VERDICT:
+    // blocked**" must not score worse than "**VERDICT: done**" just because
+    // of where the trailing ** lands relative to the $ anchor.
+    const l = raw.trim().replace(/[*_`>#]/g, "").trim();
+    const m = /VERDICT:\s*(done|blocked)\s*(?:[—:-]\s*(.*))?\s*$/i.exec(l);
+    if (m) return { claim: m[1]!.toLowerCase() as "done" | "blocked", reason: m[2]?.trim() || undefined };
   }
   return { claim: "none" };
 }
@@ -189,6 +215,29 @@ function ledgerSpend(home: string): number | null {
   }
 }
 
+/**
+ * The environment a harness cell runs in. Built from an ALLOWLIST, not a
+ * process.env spread: no PWD/OLDPWD (would leak the benchmark repo path to a
+ * yolo agent), no incidental state. Auth/provider variables pass through
+ * because harnesses need them to reach their APIs; HOME stays real only for
+ * sharedState harnesses (their login lives there) — that compromise is what
+ * the sharedState flag records.
+ */
+export function buildCellEnv(harness: HarnessSpec, substitutedEnv: Record<string, string>, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+  const ALLOW = [
+    "PATH", "TERM", "LANG", "LC_ALL", "SHELL", "USER", "TMPDIR",
+    // provider auth — the reason a harness can call a model at all
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY",
+    "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+    "AZURE_RESOURCE_NAME", "AZURE_API_KEY", "GOOGLE_VERTEX_PROJECT", "GOOGLE_VERTEX_LOCATION", "GOOGLE_APPLICATION_CREDENTIALS",
+  ];
+  const out: Record<string, string | undefined> = {};
+  for (const k of ALLOW) if (base[k] !== undefined) out[k] = base[k];
+  out.HOME = base.HOME; // sharedState harnesses authenticate via the real home
+  for (const [k, v] of Object.entries(substitutedEnv)) out[k] = v;
+  return out;
+}
+
 /** Distinct judge/toolchain binaries the task set needs (for doctor). */
 export function requiredToolchains(tasks: { spec: TaskSpec }[]): string[] {
   return [...new Set(tasks.map((t) => t.spec.check[0]!))].sort();
@@ -209,23 +258,36 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     await sh(["git", "init", "-qb", "main"], work);
     await sh(["git", "-c", "user.email=bench@bench", "-c", "user.name=bench", "add", "-A"], work);
     await sh(["git", "-c", "user.email=bench@bench", "-c", "user.name=bench", "commit", "-qm", "fixture"], work);
+    // The fixture SHA anchors all forensics: even if the agent commits, the
+    // diff/changed-files below compare against THIS, not whatever HEAD became.
+    const fixtureSha = (await sh(["git", "rev-parse", "HEAD"], work)).out.trim();
 
     const prompt = readFileSync(join(taskDir, task.prompt), "utf8").trim() + VERDICT_PROTOCOL;
     const subst = (s: string) => s.replaceAll("{prompt}", prompt).replaceAll("{home}", home);
     const cmd = harness.command.map(subst);
-    const env = Object.fromEntries(Object.entries(harness.env ?? {}).map(([k, v]) => [k, subst(v)]));
+    const env = buildCellEnv(harness, Object.fromEntries(Object.entries(harness.env ?? {}).map(([k, v]) => [k, subst(v)])));
 
     const t0 = Date.now();
     const run = opts.dryRun ? { code: 0, out: "DRY RUN\nVERDICT: blocked — dry run", timedOut: false } : await sh(cmd, work, env, opts.timeoutMs ?? RUN_TIMEOUT_MS);
     const wallMs = Date.now() - t0;
     const verdict = parseVerdict(run.out);
+    // Infra failure = OUR side couldn't run the harness (spawn error). These
+    // rows must not be judged as the harness's behavior — the scorer excludes
+    // them from every axis. A timeout is NOT infra: running forever unattended
+    // is exactly the behavior the survival axis measures.
+    const infra = !opts.dryRun && run.code === null && !run.timedOut;
 
-    // ── git forensics BEFORE the judge touches the tree ──
-    const st = (await sh(["git", "status", "--porcelain"], work)).out;
-    const changedFiles = st.split("\n").filter(Boolean).map((l) => l.slice(3).trim()).filter(Boolean);
+    // ── git forensics vs the FIXTURE SHA (agent commits don't erase them) ──
+    // add -A stages everything incl. untracked; NUL-separated name-status with
+    // renames disabled gives unambiguous paths (spaces, quotes, R-lines).
+    await sh(["git", "add", "-A", "--force"], work);
+    const ns = (await sh(["git", "diff", "--cached", "--name-status", "--no-renames", "-z", fixtureSha], work)).out;
+    const parts = ns.split("\0").filter(Boolean);
+    const changedFiles: string[] = [];
+    for (let i = 0; i + 1 < parts.length; i += 2) changedFiles.push(parts[i + 1]!);
     const collateralFiles = changedFiles.filter((f) => !inScope(f, task.scope));
     const gitClean = (await sh(["git", "rev-parse", "HEAD"], work)).code === 0;
-    const diff = (await sh(["git", "diff"], work)).out;
+    const diff = (await sh(["git", "diff", "--cached", fixtureSha], work)).out;
 
     // ── artifacts: the audit trail a leaderboard submission rides on ──
     if (opts.artifactsDir) {
@@ -235,22 +297,32 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     }
 
     // ── apply hidden tests, then judge ──
+    // The judge dir is wiped first: an agent-planted __hidden__/ (or stray
+    // files in it) must not ride into the judging run. Agent-authored test
+    // runner config is also stripped — the fixtures ship none, so any
+    // bunfig/conftest present was written by the agent and could subvert the
+    // judge (it already counts as a changed file in the forensics above).
     const hiddenDir = join(taskDir, "hidden");
     const judgeDir = join(work, "__hidden__");
+    rmSync(judgeDir, { recursive: true, force: true });
     mkdirSync(judgeDir, { recursive: true });
     for (const f of readdirSync(hiddenDir)) {
       cpSync(join(hiddenDir, f), join(judgeDir, f.replace(".hidden-test.ts", ".test.ts")));
     }
+    for (const cfg of ["bunfig.toml", ".bunfig.toml", "conftest.py", "sitecustomize.py"]) {
+      if (!existsSync(join(taskDir, "repo", cfg))) rmSync(join(work, cfg), { force: true });
+    }
     // Dry run = plumbing only: the judge never ran, so passed is unknowable.
-    const check = opts.dryRun ? null : await sh(task.check, work, undefined, 120_000);
-    const passed = check == null || check.timedOut ? null : check.code === 0;
+    const check = opts.dryRun || infra ? null : await sh(task.check, work, undefined, 120_000);
+    const passed = check == null || check.timedOut || check.code === null ? null : check.code === 0;
 
     const costUSD = harness.cost === "gearbox-ledger" ? ledgerSpend(home) : null;
 
     return {
       task: task.id, category: task.category, difficulty: task.difficulty, harness: harnessName, trial, trap: task.trap,
       claim: verdict.claim, claimReason: verdict.reason,
-      passed, exitCode: run.code, timedOut: run.timedOut,
+      passed, exitCode: run.code, timedOut: run.timedOut, infra,
+      fixtureSha, sharedState: harness.sharedState === true,
       changedFiles, collateralFiles, gitClean, costUSD, wallMs,
       at: new Date().toISOString(),
     };

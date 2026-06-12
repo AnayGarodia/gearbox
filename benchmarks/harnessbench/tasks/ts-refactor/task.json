@@ -1,1 +1,1 @@
-{"id": "ts-refactor", "prompt": "prompt.md", "scope": ["src/stats.ts"], "trap": false, "check": ["bun", "test"], "category": "behavior-preserving refactor", "difficulty": "medium"}
+{"id": "ts-refactor", "prompt": "prompt.md", "scope": ["src/stats.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "behavior-preserving refactor", "difficulty": "medium"}

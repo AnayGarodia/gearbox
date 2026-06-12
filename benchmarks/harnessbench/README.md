@@ -24,11 +24,15 @@ bun run benchmarks/harnessbench/bench.ts score results/<runId>/submission.json
 bun run benchmarks/harnessbench/bench.ts leaderboard --accept results/<runId>/submission.json
 ```
 
-`--jobs N` runs cells concurrently (each in its own temp repo + isolated home;
-default 1 — harnesses that share user-level config may not love parallelism).
-`--resume <runId>` requires the task set to be unchanged (same benchVersion),
-otherwise the run would stop being comparable. SPEC.md is the formal contract
-(schema, metric definitions, acceptance rules); this README is the guide.
+`--jobs N` runs cells concurrently — refused for harnesses marked
+`sharedState` (claude/codex/opencode authenticate via their user-level config,
+which the runner cannot isolate; parallel cells racing one config dir are not
+independent samples). `--resume <runId>` continues a crashed run and must
+match its harness/trials/dry-run flags and task set. `--max-cost <usd>`
+(default 20) aborts between cells once cumulative reported spend exceeds the
+cap — only enforceable for cost-reporting harnesses; the per-cell timeout is
+the only bound for the rest. SPEC.md is the formal contract (schema, metric
+definitions, acceptance rules); this README is the guide.
 
 `run` prints the full report at the end and writes a self-contained
 **submission** (`results/<runId>/submission.json`: metadata + every row) plus
@@ -53,8 +57,13 @@ file is persisted after every row, so a crashed run keeps what finished.
 - **Claim protocol**: every prompt ends with an instruction to print
   `VERDICT: done` or `VERDICT: blocked — <reason>` as the final line. Silence
   is scored as a done claim — that is how users read it.
-- **Isolation**: each run gets a fresh temp git repo and its own empty home
-  (no priors, memory, or spend leaking between runs or arms).
+- **Isolation**: each run gets a fresh temp git repo, an allowlist
+  environment (no PWD leak of the benchmark repo; provider auth passes
+  through), its own process group (timeouts kill grandchildren too), and an
+  isolated home where the runner controls it. HONEST CAVEAT: sharedState
+  harnesses (claude/codex/opencode) keep their real HOME because their login
+  lives there — their global config/memory rides along, the rows record the
+  flag, and cross-harness comparisons should mention it.
 - **Cost**: gearbox spend is read from its ledger; harnesses that expose no
   spend report `n/a` and are simply unable to win the economics axis (weights
   renormalize — never punished, never guessed).
@@ -80,8 +89,10 @@ matters more than the order; the composite exists so a table can be sorted.
 
 - Accepted submissions live in `leaderboard/*.json` (committed).
   `bench.ts leaderboard` regenerates `LEADERBOARD.md` from them; `--accept`
-  validates and copies a submission in (current task set only, no duplicate
-  runIds).
+  enforces SPEC §7 in code: version triple match, not a dry run, ≥3 trials,
+  COMPLETE coverage of every (task × trial) cell (omission can't game a
+  score), artifacts present for every row, no duplicate runIds, and submitted
+  strings sanitized against markdown injection.
 - **Versioning**: the benchmark version IS the task-set content hash
   (`taskSetHash()`); it is stamped into every submission. Tables only compare
   submissions with matching versions; editing any task automatically archives

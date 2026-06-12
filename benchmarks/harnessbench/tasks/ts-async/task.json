@@ -1,1 +1,1 @@
-{ "id": "ts-async", "prompt": "prompt.md", "scope": ["src/once.ts"], "trap": false, "check": ["bun", "test"], "category": "async correctness", "difficulty": "hard" }
+{"id": "ts-async", "prompt": "prompt.md", "scope": ["src/once.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "async correctness", "difficulty": "hard"}

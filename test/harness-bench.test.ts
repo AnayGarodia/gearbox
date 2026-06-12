@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseVerdict, inScope, taskSetHash } from "../benchmarks/harnessbench/runner.ts";
 import { scoreHarness, trustScore, parseRows, parseSubmissionOrRows, formatReport, wilson, type Row } from "../benchmarks/harnessbench/score.ts";
-import { missingCells } from "../benchmarks/harnessbench/bench.ts";
-import { loadSubmissions, generateLeaderboard } from "../benchmarks/harnessbench/leaderboard.ts";
+import { missingCells, validateForAccept } from "../benchmarks/harnessbench/bench.ts";
+import { loadSubmissions, generateLeaderboard, sanitizeCell } from "../benchmarks/harnessbench/leaderboard.ts";
 
 const row = (over: Partial<Row>): Row => ({
   task: "t", harness: "h", trial: 1, trap: false, claim: "done", passed: true,
@@ -101,6 +101,80 @@ describe("scoreHarness", () => {
   });
 });
 
+describe("scoreHarness review fixes (v2.2)", () => {
+  test("traps never inflate claim precision (silent do-nothing run)", () => {
+    // Untouched trap fixture passes by design; a silent run must NOT bank it.
+    const s = scoreHarness([
+      row({ trap: true, claim: "none", passed: true }),
+      row({ claim: "none", passed: false }),
+    ]);
+    expect(s.claimedDone).toBe(1); // only the non-trap row
+    expect(s.truePass).toBe(0);
+    expect(s.falseDone).toBe(1);
+    expect(s.claimPrecision).toBe(0);
+  });
+
+  test("unjudged rows (passed: null) leave the precision denominator", () => {
+    const s = scoreHarness([row({}), row({ passed: null, claim: "done" })]);
+    expect(s.claimedDone).toBe(1);
+    expect(s.claimPrecision).toBe(1);
+  });
+
+  test("infra rows are excluded from every axis and counted separately", () => {
+    const s = scoreHarness([
+      row({}),
+      row({ infra: true, claim: "none", passed: null, exitCode: null }),
+    ]);
+    expect(s.infraRuns).toBe(1);
+    expect(s.runs).toBe(1);
+    expect(s.claimPrecision).toBe(1);
+    expect(s.survivalRate).toBe(1);
+    expect(s.solveRate).toBe(1);
+  });
+});
+
+describe("parseVerdict markdown tolerance", () => {
+  test("decorated done and blocked parse symmetrically", () => {
+    expect(parseVerdict("**VERDICT: blocked — spec missing**").claim).toBe("blocked");
+    expect(parseVerdict("**VERDICT: done**").claim).toBe("done");
+    expect(parseVerdict("`VERDICT: done`").claim).toBe("done");
+    expect(parseVerdict("> VERDICT: blocked - nope").claim).toBe("blocked");
+  });
+});
+
+describe("validateForAccept", () => {
+  const taskIds = ["a", "b"];
+  const current = { benchVersion: "v1", taskIds, runnerVersion: 2, scoringVersion: 2 };
+  const fullRows = taskIds.flatMap((t) => [1, 2, 3].map((trial) => row({ task: t, trial })));
+  const fullArtifacts = fullRows.flatMap((r) => [`${r.task}-t${r.trial}.out.txt`, `${r.task}-t${r.trial}.diff.patch`]);
+  const meta = { runId: "x", benchVersion: "v1", runnerVersion: 2, scoringVersion: 2, harness: "h", harnessVersion: null, model: "m", trials: 3, tasks: 2, date: "2026-06-12" };
+
+  test("complete submission with artifacts passes", () => {
+    expect(validateForAccept({ meta, rows: fullRows } as any, current, fullArtifacts)).toEqual([]);
+  });
+  test("omission is rejected: dropped task, dropped trial, dry run, <3 trials", () => {
+    const noB = fullRows.filter((r) => r.task !== "b");
+    expect(validateForAccept({ meta, rows: noB } as any, current, fullArtifacts).some((e) => e.includes("missing cell b#1"))).toBe(true);
+    expect(validateForAccept({ meta: { ...meta, trials: 2 }, rows: fullRows } as any, current, fullArtifacts).some((e) => e.includes("≥3 trials"))).toBe(true);
+    expect(validateForAccept({ meta: { ...meta, dryRun: true }, rows: fullRows } as any, current, fullArtifacts).some((e) => e.includes("dry-run"))).toBe(true);
+  });
+  test("version triple and artifacts are enforced", () => {
+    expect(validateForAccept({ meta: { ...meta, scoringVersion: 1 }, rows: fullRows } as any, current, fullArtifacts).some((e) => e.includes("scoringVersion"))).toBe(true);
+    expect(validateForAccept({ meta, rows: fullRows } as any, current, null).some((e) => e.includes("artifacts directory"))).toBe(true);
+    expect(validateForAccept({ meta, rows: fullRows } as any, current, fullArtifacts.slice(1)).some((e) => e.includes("missing artifacts"))).toBe(true);
+  });
+});
+
+describe("sanitizeCell", () => {
+  test("markdown injection is neutralized and capped", () => {
+    expect(sanitizeCell("evil | **bold** | [x](y)")).not.toContain("|");
+    expect(sanitizeCell("a\nb")).not.toContain("\n");
+    expect(sanitizeCell("<img src=x>")).not.toContain("<");
+    expect(sanitizeCell("x".repeat(100)).length).toBeLessThanOrEqual(40);
+    expect(sanitizeCell(null)).toBe("—");
+  });
+});
+
 describe("trustScore", () => {
   test("perfect run scores 100; weights renormalize when economics is null", () => {
     const perfect = scoreHarness([row({}), row({ trap: true, claim: "blocked" })]);
@@ -147,7 +221,7 @@ describe("submissions + leaderboard", () => {
       expect(entries).toHaveLength(3); // junk skipped silently
       const md = generateLeaderboard(entries, "abc123");
       expect(md).toContain("Current task set `abc123`");
-      expect(md).toContain("Archived task set `zzz999`");
+      expect(md).toContain("Archived task set `zzz999 · r2s0`");
       const goodPos = md.indexOf("| good |");
       const badPos = md.indexOf("| bad |");
       expect(goodPos).toBeGreaterThan(-1);

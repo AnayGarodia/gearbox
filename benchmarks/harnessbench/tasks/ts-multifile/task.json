@@ -1,1 +1,1 @@
-{"id": "ts-multifile", "prompt": "prompt.md", "scope": ["src/**"], "trap": false, "check": ["bun", "test"], "category": "multi-file fix", "difficulty": "medium"}
+{"id": "ts-multifile", "prompt": "prompt.md", "scope": ["src/**"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "multi-file fix", "difficulty": "medium"}

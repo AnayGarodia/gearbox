@@ -26,6 +26,7 @@ export function loadSubmissions(dir: string): Entry[] {
     try {
       const sub = JSON.parse(readFileSync(join(dir, f), "utf8")) as Submission;
       if (!sub?.meta?.benchVersion || !Array.isArray(sub.rows) || sub.rows.length === 0) continue;
+      if (sub.meta.dryRun) continue; // plumbing runs carry no judgments
       out.push({ meta: sub.meta, report: scoreHarness(sub.rows, sub.meta.model), file: f });
     } catch {
       // a malformed submission never breaks the board; it is just absent
@@ -36,6 +37,13 @@ export function loadSubmissions(dir: string): Entry[] {
 
 const pct = (x: number | null) => (x == null ? "—" : `${(x * 100).toFixed(0)}%`);
 const usd = (x: number | null) => (x == null ? "—" : `$${x.toFixed(3)}`);
+
+/** Submitted strings land in committed markdown — neutralize table/HTML/link
+ *  syntax and cap length so a hostile meta.harness can't inject content. */
+export function sanitizeCell(s: string | null | undefined): string {
+  if (!s) return "—";
+  return s.replace(/[|\\<>\[\]`\n\r]/g, " ").replace(/\s+/g, " ").trim().slice(0, 40) || "—";
+}
 
 function table(entries: Entry[]): string {
   // Economics is RELATIVE within the comparison set: best $/trusted-done = 1.0.
@@ -54,15 +62,18 @@ function table(entries: Entry[]): string {
     const w = wilson(r.truePass, r.claimedDone);
     const cal = r.claimPrecision == null ? "—" : `${pct(r.claimPrecision)} <sub>${w ? `${(w[0] * 100).toFixed(0)}–${(w[1] * 100).toFixed(0)}` : ""}</sub>`;
     rows.push(
-      `| ${i + 1} | ${e.meta.harness} | ${e.meta.model ?? "—"} | **${t.score.toFixed(1)}** | ${cal} | ${r.falseDone}/${r.claimedDone} | ${r.trapCorrect}/${r.trapRuns} | ${pct(r.survivalRate)} | ${usd(r.costPerTrustedDone)} | ${pct(r.solveRate)} | ${r.runs} | ${e.meta.date.slice(0, 10)} |`,
+      `| ${i + 1} | ${sanitizeCell(e.meta.harness)} | ${sanitizeCell(e.meta.model)} | **${t.score.toFixed(1)}** | ${cal} | ${r.falseDone}/${r.claimedDone} | ${r.trapCorrect}/${r.trapRuns} | ${pct(r.survivalRate)} | ${usd(r.costPerTrustedDone)} | ${pct(r.solveRate)} | ${r.runs} | ${sanitizeCell(e.meta.date).slice(0, 10)} |`,
     );
   });
   return rows.join("\n");
 }
 
 export function generateLeaderboard(entries: Entry[], currentBenchVersion: string): string {
+  // Comparability key is the full version TRIPLE: task set + runner semantics
+  // + scoring/weights. Any of the three changing archives the table.
+  const verKey = (m: Submission["meta"]) => `${m.benchVersion} · r${m.runnerVersion}s${m.scoringVersion ?? 0}`;
   const byVersion = new Map<string, Entry[]>();
-  for (const e of entries) byVersion.set(e.meta.benchVersion, [...(byVersion.get(e.meta.benchVersion) ?? []), e]);
+  for (const e of entries) byVersion.set(verKey(e.meta), [...(byVersion.get(verKey(e.meta)) ?? []), e]);
 
   const out: string[] = [
     "# HarnessBench leaderboard",
@@ -75,10 +86,11 @@ export function generateLeaderboard(entries: Entry[], currentBenchVersion: strin
     `## Current task set \`${currentBenchVersion}\``,
     "",
   ];
-  const current = byVersion.get(currentBenchVersion) ?? [];
+  const currentEntry = [...byVersion.keys()].find((k) => k.startsWith(currentBenchVersion + " "));
+  const current = (currentEntry ? byVersion.get(currentEntry) : byVersion.get(currentBenchVersion)) ?? [];
   out.push(current.length ? table(current) : "_No submissions yet for the current task set._");
 
-  for (const [v, es] of [...byVersion.entries()].filter(([v]) => v !== currentBenchVersion)) {
+  for (const [v, es] of [...byVersion.entries()].filter(([v]) => !v.startsWith(currentBenchVersion))) {
     out.push("", `## Archived task set \`${v}\``, "", table(es));
   }
   out.push("");

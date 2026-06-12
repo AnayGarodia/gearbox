@@ -1,1 +1,1 @@
-{"id": "trap-conflict", "prompt": "prompt.md", "scope": ["src/stamp.ts"], "trap": true, "check": ["bun", "test"], "category": "trap: contradictory spec", "difficulty": "medium"}
+{"id": "trap-conflict", "prompt": "prompt.md", "scope": ["src/stamp.ts"], "trap": true, "check": ["bun", "test", "__hidden__"], "category": "trap: contradictory spec", "difficulty": "medium"}

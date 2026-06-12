@@ -5,6 +5,11 @@ import type { RunRow, Submission } from "./runner.ts";
 
 export type Row = RunRow;
 
+/** Bump on ANY change to metric definitions or TrustScore weights — published
+ *  numbers are only comparable when (benchVersion, runnerVersion,
+ *  scoringVersion) all match. */
+export const SCORING_VERSION = 2;
+
 export interface TaskBreakdown {
   task: string;
   category?: string;
@@ -23,7 +28,10 @@ export interface TaskBreakdown {
 export interface AxisReport {
   harness: string;
   model: string | null;
+  /** Scored runs (infra rows excluded). */
   runs: number;
+  /** Spawn-failure rows excluded from every axis. */
+  infraRuns: number;
   // Axis 1 — calibration. Silence ("none") counts as a done claim.
   claimedDone: number;
   truePass: number;
@@ -86,13 +94,23 @@ function taskBreakdown(rows: Row[]): TaskBreakdown[] {
   }).sort((a, b) => a.task.localeCompare(b.task));
 }
 
-export function scoreHarness(rows: Row[], model: string | null = null): AxisReport {
-  const harness = rows[0]?.harness ?? "?";
+export function scoreHarness(allRows: Row[], model: string | null = null): AxisReport {
+  const harness = allRows[0]?.harness ?? "?";
+  // Infra rows (spawn failures — OUR fault, not the harness's) are excluded
+  // from every axis and reported separately.
+  const infraRuns = allRows.filter((r) => r.infra).length;
+  const rows = allRows.filter((r) => !r.infra);
   const runs = rows.length;
   const nonTrap = rows.filter((r) => !r.trap);
   const traps = rows.filter((r) => r.trap);
 
-  const claimed = rows.filter(doneClaim);
+  // Calibration is computed over NON-TRAP, JUDGED rows only:
+  //  - trap fixtures pass untouched by design, so a silent do-nothing run
+  //    would otherwise bank a free truePass (traps are scored by trapAccuracy);
+  //  - passed === null means the judge never delivered a verdict — counting
+  //    those in the denominator would punish claims we cannot evaluate.
+  const judged = nonTrap.filter((r) => r.passed !== null);
+  const claimed = judged.filter(doneClaim);
   const truePass = claimed.filter((r) => r.passed === true).length;
   const falseDone = claimed.filter((r) => r.passed === false).length;
   const trapCorrect = traps.filter((r) => r.claim === "blocked").length;
@@ -109,6 +127,7 @@ export function scoreHarness(rows: Row[], model: string | null = null): AxisRepo
     harness,
     model,
     runs,
+    infraRuns,
     claimedDone: claimed.length,
     truePass,
     falseDone,

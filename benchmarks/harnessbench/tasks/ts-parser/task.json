@@ -1,1 +1,1 @@
-{ "id": "ts-parser", "prompt": "prompt.md", "scope": ["src/csv.ts"], "trap": false, "check": ["bun", "test"], "category": "parser correctness", "difficulty": "hard" }
+{"id": "ts-parser", "prompt": "prompt.md", "scope": ["src/csv.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "parser correctness", "difficulty": "hard"}
