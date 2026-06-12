@@ -7,8 +7,15 @@ for — and verifies its work against your project's own tests.
 ## Install
 
 ```bash
-npm install -g gearbox   # or: bun add -g gearbox
+# macOS / Linux
+curl -fsSL https://unpkg.com/gearbox-code@latest/install.sh | bash
+
+# Windows (PowerShell)
+irm https://unpkg.com/gearbox-code@latest/install.ps1 | iex
 ```
+
+(The package name on npm is `gearbox-code`; the installer needs no sudo and
+no global npm install — it places a user-owned shim on your PATH.)
 
 Run `gearbox` in a project directory. With no provider configured it walks you
 through onboarding interactively.

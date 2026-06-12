@@ -31,7 +31,7 @@ pure). Guards regressions; proves nothing about quality.
 - Arms: (a) routed, (b) pinned opus, (c) pinned cheap (haiku/deepseek) as the
   floor, (d) routed-with-warm-priors (after a seed pass) for H2.
 - Runner: `gearbox -p` headless with --yolo in a throwaway container per task
-  (the bwrap/seatbelt sandbox stays on); capture VERIFY tier + pass/fail,
+  (the OS sandbox stays on: seatbelt on macOS, bwrap on Linux where installed — the container is the hard isolation boundary); capture VERIFY tier + pass/fail,
   ledger cost, wall time, hops. One JSON row per (task, arm, trial); ≥3 trials
   per cell (models are stochastic).
 - Metrics: pass rate, $/solved-task (cost divided by passes — the honest
