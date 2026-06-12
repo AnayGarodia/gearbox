@@ -28,7 +28,7 @@ import { preferenceFor, globalPreference, policy, type Policy } from "./preferen
 import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
-import { coolingDown, modelScopedKey } from "./cooldown.ts";
+import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
 import { priorFor, priorLine, failRateFor } from "./priors.ts";
 
 type Kind = NonNullable<Task["kind"]>;
@@ -436,8 +436,7 @@ export class RoutingSelector implements ModelSelector {
       winner.backend?.kind !== "cli"
         ? this.cooledOut.find((c) => c.backend?.kind === "cli" && (c.canonicalId ?? c.spec.id) === (winner.canonicalId ?? winner.spec.id))
         : undefined;
-    const seatNote = skippedSeat ? ` · ${skippedSeat.state.accountId} seat cooling down (rate limited) — back automatically when it clears` : "";
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + seatNote, backend: winner.backend };
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend };
   }
 
   // Build the full ranked scorecard for the "/why" UI panel. Scores the entire
@@ -500,7 +499,12 @@ export class RoutingSelector implements ModelSelector {
     // Sort: chosen first, then bar-clearing candidates by score (ascending, so
     // best candidates are listed first), then below-bar candidates.
     entries.sort((a, b) => Number(b.chosen) - Number(a.chosen) || Number(b.verdict !== "below bar") - Number(a.verdict !== "below bar") || a.score - b.score);
-    return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries };
+    // Parity with select()'s reason line: candidates cooldown excluded from
+    // the race must be visible here too, or /why and the pick note disagree.
+    const cooledNote = this.cooledOut.length
+      ? `cooling down, not scored: ${[...new Set(this.cooledOut.map((c) => `${c.spec.label} via ${c.state.accountId}`))].join(", ")}`
+      : undefined;
+    return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: cooledNote };
   }
 }
 
@@ -548,6 +552,17 @@ function applyGlobalPreference(pool: Candidate[]): Candidate[] {
 // Build the human-readable reason string shown in the UI and routing scorecard.
 // Shows in/out prices separately rather than a blended rate, because a blended
 // rate is neither the input price nor the output price and is therefore misleading.
+/** Why a cooled-out seat sat out, in the parked reason's own words: a rate
+ *  park heals itself, an auth park needs the user (`/account login <name>`).
+ *  Hardcoding "(rate limited)" here misdiagnosed expired logins (review). */
+function seatSkipNote(seat: Candidate | undefined, now: number): string {
+  if (!seat) return "";
+  const acct = seat.state.accountId;
+  const reason = cooldownReason(acct, now) ?? cooldownReason(modelScopedKey(acct, seat.spec.id), now) ?? "";
+  const why = classifyFailure(reason) === "auth" ? `signed out — /account login ${acct} to use it again` : "rate limited — back automatically when the window clears";
+  return ` · ${acct} seat skipped (${why})`;
+}
+
 function reasonFor(c: Candidate, kind: Kind, required: string[]): string {
   const caps = required.length ? ` · ${required.join("+")} required` : "";
   if (c.backend.kind === "cli") return `${kind}${caps} · ${c.backend.binary} subscription · seat`;

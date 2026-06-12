@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseOsc11, isLightLuminance, colorFgBgIsLight } from "../src/ui/term-bg.ts";
+import { parseOsc11, isLightLuminance, colorFgBgIsLight, stripProbeReplies } from "../src/ui/term-bg.ts";
 
 test("parseOsc11 reads 16-bit-per-channel replies (the common shape)", () => {
   // iTerm2/Ghostty white background
@@ -36,4 +36,17 @@ test("COLORFGBG fallback: bg index decides; malformed → null", () => {
   expect(colorFgBgIsLight("default;default")).toBeNull();
   expect(colorFgBgIsLight(undefined)).toBeNull();
   expect(colorFgBgIsLight("")).toBeNull();
+});
+
+test("parseOsc11 requires a terminator — a partial reply keeps accumulating", () => {
+  expect(parseOsc11("\x1b]11;rgb:ffff/ffff")).toBeNull();
+  expect(parseOsc11("\x1b]11;rgb:ffff/ffff/ff")).toBeNull(); // truncated mid-channel
+});
+
+test("stripProbeReplies removes elicited replies and keeps user keystrokes", () => {
+  // keystroke + OSC11 reply + DA1 reply interleaved, in arrival order
+  const buf = "h\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\i\x1b[?62;c!";
+  expect(stripProbeReplies(buf)).toBe("hi!");
+  expect(stripProbeReplies("\x1b]11;rgb:ffff/ffff/ffff\x07")).toBe("");
+  expect(stripProbeReplies("plain typing")).toBe("plain typing");
 });

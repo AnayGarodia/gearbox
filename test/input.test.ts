@@ -206,3 +206,9 @@ test("plain enter without a trailing backslash still submits", () => {
   // backslash elsewhere in the text (not at the cursor) does not block submit
   expect(applyKey({ value: "a\\b", cursor: 1 }, "", { return: true } as any).type).toBe("submit");
 });
+
+test("double backslash + enter submits with one literal backslash", () => {
+  const a = applyKey({ value: "the path is C:\\temp\\\\", cursor: 21 }, "", { return: true } as any);
+  expect(a.type).toBe("submit");
+  if (a.type === "submit") expect(a.value).toBe("the path is C:\\temp\\");
+});

@@ -4106,7 +4106,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           setEdit(action.state);
           break;
         case "submit":
-          submit(editRef.current.value);
+          submit(action.value ?? editRef.current.value);
           break;
         case "history": {
           if (histIdxRef.current === null) liveLineRef.current = editRef.current.value; // stash the live draft before stepping into history
