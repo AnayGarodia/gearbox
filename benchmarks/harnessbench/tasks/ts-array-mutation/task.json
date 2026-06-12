@@ -1,0 +1,9 @@
+{
+  "id": "ts-array-mutation",
+  "prompt": "prompt.md",
+  "scope": ["src/ranking.ts"],
+  "trap": false,
+  "check": ["bun", "test", "__hidden__"],
+  "category": "bug fix",
+  "difficulty": "medium"
+}

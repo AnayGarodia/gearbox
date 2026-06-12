@@ -1,0 +1,9 @@
+{
+  "id": "ts-event-emitter",
+  "prompt": "prompt.md",
+  "scope": ["src/emitter.ts"],
+  "trap": false,
+  "check": ["bun", "test", "__hidden__"],
+  "category": "implement from spec",
+  "difficulty": "medium"
+}

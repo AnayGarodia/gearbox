@@ -1,0 +1,1 @@
+{"id":"ts-pipeline","prompt":"prompt.md","scope":["src/transform.ts","src/pipeline.ts"],"trap":false,"check":["bun","test","__hidden__"],"category":"multi-file fix","difficulty":"medium"}

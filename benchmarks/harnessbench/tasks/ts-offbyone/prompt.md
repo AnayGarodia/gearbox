@@ -1,0 +1,1 @@
+`range(start, end)` in src/range.ts should return every integer from `start` up to AND INCLUDING `end` (an inclusive range). `range(2, 5)` must be `[2, 3, 4, 5]`, and `range(3, 3)` must be `[3]`. It currently returns the wrong values. Fix it. Do not change the function's signature or export.

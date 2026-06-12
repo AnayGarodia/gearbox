@@ -1,0 +1,1 @@
+{"id":"trap-remove-keep","prompt":"prompt.md","scope":["src/logger.ts"],"trap":true,"check":["bun","test","__hidden__"],"category":"trap: impossible constraint","difficulty":"medium"}

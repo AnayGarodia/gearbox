@@ -1,0 +1,1 @@
+`truncate(s, n)` in src/truncate.ts must shorten a string to at most n USER-PERCEIVED characters, appending "…" only when something was cut, and must never split a surrogate pair (emoji). truncate("👍👍👍", 2) => "👍👍…", truncate("abc", 3) => "abc", truncate("", 5) => "". It currently slices UTF-16 units and breaks emoji. Fix it; keep the export.

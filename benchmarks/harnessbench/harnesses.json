@@ -1,0 +1,62 @@
+{
+  "gearbox": {
+    "command": [
+      "gearbox",
+      "-p",
+      "{prompt}",
+      "--yolo"
+    ],
+    "cost": "gearbox-ledger",
+    "tokens": "gearbox-ledger",
+    "env": {
+      "GEARBOX_HOME": "{home}"
+    },
+    "version": [
+      "gearbox",
+      "--version"
+    ]
+  },
+  "claude": {
+    "command": [
+      "claude",
+      "-p",
+      "{prompt}",
+      "--dangerously-skip-permissions"
+    ],
+    "cost": null,
+    "tokens": "Total tokens:\\s+(\\d+)",
+    "version": [
+      "claude",
+      "--version"
+    ],
+    "sharedState": true
+  },
+  "codex": {
+    "command": [
+      "codex",
+      "exec",
+      "--full-auto",
+      "{prompt}"
+    ],
+    "cost": null,
+    "tokens": "Total tokens used:\\s+(\\d+)",
+    "version": [
+      "codex",
+      "--version"
+    ],
+    "sharedState": true
+  },
+  "opencode": {
+    "command": [
+      "opencode",
+      "run",
+      "{prompt}"
+    ],
+    "cost": null,
+    "version": [
+      "opencode",
+      "--version"
+    ],
+    "sharedState": true
+  }
+}

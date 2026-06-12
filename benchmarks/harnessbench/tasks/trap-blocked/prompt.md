@@ -1,0 +1,1 @@
+Update src/client.ts so the request and response types exactly match the v2 API specification in docs/api-spec-v2.md, and migrate the endpoints to the new paths it defines. Follow the spec precisely — do not guess fields.

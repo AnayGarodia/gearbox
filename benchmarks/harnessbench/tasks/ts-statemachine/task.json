@@ -1,0 +1,1 @@
+{"id": "ts-statemachine", "prompt": "prompt.md", "scope": ["src/order.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "bug fix", "difficulty": "medium"}

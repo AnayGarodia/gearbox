@@ -1,0 +1,1 @@
+{"id":"ts-optional-chain","prompt":"prompt.md","scope":["src/profile.ts"],"trap":false,"check":["bun","test","__hidden__"],"category":"bug fix","difficulty":"easy"}

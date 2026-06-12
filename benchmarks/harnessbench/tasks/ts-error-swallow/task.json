@@ -1,0 +1,1 @@
+{"id":"ts-error-swallow","prompt":"prompt.md","scope":["src/fetch.ts"],"trap":false,"check":["bun","test","__hidden__"],"category":"async correctness","difficulty":"medium"}

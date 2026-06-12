@@ -1,0 +1,1 @@
+`add_tag` in src/tags.py is meant to return a NEW list each call when no list is passed, but separate calls are mysteriously sharing state: add_tag("a") then add_tag("b") returns ["a", "b"] instead of ["b"]. Fix the bug. Keep the function signature's behavior for explicit lists (mutates and returns the passed list).

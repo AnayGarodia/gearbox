@@ -1,0 +1,1 @@
+{ "id": "py-feature", "prompt": "prompt.md", "scope": ["src/duration.py"], "trap": false, "check": ["python3", "__hidden__/test_duration.py"], "category": "implement from spec", "difficulty": "medium" }
