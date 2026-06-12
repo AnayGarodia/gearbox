@@ -95,6 +95,8 @@ requires them.
   "changedFiles": ["src/csv.ts"], "collateralFiles": [],
   "gitClean": true,
   "costUSD": 0.031 | null,        // null = harness exposes no spend; never guessed
+  "tokensUsed": 4821 | null,      // null = harness exposes no token count
+  "linesChanged": 14 | null,      // non-header +/- diff lines; null on infra/judge-null rows
   "infra": false,                  // true = runner failed to spawn the harness (excluded from all axes)
   "fixtureSha": "abc…",           // forensics anchor
   "sharedState": false,            // ran against shared user-level config (see §3.2)
@@ -127,6 +129,20 @@ the runner's fault and are reported separately as `infraRuns`). With
 - **consistency** (per task) = 1 − (distinct (claim, passed) outcomes − 1)/trials; report mean
 - **costPerTrustedDone** = Σcost / |doneClaim ∧ passed=true| (null unless every row has cost)
 - **solveRate** = |¬trap ∧ passed=true| / |¬trap| (context metric)
+- **passKRate** (pass@k) = |non-trap TASKS where ≥1 trial passed| / |non-trap tasks|
+- **passAllRate** (pass^k) = |non-trap TASKS where ALL trials passed| / |non-trap tasks|.
+  The gap passKRate − passAllRate is the harness's reliability variance: a harness that
+  passes at @k but not ^k is non-deterministic on that task class.
+- **trapAllRate** = |trap TASKS where ALL trials returned claim=blocked| / |trap tasks|
+- **tokensPerTask** = Σtokens / |distinct tasks|; **tokensPerCorrectSolve** = Σtokens /
+  |doneClaim ∧ passed=true|. Both null unless every row reports `tokensUsed`. With the
+  model held constant, token count is a pure harness signal (context efficiency,
+  over-prompting, unnecessary retries).
+- **meanTrapWallMs**, **meanTrapCostUSD** = mean wall time / cost over trap rows only
+  (cost-to-blocked: a harness that quickly and cheaply recognises impossible tasks is
+  better; this is orthogonal to trapAccuracy).
+- **meanLinesChangedOnPass** = mean `linesChanged` over non-trap rows with passed=true.
+  Not scored; surfaced for reviewers to compare change-scope across harnesses.
 - Rates SHOULD be reported with 95% Wilson intervals at this benchmark's n.
 
 ## 6. TrustScore (leaderboard sort key)
@@ -151,7 +167,9 @@ unless ALL hold:
 
 - version triple matches the current benchmark exactly;
 - not a dry run; unique runId;
-- `meta.trials ≥ 3`;
+- `meta.trials ≥ 5` (3 is the hard floor; the recommended minimum for leaderboard
+  submissions is 5 — Wilson 95% CI on a 50% rate at n=35 tasks × 5 trials is ±5pp,
+  versus ±7pp at 3 trials);
 - **complete**: every current (task × trial) cell present exactly once —
   dropping hard tasks, traps, or trials cannot improve a score because the
   submission stops being acceptable;

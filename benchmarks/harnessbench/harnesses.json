@@ -7,6 +7,7 @@
       "--yolo"
     ],
     "cost": "gearbox-ledger",
+    "tokens": "gearbox-ledger",
     "env": {
       "GEARBOX_HOME": "{home}"
     },
@@ -23,6 +24,7 @@
       "--dangerously-skip-permissions"
     ],
     "cost": null,
+    "tokens": "Total tokens:\\s+(\\d+)",
     "version": [
       "claude",
       "--version"
@@ -37,6 +39,7 @@
       "{prompt}"
     ],
     "cost": null,
+    "tokens": "Total tokens used:\\s+(\\d+)",
     "version": [
       "codex",
       "--version"

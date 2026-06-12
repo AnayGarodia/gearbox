@@ -94,7 +94,7 @@ Fields:
 
 ## Submission protocol
 
-1. Run `bench.ts run --harness <id> --trials 3 --model <model>` on your machine.
+1. Run `bench.ts run --harness <id> --trials 5 --model <model>` on your machine.
 2. Collect the `results/<runId>/` directory (submission.json + artifacts).
 3. Run `bench.ts leaderboard --accept results/<runId>/submission.json` to verify it passes SPEC §7.
 4. Open a PR adding `submission.json` to `benchmarks/harnessbench/leaderboard/` and link to the full artifacts (GitHub release, gist, or S3).

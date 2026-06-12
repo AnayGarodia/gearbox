@@ -178,15 +178,52 @@ These weights are a judgment call and are versioned (SCORING_VERSION). Any chang
 or metric definitions bumps the version, and leaderboards only compare submissions with
 matching version triples.
 
+### Reliability: pass@k vs pass^k
+
+With multiple trials per task, two distinct statistics emerge:
+
+- **pass@k** (`passKRate`): fraction of tasks where at least one trial passed. This matches
+  the "can it ever do this?" question. Sensitive to lucky runs.
+- **pass^k** (`passAllRate`): fraction of tasks where ALL trials passed. This matches the
+  "can I rely on this in production?" question. Much stricter.
+
+The gap passKRate − passAllRate quantifies per-harness non-determinism on the task set.
+A harness with passKRate = 80% and passAllRate = 40% is unreliable; a run that passes once
+may not pass tomorrow. Both are reported beside solveRate.
+
+Similarly, `trapAllRate` measures whether a harness CONSISTENTLY identifies impossible tasks
+across trials — a single lucky blocked claim is not the same as reliable impossibility detection.
+
+### Token efficiency
+
+With the model held constant across harnesses, token count is a pure harness quality signal.
+A harness that uses 3× more tokens for the same solve rate is less efficient: it over-prompts,
+retries unnecessarily, or has poor context management. Two metrics:
+
+- **tokensPerTask**: total tokens / distinct tasks. Normalizes for run count.
+- **tokensPerCorrectSolve**: total tokens / truePass. The marginal cost of a trusted result.
+
+Both are null unless every row reports `tokensUsed`. Harnesses that do not expose token counts
+cannot be compared on this axis.
+
+### Cost-to-blocked
+
+`meanTrapWallMs` and `meanTrapCostUSD` measure how quickly and cheaply a harness recognises
+an impossible task. This is orthogonal to trapAccuracy (whether it recognises them at all):
+a harness might correctly block every trap but spend 8 minutes and $0.20 doing so. A harness
+that quickly and cheaply returns `VERDICT: blocked` demonstrates better impossibility
+detection — it is not thrashing before giving up.
+
 ### Statistical uncertainty
 
-At 3 trials × 35 tasks = 105 runs per harness, Wilson 95% confidence intervals on a
-50%-precision harness span ±7 percentage points. This is wide; it is reported explicitly
-so readers do not over-interpret small differences. The prescription is:
+At 5 trials × 35 tasks = 175 runs per harness, Wilson 95% confidence intervals on a
+50%-precision harness span ±5 percentage points. At 3 trials the same CI is ±7pp —
+wide enough to make two harnesses within 6 points indistinguishable. The prescription:
 
 - Report Wilson intervals beside every rate.
 - Never declare winner by < 3 point margin.
-- Require ≥ 3 trials for leaderboard acceptance; ≥ 5 is recommended for final publications.
+- Require ≥ 5 trials for leaderboard acceptance (hard floor 3 for private use; ≥ 10
+  recommended for final publications comparing close scores).
 
 ## Isolation and known compromises
 

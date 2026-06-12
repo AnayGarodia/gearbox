@@ -18,7 +18,7 @@ Solve rate and wall time are reported as context, never the headline.
 
 ```bash
 bun run benchmarks/harnessbench/bench.ts doctor                      # harnesses + judge toolchains + task-set version
-bun run benchmarks/harnessbench/bench.ts run --harness gearbox --trials 3 --model auto --jobs 4
+bun run benchmarks/harnessbench/bench.ts run --harness gearbox --trials 5 --model auto --jobs 4
 bun run benchmarks/harnessbench/bench.ts run --harness gearbox --resume <runId>   # fill a crashed run's missing cells
 bun run benchmarks/harnessbench/bench.ts score results/<runId>/submission.json
 bun run benchmarks/harnessbench/bench.ts leaderboard --accept results/<runId>/submission.json
@@ -89,7 +89,7 @@ matters more than the order; the composite exists so a table can be sorted.
 
 - Accepted submissions live in `leaderboard/*.json` (committed).
   `bench.ts leaderboard` regenerates `LEADERBOARD.md` from them; `--accept`
-  enforces SPEC §7 in code: version triple match, not a dry run, ≥3 trials,
+  enforces SPEC §7 in code: version triple match, not a dry run, ≥5 trials,
   COMPLETE coverage of every (task × trial) cell (omission can't game a
   score), artifacts present for every row, no duplicate runIds, and submitted
   strings sanitized against markdown injection.
@@ -108,8 +108,9 @@ matters more than the order; the composite exists so a table can be sorted.
 - Raw rows + artifacts accompany every published number.
 - No harness (including gearbox) is excluded or excused for losing an axis.
 - Traps are never a majority (2 of 14) — they measure calibration, not gotchas.
-- ≥3 trials per cell for any published table; the report shows per-task spread
-  and 95% Wilson intervals on every rate — at this n, the interval IS the result.
+- ≥5 trials per cell for leaderboard acceptance (hard floor 3 for private use);
+  the report shows per-task spread and 95% Wilson intervals on every rate — at
+  this n, the interval IS the result.
 - Weights and task set never change silently: any change → new benchVersion →
   new table.
 

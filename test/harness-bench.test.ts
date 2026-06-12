@@ -159,17 +159,17 @@ import { createHash } from "node:crypto";
 describe("validateForAccept", () => {
   const taskIds = ["a", "b"];
   const current = { benchVersion: "v1", taskIds, runnerVersion: 2, scoringVersion: 2 };
-  const fullRows = taskIds.flatMap((t) => [1, 2, 3].map((trial) => row({ task: t, trial })));
+  const fullRows = taskIds.flatMap((t) => [1, 2, 3, 4, 5].map((trial) => row({ task: t, trial })));
   const fullArtifacts = fullRows.flatMap((r) => [`${r.task}-t${r.trial}.out.txt`, `${r.task}-t${r.trial}.diff.patch`]);
-  const meta = { runId: "x", benchVersion: "v1", runnerVersion: 2, scoringVersion: 2, harness: "h", harnessVersion: null, model: "m", trials: 3, tasks: 2, date: "2026-06-12" };
+  const meta = { runId: "x", benchVersion: "v1", runnerVersion: 2, scoringVersion: 2, harness: "h", harnessVersion: null, model: "m", trials: 5, tasks: 2, date: "2026-06-12" };
 
   test("complete submission with artifacts passes", () => {
     expect(validateForAccept({ meta, rows: fullRows } as any, current, fullArtifacts)).toEqual([]);
   });
-  test("omission is rejected: dropped task, dropped trial, dry run, <3 trials", () => {
+  test("omission is rejected: dropped task, dropped trial, dry run, <5 trials", () => {
     const noB = fullRows.filter((r) => r.task !== "b");
     expect(validateForAccept({ meta, rows: noB } as any, current, fullArtifacts).some((e) => e.includes("missing cell b#1"))).toBe(true);
-    expect(validateForAccept({ meta: { ...meta, trials: 2 }, rows: fullRows } as any, current, fullArtifacts).some((e) => e.includes("≥3 trials"))).toBe(true);
+    expect(validateForAccept({ meta: { ...meta, trials: 4 }, rows: fullRows } as any, current, fullArtifacts).some((e) => e.includes("≥5 trials"))).toBe(true);
     expect(validateForAccept({ meta: { ...meta, dryRun: true }, rows: fullRows } as any, current, fullArtifacts).some((e) => e.includes("dry-run"))).toBe(true);
   });
   test("version triple and artifacts are enforced", () => {
@@ -190,8 +190,8 @@ describe("validateForAccept", () => {
       // write a DIFFERENT artifact for a-t2 but embed the original hash
       writeFileSync(join(dir, "a-t2.out.txt"), "DIFFERENT");
       writeFileSync(join(dir, "a-t2.diff.patch"), "DIFFERENT");
-      for (const t of [1, 2, 3]) { writeFileSync(join(dir, `b-t${t}.out.txt`), "x"); writeFileSync(join(dir, `b-t${t}.diff.patch`), "x"); }
-      writeFileSync(join(dir, "a-t3.out.txt"), "x"); writeFileSync(join(dir, "a-t3.diff.patch"), "x");
+      for (const t of [1, 2, 3, 4, 5]) { writeFileSync(join(dir, `b-t${t}.out.txt`), "x"); writeFileSync(join(dir, `b-t${t}.diff.patch`), "x"); }
+      for (const t of [3, 4, 5]) { writeFileSync(join(dir, `a-t${t}.out.txt`), "x"); writeFileSync(join(dir, `a-t${t}.diff.patch`), "x"); }
 
       const rowsWithHashes = fullRows.map((r) => {
         if (r.task === "a" && r.trial === 1) return { ...r, artifactHashes: { out: hash(outContent), diff: hash(diffContent) } };
@@ -279,6 +279,108 @@ describe("submissions + leaderboard", () => {
     const out = formatReport(s);
     expect(out).toContain("TrustScore");
     expect(out).toContain("⚠ u");
+  });
+});
+
+describe("scoreHarness v2.6 metrics", () => {
+  const mkRow = (overrides: Partial<Row> = {}): Row => ({
+    task: "t", harness: "h", trial: 1, trap: false,
+    claim: "done", passed: true, exitCode: 0, timedOut: false,
+    changedFiles: [], collateralFiles: [], gitClean: true,
+    costUSD: 0.01, tokensUsed: 1000, linesChanged: 20,
+    wallMs: 5000, at: "2026-01-01T00:00:00Z",
+    ...overrides,
+  });
+
+  test("pass@k and pass^k — all-pass task", () => {
+    const rows = [mkRow({ task: "a", trial: 1 }), mkRow({ task: "a", trial: 2 })];
+    const s = scoreHarness(rows);
+    expect(s.passKCount).toBe(1);
+    expect(s.passKRate).toBe(1);
+    expect(s.passAllCount).toBe(1);
+    expect(s.passAllRate).toBe(1);
+  });
+
+  test("pass@k and pass^k — mixed task (some pass some fail)", () => {
+    const rows = [
+      mkRow({ task: "a", trial: 1, passed: true }),
+      mkRow({ task: "a", trial: 2, passed: false }),
+      mkRow({ task: "b", trial: 1, passed: false }),
+      mkRow({ task: "b", trial: 2, passed: false }),
+    ];
+    const s = scoreHarness(rows);
+    expect(s.passKCount).toBe(1); // task "a" had at least one pass
+    expect(s.passKRate).toBe(0.5);
+    expect(s.passAllCount).toBe(0); // no task had all trials pass
+    expect(s.passAllRate).toBe(0);
+  });
+
+  test("trap^k — all trap trials correctly identified", () => {
+    const rows = [
+      mkRow({ task: "trap1", trap: true, claim: "blocked", passed: null, trial: 1 }),
+      mkRow({ task: "trap1", trap: true, claim: "blocked", passed: null, trial: 2 }),
+      mkRow({ task: "trap2", trap: true, claim: "done", passed: null, trial: 1 }),
+    ];
+    const s = scoreHarness(rows);
+    expect(s.trapAllCount).toBe(1); // only trap1 had all trials blocked
+    expect(s.trapAllRate).toBeCloseTo(0.5); // 1 of 2 trap tasks
+  });
+
+  test("cost-to-blocked: meanTrapWallMs and meanTrapCostUSD", () => {
+    const rows = [
+      mkRow({ task: "trap1", trap: true, claim: "blocked", passed: null, wallMs: 2000, costUSD: 0.01 }),
+      mkRow({ task: "trap2", trap: true, claim: "blocked", passed: null, wallMs: 4000, costUSD: 0.03 }),
+    ];
+    const s = scoreHarness(rows);
+    expect(s.meanTrapWallMs).toBe(3000);
+    expect(s.meanTrapCostUSD).toBeCloseTo(0.02);
+  });
+
+  test("cost-to-blocked is null when no trap rows", () => {
+    const s = scoreHarness([mkRow()]);
+    expect(s.meanTrapWallMs).toBeNull();
+    expect(s.meanTrapCostUSD).toBeNull();
+  });
+
+  test("tokensPerTask and tokensPerCorrectSolve", () => {
+    const rows = [
+      mkRow({ task: "a", trial: 1, tokensUsed: 1000, passed: true }),
+      mkRow({ task: "a", trial: 2, tokensUsed: 2000, passed: false }),
+    ];
+    const s = scoreHarness(rows);
+    expect(s.totalTokens).toBe(3000);
+    expect(s.tokensPerTask).toBe(3000); // 3000 tokens / 1 task
+    expect(s.tokensPerCorrectSolve).toBe(3000); // 3000 tokens / 1 true pass
+  });
+
+  test("tokensPerTask is null when some rows have no token data", () => {
+    const rows = [mkRow({ tokensUsed: 1000 }), mkRow({ task: "b", tokensUsed: null })];
+    const s = scoreHarness(rows);
+    expect(s.totalTokens).toBeNull();
+    expect(s.tokensPerTask).toBeNull();
+  });
+
+  test("meanLinesChangedOnPass", () => {
+    const rows = [
+      mkRow({ task: "a", passed: true, linesChanged: 10 }),
+      mkRow({ task: "b", passed: true, linesChanged: 30 }),
+      mkRow({ task: "c", passed: false, linesChanged: 5 }), // not counted
+    ];
+    const s = scoreHarness(rows);
+    expect(s.meanLinesChangedOnPass).toBe(20);
+  });
+
+  test("formatReport includes reliability, tokens, cost-blocked lines", () => {
+    const rows = [
+      mkRow({ task: "a" }),
+      mkRow({ task: "b", trap: true, claim: "blocked", passed: null }),
+    ];
+    const out = formatReport(scoreHarness(rows));
+    expect(out).toContain("reliability");
+    expect(out).toContain("tokens");
+    expect(out).toContain("cost-blocked");
+    expect(out).toContain("pass@k");
+    expect(out).toContain("pass^k");
   });
 });
 

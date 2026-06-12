@@ -35,6 +35,10 @@ export interface TaskSpec {
 export interface HarnessSpec {
   command: string[];
   cost: "gearbox-ledger" | null;
+  /** How to capture token usage. "gearbox-ledger" reads inputTokens+outputTokens
+   *  from the ledger. A regex string is applied to the harness stdout/stderr to
+   *  extract a numeric token count (first capture group, parsed as integer). */
+  tokens?: "gearbox-ledger" | string | null;
   env?: Record<string, string>;
   /** How to capture the harness version for the submission metadata. */
   version?: string[];
@@ -73,6 +77,11 @@ export interface RunRow {
    *  validateForAccept can verify the artifact files have not been swapped. */
   artifactHashes?: { out: string; diff: string };
   costUSD: number | null;
+  /** Total tokens used (input + output). null if the harness does not expose usage. */
+  tokensUsed?: number | null;
+  /** Lines added + removed in the diff vs fixtureSha (excluding diff headers).
+   *  A proxy for change size — not scored, surfaced for review. */
+  linesChanged?: number | null;
   wallMs: number;
   at: string;
 }
@@ -234,6 +243,32 @@ function ledgerSpend(home: string): number | null {
   }
 }
 
+function ledgerTokens(home: string): number | null {
+  try {
+    const f = join(home, "ledger.jsonl");
+    if (!existsSync(f)) return null;
+    let total = 0;
+    let hasData = false;
+    for (const line of readFileSync(f, "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const ev = JSON.parse(line);
+        const i = typeof ev.inputTokens === "number" ? ev.inputTokens : 0;
+        const o = typeof ev.outputTokens === "number" ? ev.outputTokens : 0;
+        if (i > 0 || o > 0) { total += i + o; hasData = true; }
+      } catch {}
+    }
+    return hasData ? total : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Count non-header diff lines (lines added + removed) in a unified diff string. */
+export function countLinesChanged(diff: string): number {
+  return diff.split("\n").filter((l) => (l.startsWith("+") || l.startsWith("-")) && !l.startsWith("+++") && !l.startsWith("---")).length;
+}
+
 /**
  * The environment a harness cell runs in. Built from an ALLOWLIST, not a
  * process.env spread: no PWD/OLDPWD (would leak the benchmark repo path to a
@@ -353,11 +388,19 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     for (const cfg of ["bunfig.toml", ".bunfig.toml", "conftest.py", "sitecustomize.py"]) {
       if (!existsSync(join(taskDir, "repo", cfg))) rmSync(join(work, cfg), { force: true });
     }
+    // Write the harness verdict so trap judges can verify the reason.
+    writeFileSync(join(work, "__verdict.json"), JSON.stringify({ claim: verdict.claim, reason: verdict.reason ?? null }));
     // Dry run = plumbing only: the judge never ran, so passed is unknowable.
     const check = opts.dryRun || infra ? null : await sh(task.check, work, undefined, 120_000);
     const passed = check == null || check.timedOut || check.code === null ? null : check.code === 0;
 
     const costUSD = harness.cost === "gearbox-ledger" ? ledgerSpend(home) : null;
+    const tokensUsed = harness.tokens === "gearbox-ledger"
+      ? ledgerTokens(home)
+      : harness.tokens
+        ? (() => { const m = new RegExp(harness.tokens as string).exec(run.out); return m ? parseInt(m[1]!, 10) || null : null; })()
+        : null;
+    const linesChanged = countLinesChanged(diff);
 
     return {
       task: task.id, category: task.category, difficulty: task.difficulty, harness: harnessName, trial, trap: task.trap,
@@ -366,7 +409,8 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
       fixtureSha, sharedState: harness.sharedState === true,
       changedFiles, collateralFiles, gitClean,
       artifactHashes: { out: outHash, diff: diffHash },
-      costUSD, wallMs,
+      costUSD, tokensUsed, linesChanged,
+      wallMs,
       at: new Date().toISOString(),
     };
   } finally {

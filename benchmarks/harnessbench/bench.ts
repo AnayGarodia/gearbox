@@ -245,7 +245,7 @@ export function validateForAccept(
   if (sub.meta.benchVersion !== current.benchVersion) errs.push(`benchVersion ${sub.meta.benchVersion} ≠ current ${current.benchVersion} — rerun on the current task set`);
   if (sub.meta.runnerVersion !== current.runnerVersion) errs.push(`runnerVersion ${sub.meta.runnerVersion} ≠ current ${current.runnerVersion}`);
   if ((sub.meta.scoringVersion ?? 0) !== current.scoringVersion) errs.push(`scoringVersion ${sub.meta.scoringVersion ?? "absent"} ≠ current ${current.scoringVersion}`);
-  if (sub.meta.trials < 3) errs.push(`published tables need ≥3 trials per cell (got ${sub.meta.trials})`);
+  if (sub.meta.trials < 5) errs.push(`leaderboard acceptance needs ≥5 trials per cell for adequate CIs (got ${sub.meta.trials}; hard floor is 3 for private use)`);
   // Completeness: every (task, trial) cell present exactly once.
   const have = new Set(sub.rows.map((r) => `${r.task}#${r.trial}`));
   if (have.size !== sub.rows.length) errs.push("duplicate (task, trial) rows");

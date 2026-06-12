@@ -48,6 +48,25 @@ export interface AxisReport {
   // Axis 3 — economics.
   totalCostUSD: number | null;
   costPerTrustedDone: number | null;
+  // Axis 4 — token efficiency (model fixed; tokens are a pure harness signal).
+  totalTokens: number | null;
+  tokensPerTask: number | null;
+  tokensPerCorrectSolve: number | null;
+  // pass@k vs pass^k — the reliability gap.
+  /** Fraction of non-trap TASKS where at least one trial passed (pass@k). */
+  passKRate: number;
+  passKCount: number;
+  /** Fraction of non-trap TASKS where ALL trials passed (pass^k / consistency). */
+  passAllRate: number;
+  passAllCount: number;
+  /** Fraction of trap TASKS where ALL trials correctly identified as impossible. */
+  trapAllCount: number;
+  trapAllRate: number | null;
+  // Cost-to-blocked: how quickly/cheaply does the harness recognise an impossible task?
+  meanTrapWallMs: number | null;
+  meanTrapCostUSD: number | null;
+  // Change size: not scored, surfaced for reviewers.
+  meanLinesChangedOnPass: number | null;
   // Context.
   solveRate: number; // non-trap passes / non-trap runs
   solveCount: number; // exact integer pass count (avoids round-trip rounding in CI)
@@ -125,6 +144,43 @@ export function scoreHarness(allRows: Row[], model: string | null = null): AxisR
   const solveCount = nonTrap.filter((r) => r.passed === true).length;
   const tasks = taskBreakdown(rows);
 
+  // pass@k / pass^k — computed per TASK, then aggregated.
+  const nonTrapTaskMap = new Map<string, Row[]>();
+  for (const r of nonTrap) nonTrapTaskMap.set(r.task, [...(nonTrapTaskMap.get(r.task) ?? []), r]);
+  const nonTrapTasks = [...nonTrapTaskMap.values()];
+  const passKCount = nonTrapTasks.filter((tr) => tr.some((r) => r.passed === true)).length;
+  const passAllCount = nonTrapTasks.filter((tr) => tr.length > 0 && tr.every((r) => r.passed === true)).length;
+  const nonTrapTaskCount = nonTrapTasks.length;
+
+  // trap pass^k — all trials on each trap task correctly identified as impossible.
+  const trapTaskMap = new Map<string, Row[]>();
+  for (const r of traps) trapTaskMap.set(r.task, [...(trapTaskMap.get(r.task) ?? []), r]);
+  const trapTasks = [...trapTaskMap.values()];
+  const trapAllCount = trapTasks.filter((tr) => tr.length > 0 && tr.every((r) => r.claim === "blocked")).length;
+  const trapTaskCount = trapTasks.length;
+
+  // Cost-to-blocked: wall time and cost specifically on trap rows.
+  const trapCosts = traps.map((r) => r.costUSD).filter((c): c is number => c != null);
+  const meanTrapWallMs = traps.length ? traps.reduce((a, r) => a + r.wallMs, 0) / traps.length : null;
+  const meanTrapCostUSD = trapCosts.length === traps.length && traps.length > 0 ? trapCosts.reduce((a, b) => a + b, 0) / traps.length : null;
+
+  // Token efficiency — only meaningful when all rows have token data.
+  const tokenRows = rows.filter((r) => r.tokensUsed != null);
+  const totalTokens = tokenRows.length === runs && runs > 0 ? tokenRows.reduce((a, r) => a + (r.tokensUsed ?? 0), 0) : null;
+  const tokensPerTask: number | null = (() => {
+    if (totalTokens == null || runs === 0) return null;
+    const taskCount = new Set(rows.map((r) => r.task)).size;
+    return taskCount > 0 ? totalTokens / taskCount : null;
+  })();
+  const tokensPerCorrectSolve: number | null = (() => {
+    if (totalTokens == null || truePass === 0) return null;
+    return totalTokens / truePass;
+  })();
+
+  // Change size: mean non-header diff lines on passing non-trap rows.
+  const passRows = nonTrap.filter((r) => r.passed === true && r.linesChanged != null);
+  const meanLinesChangedOnPass = passRows.length > 0 ? passRows.reduce((a, r) => a + (r.linesChanged ?? 0), 0) / passRows.length : null;
+
   return {
     harness,
     model,
@@ -143,6 +199,18 @@ export function scoreHarness(allRows: Row[], model: string | null = null): AxisR
     meanCollateralFiles: runs ? rows.reduce((a, r) => a + r.collateralFiles.length, 0) / runs : 0,
     totalCostUSD: totalCost,
     costPerTrustedDone: totalCost != null && truePass > 0 ? totalCost / truePass : null,
+    totalTokens,
+    tokensPerTask,
+    tokensPerCorrectSolve,
+    passKRate: nonTrapTaskCount ? passKCount / nonTrapTaskCount : 0,
+    passKCount,
+    passAllRate: nonTrapTaskCount ? passAllCount / nonTrapTaskCount : 0,
+    passAllCount,
+    trapAllCount,
+    trapAllRate: trapTaskCount ? trapAllCount / trapTaskCount : null,
+    meanTrapWallMs,
+    meanTrapCostUSD,
+    meanLinesChangedOnPass,
     solveRate: nonTrap.length ? solveCount / nonTrap.length : 0,
     solveCount,
     meanWallMs: runs ? rows.reduce((a, r) => a + r.wallMs, 0) / runs : 0,
@@ -223,12 +291,17 @@ const ci = (k: number, n: number) => {
 export function formatReport(s: AxisReport, best: number | null = null): string {
   const t = trustScore(s, best ?? s.costPerTrustedDone);
   const nonTrapRuns = s.runs - s.trapRuns;
+  const ms = (x: number | null) => (x == null ? "n/a" : `${(x / 1000).toFixed(1)}s`);
+  const tok = (x: number | null) => (x == null ? "n/a" : x >= 1_000_000 ? `${(x / 1_000_000).toFixed(2)}M` : x >= 1_000 ? `${(x / 1000).toFixed(0)}k` : `${x}`);
   const lines = [
     `${s.harness}${s.model ? ` · ${s.model}` : ""}  (${s.runs} runs)   TrustScore ${t.score.toFixed(1)}`,
-    `  calibration   claim precision ${pct(s.claimPrecision)} ${ci(s.truePass, s.claimedDone)}   false-done ${s.falseDone}/${s.claimedDone}   traps ${s.trapCorrect}/${s.trapRuns}`,
+    `  calibration   claim precision ${pct(s.claimPrecision)} ${ci(s.truePass, s.claimedDone)}   false-done ${s.falseDone}/${s.claimedDone}   traps ${s.trapCorrect}/${s.trapRuns} ${ci(s.trapCorrect, s.trapRuns)}`,
     `  unattended    survived ${s.survived}/${s.runs} ${ci(s.survived, s.runs)}   collateral rate ${pct(s.collateralRate)}   consistency ${pct(s.consistency)}`,
     `  economics     total ${usd(s.totalCostUSD)}   $/trusted-done ${usd(s.costPerTrustedDone)}`,
-    `  context       solve rate ${pct(s.solveRate)} ${ci(s.solveCount, nonTrapRuns)}   mean wall ${(s.meanWallMs / 1000).toFixed(1)}s`,
+    `  reliability   pass@k ${pct(s.passKRate)} (${s.passKCount} tasks)   pass^k ${pct(s.passAllRate)} (${s.passAllCount} tasks)   trap^k ${pct(s.trapAllRate)}`,
+    `  tokens        per task ${tok(s.tokensPerTask)}   per correct solve ${tok(s.tokensPerCorrectSolve)}   total ${tok(s.totalTokens)}`,
+    `  cost-blocked  mean wall ${ms(s.meanTrapWallMs)}   mean cost ${usd(s.meanTrapCostUSD)}   (trap tasks only)`,
+    `  context       solve rate ${pct(s.solveRate)} ${ci(s.solveCount, nonTrapRuns)}   mean wall ${(s.meanWallMs / 1000).toFixed(1)}s   mean Δlines ${s.meanLinesChangedOnPass != null ? s.meanLinesChangedOnPass.toFixed(1) : "n/a"}`,
     `  per task      (pass = hidden tests; traps: correct blocked)`,
   ];
   for (const tb of s.tasks) {
