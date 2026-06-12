@@ -78,6 +78,21 @@ export const PALETTES: Record<string, Palette> = {
 };
 export const PALETTE_ORDER = ["default", "fire", "ice", "golden", "mint", "pink", "void", "slate", "ember"];
 
+// Light-canvas counterparts: the standard palettes are pale pastels designed
+// to glow on a dark terminal — on a white background the body washes out to
+// near-invisible. Same hue families, deepened to read as ink on white.
+export const PALETTES_LIGHT: Record<string, Palette> = {
+  default: { body: "#a5b4fc", hi: "#c7d2fe", eyeDark: "#1e1b4b", eyeShine: "#4f46e5", mouth: "#6366f1", sole: "#6366f1", toeL: "#4f46e5", toeR: null },
+  fire: { body: "#fb923c", hi: "#fdba74", eyeDark: "#7c2d12", eyeShine: "#ea580c", mouth: "#ea580c", sole: "#ea580c", toeL: "#dc2626", toeR: "#ca8a04" },
+  ice: { body: "#38bdf8", hi: "#7dd3fc", eyeDark: "#0c4a6e", eyeShine: "#0284c7", mouth: "#0284c7", sole: "#0284c7", toeL: "#0369a1", toeR: "#0369a1" },
+  golden: { body: "#facc15", hi: "#fde047", eyeDark: "#713f12", eyeShine: "#ca8a04", mouth: "#ca8a04", sole: "#ca8a04", toeL: "#a16207", toeR: null },
+  mint: { body: "#34d399", hi: "#6ee7b7", eyeDark: "#064e3b", eyeShine: "#059669", mouth: "#059669", sole: "#059669", toeL: "#047857", toeR: null },
+  pink: { body: "#f472b6", hi: "#f9a8d4", eyeDark: "#831843", eyeShine: "#db2777", mouth: "#db2777", sole: "#db2777", toeL: "#be185d", toeR: null },
+  void: { body: "#8b5cf6", hi: "#a78bfa", eyeDark: "#2e1065", eyeShine: "#7c3aed", mouth: "#7c3aed", sole: "#7c3aed", toeL: "#6d28d9", toeR: null },
+  slate: { body: "#64748b", hi: "#94a3b8", eyeDark: "#1e293b", eyeShine: "#475569", mouth: "#475569", sole: "#475569", toeL: "#334155", toeR: null },
+  ember: { body: "#ef4444", hi: "#f87171", eyeDark: "#7f1d1d", eyeShine: "#dc2626", mouth: "#dc2626", sole: "#dc2626", toeL: "#b91c1c", toeR: "#ef4444" },
+};
+
 // ---------- BODY SILHOUETTE ----------
 // Maps "c,r" to a palette role. Eyes and mouth are absent here; faces overlay them.
 function buildBody(): Map<string, Role> {
@@ -400,11 +415,14 @@ export interface GhostCfg {
   crop?: { rowStart: number; rowEnd: number } | null;
   hideBehind?: boolean;
   hideOver?: boolean;
+  /** Render with the ink-on-white palette set (light terminal themes). Part of
+   *  the cfg so the JSON memo key invalidates on theme switches for free. */
+  lightCanvas?: boolean;
 }
 
 /** Paint the layered sprite into an H×20 color grid. H = 22 for personas (extra rows for tall costumes), else 20. */
 function compositeGrid(cfg: GhostCfg): (Color | null)[][] {
-  const pal = PALETTES[cfg.palette] || PALETTES.default!;
+  const pal = (cfg.lightCanvas ? PALETTES_LIGHT[cfg.palette] : PALETTES[cfg.palette]) || (cfg.lightCanvas ? PALETTES_LIGHT.default! : PALETTES.default!);
   const face = FACES[cfg.face] || FACES.neutral!;
   const accName = cfg.accessory ?? face.accessory ?? "none";
   const acc = ACCESSORIES[accName] || ACCESSORIES.none!;

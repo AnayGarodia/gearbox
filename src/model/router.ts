@@ -28,7 +28,7 @@ import { preferenceFor, globalPreference, policy, type Policy } from "./preferen
 import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
-import { coolingDown, modelScopedKey } from "./cooldown.ts";
+import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
 import { priorFor, priorLine, failRateFor } from "./priors.ts";
 
 type Kind = NonNullable<Task["kind"]>;
@@ -102,7 +102,15 @@ export function confidentKeywordKind(prompt: string): Kind | null {
   // A bare greeting/ack never needs the LLM classifier hop — it's chat by definition.
   if (/^(hi|hiya|hello|hey|yo|sup|howdy|thanks?|thank you|ty|ok(ay)?|cool|nice|lol|good (morning|afternoon|evening))[\s!.?]*$/.test(p)) return "chat";
   if (MUTATION.test(p)) return "code"; // a real change is requested, use a strong model
-  if (/\b(summari[sz]e|tl;?dr|recap|condense|digest|gist)\b/.test(p)) return "summarize";
+  // "summarize" is a confident pure-summarize signal only when the prompt isn't
+  // ALSO asking for tool work over the workspace: "read the files and summarize"
+  // needs a model that drives tools across many files, but the summarize bar is
+  // 0 and routes to the cheapest model, which then misunderstands the task
+  // (user-reported). Mixed prompts fall through to the LLM classifier.
+  if (/\b(summari[sz]e|tl;?dr|recap|condense|digest|gist)\b/.test(p)) {
+    const workspaceWork = /\b(files?|codebase|repo(sitor(y|ies))?|director(y|ies)|folders?|read|scan|look (at|through)|go through|examine|analy[sz]e)\b/.test(p);
+    return workspaceWork ? null : "summarize";
+  }
   if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b/.test(p)) return "classify";
   if (/^(find|search|locate|grep)\b|\bwhere is\b|\bwhich file\b/.test(p)) return "search";
   return null;
@@ -292,8 +300,15 @@ export class RoutingSelector implements ModelSelector {
     const live = out.filter(
       (c) => !coolingDown(c.state.accountId, ctx.now) && !coolingDown(modelScopedKey(c.state.accountId, c.spec.id), ctx.now),
     );
+    // Remember what cooldown removed: select() names a skipped subscription
+    // seat in its reason, so a silent seat→API switch (user-reported) becomes
+    // a visible, explained one.
+    this.cooledOut = live.length ? out.filter((c) => !live.includes(c)) : [];
     return live.length ? live : out;
   }
+
+  // Candidates excluded by cooldown in the most recent enumerate() pass.
+  private cooledOut: Candidate[] = [];
 
   // Shared setup for select() and explain(). Builds the account snapshot,
   // enumerates all candidates, filters by capability and context window, applies
@@ -414,7 +429,14 @@ export class RoutingSelector implements ModelSelector {
     const winner = candidates.find((c) => scoreId(c) === best.candidate.id)!;
     this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
+    // Transparency: when a subscription seat serving this same model sat out
+    // the race on a cooldown, say so — the user sees a seat turn silently
+    // become a metered-API turn otherwise and reads it as a routing bug.
+    const skippedSeat =
+      winner.backend?.kind !== "cli"
+        ? this.cooledOut.find((c) => c.backend?.kind === "cli" && (c.canonicalId ?? c.spec.id) === (winner.canonicalId ?? winner.spec.id))
+        : undefined;
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend };
   }
 
   // Build the full ranked scorecard for the "/why" UI panel. Scores the entire
@@ -477,7 +499,12 @@ export class RoutingSelector implements ModelSelector {
     // Sort: chosen first, then bar-clearing candidates by score (ascending, so
     // best candidates are listed first), then below-bar candidates.
     entries.sort((a, b) => Number(b.chosen) - Number(a.chosen) || Number(b.verdict !== "below bar") - Number(a.verdict !== "below bar") || a.score - b.score);
-    return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries };
+    // Parity with select()'s reason line: candidates cooldown excluded from
+    // the race must be visible here too, or /why and the pick note disagree.
+    const cooledNote = this.cooledOut.length
+      ? `cooling down, not scored: ${[...new Set(this.cooledOut.map((c) => `${c.spec.label} via ${c.state.accountId}`))].join(", ")}`
+      : undefined;
+    return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: cooledNote };
   }
 }
 
@@ -525,6 +552,17 @@ function applyGlobalPreference(pool: Candidate[]): Candidate[] {
 // Build the human-readable reason string shown in the UI and routing scorecard.
 // Shows in/out prices separately rather than a blended rate, because a blended
 // rate is neither the input price nor the output price and is therefore misleading.
+/** Why a cooled-out seat sat out, in the parked reason's own words: a rate
+ *  park heals itself, an auth park needs the user (`/account login <name>`).
+ *  Hardcoding "(rate limited)" here misdiagnosed expired logins (review). */
+function seatSkipNote(seat: Candidate | undefined, now: number): string {
+  if (!seat) return "";
+  const acct = seat.state.accountId;
+  const reason = cooldownReason(acct, now) ?? cooldownReason(modelScopedKey(acct, seat.spec.id), now) ?? "";
+  const why = classifyFailure(reason) === "auth" ? `signed out — /account login ${acct} to use it again` : "rate limited — back automatically when the window clears";
+  return ` · ${acct} seat skipped (${why})`;
+}
+
 function reasonFor(c: Candidate, kind: Kind, required: string[]): string {
   const caps = required.length ? ` · ${required.join("+")} required` : "";
   if (c.backend.kind === "cli") return `${kind}${caps} · ${c.backend.binary} subscription · seat`;

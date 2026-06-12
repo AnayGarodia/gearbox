@@ -321,6 +321,10 @@ export function scorecardRows(card: Scorecard, width = 80): ScorecardLine[] {
     out.push({ text: "", tone: "note" });
     for (const l of wrapWords(summary, width)) out.push({ text: l, tone: "summary" });
   }
+  // Parity with select()'s reason line: a cooled-out seat skipped the race —
+  // say so here too, or /why contradicts the pick note (it only rendered in
+  // the no-candidates branch before, which is never the cooled-seat case).
+  if (card.note) for (const l of wrapWords(card.note, width)) out.push({ text: l, tone: "note" });
   out.push({ text: "", tone: "note" });
 
   const entries = card.entries.slice(0, 8);

@@ -14,7 +14,7 @@ export interface Edit {
 
 export type KeyAction =
   | { type: "edit"; state: Edit }
-  | { type: "submit" }
+  | { type: "submit"; value?: string } // value: submit THIS text instead of the composer state (\\-Enter collapses the pair to a literal \)
   | { type: "history"; dir: "up" | "down" }
   | { type: "interrupt" }
   | { type: "vim"; to: "insert" | "normal"; state?: Edit } // switch vim sub-mode (+ optional cursor move)
@@ -185,6 +185,20 @@ export function applyKey(s: Edit, input: string, key: Key, vim?: { normal: boole
   }
   // Newline: modifier+Enter or ⌃J. Checked before plain Enter (submit).
   if ((key.return && (key.shift || key.meta)) || (key.ctrl && input === "j")) return insert(s, NL);
+  // Backslash-Enter = newline (the Claude Code convention). Most terminals send
+  // a bare CR for shift+enter — Ink never sees `shift` — so the modifier path
+  // above only fires under the kitty keyboard protocol. A `\` immediately
+  // before the cursor is an explicit, terminal-agnostic continuation: swallow
+  // it and insert the newline instead of submitting. Escape hatch (review): a
+  // message that genuinely ends in a backslash (`C:\temp\`) ends it `\\` —
+  // Enter collapses the pair to one literal `\` and submits.
+  if (key.return && s.cursor > 0 && s.value[s.cursor - 1] === "\\") {
+    if (s.cursor > 1 && s.value[s.cursor - 2] === "\\") {
+      return { type: "submit", value: s.value.slice(0, s.cursor - 1) + s.value.slice(s.cursor) };
+    }
+    const value = s.value.slice(0, s.cursor - 1) + NL + s.value.slice(s.cursor);
+    return { type: "edit", state: { value, cursor: s.cursor } };
+  }
   if (key.return) return { type: "submit" };
   if (key.escape) return { type: "interrupt" };
 

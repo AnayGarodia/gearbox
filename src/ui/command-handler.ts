@@ -63,7 +63,7 @@ import type { CliModelChoice } from "./App.tsx";
 
 export const KEYS_HELP = [
   "keyboard shortcuts",
-  "  ⏎ send · ⌃J newline · esc interrupt · ⌃C twice to quit",
+  "  ⏎ send · ⌃J or \\⏎ newline (\\\\⏎ for a literal \\) · esc interrupt · ⌃C twice to quit",
   "  ↑↓ history / move line · ← → cursor · ⌥/⌃ ← → word jump",
   "  ⌃A select all · ⌃E line end · ⌃U / ⌃K kill line · ⌃W kill word · ⌃D forward-delete",
   "  ⌃Y copy last reply · ⌃V paste image from clipboard · shift+tab cycle mode",
@@ -244,6 +244,11 @@ export interface CommandCtx {
   selectorKind: SelectorKind;
   statusPinned: boolean;
 }
+
+// /yolo two-step confirm: timestamp of the first (arming) invocation, PER
+// WORKSPACE ROOT — arming in one conductor tab must not let a typo in another
+// tab (which never saw the warning) complete the confirmation.
+const yoloArmedAt = new Map<string, number>();
 
 export function handleCommand(ctx: CommandCtx, text: string): void {
   const groot = ctx.root || process.cwd(); // the tab's tree — every git verb below runs here
@@ -1170,6 +1175,19 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         case "yolo": {
           echo(text);
           const next = !isYolo();
+          // Turning yolo ON is the most dangerous toggle in the app (every
+          // write and shell command auto-approves; only written `deny` rules
+          // and the sandbox still hold). Don't let it happen on a typo:
+          // require a second /yolo within 15s (user feedback).
+          if (next) {
+            const now = Date.now();
+            if (now - (yoloArmedAt.get(ctx.root) ?? 0) > 15_000) {
+              yoloArmedAt.set(ctx.root, now);
+              notice("yolo runs EVERY file write and shell command without asking, until you /yolo again.\n  type /yolo once more within 15s to confirm.");
+              return;
+            }
+            yoloArmedAt.delete(ctx.root);
+          }
           setYolo(next);
           setYoloState(next);
           notice(next ? "yolo mode ON · all file writes and shell commands run without asking" : "yolo mode off · back to asking before writes/edits/shell");

@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Box, Text } from "ink";
-import { color } from "../theme.ts";
+import { color, isLightCanvas } from "../theme.ts";
 import { GHOSTS, type SpriteCell } from "../mascot-sprite.ts";
 import { getImageMode, imageId, idColor, placeholderRows, type GhostSize } from "../image.ts";
 import { renderGhost, EYES_CLOSED, TALK, PERSONAS, PERSONA_ORDER, PALETTES, ACCESSORIES, type GhostCfg, type OverlayKind } from "../ghost/engine.ts";
@@ -226,7 +226,9 @@ export function homeShow(tick: number): { patch: Partial<GhostCfg>; overlay?: Ov
 export function AnimatedGhost({ cfg, scale, anim }: { cfg: GhostCfg; scale: 1 | 2; anim: AnimSpec }) {
   const tick = useTick(240, !!(anim.blink || anim.talk || anim.shake || anim.overlay || anim.show));
   const slow = Math.floor(tick / 2); // calmer cadence for talk + overlays
-  const frameCfg: GhostCfg = { ...cfg, scale };
+  // lightCanvas swaps in the ink-on-white palette set (the standard pastels
+  // wash out on a white terminal); riding in the cfg keys the render memo too.
+  const frameCfg: GhostCfg = { ...cfg, scale, lightCanvas: isLightCanvas() || undefined };
   // A costume RESTING look (a persona tab's wizard, an accessory) stays in
   // character: no homeShow costume-cycling on top — it animates (blink/talk/
   // overlay) in that one look only.

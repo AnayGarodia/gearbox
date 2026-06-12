@@ -687,6 +687,19 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
       continue;
     }
     const itemStart = out.length; // recede pass maps this item's lines after the switch
+    // SETTLED tool items render identically every frame, but the old cache
+    // covered only user/assistant — so a transcript full of finished writes
+    // re-flattened (split/wrap/diff) on every streaming tick, which is what
+    // made fast streams feel slow. Same WeakMap discipline as staticItemLines;
+    // `expand` joins the key because ⌃O changes the rendering. Running items
+    // stay uncached (their spinner/stream animates).
+    if (it.kind === "tool" && it.status !== "running") {
+      const hit = settledToolCache.get(it);
+      if (hit && hit.width === width && hit.epoch === themeEpoch && hit.receded === dimmed && hit.expand === expand) {
+        out.push(...hit.lines);
+        continue;
+      }
+    }
     switch (it.kind) {
       case "tool": {
         // Collapsed delegate_parallel group: ONE summary row that expands (⌃O) to
@@ -1079,6 +1092,14 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
       }
     }
     if (dimmed) for (let i = itemStart; i < out.length; i++) out[i] = recedeLine(out[i]!);
+    if (it.kind === "tool" && it.status !== "running") {
+      settledToolCache.set(it, { width, epoch: themeEpoch, receded: dimmed, expand, lines: out.slice(itemStart) });
+    }
   }
   return out;
 }
+
+// Line cache for SETTLED tool items (see the gate in itemsToLines). Keyed by
+// object identity like staticLineCache: setItems keeps unchanged items
+// reference-stable, so history hits and only the live tail re-renders.
+const settledToolCache = new WeakMap<object, { width: number; epoch: number; receded: boolean; expand: boolean; lines: Line[] }>();
