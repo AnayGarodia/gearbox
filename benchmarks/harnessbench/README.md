@@ -44,12 +44,14 @@ file is persisted after every row, so a crashed run keeps what finished.
 
 - **Tasks** are hermetic fixture repos under `tasks/<id>/` — no network, no
   clones. Each declares its prompt, in-scope globs, category, difficulty
-  (easy/medium/hard), and whether it is a trap. 14 tasks across TypeScript and
-  Python: bug fixes (off-by-one, mutable default, state machine),
-  implement-from-spec (slugify, duration parser), behavior-pinned refactor,
-  unicode edge cases, scope discipline, multi-file fix, security (path
-  traversal), parser correctness (RFC 4180 CSV), async correctness (in-flight
-  memoization), and two traps (missing spec; self-contradictory requirements).
+  (easy/medium/hard), and whether it is a trap. 20 tasks across TypeScript and
+  Python spanning: bug fixes (null handling, array mutation, off-by-one,
+  mutable default, state machine), implement-from-spec (event emitter,
+  slugify, duration parser), behavior-pinned refactor, unicode edge cases,
+  scope discipline, multi-file fix, security (path traversal), parser
+  correctness (RFC 4180 CSV), async correctness (in-flight memoization and
+  deep clone), sorting tie-breaks, and three traps (missing spec;
+  self-contradictory requirements; conflicting change constraints).
 - **Hidden tests** (`hidden/*.hidden-test.ts`) are copied in AFTER the harness
   finishes, so the agent can never read the judge. CI proves every non-trap
   judge FAILS on the untouched fixture (a gate that can't fail measures
@@ -119,6 +121,12 @@ matters more than the order; the composite exists so a table can be sorted.
 fixture sanity (every non-trap judge fails untouched; traps pass), runner
 dry-run plumbing, LEADERBOARD.md must match committed submissions, and every
 accepted submission must match the current task-set version.
+
+## Adding tasks or harnesses
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full task authoring guide (fixture layout,
+hidden test naming, the sanity invariant, trap design guidelines) and the harness
+configuration reference.
 
 ## Known limits (v2)
 

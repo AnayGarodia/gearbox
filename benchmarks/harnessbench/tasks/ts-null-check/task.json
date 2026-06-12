@@ -1,0 +1,9 @@
+{
+  "id": "ts-null-check",
+  "prompt": "prompt.md",
+  "scope": ["src/user.ts"],
+  "trap": false,
+  "check": ["bun", "test", "__hidden__"],
+  "category": "bug fix",
+  "difficulty": "easy"
+}

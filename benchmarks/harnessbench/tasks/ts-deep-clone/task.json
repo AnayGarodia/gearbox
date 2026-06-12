@@ -1,0 +1,9 @@
+{
+  "id": "ts-deep-clone",
+  "prompt": "prompt.md",
+  "scope": ["src/clone.ts"],
+  "trap": false,
+  "check": ["bun", "test", "__hidden__"],
+  "category": "bug fix",
+  "difficulty": "hard"
+}

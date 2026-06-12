@@ -1,0 +1,9 @@
+{
+  "id": "py-sorting",
+  "prompt": "prompt.md",
+  "scope": ["leaderboard.py"],
+  "trap": false,
+  "check": ["python3", "__hidden__/test_sorting.py"],
+  "category": "bug fix",
+  "difficulty": "medium"
+}
