@@ -4,7 +4,9 @@
       "gearbox",
       "-p",
       "{prompt}",
-      "--yolo"
+      "--yolo",
+      "--model",
+      "{model}"
     ],
     "cost": "gearbox-ledger",
     "tokens": "gearbox-ledger",
