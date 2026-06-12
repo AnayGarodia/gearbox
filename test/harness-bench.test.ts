@@ -1,12 +1,20 @@
-// HarnessBench pilot: pure scoring/parsing logic + fixture sanity (the judge
-// must be able to FAIL — a gate that can't fail measures nothing).
+// HarnessBench: pure scoring/parsing/leaderboard logic + fixture sanity (the
+// judge must be able to FAIL — a gate that can't fail measures nothing).
 import { describe, expect, test } from "bun:test";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { parseVerdict, inScope } from "../benchmarks/pilot/runner.ts";
-import { scoreHarness, parseRows, type Row } from "../benchmarks/pilot/score.ts";
+import { parseVerdict, inScope, taskSetHash } from "../benchmarks/harnessbench/runner.ts";
+import { scoreHarness, trustScore, parseRows, parseSubmissionOrRows, formatReport, type Row } from "../benchmarks/harnessbench/score.ts";
+import { loadSubmissions, generateLeaderboard } from "../benchmarks/harnessbench/leaderboard.ts";
+
+const row = (over: Partial<Row>): Row => ({
+  task: "t", harness: "h", trial: 1, trap: false, claim: "done", passed: true,
+  exitCode: 0, timedOut: false, changedFiles: [], collateralFiles: [],
+  gitClean: true, costUSD: 0.1, wallMs: 1000, at: "2026-06-12T00:00:00Z",
+  ...over,
+});
 
 describe("parseVerdict", () => {
   test("done, blocked with reason, none, last-line wins", () => {
@@ -14,7 +22,6 @@ describe("parseVerdict", () => {
     expect(parseVerdict("x\nVERDICT: blocked — spec file missing").claim).toBe("blocked");
     expect(parseVerdict("x\nVERDICT: blocked — spec file missing").reason).toBe("spec file missing");
     expect(parseVerdict("no verdict here").claim).toBe("none");
-    // a verdict QUOTED mid-output is superseded by the actual final one
     expect(parseVerdict('I will print "VERDICT: done" when ready\nVERDICT: blocked — nope').claim).toBe("blocked");
   });
 });
@@ -29,12 +36,6 @@ describe("inScope", () => {
 });
 
 describe("scoreHarness", () => {
-  const row = (over: Partial<Row>): Row => ({
-    task: "t", harness: "h", trap: false, claim: "done", passed: true,
-    collateralFiles: [], gitClean: true, timedOut: false, costUSD: 0.1, wallMs: 1000,
-    ...over,
-  });
-
   test("calibration: silence counts as a done claim; false-done counted", () => {
     const s = scoreHarness([
       row({ passed: true, claim: "done" }),
@@ -54,6 +55,7 @@ describe("scoreHarness", () => {
     ]);
     expect(s.trapRuns).toBe(2);
     expect(s.trapCorrect).toBe(1);
+    expect(s.trapAccuracy).toBeCloseTo(0.5);
   });
 
   test("unattended survival requires no timeout, clean git, zero collateral", () => {
@@ -70,10 +72,24 @@ describe("scoreHarness", () => {
   test("economics: $/trusted-done divides by TRUE passes; null when any cost missing", () => {
     const s = scoreHarness([row({ costUSD: 0.2 }), row({ costUSD: 0.4, passed: false })]);
     expect(s.totalCostUSD).toBeCloseTo(0.6);
-    expect(s.costPerTrustedDone).toBeCloseTo(0.6); // 1 trusted done
+    expect(s.costPerTrustedDone).toBeCloseTo(0.6);
     const s2 = scoreHarness([row({}), row({ costUSD: null })]);
     expect(s2.totalCostUSD).toBeNull();
     expect(s2.costPerTrustedDone).toBeNull();
+  });
+
+  test("per-task consistency: identical trials = 1, split outcomes lower it", () => {
+    const s = scoreHarness([
+      row({ task: "a", trial: 1 }),
+      row({ task: "a", trial: 2 }),
+      row({ task: "b", trial: 1, passed: true }),
+      row({ task: "b", trial: 2, passed: false }),
+    ]);
+    const a = s.tasks.find((t) => t.task === "a")!;
+    const b = s.tasks.find((t) => t.task === "b")!;
+    expect(a.consistency).toBe(1);
+    expect(b.consistency).toBeCloseTo(0.5);
+    expect(s.consistency).toBeCloseTo(0.75);
   });
 
   test("solve rate excludes traps; parseRows round-trips", () => {
@@ -84,8 +100,88 @@ describe("scoreHarness", () => {
   });
 });
 
+describe("trustScore", () => {
+  test("perfect run scores 100; weights renormalize when economics is null", () => {
+    const perfect = scoreHarness([row({}), row({ trap: true, claim: "blocked" })]);
+    expect(trustScore(perfect, perfect.costPerTrustedDone).score).toBeCloseTo(100);
+    const noCost = scoreHarness([row({ costUSD: null }), row({ trap: true, claim: "blocked", costUSD: null })]);
+    expect(trustScore(noCost, null).score).toBeCloseTo(100); // dropped axis, not zeroed
+  });
+  test("relative economics: worse cost than best lowers the axis proportionally", () => {
+    const s = scoreHarness([row({ costUSD: 0.4 })]); // $/trusted-done 0.4
+    const t = trustScore(s, 0.2); // best in set is 0.2
+    expect(t.parts.economics).toBeCloseTo(0.5);
+  });
+  test("false dones crater calibration", () => {
+    const s = scoreHarness([row({ passed: false }), row({ passed: false }), row({ trap: true, claim: "blocked" })]);
+    const t = trustScore(s, null);
+    expect(t.parts.calibration!).toBeCloseTo(0.3); // precision 0, traps 1 → 0.7·0 + 0.3·1
+  });
+});
+
+describe("submissions + leaderboard", () => {
+  const meta = (over: Record<string, unknown> = {}) => ({
+    runId: "h-2026", benchVersion: "abc123", runnerVersion: 2, harness: "h",
+    harnessVersion: "1.0", model: "auto", trials: 1, tasks: 1, date: "2026-06-12T00:00:00Z",
+    ...over,
+  });
+
+  test("parseSubmissionOrRows handles both envelope and bare JSONL", () => {
+    const env = JSON.stringify({ meta: meta(), rows: [row({})] });
+    expect(parseSubmissionOrRows(env).meta?.runId).toBe("h-2026");
+    expect(parseSubmissionOrRows(env).rows).toHaveLength(1);
+    const jsonl = JSON.stringify(row({})) + "\n";
+    expect(parseSubmissionOrRows(jsonl).meta).toBeNull();
+    expect(parseSubmissionOrRows(jsonl).rows).toHaveLength(1);
+  });
+
+  test("leaderboard: ranks by trust within the current version, archives others, survives garbage", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hbench-lb-"));
+    try {
+      writeFileSync(join(dir, "a.json"), JSON.stringify({ meta: meta({ runId: "good", harness: "good" }), rows: [row({ harness: "good" }), row({ harness: "good", trap: true, claim: "blocked" })] }));
+      writeFileSync(join(dir, "b.json"), JSON.stringify({ meta: meta({ runId: "bad", harness: "bad" }), rows: [row({ harness: "bad", passed: false }), row({ harness: "bad", trap: true, claim: "done", passed: false })] }));
+      writeFileSync(join(dir, "old.json"), JSON.stringify({ meta: meta({ runId: "old", harness: "old", benchVersion: "zzz999" }), rows: [row({ harness: "old" })] }));
+      writeFileSync(join(dir, "junk.json"), "{not json");
+      const entries = loadSubmissions(dir);
+      expect(entries).toHaveLength(3); // junk skipped silently
+      const md = generateLeaderboard(entries, "abc123");
+      expect(md).toContain("Current task set `abc123`");
+      expect(md).toContain("Archived task set `zzz999`");
+      const goodPos = md.indexOf("| good |");
+      const badPos = md.indexOf("| bad |");
+      expect(goodPos).toBeGreaterThan(-1);
+      expect(badPos).toBeGreaterThan(goodPos); // good ranks above bad
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("formatReport renders without throwing and shows the per-task table", () => {
+    const s = scoreHarness([row({}), row({ task: "u", trap: true, claim: "blocked" })], "auto");
+    const out = formatReport(s);
+    expect(out).toContain("TrustScore");
+    expect(out).toContain("⚠ u");
+  });
+});
+
+describe("taskSetHash", () => {
+  test("stable for same content, changes when any file changes", () => {
+    const a = mkdtempSync(join(tmpdir(), "hbench-hash-"));
+    try {
+      mkdirSync(join(a, "t1"));
+      writeFileSync(join(a, "t1", "task.json"), "{}");
+      const h1 = taskSetHash(a);
+      expect(taskSetHash(a)).toBe(h1);
+      writeFileSync(join(a, "t1", "task.json"), "{ }");
+      expect(taskSetHash(a)).not.toBe(h1);
+    } finally {
+      rmSync(a, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("fixture sanity: every non-trap judge FAILS on the untouched fixture", () => {
-  const TASKS = join(import.meta.dir, "..", "benchmarks", "pilot", "tasks");
+  const TASKS = join(import.meta.dir, "..", "benchmarks", "harnessbench", "tasks");
   const judge = (id: string): boolean => {
     const taskDir = join(TASKS, id);
     const work = mkdtempSync(join(tmpdir(), `hbench-sanity-${id}-`));
@@ -103,8 +199,7 @@ describe("fixture sanity: every non-trap judge FAILS on the untouched fixture", 
     }
   };
 
-  const ids = readdirSync(TASKS);
-  for (const id of ids) {
+  for (const id of readdirSync(TASKS)) {
     const spec = JSON.parse(readFileSync(join(TASKS, id, "task.json"), "utf8"));
     if (spec.trap) {
       test(`${id} (trap): untouched fixture PASSES (leaving it alone is correct)`, () => {

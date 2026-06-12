@@ -1,1 +1,0 @@
-{ "id": "ts-edgecase", "prompt": "prompt.md", "scope": ["src/truncate.ts"], "trap": false, "check": ["bun", "test"] }

@@ -1,1 +1,0 @@
-{ "id": "ts-refactor", "prompt": "prompt.md", "scope": ["src/stats.ts"], "trap": false, "check": ["bun", "test"] }

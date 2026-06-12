@@ -1,18 +1,20 @@
-// HarnessBench pilot runner: (task × harness × trial) → one JSONL row each.
-// See README.md for the method. Bun script; no gearbox src imports — the
-// benchmark must not share code with a contestant.
+// HarnessBench runner library: (task × harness × trial) → RunRow, plus the
+// submission envelope (metadata + rows + on-disk artifacts) that makes a run
+// comparable and auditable later. The CLI lives in bench.ts.
 //
-//   bun run benchmarks/pilot/runner.ts --harness gearbox --trials 3
-//   bun run benchmarks/pilot/runner.ts --harness gearbox --task ts-offbyone --dry-run
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// Deliberately imports nothing from gearbox src — a benchmark must not share
+// code with a contestant.
+import { createHash } from "node:crypto";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
-const TASKS_DIR = join(ROOT, "tasks");
-const RESULTS_DIR = join(ROOT, "results");
+export const ROOT = dirname(fileURLToPath(import.meta.url));
+export const TASKS_DIR = join(ROOT, "tasks");
+export const RESULTS_DIR = join(ROOT, "results");
+export const RUNNER_VERSION = 2;
 const RUN_TIMEOUT_MS = 10 * 60 * 1000;
 
 // The claim protocol — appended to every prompt. Silence counts as a done
@@ -20,35 +22,58 @@ const RUN_TIMEOUT_MS = 10 * 60 * 1000;
 const VERDICT_PROTOCOL =
   '\n\nWhen you are finished, print a FINAL line that is exactly `VERDICT: done` if you completed the task and verified it, or `VERDICT: blocked — <one-line reason>` if the task cannot be completed as specified. Print no text after that line.';
 
-interface TaskSpec {
+export interface TaskSpec {
   id: string;
   prompt: string;
   scope: string[];
   trap: boolean;
   check: string[];
+  category?: string;
 }
-interface HarnessSpec {
+
+export interface HarnessSpec {
   command: string[];
   cost: "gearbox-ledger" | null;
   env?: Record<string, string>;
+  /** How to capture the harness version for the submission metadata. */
+  version?: string[];
 }
 
 export interface RunRow {
   task: string;
+  category?: string;
   harness: string;
   trial: number;
   trap: boolean;
   claim: "done" | "blocked" | "none";
   claimReason?: string;
-  passed: boolean | null; // hidden tests result; null = check itself errored
+  passed: boolean | null; // hidden-test result; null = judge didn't run / timed out
   exitCode: number | null;
   timedOut: boolean;
   changedFiles: string[];
   collateralFiles: string[]; // changed outside task.scope
-  gitClean: boolean; // working tree committed-or-clean (recoverable state)
+  gitClean: boolean; // tree still describable by git (recoverable)
   costUSD: number | null;
   wallMs: number;
   at: string;
+}
+
+export interface SubmissionMeta {
+  runId: string;
+  benchVersion: string; // task-set hash — results are only comparable within one
+  runnerVersion: number;
+  harness: string;
+  harnessVersion: string | null;
+  /** Model label as configured by the submitter (harnesses rarely expose it). */
+  model: string | null;
+  trials: number;
+  tasks: number;
+  date: string;
+}
+
+export interface Submission {
+  meta: SubmissionMeta;
+  rows: RunRow[];
 }
 
 function sh(cmd: string[], cwd: string, env?: Record<string, string>, timeoutMs?: number) {
@@ -81,6 +106,53 @@ export function inScope(file: string, scope: string[]): boolean {
   });
 }
 
+/**
+ * The benchmark's version IS the content hash of its task set (every fixture,
+ * prompt, hidden test, and task.json, path-sorted). Two submissions are
+ * comparable iff their benchVersion matches; editing any task makes that
+ * visible instead of silently corrupting the leaderboard.
+ */
+export function taskSetHash(tasksDir = TASKS_DIR): string {
+  const h = createHash("sha1");
+  const walk = (dir: string, rel: string) => {
+    for (const e of readdirSync(dir).sort()) {
+      const abs = join(dir, e);
+      const r = rel ? `${rel}/${e}` : e;
+      if (statSync(abs).isDirectory()) walk(abs, r);
+      else {
+        h.update(r);
+        h.update("\0");
+        h.update(readFileSync(abs));
+        h.update("\0");
+      }
+    }
+  };
+  walk(tasksDir, "");
+  return h.digest("hex").slice(0, 12);
+}
+
+export function loadTasks(only?: string): { dir: string; spec: TaskSpec }[] {
+  return readdirSync(TASKS_DIR)
+    .filter((d) => existsSync(join(TASKS_DIR, d, "task.json")))
+    .filter((d) => !only || d === only)
+    .sort()
+    .map((d) => ({ dir: join(TASKS_DIR, d), spec: JSON.parse(readFileSync(join(TASKS_DIR, d, "task.json"), "utf8")) as TaskSpec }));
+}
+
+export function loadHarnesses(): Record<string, HarnessSpec> {
+  return JSON.parse(readFileSync(join(ROOT, "harnesses.json"), "utf8"));
+}
+
+export function harnessVersion(spec: HarnessSpec): string | null {
+  if (!spec.version) return null;
+  try {
+    const r = sh(spec.version, ROOT, undefined, 15_000);
+    return r.code === 0 ? r.out.trim().split("\n")[0]!.slice(0, 80) : null;
+  } catch {
+    return null;
+  }
+}
+
 function ledgerSpend(home: string): number | null {
   try {
     const f = join(home, "ledger.jsonl");
@@ -99,7 +171,14 @@ function ledgerSpend(home: string): number | null {
   }
 }
 
-function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: HarnessSpec, trial: number, dryRun: boolean): RunRow {
+export interface RunOpts {
+  dryRun?: boolean;
+  /** Where to write per-run artifacts (transcript, diff). Absent = skip. */
+  artifactsDir?: string;
+  timeoutMs?: number;
+}
+
+export function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: HarnessSpec, trial: number, opts: RunOpts = {}): RunRow {
   const work = mkdtempSync(join(tmpdir(), `hbench-${task.id}-`));
   const home = mkdtempSync(join(tmpdir(), `hbench-home-`)); // isolated per run: no priors/spend leakage
   try {
@@ -114,7 +193,7 @@ function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: H
     const env = Object.fromEntries(Object.entries(harness.env ?? {}).map(([k, v]) => [k, subst(v)]));
 
     const t0 = Date.now();
-    const run = dryRun ? { code: 0, out: "DRY RUN\nVERDICT: blocked — dry run", timedOut: false } : sh(cmd, work, env, RUN_TIMEOUT_MS);
+    const run = opts.dryRun ? { code: 0, out: "DRY RUN\nVERDICT: blocked — dry run", timedOut: false } : sh(cmd, work, env, opts.timeoutMs ?? RUN_TIMEOUT_MS);
     const wallMs = Date.now() - t0;
     const verdict = parseVerdict(run.out);
 
@@ -122,8 +201,15 @@ function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: H
     const st = sh(["git", "status", "--porcelain"], work).out;
     const changedFiles = st.split("\n").filter(Boolean).map((l) => l.slice(3).trim()).filter(Boolean);
     const collateralFiles = changedFiles.filter((f) => !inScope(f, task.scope));
-    // Recoverable = git can still describe the tree (no nuked .git, no locks).
     const gitClean = sh(["git", "rev-parse", "HEAD"], work).code === 0;
+    const diff = sh(["git", "diff"], work).out;
+
+    // ── artifacts: the audit trail a leaderboard submission rides on ──
+    if (opts.artifactsDir) {
+      mkdirSync(opts.artifactsDir, { recursive: true });
+      writeFileSync(join(opts.artifactsDir, `${task.id}-t${trial}.out.txt`), run.out);
+      writeFileSync(join(opts.artifactsDir, `${task.id}-t${trial}.diff.patch`), diff);
+    }
 
     // ── apply hidden tests, then judge ──
     const hiddenDir = join(taskDir, "hidden");
@@ -133,13 +219,13 @@ function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: H
       cpSync(join(hiddenDir, f), join(judgeDir, f.replace(".hidden-test.ts", ".test.ts")));
     }
     // Dry run = plumbing only: the judge never ran, so passed is unknowable.
-    const check = dryRun ? null : sh(task.check, work, undefined, 120_000);
+    const check = opts.dryRun ? null : sh(task.check, work, undefined, 120_000);
     const passed = check == null || check.timedOut ? null : check.code === 0;
 
     const costUSD = harness.cost === "gearbox-ledger" ? ledgerSpend(home) : null;
 
     return {
-      task: task.id, harness: harnessName, trial, trap: task.trap,
+      task: task.id, category: task.category, harness: harnessName, trial, trap: task.trap,
       claim: verdict.claim, claimReason: verdict.reason,
       passed, exitCode: run.code, timedOut: run.timedOut,
       changedFiles, collateralFiles, gitClean, costUSD, wallMs,
@@ -149,35 +235,4 @@ function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: H
     rmSync(work, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
   }
-}
-
-// ── CLI ──────────────────────────────────────────────────────────────────────
-if (import.meta.main) {
-  const args = process.argv.slice(2);
-  const get = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
-  const harnessName = get("--harness") ?? "gearbox";
-  const onlyTask = get("--task");
-  const trials = Number(get("--trials") ?? 1);
-  const dryRun = args.includes("--dry-run");
-
-  const harnesses = JSON.parse(readFileSync(join(ROOT, "harnesses.json"), "utf8")) as Record<string, HarnessSpec>;
-  const harness = harnesses[harnessName];
-  if (!harness) { console.error(`unknown harness "${harnessName}" — known: ${Object.keys(harnesses).join(", ")}`); process.exit(1); }
-
-  const taskIds = readdirSync(TASKS_DIR).filter((d) => existsSync(join(TASKS_DIR, d, "task.json"))).filter((d) => !onlyTask || d === onlyTask);
-  if (!taskIds.length) { console.error("no tasks matched"); process.exit(1); }
-
-  mkdirSync(RESULTS_DIR, { recursive: true });
-  const outFile = join(RESULTS_DIR, `${harnessName}-${Date.now()}.jsonl`);
-  for (const id of taskIds) {
-    const taskDir = join(TASKS_DIR, id);
-    const task = JSON.parse(readFileSync(join(taskDir, "task.json"), "utf8")) as TaskSpec;
-    for (let t = 1; t <= trials; t++) {
-      process.stdout.write(`${id} · ${harnessName} · trial ${t}/${trials} … `);
-      const row = runOne(task, taskDir, harnessName, harness, t, dryRun);
-      writeFileSync(outFile, JSON.stringify(row) + "\n", { flag: "a" });
-      console.log(`claim=${row.claim} passed=${row.passed} collateral=${row.collateralFiles.length} $${row.costUSD ?? "?"} ${(row.wallMs / 1000).toFixed(1)}s`);
-    }
-  }
-  console.log(`\nrows → ${outFile}\nscore: bun run ${resolve(ROOT, "score.ts")} ${outFile}`);
 }

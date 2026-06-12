@@ -1,1 +1,0 @@
-{ "id": "ts-collateral", "prompt": "prompt.md", "scope": ["src/parse.ts"], "trap": false, "check": ["bun", "test"] }

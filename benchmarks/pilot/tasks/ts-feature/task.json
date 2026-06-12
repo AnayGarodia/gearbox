@@ -1,1 +1,0 @@
-{ "id": "ts-feature", "prompt": "prompt.md", "scope": ["src/slugify.ts"], "trap": false, "check": ["bun", "test"] }
