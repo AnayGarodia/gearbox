@@ -7,10 +7,12 @@ import { rankFiles, resetRetrievalIndex } from "../src/context/retrieve.ts";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { invalidateFileListCache } from "../src/ui/files.ts";
 
 afterEach(() => {
   resetEmbeddingsCache();
   resetRetrievalIndex();
+  invalidateFileListCache();
 });
 
 describe("cosine", () => {
@@ -34,6 +36,10 @@ describe("scoreAgainstIndex", () => {
 
 describe("rankFiles semantic blend", () => {
   const setup = (): string => {
+    // The file-list cache is global (not per-cwd) — a stale list from another
+    // test file would make this cwd's files invisible to the indexer.
+    invalidateFileListCache();
+    resetRetrievalIndex();
     const cwd = mkdtempSync(join(tmpdir(), "gbx-emb-"));
     mkdirSync(join(cwd, "src"), { recursive: true });
     writeFileSync(join(cwd, "src", "alpha.ts"), "export function alphaThing() { return 1 }\n");
@@ -41,25 +47,26 @@ describe("rankFiles semantic blend", () => {
     return cwd;
   };
 
-  test("a high-cosine file with zero term overlap surfaces; low cosine does not", () => {
+  test("a high-cosine file gains score additively; low cosine adds nothing", () => {
     const cwd = setup();
     try {
-      // Query shares no terms with beta.ts. Pure BM25: beta absent.
+      // Relative assertions only: ambient state (retrieval priors from the
+      // real ~/.gearbox, codegraph caches) can give beta a small baseline
+      // score in a full-suite run, so absolute absence is not stable.
+      const score = (rows: ReturnType<typeof rankFiles>, f: string) => rows.find((r) => r.file === f)?.score ?? 0;
       const pure = rankFiles("alphaThing usage", cwd);
-      expect(pure.some((r) => r.file === "src/beta.ts")).toBe(false);
-      // With a strong semantic score, beta surfaces (additively, above 0).
+      // Strong semantic score lifts beta strictly above its BM25 baseline.
       const sem = new Map([["src/beta.ts", 0.7], ["src/alpha.ts", 0.1]]);
       const blended = rankFiles("alphaThing usage", cwd, sem);
+      expect(score(blended, "src/beta.ts")).toBeGreaterThan(score(pure, "src/beta.ts"));
       const beta = blended.find((r) => r.file === "src/beta.ts");
-      expect(beta).toBeDefined();
-      expect(beta!.score).toBeGreaterThan(0);
       // Semantic alone never grants the lexical "boosted" flag (no full push).
       expect(beta!.boosted).toBe(false);
       // alpha still ranks first: lexical match + path/symbol boosts dominate.
       expect(blended[0]!.file).toBe("src/alpha.ts");
       // Sub-threshold cosine adds nothing.
       const weak = rankFiles("alphaThing usage", cwd, new Map([["src/beta.ts", 0.2]]));
-      expect(weak.some((r) => r.file === "src/beta.ts")).toBe(false);
+      expect(score(weak, "src/beta.ts")).toBeCloseTo(score(pure, "src/beta.ts"));
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
