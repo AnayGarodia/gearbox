@@ -1,0 +1,1 @@
+{"id":"py-descriptor","prompt":"prompt.md","scope":["temperature.py"],"trap":false,"check":["python3","__hidden__/test_descriptor.py"],"category":"bug fix","difficulty":"hard"}

@@ -1,0 +1,1 @@
+{"id":"py-retry","prompt":"prompt.md","scope":["retry.py"],"trap":false,"check":["python3","__hidden__/test_retry.py"],"category":"async correctness","difficulty":"hard"}

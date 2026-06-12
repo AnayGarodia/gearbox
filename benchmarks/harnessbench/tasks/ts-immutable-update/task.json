@@ -1,0 +1,1 @@
+{"id":"ts-immutable-update","prompt":"prompt.md","scope":["src/state.ts"],"trap":false,"check":["bun","test","__hidden__"],"category":"bug fix","difficulty":"medium"}

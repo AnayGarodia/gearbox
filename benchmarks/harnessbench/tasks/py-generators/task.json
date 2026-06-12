@@ -1,0 +1,1 @@
+{"id":"py-generators","prompt":"prompt.md","scope":["pipeline.py"],"trap":false,"check":["python3","__hidden__/test_generators.py"],"category":"bug fix","difficulty":"medium"}

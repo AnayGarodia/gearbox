@@ -1,0 +1,1 @@
+{"id":"ts-lru-cache","prompt":"prompt.md","scope":["src/lru.ts"],"trap":false,"check":["bun","test","__hidden__"],"category":"implement from spec","difficulty":"hard"}

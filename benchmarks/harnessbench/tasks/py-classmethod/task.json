@@ -1,0 +1,1 @@
+{"id":"py-classmethod","prompt":"prompt.md","scope":["counter.py"],"trap":false,"check":["python3","__hidden__/test_classmethod.py"],"category":"bug fix","difficulty":"medium"}

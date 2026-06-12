@@ -1,0 +1,1 @@
+{"id":"ts-discriminated-union","prompt":"prompt.md","scope":["src/shape.ts"],"trap":false,"check":["bun","test","__hidden__"],"category":"bug fix","difficulty":"medium"}

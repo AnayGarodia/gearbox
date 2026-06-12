@@ -1,0 +1,1 @@
+{"id":"py-context-manager","prompt":"prompt.md","scope":["resource.py"],"trap":false,"check":["python3","__hidden__/test_context_manager.py"],"category":"implement from spec","difficulty":"medium"}
