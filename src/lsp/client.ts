@@ -53,6 +53,34 @@ function foldSource(source: unknown, code: unknown): string | undefined {
   return src ? `${src}(${c})` : String(c);
 }
 
+/**
+ * Normalize an LSP definition/references result — Location | Location[] |
+ * LocationLink[] | null — into 1-based path/line/col triples. Exported for tests.
+ */
+export function normalizeLocations(result: unknown): { path: string; line: number; col: number }[] {
+  const arr = result == null ? [] : Array.isArray(result) ? result : [result];
+  const out: { path: string; line: number; col: number }[] = [];
+  for (const loc of arr) {
+    if (!loc || typeof loc !== "object") continue;
+    const l = loc as any;
+    const uri: unknown = l.uri ?? l.targetUri;
+    const range = l.range ?? l.targetSelectionRange ?? l.targetRange;
+    if (typeof uri !== "string") continue;
+    let path: string;
+    try {
+      path = uri.startsWith("file:") ? normPath(fileURLToPath(uri)) : uri;
+    } catch {
+      path = uri;
+    }
+    out.push({
+      path,
+      line: (range?.start?.line ?? 0) + 1,
+      col: (range?.start?.character ?? 0) + 1,
+    });
+  }
+  return out;
+}
+
 export interface DiagnosticsWait {
   /** Resolve once no new publish has arrived for this long. */
   settleMs?: number;
@@ -120,7 +148,7 @@ export class LspClient {
         processId: process.pid,
         rootUri,
         rootPath: this.opts.cwd,
-        capabilities: { textDocument: { publishDiagnostics: {} } },
+        capabilities: { textDocument: { publishDiagnostics: {}, definition: {}, references: {} } },
         workspaceFolders: [{ uri: rootUri, name: basename(this.opts.cwd) }],
       },
       initTimeoutMs,
@@ -191,6 +219,30 @@ export class LspClient {
       await sleep(Math.min(25, Math.max(1, deadline - now)));
     }
     return this.store.get(key)?.diags ?? [];
+  }
+
+  // ── symbol navigation ─────────────────────────────────────────────────────
+
+  /**
+   * textDocument/definition or /references at a 1-based (line, col). Returns
+   * normalized 1-based locations; [] on any failure or timeout (never throws).
+   * The file must have been didOpen'd first so the server has its content.
+   */
+  async locations(
+    kind: "definition" | "references",
+    absPath: string,
+    line: number,
+    col: number,
+    timeoutMs = 5000,
+  ): Promise<{ path: string; line: number; col: number }[]> {
+    const uri = pathToFileURL(normPath(absPath)).href;
+    const params: Record<string, unknown> = {
+      textDocument: { uri },
+      position: { line: Math.max(0, line - 1), character: Math.max(0, col - 1) },
+    };
+    if (kind === "references") params.context = { includeDeclaration: true };
+    const res = await this.request(`textDocument/${kind}`, params, timeoutMs);
+    return normalizeLocations(res?.result);
   }
 
   // ── shutdown ──────────────────────────────────────────────────────────────

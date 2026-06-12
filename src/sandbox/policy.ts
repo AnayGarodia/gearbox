@@ -3,7 +3,7 @@
 // mechanism (seatbelt.ts on macOS, a future bwrap builder on Linux) renders a
 // policy into an actual sandbox invocation. Keeping the policy separate means
 // the Linux backend reuses every decision here unchanged.
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, isAbsolute } from "node:path";
 
@@ -53,20 +53,32 @@ export function resolveSandboxPolicy(
   prefs: SandboxPrefs,
   env: Record<string, string | undefined>,
   cwd: string,
-  opts: { platform?: NodeJS.Platform; gearboxHome?: string } = {},
+  opts: { platform?: NodeJS.Platform; gearboxHome?: string; hasBackend?: (platform: NodeJS.Platform) => boolean } = {},
 ): SandboxPolicy {
   const platform = opts.platform ?? process.platform;
+  // Backend presence: seatbelt ships on every macOS; Linux needs bwrap installed.
+  // Injectable so tests never probe the host filesystem.
+  const hasBackend = opts.hasBackend ?? defaultHasBackend;
   const envMode = parseSandboxMode(env.GEARBOX_SANDBOX);
   // Default: on (workspace-write) where a backend exists, off elsewhere.
-  const platformDefault: SandboxMode = platform === "darwin" ? "workspace-write" : "off";
+  const platformDefault: SandboxMode = hasBackend(platform) ? "workspace-write" : "off";
   const mode: SandboxMode = envMode ?? prefs.sandbox ?? platformDefault;
   const envNet = env.GEARBOX_SANDBOX_NETWORK?.trim().toLowerCase();
   const network = envNet === "allow" || envNet === "on" ? true : envNet === "deny" || envNet === "off" ? false : (prefs.sandboxNetwork ?? false);
   const workspace = real(cwd);
-  // Only darwin has a backend today; anything else degrades to off so callers
-  // never spawn a wrapper that does not exist on the host.
-  const effective = platform === "darwin" ? mode : "off";
+  // Degrade to off where no backend exists so callers never spawn a wrapper
+  // that does not exist on the host.
+  const effective = hasBackend(platform) ? mode : "off";
   return { mode: effective, workspace, network, extraWritePaths: gitDirWritePaths(workspace) };
+}
+
+// darwin always has sandbox-exec; linux counts only when bwrap is installed.
+// Path list mirrors bwrap.ts BWRAP_CANDIDATES (kept literal here to avoid an
+// import cycle between policy and backend modules).
+function defaultHasBackend(platform: NodeJS.Platform): boolean {
+  if (platform === "darwin") return true;
+  if (platform === "linux") return ["/usr/bin/bwrap", "/usr/local/bin/bwrap", "/bin/bwrap"].some((p) => existsSync(p));
+  return false;
 }
 
 /**

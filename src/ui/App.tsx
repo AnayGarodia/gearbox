@@ -73,7 +73,7 @@ import { missingRequirements, capabilitySummary, type ModelRequirement } from ".
 import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
-import { resolveSandboxPolicy, sandboxAvailable } from "../sandbox/index.ts";
+import { resolveSandboxPolicy, sandboxBackendAvailable } from "../sandbox/index.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, reloadMcpConnections, removeMcpServer, shellSplit } from "../mcp.ts";
@@ -93,6 +93,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { computeDiff, diffStat } from "../diff.ts";
 import { updateRetrievalFile, resetRetrievalIndex } from "../context/retrieve.ts";
+import { refreshEmbeddingsIndex, semanticScores } from "../context/embeddings.ts";
 import { addToast, TOAST_TTL_MS, type Toast, type ToastKind } from "./toast.ts";
 import { editorNames, setEditorPref } from "./links.ts";
 import { liveCheckAll, formatDoctorRows } from "../accounts/doctor.ts";
@@ -535,8 +536,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Effective OS-sandbox mode for the status chip. Availability is folded in
   // (darwin without sandbox-exec honestly reads "off"); sbxAvail distinguishes
   // "off by choice" (warn chip) from "no backend on this platform" (no chip).
-  const sbxAvail = sandboxAvailable();
-  const [sandboxMode, setSandboxMode] = useState(() => (sandboxAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, rootRef.current).mode : "off" as const));
+  const sbxAvail = sandboxBackendAvailable();
+  const [sandboxMode, setSandboxMode] = useState(() => (sandboxBackendAvailable() ? resolveSandboxPolicy(loadPrefs(), process.env, rootRef.current).mode : "off" as const));
   const charTestOfferedRef = useRef(false); // characterization-test offer: once per session
   const autofixFpRef = useRef<string | undefined>(undefined); // last auto-fix attempt's failure fingerprint (same-failure early stop)
   const lastChangedFilesRef = useRef<string[]>([]); // most recent edited-turn file list (/verify test targets these)
@@ -749,6 +750,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 500);
     return () => clearInterval(t);
   }, [busy]);
+
+  // Background semantic-index refresh: once per session, a few seconds after
+  // boot so it never competes with the first turn. Incremental (content-hash)
+  // and pref-gated; a failure is silently a no-op — retrieval stays BM25.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      void refreshEmbeddingsIndex(rootRef.current, { prefs: loadPrefs() }).catch(() => {});
+    }, 3000);
+    return () => clearTimeout(t);
+  }, []);
 
   // Reflect status in the terminal window/tab title (OSC 2). Active tab only —
   // a background session finishing must not retitle the user's terminal.
@@ -2230,6 +2241,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
+        // Semantic retrieval: one bounded query-embedding call (memoized across
+        // hops of the same turn); null on timeout/no-index/no-provider → BM25.
+        const semantic = await semanticScores(prompt, rootRef.current, { prefs: loadPrefs() }).catch(() => null);
         let { system, messages: ctx, cacheBreak, sections, retrievedFiles, overflow } = buildContext({
           history: messages,
           userText: prompt,
@@ -2239,6 +2253,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           verifyMode: verifyRef.current,
           cwd: rootRef.current,
           compactions: sessionRef.current.compactions,
+          semantic,
         });
         // Remember this turn's non-history context overhead (system + memory +
         // repomap + retrieval + git) so the auto-compact trigger can budget on

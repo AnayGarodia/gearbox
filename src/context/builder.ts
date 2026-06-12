@@ -529,6 +529,11 @@ export function buildContext(opts: {
   cwd?: string;
   recentTurns?: number;
   compactions?: CompactionArchive[];
+  /** Per-file cosine scores from context/embeddings.ts semanticScores().
+   *  buildContext stays sync (and network-free): the caller awaits the ONE
+   *  query-embedding call before building and passes the result here; absent
+   *  or null means pure BM25 retrieval, exactly as before. */
+  semantic?: Map<string, number> | null;
 }): BuiltContext {
   const { history, userText, model, plan } = opts;
   const cwd = opts.cwd ?? process.cwd();
@@ -609,7 +614,7 @@ export function buildContext(opts: {
   // turns actually kept — filtering against the pre-trim window wrongly treated
   // files in subsequently-dropped turns as in-context and skipped them.
   const retrieveBudget = Math.min(12_000, Math.floor(inputBudget * 0.15));
-  const allHits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId), []);
+  const allHits = safe(() => retrieveFiles(userText, cwd, 6, retrieveBudget, modelId, opts.semantic), []);
   const archiveBudget = Math.min(6_000, Math.floor(inputBudget * 0.08));
   const archiveHits = safe(() => retrieveArchives(userText, opts.compactions ?? [], 3, archiveBudget, modelId), []);
 

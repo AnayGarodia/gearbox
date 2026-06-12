@@ -253,7 +253,11 @@ function countOcc(haystack: string, needle: string): number {
  *     like a model-selection question and the file is a known selector/router.
  *     Without this, generic terms like "model" swamp the routing files.
  */
-export function rankFiles(query: string, cwd = process.cwd()): { file: string; score: number; coverage: number; boosted: boolean }[] {
+export function rankFiles(
+  query: string,
+  cwd = process.cwd(),
+  semantic?: Map<string, number> | null,
+): { file: string; score: number; coverage: number; boosted: boolean }[] {
   const idx = index(cwd);
   const qt = terms(query);
   if (!qt.length) return [];
@@ -284,6 +288,14 @@ export function rankFiles(query: string, cwd = process.cwd()): { file: string; s
     }
     const prior = retrievalPriorScore(f, cwd);
     if (prior) s += prior * qIdf * 0.12;
+    // Semantic rerank (context/embeddings.ts): cosine similarity blended as an
+    // ADDITIVE boost in qIdf units. Weight 2.0 is deliberately conservative: a
+    // strongly similar file (cos ≈ 0.6) gains ~1.2 coverage — enough to lift a
+    // borderline lexical hit over the pointer/full thresholds, or to surface a
+    // zero-term-overlap file as a pointer, never enough to fabricate a
+    // full-content push on its own (full tier still requires a lexical boost).
+    const cos = semantic?.get(f) ?? 0;
+    if (cos > 0.25) s += (cos - 0.25) * qIdf * 2.0;
     const graphBoost = asksReferences ? graphBoostForFile(qt, f, cwd) : 0;
     if (graphBoost) { s += graphBoost * qIdf * 0.18; boosted = true; }
     // Routing boost: model-selection queries should surface selector/router/config
@@ -333,9 +345,10 @@ export function retrieveFiles(
   k = 6,
   budget = 8000,
   modelId?: string,
+  semantic?: Map<string, number> | null,
 ): RetrievedFile[] {
   const idx = index(cwd);
-  const rankedAll = rankFiles(query, cwd);
+  const rankedAll = rankFiles(query, cwd, semantic);
   const topScore = rankedAll[0]?.score ?? 0;
   // Tier the candidates: floors first (relative + absolute), then slice to
   // top-k before token-packing to keep the loop bounded.

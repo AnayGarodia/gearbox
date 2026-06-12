@@ -14,11 +14,17 @@ describe("parseSandboxMode", () => {
 
 describe("resolveSandboxPolicy", () => {
   const cwd = "/tmp/ws";
-  test("default: workspace-write on darwin, off elsewhere", () => {
+  test("default: workspace-write where a backend exists, off elsewhere", () => {
     const p = resolveSandboxPolicy({}, {}, cwd, { platform: "darwin" });
     expect(p.mode).toBe("workspace-write");
     expect(p.network).toBe(false);
-    expect(resolveSandboxPolicy({}, {}, cwd, { platform: "linux" }).mode).toBe("off");
+    const noBackend = () => false;
+    expect(resolveSandboxPolicy({}, {}, cwd, { platform: "linux", hasBackend: noBackend }).mode).toBe("off");
+  });
+  test("linux with bwrap installed defaults to workspace-write", () => {
+    const withBwrap = (pl: NodeJS.Platform) => pl === "linux";
+    expect(resolveSandboxPolicy({}, {}, cwd, { platform: "linux", hasBackend: withBwrap }).mode).toBe("workspace-write");
+    expect(resolveSandboxPolicy({}, {}, cwd, { platform: "win32", hasBackend: withBwrap }).mode).toBe("off");
   });
   test("prefs can turn it off", () => {
     expect(resolveSandboxPolicy({ sandbox: "off" }, {}, cwd, { platform: "darwin" }).mode).toBe("off");
@@ -33,8 +39,8 @@ describe("resolveSandboxPolicy", () => {
     expect(resolveSandboxPolicy({ sandboxNetwork: true }, { GEARBOX_SANDBOX_NETWORK: "deny" }, cwd, { platform: "darwin" }).network).toBe(false);
     expect(resolveSandboxPolicy({}, { GEARBOX_SANDBOX_NETWORK: "allow" }, cwd, { platform: "darwin" }).network).toBe(true);
   });
-  test("non-darwin degrades to off", () => {
-    const p = resolveSandboxPolicy({ sandbox: "workspace-write" }, {}, cwd, { platform: "linux" });
+  test("platform without a backend degrades to off even when prefs ask for it", () => {
+    const p = resolveSandboxPolicy({ sandbox: "workspace-write" }, {}, cwd, { platform: "linux", hasBackend: () => false });
     expect(p.mode).toBe("off");
   });
 });
@@ -81,4 +87,14 @@ describe("looksLikeSandboxDenial", () => {
     expect(looksLikeSandboxDenial("exit 1\n3 tests failed", 1).denied).toBe(false);
     expect(looksLikeSandboxDenial("error TS2304: Cannot find name 'x'", 2).denied).toBe(false);
   });
+});
+
+import { sandboxBackendAvailable } from "../src/sandbox/index.ts";
+
+test("sandboxBackendAvailable dispatches per platform (UI surfaces share ONE check)", () => {
+  // win32 has no backend; darwin/linux answers depend on the host binaries —
+  // the contract under test is the dispatch itself, not the host setup.
+  expect(sandboxBackendAvailable("win32")).toBe(false);
+  expect(typeof sandboxBackendAvailable("darwin")).toBe("boolean");
+  expect(typeof sandboxBackendAvailable("linux")).toBe("boolean");
 });
