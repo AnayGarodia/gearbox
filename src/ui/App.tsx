@@ -28,7 +28,8 @@ import { color, glyph, setTheme, activeTheme, THEMES } from "./theme.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
-import { FixedSelector, type ModelSelector, type ModelChoice } from "../model/selector.ts";
+import { FixedSelector, type ModelSelector, type ModelChoice, type FailureKind } from "../model/selector.ts";
+import { selectorForPolicy } from "../model/policy.ts";
 import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
@@ -68,7 +69,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, provenTier, detectProofTier, worstFailureKind, shouldOfferCharTest, buildCharTestPrompt, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { helpText, formatModelList, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
@@ -87,7 +88,7 @@ import { basename, extname, resolve } from "node:path";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { computeDiff, diffStat } from "../diff.ts";
-import { updateRetrievalFile, resetRetrievalIndex } from "../context/retrieve.ts";
+import { updateRetrievalFile, resetRetrievalIndex, terms as retrievalTerms } from "../context/retrieve.ts";
 import { addToast, TOAST_TTL_MS, type Toast, type ToastKind } from "./toast.ts";
 import { editorNames, setEditorPref } from "./links.ts";
 import { liveCheckAll, formatDoctorRows } from "../accounts/doctor.ts";
@@ -97,6 +98,7 @@ import { checkFileDiagnostics, formatDiagnostics, shutdownAllLsp } from "../lsp/
 import { loadPlugins, emitHook, installPluginLogger } from "../plugins.ts";
 import { loadAgents, agentInvocation, type AgentDef } from "../agents.ts";
 import { recordTurnOutcome } from "../model/priors.ts";
+import { recordRoutingOutcome } from "../model/outcomes.ts";
 import { armDeviceLogin } from "../accounts/azure-arm.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
@@ -108,6 +110,7 @@ export type Runner = (opts: {
   selector: ModelSelector;
   signal: AbortSignal;
   escalate?: number; // prior failed-check count → router climbs to a stronger model
+  failureKind?: FailureKind; // what kind of check failed (set with escalate > 0; the fix-routing policy reads it)
 }) => Promise<{ messages: ModelMessage[]; usage: Usage }>;
 
 const KEYS_HELP = [
@@ -490,6 +493,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // turn. The routing line cross-checks this against what we requested.
   const servedModelRef = useRef<string | null>(null);
   const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
+  // What kind of check failed last turn — set when an auto-fix attempt is
+  // scheduled so the next select() can route the FIX by failure kind.
+  const lastFailureKindRef = useRef<FailureKind | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number }[]>([]); // per-turn file snapshots for /undo + /diff
   const firstRunRef = useRef(!loadPrefs().onboarded); // show setup tips until a real account exists
@@ -1801,7 +1807,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   );
 
   const defaultRunner: Runner = useCallback(
-    async ({ prompt, messages, onEvent, selector: sel, signal, escalate = 0 }) => {
+    async ({ prompt, messages, onEvent, selector: sel, signal, escalate = 0, failureKind }) => {
       // /ask (and auto-detected meta-questions): answer from the bundled Gearbox
       // docs via a cheap routed model, NO tools · runs before routing/pin so it
       // works even when /model is pinned to something broken. Read-and-clear.
@@ -1957,7 +1963,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // wins; this adds the natural-language path.
       const agentDef = agentTurnRef.current; // set by runTurn for @agent turns
       const directiveId = (agentDef?.model ?? null) || (sel instanceof RoutingSelector ? modelDirectiveIn(prompt) : null);
-      if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
+      // Policies that derive the kind from repo observables (observables /
+      // combined) classify themselves — skip the billed LLM classify hop so the
+      // app realizes the same cost/latency saving the bench measured headless.
+      const selfClassifies = (sel as { classifiesItself?: boolean }).classifiesItself === true;
+      if (!routedKind && sel instanceof RoutingSelector && !directiveId && !selfClassifies) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
         routedKind = await classifyTask(prompt, signal);
       }
@@ -1967,7 +1977,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true });
+        // verifierTier: how strong this workspace's safety net is (a pure fs
+        // check). Routing policies scale caution to it; the baseline ignores it.
+        const verifierTier = (() => { try { return detectProofTier(process.cwd()); } catch { return undefined; } })();
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate, failureKind, verifierTier, interactive: true });
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
       }
@@ -2417,7 +2430,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // the cheap pick already missed, so it climbs to a stronger model instead of
         // re-running the too-weak one — fixing the false economy of a cheap pick that
         // fails and forces an expensive retry anyway.
-        const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal, escalate: attempt });
+        const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal, escalate: attempt, failureKind: attempt > 0 ? lastFailureKindRef.current ?? undefined : undefined });
         msgRef.current = r.messages;
         if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && !interruptedRef.current && changedFiles.size && checks.length === 0) {
           // FAST tier first: language-server diagnostics on the changed files
@@ -2605,6 +2618,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             const outcomeKind = routedKindRef.current ?? "code";
             const outcome = failed.length ? "failed" : tier && tier !== "none" ? "passed" : "unverified";
             try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome }); } catch { /* never break settle */ }
+            // The joined record (outcome + the task's retrieval terms + touched
+            // files) — what the precedent policy routes by. Same ground truth,
+            // finer grain than the aggregate priors.
+            try {
+              recordRoutingOutcome({
+                kind: outcomeKind, modelId: ranModel, outcome, prompt,
+                terms: retrievalTerms(prompt), touched: changed,
+                proofTier: tier, policy: (selectorRef.current as { policyName?: string }).policyName ?? "pinned",
+              });
+            } catch { /* never break settle */ }
             lastOutcomeKeyRef.current = { kind: outcomeKind, modelId: ranModel };
           }
           // Once per session, after a clean code-changing turn in a project whose
@@ -2648,6 +2671,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // `/verify off` disables this (verifyRef === "off").
           if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed })) {
             notice(`checks failed — fixing (attempt ${attempt + 1}/${MAX_AUTOFIX_ATTEMPTS})`);
+            lastFailureKindRef.current = worstFailureKind(failed); // the fix-routing policy reads this on the next select
             const fixPrompt = buildFixPrompt(failed);
             setTimeout(() => void runTurnRef.current?.(fixPrompt, attempt + 1), 0);
           } else if (verifyRef.current === "auto" && attempt >= MAX_AUTOFIX_ATTEMPTS && failed.length) {
@@ -3548,7 +3572,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
               return;
             }
             const left = leaveSubscription();
-            setSelector(new RoutingSelector());
+            setSelector(selectorForPolicy(process.env.GEARBOX_ROUTER));
             setLastPick(null);
             routedRef.current = null;
             updatePrefs({ pinnedModel: undefined }); // remember: routing, across sessions
@@ -3634,7 +3658,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // would either be a silent no-op (the old bug) or yank their pin — so
           // save it and say plainly when it applies.
           if (selectorRef.current instanceof RoutingSelector) {
-            setSelector(new RoutingSelector()); // re-instantiate so the new pref is read
+            setSelector(selectorForPolicy(process.env.GEARBOX_ROUTER)); // re-instantiate so the new pref is read
             notice(`remembered: prefer ${pref.modelId} for ${pref.kind} tasks`);
           } else {
             notice(`remembered: prefer ${pref.modelId} for ${pref.kind} tasks · applies once routing is on (/model auto${activeCliRef.current ? " · /account off to leave the subscription" : ""})`);

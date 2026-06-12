@@ -30,6 +30,7 @@ import { buildRoutingContext, type AccountState, type RoutingContext } from "./r
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey } from "./cooldown.ts";
 import { priorFor, priorLine } from "./priors.ts";
+import { recordRouteDecision } from "./route-log.ts";
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -41,7 +42,10 @@ const NOMINAL_INPUT_TOKENS = 16_000;
 // One (model, account) routing candidate, before scoring. `canonicalId` is the
 // registry model id used for profile lookup (cost and quality); it differs from
 // `spec.id` only for subscription seats, which mirror a canonical model's spec.
-interface Candidate {
+// Exported (with the helpers below) for the routing POLICIES in
+// src/model/policies/ — RoutingSelector subclasses that override the protected
+// hooks instead of duplicating enumeration/filtering.
+export interface Candidate {
   spec: ModelSpec;
   canonicalId?: string;
   backend: Backend;
@@ -52,7 +56,7 @@ interface Candidate {
 // model must have to qualify for this task. Bounded sub-tasks (summarize,
 // classify, search) have no bar so the cheapest model wins. Real coding and
 // planning demand a strong model (0.7 clears Sonnet+ but not Haiku).
-const BAR: Record<Kind, number> = {
+export const BAR: Record<Kind, number> = {
   summarize: 0,
   classify: 0,
   search: 0.2,
@@ -65,8 +69,8 @@ const BAR: Record<Kind, number> = {
 // the model ladder toward stronger candidates. BAR_MAX ensures the bar never
 // excludes every model: if no candidate clears the raised bar, prepare() promotes
 // to the strongest available tier rather than dropping back to cheapest.
-const ESCALATION_STEP = 0.08;
-const BAR_MAX = 0.95;
+export const ESCALATION_STEP = 0.08;
+export const BAR_MAX = 0.95;
 
 // Unambiguous mutation or repair verbs: their presence means real work is
 // requested and the prompt should route to a strong model regardless of other
@@ -100,7 +104,7 @@ export function classify(prompt: string): Kind {
 // Resolve quality from the canonical model profile. Uses sweBenchVerified if
 // available (primary signal), falls back to intelligenceIndex normalised to 0..1,
 // then to 0.5 as a neutral placeholder when neither is present.
-function qualityOf(c: Candidate): number {
+export function qualityOf(c: Candidate): number {
   const pr = profileFor(c.canonicalId ?? c.spec.id);
   if (!pr) return 0.5;
   if (pr.quality.sweBenchVerified != null) return pr.quality.sweBenchVerified;
@@ -111,7 +115,7 @@ function qualityOf(c: Candidate): number {
 // Returns true when the profile contains at least one real quality benchmark.
 // Used by the bar-clearing predicate: a CLI seat with no benchmark is given the
 // benefit of the doubt (assumed to clear) rather than penalised for a 0.5 guess.
-function hasKnownQuality(c: Candidate): boolean {
+export function hasKnownQuality(c: Candidate): boolean {
   const pr = profileFor(c.canonicalId ?? c.spec.id);
   return !!pr && (pr.quality.sweBenchVerified != null || pr.quality.intelligenceIndex != null);
 }
@@ -122,7 +126,7 @@ function hasKnownQuality(c: Candidate): boolean {
 const clearsBar = (bar: number) => (c: Candidate): boolean =>
   c.backend?.kind === "cli" ? !hasKnownQuality(c) || qualityOf(c) >= bar : qualityOf(c) >= bar;
 
-function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {
+export function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {
   const cost = profileFor(c.canonicalId ?? c.spec.id)?.cost ?? c.spec.cost;
   // Unknown cost sorts last. The sentinel 1e6 matches prior POSITIVE_INFINITY behaviour.
   return cost ?? { inUSDPerMtok: 1e6, outUSDPerMtok: 1e6 };
@@ -136,13 +140,17 @@ function tpsOf(c: Candidate): number {
 // Profile metrics resolve against the canonical model id (a subscription seat
 // mirrors its canonical model's pricing and quality), falling back to the seat's
 // own spec for cost when no profile exists.
-function toScoreCandidate(c: Candidate, kind?: string): ScoreCandidate {
+export function toScoreCandidate(c: Candidate, kind?: string): ScoreCandidate {
   const cost = costPair(c);
   const prior = kind ? priorFor(kind, c.canonicalId ?? c.spec.id) : null;
   return { id: c.spec.id, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, quality: qualityOf(c) + (prior?.delta ?? 0), tps: tpsOf(c), account: c.state };
 }
 
 export class RoutingSelector implements ModelSelector {
+  // Which policy this selector implements — subclasses in src/model/policies/
+  // override it so the route-decision log and /why can attribute every pick.
+  readonly policyName: string = "baseline";
+
   constructor(private fallbackId?: string) {}
 
   // Enumerate every (model, account) pair the user can run right now.
@@ -181,20 +189,27 @@ export class RoutingSelector implements ModelSelector {
     return live.length ? live : out;
   }
 
+  // The quality bar for this task. Default: the static per-kind bar, lifted by
+  // ESCALATION_STEP per prior miss. Policies override this hook to shape the
+  // bar from richer signals (verifier tier, repo-side difficulty) without
+  // re-implementing candidate enumeration.
+  protected barFor(kind: Kind, escalate: number, _task: Task): number {
+    return escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
+  }
+
   // Shared setup for select() and explain(). Builds the account snapshot,
   // enumerates all candidates, filters by capability and context window, applies
   // the global preference, and determines the bar-clearing set.
   // Throws when no model supports the required capabilities.
   // Returns a `fallback` field when the enumeration is empty (no keys configured).
-  private prepare(task: Task): {
+  protected prepare(task: Task): {
     kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
     pool: Candidate[]; clears: Candidate[]; estInputTokens: number;
     fallback?: ModelSpec;
   } {
     const kind = task.kind ?? classify(task.prompt);
     const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
-    // Each prior miss lifts the bar so the router climbs to a stronger model.
-    const bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
+    const bar = this.barFor(kind, escalate, task);
     const required = task.requires ?? [];
     const ctx = buildRoutingContext(ctx_now());
     const estInputTokens = task.estTokens || NOMINAL_INPUT_TOKENS;
@@ -243,7 +258,7 @@ export class RoutingSelector implements ModelSelector {
 
   // Return the per-kind remembered preference if it is present in the given
   // candidate set. A preference can be a specific model id or just a provider.
-  private preferredIn(kind: Kind, candidates: Candidate[]): Candidate | undefined {
+  protected preferredIn(kind: Kind, candidates: Candidate[]): Candidate | undefined {
     const pref = preferenceFor(kind);
     return pref?.modelId
       ? candidates.find((c) => c.canonicalId === pref.modelId || c.spec.id === pref.modelId)
@@ -269,10 +284,38 @@ export class RoutingSelector implements ModelSelector {
     if (preferred) return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
 
     // Score all bar-clearing candidates and pick the winner.
-    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive });
+    const scoreInput = { candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive };
+    const best = pickBest(scoreInput);
     const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
+    const choice = { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
+    this.logDecision(task, p.kind, p.bar, p.escalate, choice, candidates, p);
+    return choice;
+  }
+
+  // Persist this pick's compact scorecard to the route-decision log so
+  // `gearbox calibrate` and the routing bench can replay history offline.
+  // Best-effort by construction (route-log.ts swallows all I/O errors), and
+  // the re-scoring is pure math over a dozen candidates.
+  protected logDecision(
+    task: Task, kind: Kind, bar: number, escalate: number, choice: ModelChoice,
+    candidates: Candidate[], p: { ctx: RoutingContext; estInputTokens: number },
+  ): void {
+    try {
+      const rows = candidates
+        .map((c) => ({ c, s: scoreCandidate(toScoreCandidate(c, kind), { candidates: [], now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive }) }))
+        .sort((a, b) => a.s.score - b.s.score)
+        .map(({ c, s }) => ({ id: c.spec.id, score: Number(s.score.toFixed(6)), quality: Number(qualityOf(c).toFixed(3)) }));
+      recordRouteDecision({
+        policy: this.policyName, kind, bar, escalate,
+        chosen: choice.model.id,
+        backend: choice.backend?.kind === "cli" ? "seat" : "api",
+        reason: choice.reason,
+        candidates: rows,
+      });
+    } catch {
+      /* never break routing over bookkeeping */
+    }
   }
 
   // Build the full ranked scorecard for the "/why" UI panel. Scores the entire

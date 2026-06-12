@@ -24,6 +24,31 @@ export type Backend =
   | { kind: "in-loop"; account?: Account }
   | { kind: "cli"; account: Account; binary: string; profile?: string };
 
+// Which kind of check failed when an escalation is in play. Mechanical failures
+// (typecheck/lint/build — a compiler told us exactly what's wrong) are a much
+// easier task than the original edit; a test failure signals a reasoning miss.
+// Mirrors verify.ts checkIntent values; kept as a literal union here so the
+// seam stays free of verify.ts's shell/event imports.
+export type FailureKind = "typecheck" | "lint" | "build" | "test" | "other";
+
+// How strong this workspace's safety net is, detectable BEFORE routing (a pure
+// filesystem check — verify.ts detectProofTier). "tests" means a wrong cheap
+// pick is caught by the gate; "none" means a miss is invisible. Routing
+// policies use this to scale caution to verifier strength.
+export type VerifierTier = "tests" | "types" | "none";
+
+// Cheap repo-side difficulty signals computed WITHOUT any model call (BM25
+// retrieval spread, prompt size, test presence). A concentrated top hit means
+// localized easy work; a flat spread across many files means diffuse
+// cross-cutting work. Consumed by the observables policy; ignored elsewhere.
+export interface DifficultySignals {
+  retrievalTop: number; // BM25 score of the best-matching file (0 = no match)
+  retrievalSpread: number; // top-1 / mean(top-8): high = concentrated, low = diffuse
+  filesMatched: number; // files with a non-zero retrieval score
+  promptChars: number;
+  hasTests: boolean;
+}
+
 // The inputs the router uses to decide which model to run. All fields are
 // optional: FixedSelector ignores them, and RoutingSelector reads them to
 // classify the task, set the quality bar, and size the context estimate.
@@ -44,6 +69,16 @@ export interface Task {
   // re-running the same too-weak one. 0 (the default) is the normal path;
   // FixedSelector ignores this field entirely.
   escalate?: number;
+  // What kind of check produced the escalation (set alongside escalate > 0).
+  // The baseline router ignores it; the fix-routing policy routes mechanical
+  // failures DOWN (cheap model, pinpointed compiler error) and test failures
+  // straight to the top tier.
+  failureKind?: FailureKind;
+  // Verifier strength of this workspace (see VerifierTier). Policies that
+  // cascade cheap-first only do so where a verifier exists to catch the miss.
+  verifierTier?: VerifierTier;
+  // Repo-side difficulty signals (see DifficultySignals). No model call.
+  difficulty?: DifficultySignals;
   // Latency class: true when the user is WAITING on this turn (a foreground
   // request), so the router pulls faster models forward among bar-clearing
   // candidates (done > fast > cheap when waiting). Omit for background work

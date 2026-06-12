@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { runShellStream, type ShellResult } from "./shell.ts";
 import type { OnEvent } from "./agent/events.ts";
@@ -36,12 +36,24 @@ function packageCommands(cwd: string): VerificationCommand[] {
   return cmds;
 }
 
+function hasPytestFiles(cwd: string): boolean {
+  try {
+    if (existsSync(join(cwd, "tests")) || existsSync(join(cwd, "test"))) return true;
+    return readdirSync(cwd).some((f) => /^test_.*\.py$/.test(f) || /_test\.py$/.test(f));
+  } catch {
+    return false;
+  }
+}
+
 export function detectVerificationCommands(cwd = process.cwd(), changedFiles: string[] = []): VerificationCommand[] {
   const cmds = packageCommands(cwd);
   const hasPython = changedFiles.some((f) => /\.py$/.test(f)) || existsSync(join(cwd, "pyproject.toml")) || existsSync(join(cwd, "pytest.ini"));
   const hasRust = changedFiles.some((f) => /\.rs$/.test(f)) || existsSync(join(cwd, "Cargo.toml"));
   const hasGo = changedFiles.some((f) => /\.go$/.test(f)) || existsSync(join(cwd, "go.mod"));
-  if (hasPython && !cmds.some((c) => /\bpytest\b/.test(c.command))) cmds.push({ command: "pytest", reason: "python project" });
+  // Bare `pytest` in a project with no test files exits non-zero ("no tests
+  // collected", or 127 when pytest isn't installed) — a red verification for a
+  // perfectly fine change. Only run it when test files actually exist.
+  if (hasPython && !cmds.some((c) => /\bpytest\b/.test(c.command)) && hasPytestFiles(cwd)) cmds.push({ command: "pytest", reason: "python project" });
   if (hasRust && !cmds.some((c) => /\bcargo\s+test\b/.test(c.command))) cmds.push({ command: "cargo test", reason: "rust project" });
   if (hasGo && !cmds.some((c) => /\bgo\s+test\b/.test(c.command))) cmds.push({ command: "go test ./...", reason: "go project" });
   return cmds.slice(0, 3);
@@ -67,6 +79,34 @@ export function provenTier(passedIntents: (string | undefined)[]): ProofTier {
   if (passedIntents.includes("test")) return "tests";
   if (passedIntents.some((i) => i === "typecheck" || i === "build" || i === "lint")) return "types";
   return "none";
+}
+
+// The verifier strength this workspace COULD provide, detectable BEFORE any
+// model runs (pure filesystem check — what detectVerificationCommands would
+// find). This is the routing-side twin of provenTier: routing policies use it
+// to scale caution to verifier strength (cheap-first is safe exactly where a
+// test gate will catch the miss; with no checks at all a miss is invisible).
+export function detectProofTier(cwd = process.cwd(), changedFiles: string[] = []): ProofTier {
+  const cmds = detectVerificationCommands(cwd, changedFiles);
+  if (hasTestCheck(cmds)) return "tests";
+  return cmds.length ? "types" : "none";
+}
+
+// Classify a set of verification failures into the single kind routing cares
+// about. Failures arrive as "<command>: <summary>" strings, so checkIntent
+// matches on the command prefix. A test failure dominates (it signals a
+// reasoning miss → escalate); otherwise the mechanical kinds (a compiler/linter
+// pinpointed the error → an easier, cheaper fix task) in build > typecheck >
+// lint order; "other" when nothing matches (e.g. a raw model error).
+export function worstFailureKind(failures: string[]): "typecheck" | "lint" | "build" | "test" | "other" {
+  // Only the command part decides the kind — the summary tail may name files
+  // like foo.test.ts that would spuriously match the test regex.
+  const kinds = failures.map((f) => checkIntent(f.split(":", 1)[0] ?? f));
+  if (kinds.includes("test")) return "test";
+  if (kinds.includes("build")) return "build";
+  if (kinds.includes("typecheck")) return "typecheck";
+  if (kinds.includes("lint")) return "lint";
+  return "other";
 }
 
 function summarize(output: string): string {

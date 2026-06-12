@@ -12,7 +12,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { App } from "./ui/App.tsx";
 import { FixedSelector } from "./model/selector.ts";
-import { RoutingSelector } from "./model/router.ts";
+import { selectorForPolicy } from "./model/policy.ts";
 import { anyProviderAvailable } from "./config.ts";
 import { modelRegistry } from "./providers.ts";
 import { detectImageMode, setImageMode, transmitAll } from "./ui/image.ts";
@@ -460,23 +460,59 @@ const pIdx = args.findIndex((a) => a === "-p" || a === "--print");
 if (pIdx >= 0) {
   const jsonOut = args.includes("--json");
   const yolo = args.includes("--yolo");
-  const prompt = args.slice(pIdx + 1).filter((a) => a !== "--json" && a !== "--yolo").join(" ").trim();
+  const verified = args.includes("--verify");
+  // --skip-checks (with --verify): the full routed turn — classify, policy
+  // routing, cascade drivers — but without running detected check commands.
+  // For workspaces whose real test suite can't run in bounded time (the SWE
+  // bench slice); the judge runs outside.
+  const skipChecks = args.includes("--skip-checks");
+  // --router <policy> swaps the routing policy for this run (same set as
+  // GEARBOX_ROUTER; the flag wins). This is how the routing bench drives runs.
+  const rIdx = args.indexOf("--router");
+  const routerName = rIdx >= 0 ? args[rIdx + 1] : undefined;
+  const tail = args.slice(pIdx + 1).filter((a, i, all) => {
+    if (a === "--json" || a === "--yolo" || a === "--verify" || a === "--skip-checks" || a === "--router") return false;
+    if (all[i - 1] === "--router") return false;
+    return true;
+  });
+  const prompt = tail.join(" ").trim();
   if (!prompt) {
-    console.error('usage: gearbox -p "prompt" [--json] [--yolo]');
+    console.error('usage: gearbox -p "prompt" [--json] [--yolo] [--verify [--skip-checks]] [--router <policy>]');
     process.exit(2);
   }
+  // The verified one-shot: the FULL loop (classify → route → run → VERIFY →
+  // auto-fix/escalate) with edits enabled — what the plain -p path can't do.
+  if (verified) {
+    const { runHeadlessTurn } = await import("./agent/headless.ts");
+    const { selectorForPolicy } = await import("./model/policy.ts");
+    try {
+      const r = await runHeadlessTurn({ prompt, selector: selectorForPolicy(routerName), verify: !skipChecks });
+      if (jsonOut) console.log(JSON.stringify(r));
+      else {
+        console.log(r.text || "(no text)");
+        const models = r.attempts.map((a) => a.model).join(" → ");
+        console.log(`\n[${r.ok ? "ok" : "FAILED"}] policy=${r.policy} models=${models} cost=$${r.totals.costUSD.toFixed(4)} wall=${(r.totals.wallMs / 1000).toFixed(1)}s proof=${r.proofTier}${r.error ? `\nerror: ${r.error}` : ""}`);
+      }
+      process.exit(r.ok ? 0 : 1);
+    } catch (e: any) {
+      console.error(e?.message ?? String(e));
+      process.exit(1);
+    }
+  }
+  if (routerName) process.env.GEARBOX_ROUTER = routerName;
   const { runTask } = await import("./agent/run.ts");
-  const { RoutingSelector } = await import("./model/router.ts");
   const { buildContext } = await import("./context/builder.ts");
   const { resolveCreds } = await import("./accounts/resolve.ts");
   const { defaultAccount } = await import("./accounts/store.ts");
   const { recordSpend, resolveTurnCost } = await import("./accounts/ledger.ts");
   try {
+    const { selectorForPolicy: policySelector } = await import("./model/policy.ts");
+    const sel = policySelector(routerName);
     let choice;
     try {
-      choice = new RoutingSelector().select({ prompt, requires: ["tools"] });
+      choice = sel.select({ prompt, requires: ["tools"] });
     } catch {
-      choice = new RoutingSelector().select({ prompt }); // subscription-only setups
+      choice = sel.select({ prompt }); // subscription-only setups
     }
     // A CLI seat hosts the one-shot via the vendor binary.
     if (choice.backend?.kind === "cli") {
@@ -565,6 +601,47 @@ if (args[0] === "doctor") {
   process.exit(0);
 }
 
+// `gearbox calibrate` — counterfactual replay over the logs routing already
+// writes: measured pass rates per (kind, model) from the outcome log vs the
+// seeded benchmark numbers, and per-policy decision counts from the route log.
+// Pure log mining: zero API spend, zero behavior change.
+if (args[0] === "calibrate") {
+  const { readRoutingOutcomes } = await import("./model/outcomes.ts");
+  const { readRouteDecisions } = await import("./model/route-log.ts");
+  const { profileFor } = await import("./model/profiles.ts");
+  const { repoSlug } = await import("./model/priors.ts");
+  const repo = repoSlug();
+  const outcomes = readRoutingOutcomes(repo);
+  const decisions = readRouteDecisions(repo);
+  if (!outcomes.length && !decisions.length) {
+    console.log("No routing history for this repo yet. Run some turns (or the routing bench) first.");
+    process.exit(0);
+  }
+  // Measured pass rate per (kind, model) vs the seeded quality number.
+  const byKey = new Map<string, { passed: number; failed: number; undone: number; unverified: number }>();
+  for (const o of outcomes) {
+    const k = `${o.kind} · ${o.modelId}`;
+    const c = byKey.get(k) ?? { passed: 0, failed: 0, undone: 0, unverified: 0 };
+    c[o.outcome] += 1;
+    byKey.set(k, c);
+  }
+  console.log(`Measured outcomes in ${repo} (${outcomes.length} recorded):`);
+  for (const [k, c] of [...byKey.entries()].sort()) {
+    const n = c.passed + c.failed + c.undone;
+    const modelId = k.split(" · ")[1]!;
+    const seeded = profileFor(modelId)?.quality.sweBenchVerified;
+    const rate = n ? ` · measured ${c.passed}/${n} ✓ (${Math.round((c.passed / n) * 100)}%)` : "";
+    console.log(`  ${k.padEnd(44)} ${rate}${c.unverified ? ` · ${c.unverified} unverified` : ""}${seeded != null ? ` · seeded ${seeded}` : ""}`);
+  }
+  if (decisions.length) {
+    const byPolicy = new Map<string, number>();
+    for (const d of decisions) byPolicy.set(d.policy, (byPolicy.get(d.policy) ?? 0) + 1);
+    console.log(`\nRoute decisions logged: ${decisions.length}`);
+    for (const [pol, n] of [...byPolicy.entries()].sort((a, b) => b[1] - a[1])) console.log(`  ${pol.padEnd(16)} ${n}`);
+  }
+  process.exit(0);
+}
+
 // `gearbox auth …` — headless account/credential management (no TUI). Mirrors
 // the in-app /accounts command so you can set up keys from a script or SSH.
 if (args[0] === "auth") {
@@ -649,7 +726,9 @@ const preferred = mi >= 0 ? args[mi + 1] : undefined;
 // session (/model <name>); else routing. (The active subscription account is
 // restored inside the App from the same prefs.)
 const pinned = preferred ?? loadPrefs().pinnedModel;
-const selector = pinned ? new FixedSelector(pinned) : new RoutingSelector();
+// A non-default GEARBOX_ROUTER policy applies to the interactive app too, so a
+// policy can be lived with, not just benchmarked. Unset → baseline (unchanged).
+const selector = pinned ? new FixedSelector(pinned) : selectorForPolicy(process.env.GEARBOX_ROUTER);
 if (args.includes("--yolo")) setYolo(true); // start with writes/edits/shell auto-approved
 // --continue / -c resumes the most recent session for this directory.
 const resumeId = args.includes("--continue") || args.includes("-c") ? (latestSession()?.id ?? undefined) : undefined;

@@ -12,3 +12,7 @@ dist/
 .aider*
 .worktrees/
 .claude/
+
+# routing-bench transient output (workspaces, per-policy homes, django checkouts)
+experiments/routing-bench/results/
+experiments/routing-bench/swe-cache/

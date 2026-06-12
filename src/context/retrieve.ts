@@ -60,7 +60,7 @@ const DEF_RE =
  * chars. camelCase splitting means "buildContext" yields ["build", "context"]
  * and matches files that spell out either word.
  */
-function terms(s: string): string[] {
+export function terms(s: string): string[] {
   const out: string[] = [];
   for (const part of s.split(/[^A-Za-z0-9]+/)) {
     for (const w of part.match(/[A-Z]+(?![a-z])|[A-Z][a-z]+|[a-z]+|[0-9]+/g) ?? []) {
@@ -252,6 +252,34 @@ export function rankFiles(query: string, cwd = process.cwd()): { file: string; s
     return { file: f, score: s };
   });
   return scored.filter((x) => x.score > 0).sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Repo-side difficulty signals for routing, computed from the same BM25 index
+ * with NO model call. The spread (top-1 score over the mean of the top-8)
+ * separates localized work (one file clearly matches the prompt) from diffuse
+ * cross-cutting work (many files match weakly) — a stronger predictor of edit
+ * difficulty than the prompt text alone. Consumed via Task.difficulty by the
+ * observables routing policy.
+ */
+export function difficultySignals(prompt: string, cwd = process.cwd(), hasTests = false): {
+  retrievalTop: number;
+  retrievalSpread: number;
+  filesMatched: number;
+  promptChars: number;
+  hasTests: boolean;
+} {
+  const ranked = rankFiles(prompt, cwd);
+  const top = ranked[0]?.score ?? 0;
+  const top8 = ranked.slice(0, 8);
+  const mean = top8.length ? top8.reduce((s, r) => s + r.score, 0) / top8.length : 0;
+  return {
+    retrievalTop: top,
+    retrievalSpread: mean > 0 ? top / mean : 0,
+    filesMatched: ranked.length,
+    promptChars: prompt.length,
+    hasTests,
+  };
 }
 
 export interface RetrievedFile {
