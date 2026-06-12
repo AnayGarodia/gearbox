@@ -44,8 +44,8 @@ file is persisted after every row, so a crashed run keeps what finished.
 
 - **Tasks** are hermetic fixture repos under `tasks/<id>/` — no network, no
   clones. Each declares its prompt, in-scope globs, category, difficulty
-  (easy/medium/hard), and whether it is a trap. 35 tasks across TypeScript and
-  Python: 8 easy, 18 medium, 4 hard (non-trap) + 5 traps (14%).
+  (easy/medium/hard), and whether it is a trap. 47 tasks across TypeScript and
+  Python: 10 easy, 22 medium, 6 hard (non-trap) + 7 traps (15%).
   Categories: bug fix · implement from spec · behavior-preserving refactor ·
   async correctness · multi-file fix · edge cases · security · scope discipline ·
   parser correctness · trap (missing spec / contradictory spec / impossible

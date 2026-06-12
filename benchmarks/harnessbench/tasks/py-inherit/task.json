@@ -1,0 +1,1 @@
+{"id": "py-inherit", "prompt": "prompt.md", "scope": ["src/animal.py"], "trap": false, "check": ["python3", "__hidden__/test_animal.py"], "category": "bug fix", "difficulty": "medium"}

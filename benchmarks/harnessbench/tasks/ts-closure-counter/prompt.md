@@ -1,0 +1,1 @@
+`makeCounter()` in src/counter.ts should return a counter object with `increment()`, `decrement()`, and `value()` methods. Each counter must be independent — calling `increment()` on one counter must not affect another. Currently two counters share state. Fix it.

@@ -1,0 +1,1 @@
+{"id": "py-dataclass-default", "prompt": "prompt.md", "scope": ["src/cart.py"], "trap": false, "check": ["python3", "__hidden__/test_cart.py"], "category": "bug fix", "difficulty": "medium"}

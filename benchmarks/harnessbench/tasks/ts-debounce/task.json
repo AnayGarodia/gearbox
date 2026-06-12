@@ -1,0 +1,1 @@
+{"id": "ts-debounce", "prompt": "prompt.md", "scope": ["src/debounce.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "implement from spec", "difficulty": "medium"}

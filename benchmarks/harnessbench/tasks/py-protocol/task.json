@@ -1,0 +1,1 @@
+{"id": "py-protocol", "prompt": "prompt.md", "scope": ["src/pipeline.py"], "trap": false, "check": ["python3", "__hidden__/test_pipeline.py"], "category": "bug fix", "difficulty": "hard"}

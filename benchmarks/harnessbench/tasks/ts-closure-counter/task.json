@@ -1,0 +1,1 @@
+{"id": "ts-closure-counter", "prompt": "prompt.md", "scope": ["src/counter.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "bug fix", "difficulty": "easy"}

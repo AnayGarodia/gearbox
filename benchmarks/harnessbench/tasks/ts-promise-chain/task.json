@@ -1,0 +1,1 @@
+{"id": "ts-promise-chain", "prompt": "prompt.md", "scope": ["src/fetch-user.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "async correctness", "difficulty": "medium"}

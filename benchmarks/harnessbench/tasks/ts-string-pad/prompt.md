@@ -1,0 +1,1 @@
+`padCenter(str, width, char?)` in src/pad.ts should center-align `str` in a field of `width` characters, padding with `char` (default `' '`). When the padding is odd, the extra character goes on the right. `padCenter("hi", 6)` => `"  hi  "`, `padCenter("hi", 5)` => `" hi  "`. It currently pads incorrectly. Fix it.
