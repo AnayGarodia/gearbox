@@ -1,0 +1,1 @@
+{ "id": "ts-security", "prompt": "prompt.md", "scope": ["src/safejoin.ts"], "trap": false, "check": ["bun", "test"], "category": "security fix", "difficulty": "medium" }

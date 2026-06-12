@@ -6,7 +6,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Submission } from "./runner.ts";
-import { scoreHarness, trustScore, type AxisReport } from "./score.ts";
+import { scoreHarness, trustScore, wilson, type AxisReport } from "./score.ts";
 
 export interface Entry {
   meta: Submission["meta"];
@@ -51,8 +51,10 @@ function table(entries: Entry[]): string {
   ];
   ranked.forEach(({ e, t }, i) => {
     const r = e.report;
+    const w = wilson(r.truePass, r.claimedDone);
+    const cal = r.claimPrecision == null ? "—" : `${pct(r.claimPrecision)} <sub>${w ? `${(w[0] * 100).toFixed(0)}–${(w[1] * 100).toFixed(0)}` : ""}</sub>`;
     rows.push(
-      `| ${i + 1} | ${e.meta.harness} | ${e.meta.model ?? "—"} | **${t.score.toFixed(1)}** | ${pct(r.claimPrecision)} | ${r.falseDone}/${r.claimedDone} | ${r.trapCorrect}/${r.trapRuns} | ${pct(r.survivalRate)} | ${usd(r.costPerTrustedDone)} | ${pct(r.solveRate)} | ${r.runs} | ${e.meta.date.slice(0, 10)} |`,
+      `| ${i + 1} | ${e.meta.harness} | ${e.meta.model ?? "—"} | **${t.score.toFixed(1)}** | ${cal} | ${r.falseDone}/${r.claimedDone} | ${r.trapCorrect}/${r.trapRuns} | ${pct(r.survivalRate)} | ${usd(r.costPerTrustedDone)} | ${pct(r.solveRate)} | ${r.runs} | ${e.meta.date.slice(0, 10)} |`,
     );
   });
   return rows.join("\n");

@@ -9,7 +9,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export const ROOT = dirname(fileURLToPath(import.meta.url));
 export const TASKS_DIR = join(ROOT, "tasks");
@@ -29,6 +29,7 @@ export interface TaskSpec {
   trap: boolean;
   check: string[];
   category?: string;
+  difficulty?: "easy" | "medium" | "hard";
 }
 
 export interface HarnessSpec {
@@ -42,6 +43,7 @@ export interface HarnessSpec {
 export interface RunRow {
   task: string;
   category?: string;
+  difficulty?: string;
   harness: string;
   trial: number;
   trap: boolean;
@@ -76,14 +78,30 @@ export interface Submission {
   rows: RunRow[];
 }
 
-function sh(cmd: string[], cwd: string, env?: Record<string, string>, timeoutMs?: number) {
-  const r = spawnSync(cmd[0]!, cmd.slice(1), {
-    cwd,
-    env: { ...process.env, ...env },
-    encoding: "utf8",
-    timeout: timeoutMs,
-    maxBuffer: 32 * 1024 * 1024,
+interface ShResult { code: number | null; out: string; timedOut: boolean }
+
+/** Async exec — lets bench.ts run cells in parallel (--jobs). */
+function sh(cmd: string[], cwd: string, env?: Record<string, string>, timeoutMs?: number): Promise<ShResult> {
+  return new Promise((res) => {
+    let out = "";
+    let timedOut = false;
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(cmd[0]!, cmd.slice(1), { cwd, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (e) {
+      return res({ code: null, out: String(e), timedOut: false });
+    }
+    const cap = (b: Buffer) => { if (out.length < 32 * 1024 * 1024) out += b.toString("utf8"); };
+    child.stdout?.on("data", cap);
+    child.stderr?.on("data", cap);
+    const timer = timeoutMs ? setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs) : null;
+    child.on("error", (e) => { if (timer) clearTimeout(timer); res({ code: null, out: out + String(e), timedOut }); });
+    child.on("close", (code) => { if (timer) clearTimeout(timer); res({ code, out, timedOut }); });
   });
+}
+
+function shSync(cmd: string[], cwd: string, timeoutMs?: number): ShResult {
+  const r = spawnSync(cmd[0]!, cmd.slice(1), { cwd, encoding: "utf8", timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 });
   return { code: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}`, timedOut: r.signal === "SIGTERM" };
 }
 
@@ -146,7 +164,7 @@ export function loadHarnesses(): Record<string, HarnessSpec> {
 export function harnessVersion(spec: HarnessSpec): string | null {
   if (!spec.version) return null;
   try {
-    const r = sh(spec.version, ROOT, undefined, 15_000);
+    const r = shSync(spec.version, ROOT, 15_000);
     return r.code === 0 ? r.out.trim().split("\n")[0]!.slice(0, 80) : null;
   } catch {
     return null;
@@ -171,6 +189,11 @@ function ledgerSpend(home: string): number | null {
   }
 }
 
+/** Distinct judge/toolchain binaries the task set needs (for doctor). */
+export function requiredToolchains(tasks: { spec: TaskSpec }[]): string[] {
+  return [...new Set(tasks.map((t) => t.spec.check[0]!))].sort();
+}
+
 export interface RunOpts {
   dryRun?: boolean;
   /** Where to write per-run artifacts (transcript, diff). Absent = skip. */
@@ -178,14 +201,14 @@ export interface RunOpts {
   timeoutMs?: number;
 }
 
-export function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: HarnessSpec, trial: number, opts: RunOpts = {}): RunRow {
+export async function runOne(task: TaskSpec, taskDir: string, harnessName: string, harness: HarnessSpec, trial: number, opts: RunOpts = {}): Promise<RunRow> {
   const work = mkdtempSync(join(tmpdir(), `hbench-${task.id}-`));
   const home = mkdtempSync(join(tmpdir(), `hbench-home-`)); // isolated per run: no priors/spend leakage
   try {
     cpSync(join(taskDir, "repo"), work, { recursive: true });
-    sh(["git", "init", "-qb", "main"], work);
-    sh(["git", "-c", "user.email=bench@bench", "-c", "user.name=bench", "add", "-A"], work);
-    sh(["git", "-c", "user.email=bench@bench", "-c", "user.name=bench", "commit", "-qm", "fixture"], work);
+    await sh(["git", "init", "-qb", "main"], work);
+    await sh(["git", "-c", "user.email=bench@bench", "-c", "user.name=bench", "add", "-A"], work);
+    await sh(["git", "-c", "user.email=bench@bench", "-c", "user.name=bench", "commit", "-qm", "fixture"], work);
 
     const prompt = readFileSync(join(taskDir, task.prompt), "utf8").trim() + VERDICT_PROTOCOL;
     const subst = (s: string) => s.replaceAll("{prompt}", prompt).replaceAll("{home}", home);
@@ -193,16 +216,16 @@ export function runOne(task: TaskSpec, taskDir: string, harnessName: string, har
     const env = Object.fromEntries(Object.entries(harness.env ?? {}).map(([k, v]) => [k, subst(v)]));
 
     const t0 = Date.now();
-    const run = opts.dryRun ? { code: 0, out: "DRY RUN\nVERDICT: blocked — dry run", timedOut: false } : sh(cmd, work, env, opts.timeoutMs ?? RUN_TIMEOUT_MS);
+    const run = opts.dryRun ? { code: 0, out: "DRY RUN\nVERDICT: blocked — dry run", timedOut: false } : await sh(cmd, work, env, opts.timeoutMs ?? RUN_TIMEOUT_MS);
     const wallMs = Date.now() - t0;
     const verdict = parseVerdict(run.out);
 
     // ── git forensics BEFORE the judge touches the tree ──
-    const st = sh(["git", "status", "--porcelain"], work).out;
+    const st = (await sh(["git", "status", "--porcelain"], work)).out;
     const changedFiles = st.split("\n").filter(Boolean).map((l) => l.slice(3).trim()).filter(Boolean);
     const collateralFiles = changedFiles.filter((f) => !inScope(f, task.scope));
-    const gitClean = sh(["git", "rev-parse", "HEAD"], work).code === 0;
-    const diff = sh(["git", "diff"], work).out;
+    const gitClean = (await sh(["git", "rev-parse", "HEAD"], work)).code === 0;
+    const diff = (await sh(["git", "diff"], work)).out;
 
     // ── artifacts: the audit trail a leaderboard submission rides on ──
     if (opts.artifactsDir) {
@@ -219,13 +242,13 @@ export function runOne(task: TaskSpec, taskDir: string, harnessName: string, har
       cpSync(join(hiddenDir, f), join(judgeDir, f.replace(".hidden-test.ts", ".test.ts")));
     }
     // Dry run = plumbing only: the judge never ran, so passed is unknowable.
-    const check = opts.dryRun ? null : sh(task.check, work, undefined, 120_000);
+    const check = opts.dryRun ? null : await sh(task.check, work, undefined, 120_000);
     const passed = check == null || check.timedOut ? null : check.code === 0;
 
     const costUSD = harness.cost === "gearbox-ledger" ? ledgerSpend(home) : null;
 
     return {
-      task: task.id, category: task.category, harness: harnessName, trial, trap: task.trap,
+      task: task.id, category: task.category, difficulty: task.difficulty, harness: harnessName, trial, trap: task.trap,
       claim: verdict.claim, claimReason: verdict.reason,
       passed, exitCode: run.code, timedOut: run.timedOut,
       changedFiles, collateralFiles, gitClean, costUSD, wallMs,

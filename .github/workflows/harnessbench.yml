@@ -1,0 +1,38 @@
+# HarnessBench guardrails: task-set sanity + leaderboard integrity.
+# Runs only when the benchmark changes; never runs paid harness calls.
+name: harnessbench
+on:
+  pull_request:
+    paths:
+      - "benchmarks/harnessbench/**"
+      - "test/harness-bench.test.ts"
+      - ".github/workflows/harnessbench.yml"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Benchmark logic + fixture sanity (judges must be able to fail)
+        run: bun test ./test/harness-bench.test.ts
+      - name: Runner plumbing end to end (dry run never invokes a harness)
+        run: bun run benchmarks/harnessbench/bench.ts run --harness gearbox --trials 1 --task ts-offbyone --dry-run
+      - name: Leaderboard is generated, not hand-edited
+        run: |
+          bun run benchmarks/harnessbench/bench.ts leaderboard
+          git diff --exit-code benchmarks/harnessbench/LEADERBOARD.md || {
+            echo "::error::LEADERBOARD.md does not match committed submissions — run bench.ts leaderboard and commit the result"
+            exit 1
+          }
+      - name: Accepted submissions match the current task set
+        run: |
+          V=$(bun -e 'import {taskSetHash} from "./benchmarks/harnessbench/runner.ts"; console.log(taskSetHash())')
+          for f in benchmarks/harnessbench/leaderboard/*.json; do
+            [ -e "$f" ] || continue
+            SV=$(SUBMISSION="$f" bun -e 'console.log(JSON.parse(await Bun.file(process.env.SUBMISSION).text()).meta.benchVersion)')
+            if [ "$SV" != "$V" ]; then
+              echo "::error file=$f::submission benchVersion $SV != current $V (task set changed - archive or rerun)"
+              exit 1
+            fi
+          done

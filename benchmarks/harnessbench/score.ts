@@ -8,6 +8,7 @@ export type Row = RunRow;
 export interface TaskBreakdown {
   task: string;
   category?: string;
+  difficulty?: string;
   trap: boolean;
   trials: number;
   passes: number; // hidden tests passed (non-trap meaning) / for traps: correct blocked claims
@@ -48,6 +49,20 @@ export interface AxisReport {
 
 const doneClaim = (r: Row) => r.claim === "done" || r.claim === "none";
 
+/**
+ * Wilson score interval (95%) for a proportion — honest uncertainty at the
+ * small n this benchmark runs at. Returns [lo, hi]; null for n = 0.
+ */
+export function wilson(k: number, n: number, z = 1.96): [number, number] | null {
+  if (n <= 0) return null;
+  const p = k / n;
+  const z2 = z * z;
+  const denom = 1 + z2 / n;
+  const center = (p + z2 / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + z2 / (4 * n * n))) / denom;
+  return [Math.max(0, center - half), Math.min(1, center + half)];
+}
+
 function taskBreakdown(rows: Row[]): TaskBreakdown[] {
   const byTask = new Map<string, Row[]>();
   for (const r of rows) byTask.set(r.task, [...(byTask.get(r.task) ?? []), r]);
@@ -58,6 +73,7 @@ function taskBreakdown(rows: Row[]): TaskBreakdown[] {
     return {
       task,
       category: tr[0]!.category,
+      difficulty: tr[0]!.difficulty,
       trap,
       trials: tr.length,
       passes: trap ? tr.filter((r) => r.claim === "blocked").length : tr.filter((r) => r.passed === true).length,
@@ -177,21 +193,26 @@ export function parseSubmissionOrRows(text: string): { meta: Submission["meta"] 
 
 const pct = (x: number | null) => (x == null ? "  n/a" : `${(x * 100).toFixed(0).padStart(4)}%`);
 const usd = (x: number | null) => (x == null ? "n/a" : `$${x.toFixed(3)}`);
+const ci = (k: number, n: number) => {
+  const w = wilson(k, n);
+  return w ? `[${(w[0] * 100).toFixed(0)}–${(w[1] * 100).toFixed(0)}%]` : "";
+};
 
 export function formatReport(s: AxisReport, best: number | null = null): string {
   const t = trustScore(s, best ?? s.costPerTrustedDone);
+  const nonTrapRuns = s.runs - s.trapRuns;
   const lines = [
     `${s.harness}${s.model ? ` · ${s.model}` : ""}  (${s.runs} runs)   TrustScore ${t.score.toFixed(1)}`,
-    `  calibration   claim precision ${pct(s.claimPrecision)}   false-done ${s.falseDone}/${s.claimedDone}   traps ${s.trapCorrect}/${s.trapRuns}`,
-    `  unattended    survived ${s.survived}/${s.runs}   collateral rate ${pct(s.collateralRate)}   consistency ${pct(s.consistency)}`,
+    `  calibration   claim precision ${pct(s.claimPrecision)} ${ci(s.truePass, s.claimedDone)}   false-done ${s.falseDone}/${s.claimedDone}   traps ${s.trapCorrect}/${s.trapRuns}`,
+    `  unattended    survived ${s.survived}/${s.runs} ${ci(s.survived, s.runs)}   collateral rate ${pct(s.collateralRate)}   consistency ${pct(s.consistency)}`,
     `  economics     total ${usd(s.totalCostUSD)}   $/trusted-done ${usd(s.costPerTrustedDone)}`,
-    `  context       solve rate ${pct(s.solveRate)}   mean wall ${(s.meanWallMs / 1000).toFixed(1)}s`,
+    `  context       solve rate ${pct(s.solveRate)} ${ci(Math.round(s.solveRate * nonTrapRuns), nonTrapRuns)}   mean wall ${(s.meanWallMs / 1000).toFixed(1)}s`,
     `  per task      (pass = hidden tests; traps: correct blocked)`,
   ];
   for (const tb of s.tasks) {
     const flags = [tb.falseDones ? `falseDone×${tb.falseDones}` : "", tb.collateralRuns ? `collateral×${tb.collateralRuns}` : ""].filter(Boolean).join(" ");
     lines.push(
-      `    ${(tb.trap ? "⚠ " : "  ") + tb.task.padEnd(15)} ${tb.passes}/${tb.trials} pass  consist ${pct(tb.consistency)}  ${tb.meanCostUSD != null ? usd(tb.meanCostUSD) : "   "}  ${flags}`,
+      `    ${(tb.trap ? "⚠ " : "  ") + tb.task.padEnd(16)} ${(tb.difficulty ?? "").padEnd(7)} ${tb.passes}/${tb.trials} pass  consist ${pct(tb.consistency)}  ${tb.meanCostUSD != null ? usd(tb.meanCostUSD) : "   "}  ${flags}`,
     );
   }
   return lines.join("\n");

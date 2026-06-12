@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parseVerdict, inScope, taskSetHash } from "../benchmarks/harnessbench/runner.ts";
-import { scoreHarness, trustScore, parseRows, parseSubmissionOrRows, formatReport, type Row } from "../benchmarks/harnessbench/score.ts";
+import { scoreHarness, trustScore, parseRows, parseSubmissionOrRows, formatReport, wilson, type Row } from "../benchmarks/harnessbench/score.ts";
+import { missingCells } from "../benchmarks/harnessbench/bench.ts";
 import { loadSubmissions, generateLeaderboard } from "../benchmarks/harnessbench/leaderboard.ts";
 
 const row = (over: Partial<Row>): Row => ({
@@ -164,6 +165,33 @@ describe("submissions + leaderboard", () => {
   });
 });
 
+describe("wilson", () => {
+  test("interval brackets the point estimate, shrinks with n, clamps to [0,1]", () => {
+    const [lo, hi] = wilson(8, 10)!;
+    expect(lo).toBeLessThan(0.8);
+    expect(hi).toBeGreaterThan(0.8);
+    const wide = wilson(4, 5)!;
+    const narrow = wilson(40, 50)!;
+    expect(narrow[1] - narrow[0]).toBeLessThan(wide[1] - wide[0]);
+    expect(wilson(0, 5)![0]).toBe(0);
+    expect(wilson(5, 5)![1]).toBe(1);
+    expect(wilson(1, 0)).toBeNull();
+  });
+});
+
+describe("missingCells (resume)", () => {
+  const tasks = [{ spec: { id: "a" } }, { spec: { id: "b" } }];
+  test("fresh run needs every cell; completed rows are skipped", () => {
+    expect(missingCells(tasks, 2, [])).toHaveLength(4);
+    const have = [{ task: "a", trial: 1 }, { task: "b", trial: 2 }];
+    expect(missingCells(tasks, 2, have)).toEqual([
+      { taskId: "a", trial: 2 },
+      { taskId: "b", trial: 1 },
+    ]);
+    expect(missingCells(tasks, 2, [...have, { task: "a", trial: 2 }, { task: "b", trial: 1 }])).toEqual([]);
+  });
+});
+
 describe("taskSetHash", () => {
   test("stable for same content, changes when any file changes", () => {
     const a = mkdtempSync(join(tmpdir(), "hbench-hash-"));
@@ -182,7 +210,7 @@ describe("taskSetHash", () => {
 
 describe("fixture sanity: every non-trap judge FAILS on the untouched fixture", () => {
   const TASKS = join(import.meta.dir, "..", "benchmarks", "harnessbench", "tasks");
-  const judge = (id: string): boolean => {
+  const judge = (id: string, check: string[]): boolean => {
     const taskDir = join(TASKS, id);
     const work = mkdtempSync(join(tmpdir(), `hbench-sanity-${id}-`));
     try {
@@ -192,7 +220,7 @@ describe("fixture sanity: every non-trap judge FAILS on the untouched fixture", 
       for (const f of readdirSync(join(taskDir, "hidden"))) {
         cpSync(join(taskDir, "hidden", f), join(hidden, f.replace(".hidden-test.ts", ".test.ts")));
       }
-      const r = spawnSync("bun", ["test"], { cwd: work, encoding: "utf8", timeout: 60_000 });
+      const r = spawnSync(check[0]!, check.slice(1), { cwd: work, encoding: "utf8", timeout: 60_000 });
       return r.status === 0;
     } finally {
       rmSync(work, { recursive: true, force: true });
@@ -203,11 +231,11 @@ describe("fixture sanity: every non-trap judge FAILS on the untouched fixture", 
     const spec = JSON.parse(readFileSync(join(TASKS, id, "task.json"), "utf8"));
     if (spec.trap) {
       test(`${id} (trap): untouched fixture PASSES (leaving it alone is correct)`, () => {
-        expect(judge(id)).toBe(true);
+        expect(judge(id, spec.check)).toBe(true);
       }, 60_000);
     } else {
       test(`${id}: untouched fixture FAILS the hidden tests`, () => {
-        expect(judge(id)).toBe(false);
+        expect(judge(id, spec.check)).toBe(false);
       }, 60_000);
     }
   }

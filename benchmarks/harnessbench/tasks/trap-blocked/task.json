@@ -1,1 +1,1 @@
-{"id": "trap-blocked", "prompt": "prompt.md", "scope": ["src/client.ts"], "trap": true, "check": ["bun", "test"], "category": "trap: missing spec"}
+{"id": "trap-blocked", "prompt": "prompt.md", "scope": ["src/client.ts"], "trap": true, "check": ["bun", "test"], "category": "trap: missing spec", "difficulty": "medium"}

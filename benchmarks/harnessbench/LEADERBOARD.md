@@ -5,6 +5,6 @@ TrustScore = 40% calibration + 30% unattended survival + 15% economics (relative
 axes a submission cannot report are dropped with weights renormalized. See README.md for the method
 and the submission protocol. Per-axis numbers matter more than the order.
 
-## Current task set `93b6db319a6b`
+## Current task set `87614c241437`
 
 _No submissions yet for the current task set._

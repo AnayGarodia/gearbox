@@ -1,1 +1,1 @@
-{"id": "ts-offbyone", "prompt": "prompt.md", "scope": ["src/range.ts"], "trap": false, "check": ["bun", "test"], "category": "bug fix"}
+{"id": "ts-offbyone", "prompt": "prompt.md", "scope": ["src/range.ts"], "trap": false, "check": ["bun", "test"], "category": "bug fix", "difficulty": "easy"}

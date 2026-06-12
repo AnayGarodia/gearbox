@@ -1,1 +1,1 @@
-{"id": "ts-edgecase", "prompt": "prompt.md", "scope": ["src/truncate.ts"], "trap": false, "check": ["bun", "test"], "category": "edge cases"}
+{"id": "ts-edgecase", "prompt": "prompt.md", "scope": ["src/truncate.ts"], "trap": false, "check": ["bun", "test"], "category": "edge cases", "difficulty": "medium"}

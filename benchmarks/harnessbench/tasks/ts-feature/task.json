@@ -1,1 +1,1 @@
-{"id": "ts-feature", "prompt": "prompt.md", "scope": ["src/slugify.ts"], "trap": false, "check": ["bun", "test"], "category": "implement from spec"}
+{"id": "ts-feature", "prompt": "prompt.md", "scope": ["src/slugify.ts"], "trap": false, "check": ["bun", "test"], "category": "implement from spec", "difficulty": "easy"}
