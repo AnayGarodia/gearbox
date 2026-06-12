@@ -1645,11 +1645,23 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
               const phaseId = pushPhase(`${accountLabel(a)} sign-in`, `checking ${bin === "codex" ? "codex login status" : "claude auth status"}`);
               void (async () => {
                 try {
-                  const st = await cliAuthStatus(bin, profile);
+                  let st = await cliAuthStatus(bin, profile);
                   if (!st.loggedIn) {
-                    updatePhase(phaseId, "err", `${accountLabel(a)} sign-in`, `not signed in${st.detail ? `; ${st.detail}` : ""}. Run /account add ${bin === "codex" ? "codex" : "claude"}${accountName(a).includes("(") ? " " + accountName(a).replace(/^.*\((.*)\).*$/, "$1") : ""}`);
-                    accountStatusCacheRef.current[a.id] = { signedIn: false, detail: st.detail };
-                    return;
+                    const detail = st.detail ? ` (${st.detail})` : "";
+                    updatePhase(phaseId, "running", `${accountLabel(a)} sign-in`, `opening ${bin} ${cliLoginArgs(bin).join(" ")}${detail}`);
+                    const code = runInteractive(bin, cliLoginArgs(bin), subscriptionEnv(bin, profile));
+                    if (code == null) {
+                      updatePhase(phaseId, "err", `${accountLabel(a)} sign-in`, `couldn't launch ${bin} ${cliLoginArgs(bin).join(" ")}; run it in a terminal, then try again`);
+                      return;
+                    }
+                    st = await cliAuthStatus(bin, profile);
+                    if (!st.loggedIn) {
+                      const retryDetail = st.detail ? ` ${st.detail}.` : "";
+                      const tokenTip = bin === "claude" ? " Or run `claude setup-token` in a terminal and paste the sk-ant-oat… token here as /account add <token>." : "";
+                      updatePhase(phaseId, "err", `${accountLabel(a)} sign-in`, `didn't complete.${retryDetail}${tokenTip}`);
+                      accountStatusCacheRef.current[a.id] = { signedIn: false, detail: st.detail };
+                      return;
+                    }
                   }
                   if (st.identity) {
                     putAccount({ ...a, identity: { key: st.identity, label: st.identityLabel ?? st.detail, checkedAt: Date.now() } });
