@@ -64,6 +64,7 @@ import { webSearch, formatSearchResults } from "./websearch.ts";
 import { mcpTools } from "./mcp.ts";
 import { capToolOutput } from "./truncate.ts";
 import { summarize } from "./verify.ts";
+import { symbolLocations, formatLocations } from "./lsp/symbols.ts";
 import { invalidateFileListCache } from "./ui/files.ts";
 
 /** Message thrown when the user declines a permission prompt. */
@@ -579,6 +580,49 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
       return capToolOutput("run-shell", sandboxNote ? `${r.output}\n${sandboxNote.trimEnd()}` : r.output, { direction: "tail" });
     },
   }),
+  /**
+   * Go to definition via the project's language server.
+   *
+   * Permission: none (read-only). Degrades to a note when no server is
+   * available — the model falls back to `search`. Symbol-by-name: the model
+   * names a file where the symbol APPEARS plus the symbol; we anchor the LSP
+   * position from the source text.
+   */
+  code_definition: tool({
+    description:
+      "Jump to the DEFINITION of a symbol via the language server. More precise than `search` for code navigation: resolves imports, re-exports, and shadowing. `file` is any file where the symbol appears.",
+    inputSchema: z.object({
+      file: z.string().describe("a file where the symbol appears, relative to the workspace root"),
+      symbol: z.string().describe("the identifier to resolve, e.g. buildContext"),
+      line: z.number().optional().describe("1-based line of the occurrence to resolve (disambiguates shadowed names)"),
+    }),
+    execute: async ({ file, symbol, line }) => {
+      const { locations, note } = await symbolLocations("definition", safe(file), symbol, root, { nearLine: line });
+      if (!locations.length) return note ? `no definition found (${note})` : "no definition found";
+      return capToolOutput("code-definition", formatLocations(locations, 30, root), { direction: "head" });
+    },
+  }),
+
+  /**
+   * Find all references via the project's language server.
+   *
+   * Permission: none (read-only). Same degradation contract as code_definition.
+   */
+  code_references: tool({
+    description:
+      "Find all REFERENCES to a symbol via the language server (callers, usages, including the declaration). More complete than `search` for rename/impact analysis. `file` is any file where the symbol appears.",
+    inputSchema: z.object({
+      file: z.string().describe("a file where the symbol appears, relative to the workspace root"),
+      symbol: z.string().describe("the identifier to look up, e.g. retrieveFiles"),
+      line: z.number().optional().describe("1-based line of the occurrence to resolve (disambiguates shadowed names)"),
+    }),
+    execute: async ({ file, symbol, line }) => {
+      const { locations, note } = await symbolLocations("references", safe(file), symbol, root, { nearLine: line });
+      if (!locations.length) return note ? `no references found (${note})` : "no references found";
+      return capToolOutput("code-references", formatLocations(locations, 60, root), { direction: "head" });
+    },
+  }),
+
   remember: tool({
     description:
       "Save ONE durable, non-obvious fact about this project to its persistent memory (loaded into every future session). Use it the moment you learn something a future session would otherwise have to rediscover: a build quirk, a vendor gotcha, an architectural decision and its why, a constraint the user stated. NOT for session-local context, code structure (the repo shows that), or anything already in the project guide. One short sentence per call.",
@@ -615,6 +659,8 @@ function readOnlySubset(all: ReturnType<typeof createTools>) {
     glob: all.glob,
     fetch_url: all.fetch_url,
     web_search: all.web_search,
+    code_definition: all.code_definition,
+    code_references: all.code_references,
   };
 }
 

@@ -19,7 +19,7 @@ import { newSessionId, saveSession, type Session } from "../../session.ts";
 import { lookForTabName } from "./Mascot.tsx";
 import { nextTabName, TAB_NAMES, type TabRow } from "../tabbar.ts";
 import type { ModelSelector } from "../../model/selector.ts";
-import { repoRoot, worktreeAdd } from "../../git/ops.ts";
+import { ensureExcluded, repoRoot, worktreeAdd } from "../../git/ops.ts";
 
 export interface ConductorProps {
   selector: ModelSelector; // tab 1's selector (from the CLI flags)
@@ -137,6 +137,10 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
       // files. Branch tab/<slug> from the current HEAD; the user merges (or
       // discards) with the normal git suite when the tab's work is done.
       const wtDir = join(root, ".gearbox", "tabs", slug);
+      // Repo-local ignore for the nest dir (info/exclude, shared by all
+      // worktrees): without it, a repo that doesn't ignore .gearbox/ lets the
+      // base tab's `git add -A` / checkpoints sweep the nested worktrees.
+      ensureExcluded(".gearbox/", root);
       const r = worktreeAdd(wtDir, `tab/${slug}`, root);
       if (r.ok) dir = wtDir;
       // Closing a tab never deletes its worktree, so a reused name finds the

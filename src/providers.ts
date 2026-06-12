@@ -44,7 +44,7 @@ import { deepseek, createDeepSeek } from "@ai-sdk/deepseek";
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createVertex } from "@ai-sdk/google-vertex";
 import { createAzure } from "@ai-sdk/azure";
-import type { LanguageModel } from "ai";
+import type { EmbeddingModel, LanguageModel } from "ai";
 import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { profileFor } from "./model/profiles.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
@@ -471,6 +471,30 @@ export function providerAvailable(p: ProviderId): boolean {
   if (accountsForProvider(p).length > 0) return true;
   const ev = envVarFor(p);
   return ev ? Boolean(process.env[ev]) : false;
+}
+
+/**
+ * The embedding seam for retrieval (context/embeddings.ts). Picks the first
+ * provider with usable credentials and returns its cheapest embedding model.
+ * v1 resolves keys the same way resolveModel's native fallback does (env var,
+ * else the SDK's ambient lookup) — saved-account keys can layer in later.
+ * Returns null when no embedding-capable provider is configured; retrieval
+ * then stays pure BM25. NOT part of the routing seam: embeddings never
+ * generate text, so ModelSelector is not involved.
+ */
+export function embeddingModelFor(): { provider: string; modelId: string; model: EmbeddingModel<string>; usdPerMtok: number } | null {
+  const key = (p: string) => (envVarFor(p) ? process.env[envVarFor(p)!] : undefined);
+  if (providerAvailable("openai")) {
+    const apiKey = key("openai");
+    const m = apiKey ? createOpenAI({ apiKey }).textEmbeddingModel("text-embedding-3-small") : openai.textEmbeddingModel("text-embedding-3-small");
+    return { provider: "openai", modelId: "text-embedding-3-small", model: m, usdPerMtok: 0.02 };
+  }
+  if (providerAvailable("google")) {
+    const apiKey = key("google");
+    const m = apiKey ? createGoogleGenerativeAI({ apiKey }).textEmbeddingModel("text-embedding-004") : google.textEmbeddingModel("text-embedding-004");
+    return { provider: "google", modelId: "text-embedding-004", model: m, usdPerMtok: 0 };
+  }
+  return null;
 }
 
 /** Finds a ModelSpec by id or label. Returns undefined if not found. */

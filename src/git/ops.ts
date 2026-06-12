@@ -3,8 +3,8 @@
 // text (commit messages, PR titles/bodies) must never ride a shell string, so
 // there is no injection surface. Pure-ish (no UI imports); App wires thin.
 import { spawnSyncProc, spawnProc, which } from "../proc.ts";
-import { existsSync, readFileSync, rmSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, realpathSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
 
 export interface GitResult {
   ok: boolean;
@@ -213,6 +213,31 @@ export function worktreeList(cwd = process.cwd()): WorktreeInfo[] {
     else if (line === "detached") cur.branch = null;
   }
   return out;
+}
+
+/**
+ * Ensure `pattern` is ignored repo-locally via .git/info/exclude (the COMMON
+ * gitdir, so every linked worktree shares it). Used before nesting tab
+ * worktrees under <repo>/.gearbox/: in a repo whose .gitignore lacks that
+ * line, `git add -A`, `/commit -a`, and turn checkpoints (which capture
+ * untracked files) in the base tab would otherwise sweep entire nested
+ * worktrees. info/exclude keeps the fix invisible — no user file is edited.
+ * Best-effort: failure means git behaves as before, never an error to the user.
+ */
+export function ensureExcluded(pattern: string, cwd = process.cwd()): boolean {
+  try {
+    const r = git(["rev-parse", "--git-common-dir"], cwd);
+    if (!r.ok || !r.out) return false;
+    const common = isAbsolute(r.out) ? r.out : resolve(cwd, r.out);
+    const file = join(common, "info", "exclude");
+    const cur = existsSync(file) ? readFileSync(file, "utf8") : "";
+    if (cur.split("\n").some((l) => l.trim() === pattern)) return true;
+    mkdirSync(join(common, "info"), { recursive: true });
+    writeFileSync(file, `${cur}${cur.endsWith("\n") || cur === "" ? "" : "\n"}${pattern}\n`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Add a worktree at `dir`. With `branch`, creates the branch there (`-b`) if

@@ -22,6 +22,7 @@ export interface Prefs {
   offerTests?: boolean; // false = never offer the characterization test (/verify test off)
   sandbox?: "off" | "read-only" | "workspace-write"; // OS sandbox for agent shell commands (/sandbox); default workspace-write on macOS
   sandboxNetwork?: boolean; // allow network inside the sandbox (/sandbox network on); default off
+  embeddings?: boolean; // semantic retrieval index + query embedding (default on when a provider has embeddings); false = pure BM25
 }
 
 function file(): string {
