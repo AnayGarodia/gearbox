@@ -5,6 +5,7 @@
 //   bun run benchmarks/harnessbench/bench.ts score results/<runId>/submission.json [more…]
 //   bun run benchmarks/harnessbench/bench.ts leaderboard [--accept results/<runId>/submission.json]
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -236,6 +237,7 @@ export function validateForAccept(
   sub: Submission,
   current: { benchVersion: string; taskIds: string[]; runnerVersion: number; scoringVersion: number },
   artifactFileNames: string[] | null,
+  artifactDir?: string,
 ): string[] {
   const errs: string[] = [];
   if (!sub?.meta?.runId || !Array.isArray(sub.rows) || !sub.rows.length) return ["not a valid submission envelope"];
@@ -254,14 +256,25 @@ export function validateForAccept(
   }
   const unknown = sub.rows.filter((r) => !current.taskIds.includes(r.task));
   if (unknown.length) errs.push(`rows for unknown tasks: ${[...new Set(unknown.map((r) => r.task))].join(", ")}`);
-  // Artifacts: one transcript + one diff per row.
+  // Artifacts: one transcript + one diff per row, content verified against the
+  // hashes embedded in the row at run time so copied/swapped artifacts are caught.
   if (artifactFileNames == null) {
     errs.push("artifacts directory not found next to the submission (transcripts + diffs are required for acceptance)");
   } else {
     const haveArt = new Set(artifactFileNames);
     for (const r of sub.rows) {
-      if (!haveArt.has(`${r.task}-t${r.trial}.out.txt`) || !haveArt.has(`${r.task}-t${r.trial}.diff.patch`)) {
+      const outName = `${r.task}-t${r.trial}.out.txt`;
+      const diffName = `${r.task}-t${r.trial}.diff.patch`;
+      if (!haveArt.has(outName) || !haveArt.has(diffName)) {
         errs.push(`missing artifacts for ${r.task}#${r.trial}`);
+        continue;
+      }
+      // If the row carries content hashes (produced by runner v2.3+), verify
+      // the on-disk files match. This catches artifacts copied from a better run.
+      if (r.artifactHashes && artifactDir) {
+        const sha = (f: string) => createHash("sha256").update(readFileSync(join(artifactDir, f))).digest("hex");
+        if (sha(outName) !== r.artifactHashes.out) errs.push(`artifact content mismatch for ${outName} — file does not match the hash recorded at run time`);
+        if (sha(diffName) !== r.artifactHashes.diff) errs.push(`artifact content mismatch for ${diffName} — file does not match the hash recorded at run time`);
       }
     }
   }
@@ -279,6 +292,7 @@ function cmdLeaderboard(args: string[]): number {
       sub,
       { benchVersion: taskSetHash(), taskIds: loadTasks().map((t) => t.spec.id), runnerVersion: RUNNER_VERSION, scoringVersion: SCORING_VERSION },
       artifacts,
+      existsSync(artDir) ? artDir : undefined,
     );
     if (errs.length) {
       for (const e of errs) console.error(`✗ ${e}`);

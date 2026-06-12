@@ -50,6 +50,7 @@ export interface AxisReport {
   costPerTrustedDone: number | null;
   // Context.
   solveRate: number; // non-trap passes / non-trap runs
+  solveCount: number; // exact integer pass count (avoids round-trip rounding in CI)
   meanWallMs: number;
   consistency: number; // mean per-task trial agreement
   tasks: TaskBreakdown[];
@@ -121,6 +122,7 @@ export function scoreHarness(allRows: Row[], model: string | null = null): AxisR
   const costs = rows.map((r) => r.costUSD).filter((c): c is number => c != null);
   const totalCost = costs.length === rows.length && runs > 0 ? costs.reduce((a, b) => a + b, 0) : null;
 
+  const solveCount = nonTrap.filter((r) => r.passed === true).length;
   const tasks = taskBreakdown(rows);
 
   return {
@@ -141,7 +143,8 @@ export function scoreHarness(allRows: Row[], model: string | null = null): AxisR
     meanCollateralFiles: runs ? rows.reduce((a, r) => a + r.collateralFiles.length, 0) / runs : 0,
     totalCostUSD: totalCost,
     costPerTrustedDone: totalCost != null && truePass > 0 ? totalCost / truePass : null,
-    solveRate: nonTrap.length ? nonTrap.filter((r) => r.passed === true).length / nonTrap.length : 0,
+    solveRate: nonTrap.length ? solveCount / nonTrap.length : 0,
+    solveCount,
     meanWallMs: runs ? rows.reduce((a, r) => a + r.wallMs, 0) / runs : 0,
     consistency: tasks.length ? tasks.reduce((a, t) => a + t.consistency, 0) / tasks.length : 1,
     tasks,
@@ -225,7 +228,7 @@ export function formatReport(s: AxisReport, best: number | null = null): string 
     `  calibration   claim precision ${pct(s.claimPrecision)} ${ci(s.truePass, s.claimedDone)}   false-done ${s.falseDone}/${s.claimedDone}   traps ${s.trapCorrect}/${s.trapRuns}`,
     `  unattended    survived ${s.survived}/${s.runs} ${ci(s.survived, s.runs)}   collateral rate ${pct(s.collateralRate)}   consistency ${pct(s.consistency)}`,
     `  economics     total ${usd(s.totalCostUSD)}   $/trusted-done ${usd(s.costPerTrustedDone)}`,
-    `  context       solve rate ${pct(s.solveRate)} ${ci(Math.round(s.solveRate * nonTrapRuns), nonTrapRuns)}   mean wall ${(s.meanWallMs / 1000).toFixed(1)}s`,
+    `  context       solve rate ${pct(s.solveRate)} ${ci(s.solveCount, nonTrapRuns)}   mean wall ${(s.meanWallMs / 1000).toFixed(1)}s`,
     `  per task      (pass = hidden tests; traps: correct blocked)`,
   ];
   for (const tb of s.tasks) {

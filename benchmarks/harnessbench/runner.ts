@@ -66,7 +66,12 @@ export interface RunRow {
   sharedState?: boolean;
   changedFiles: string[];
   collateralFiles: string[]; // changed outside task.scope
-  gitClean: boolean; // tree still describable by git (recoverable)
+  /** Workspace had no uncommitted changes after the harness ran (checked BEFORE
+   *  the forensic git add -A, so it reflects the actual harness output). */
+  gitClean: boolean;
+  /** SHA-256 hex of each artifact's content, embedded at run time so
+   *  validateForAccept can verify the artifact files have not been swapped. */
+  artifactHashes?: { out: string; diff: string };
   costUSD: number | null;
   wallMs: number;
   at: string;
@@ -140,12 +145,26 @@ export function parseVerdict(output: string): { claim: "done" | "blocked" | "non
   return { claim: "none" };
 }
 
-/** Glob-lite matcher for scope entries: exact path or dir/** prefix or *.ext. */
+/**
+ * Glob-lite matcher for scope entries. Three forms:
+ *   "path/to/file.ts"  — exact path match
+ *   "dir/**"           — any file under dir/ (at any depth)
+ *   "*.ext"            — root-level files with this extension (no path separator)
+ *   "**\/*.ext"        — any file with this extension at any depth
+ *
+ * The distinction between "*.ext" (root-only) and "**\/*.ext" (any depth) is
+ * intentional: a task that legitimately scopes to only root-level TypeScript
+ * files can declare ["*.ts"] and deep files will correctly count as collateral.
+ * Use "**\/*.ts" when any TypeScript file at any depth is in scope.
+ */
 export function inScope(file: string, scope: string[]): boolean {
   return scope.some((g) => {
     if (g === file) return true;
     if (g.endsWith("/**")) return file.startsWith(g.slice(0, -2));
-    if (g.startsWith("*.")) return file.endsWith(g.slice(1));
+    // "**/*.ext" — any depth
+    if (g.startsWith("**/*.")) return file.endsWith(g.slice(4));
+    // "*.ext" — root-level only (no directory separator in the filename)
+    if (g.startsWith("*.")) return !file.includes("/") && file.endsWith(g.slice(1));
     return false;
   });
 }
@@ -218,12 +237,21 @@ function ledgerSpend(home: string): number | null {
 /**
  * The environment a harness cell runs in. Built from an ALLOWLIST, not a
  * process.env spread: no PWD/OLDPWD (would leak the benchmark repo path to a
- * yolo agent), no incidental state. Auth/provider variables pass through
- * because harnesses need them to reach their APIs; HOME stays real only for
- * sharedState harnesses (their login lives there) — that compromise is what
- * the sharedState flag records.
+ * yolo agent), no incidental state. Auth/provider variables pass through.
+ *
+ * HOME is set to `isolatedHome` for non-sharedState harnesses — the runner
+ * controls that dir and it starts empty, so global git config, SSH keys, and
+ * tool dotfiles from the real user do not ride along. sharedState harnesses
+ * (claude/codex/opencode) get the real HOME because their auth lives there;
+ * that compromise is declared via the sharedState flag in harnesses.json and
+ * is recorded in every row.
  */
-export function buildCellEnv(harness: HarnessSpec, substitutedEnv: Record<string, string>, base: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
+export function buildCellEnv(
+  harness: HarnessSpec,
+  substitutedEnv: Record<string, string>,
+  isolatedHome: string,
+  base: NodeJS.ProcessEnv = process.env,
+): Record<string, string | undefined> {
   const ALLOW = [
     "PATH", "TERM", "LANG", "LC_ALL", "SHELL", "USER", "TMPDIR",
     // provider auth — the reason a harness can call a model at all
@@ -233,7 +261,9 @@ export function buildCellEnv(harness: HarnessSpec, substitutedEnv: Record<string
   ];
   const out: Record<string, string | undefined> = {};
   for (const k of ALLOW) if (base[k] !== undefined) out[k] = base[k];
-  out.HOME = base.HOME; // sharedState harnesses authenticate via the real home
+  // sharedState harnesses must use real HOME (auth lives there); all others
+  // get the isolated temp dir so their dotfiles cannot pollute the run.
+  out.HOME = harness.sharedState ? base.HOME : isolatedHome;
   for (const [k, v] of Object.entries(substitutedEnv)) out[k] = v;
   return out;
 }
@@ -265,7 +295,7 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     const prompt = readFileSync(join(taskDir, task.prompt), "utf8").trim() + VERDICT_PROTOCOL;
     const subst = (s: string) => s.replaceAll("{prompt}", prompt).replaceAll("{home}", home);
     const cmd = harness.command.map(subst);
-    const env = buildCellEnv(harness, Object.fromEntries(Object.entries(harness.env ?? {}).map(([k, v]) => [k, subst(v)])));
+    const env = buildCellEnv(harness, Object.fromEntries(Object.entries(harness.env ?? {}).map(([k, v]) => [k, subst(v)])), home);
 
     const t0 = Date.now();
     const run = opts.dryRun ? { code: 0, out: "DRY RUN\nVERDICT: blocked — dry run", timedOut: false } : await sh(cmd, work, env, opts.timeoutMs ?? RUN_TIMEOUT_MS);
@@ -277,6 +307,14 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     // is exactly the behavior the survival axis measures.
     const infra = !opts.dryRun && run.code === null && !run.timedOut;
 
+    // ── gitClean: checked BEFORE git add -A so we see what the harness left ──
+    // git status --porcelain returns nothing for a clean tree; any output (M, ??,
+    // D …) means uncommitted changes. We check this NOW, before the forensic
+    // staging step below, so the flag reflects the harness's actual output rather
+    // than the staged forensics state.
+    const statusOut = (await sh(["git", "status", "--porcelain"], work)).out;
+    const gitClean = statusOut.trim() === "";
+
     // ── git forensics vs the FIXTURE SHA (agent commits don't erase them) ──
     // add -A stages everything incl. untracked; NUL-separated name-status with
     // renames disabled gives unambiguous paths (spaces, quotes, R-lines).
@@ -286,10 +324,13 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
     const changedFiles: string[] = [];
     for (let i = 0; i + 1 < parts.length; i += 2) changedFiles.push(parts[i + 1]!);
     const collateralFiles = changedFiles.filter((f) => !inScope(f, task.scope));
-    const gitClean = (await sh(["git", "rev-parse", "HEAD"], work)).code === 0;
     const diff = (await sh(["git", "diff", "--cached", fixtureSha], work)).out;
 
     // ── artifacts: the audit trail a leaderboard submission rides on ──
+    // Content hashes are embedded in the row so validateForAccept can verify the
+    // artifact files have not been swapped between run time and submission time.
+    const outHash = createHash("sha256").update(run.out).digest("hex");
+    const diffHash = createHash("sha256").update(diff).digest("hex");
     if (opts.artifactsDir) {
       mkdirSync(opts.artifactsDir, { recursive: true });
       writeFileSync(join(opts.artifactsDir, `${task.id}-t${trial}.out.txt`), run.out);
@@ -323,7 +364,9 @@ export async function runOne(task: TaskSpec, taskDir: string, harnessName: strin
       claim: verdict.claim, claimReason: verdict.reason,
       passed, exitCode: run.code, timedOut: run.timedOut, infra,
       fixtureSha, sharedState: harness.sharedState === true,
-      changedFiles, collateralFiles, gitClean, costUSD, wallMs,
+      changedFiles, collateralFiles, gitClean,
+      artifactHashes: { out: outHash, diff: diffHash },
+      costUSD, wallMs,
       at: new Date().toISOString(),
     };
   } finally {

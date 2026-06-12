@@ -34,6 +34,18 @@ describe("inScope", () => {
     expect(inScope("note.md", ["*.md"])).toBe(true);
     expect(inScope("src/b.ts", ["src/a.ts"])).toBe(false);
   });
+  test("*.ext matches root-level only (bug #3 regression)", () => {
+    // "*.ts" should NOT match deep files — that silently masked unintended writes
+    expect(inScope("root.ts", ["*.ts"])).toBe(true);
+    expect(inScope("src/deep.ts", ["*.ts"])).toBe(false);
+    expect(inScope("a/b/c.ts", ["*.ts"])).toBe(false);
+  });
+  test("**/*.ext matches any depth", () => {
+    expect(inScope("root.ts", ["**/*.ts"])).toBe(true);
+    expect(inScope("src/deep.ts", ["**/*.ts"])).toBe(true);
+    expect(inScope("a/b/c.ts", ["**/*.ts"])).toBe(true);
+    expect(inScope("root.js", ["**/*.ts"])).toBe(false);
+  });
 });
 
 describe("scoreHarness", () => {
@@ -142,6 +154,8 @@ describe("parseVerdict markdown tolerance", () => {
   });
 });
 
+import { createHash } from "node:crypto";
+
 describe("validateForAccept", () => {
   const taskIds = ["a", "b"];
   const current = { benchVersion: "v1", taskIds, runnerVersion: 2, scoringVersion: 2 };
@@ -162,6 +176,35 @@ describe("validateForAccept", () => {
     expect(validateForAccept({ meta: { ...meta, scoringVersion: 1 }, rows: fullRows } as any, current, fullArtifacts).some((e) => e.includes("scoringVersion"))).toBe(true);
     expect(validateForAccept({ meta, rows: fullRows } as any, current, null).some((e) => e.includes("artifacts directory"))).toBe(true);
     expect(validateForAccept({ meta, rows: fullRows } as any, current, fullArtifacts.slice(1)).some((e) => e.includes("missing artifacts"))).toBe(true);
+  });
+
+  test("artifact content hashes are verified when present (bug #2 regression)", () => {
+    // write real artifact files, embed correct hashes in rows → should pass
+    const dir = mkdtempSync(join(tmpdir(), "hbench-art-"));
+    try {
+      const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+      const outContent = "transcript"; const diffContent = "diff";
+      // write artifacts for task a, trial 1 only
+      writeFileSync(join(dir, "a-t1.out.txt"), outContent);
+      writeFileSync(join(dir, "a-t1.diff.patch"), diffContent);
+      // write a DIFFERENT artifact for a-t2 but embed the original hash
+      writeFileSync(join(dir, "a-t2.out.txt"), "DIFFERENT");
+      writeFileSync(join(dir, "a-t2.diff.patch"), "DIFFERENT");
+      for (const t of [1, 2, 3]) { writeFileSync(join(dir, `b-t${t}.out.txt`), "x"); writeFileSync(join(dir, `b-t${t}.diff.patch`), "x"); }
+      writeFileSync(join(dir, "a-t3.out.txt"), "x"); writeFileSync(join(dir, "a-t3.diff.patch"), "x");
+
+      const rowsWithHashes = fullRows.map((r) => {
+        if (r.task === "a" && r.trial === 1) return { ...r, artifactHashes: { out: hash(outContent), diff: hash(diffContent) } };
+        if (r.task === "a" && r.trial === 2) return { ...r, artifactHashes: { out: hash("original"), diff: hash("original") } }; // wrong!
+        return r;
+      });
+      const errs = validateForAccept({ meta, rows: rowsWithHashes } as any, current, fullArtifacts, dir);
+      // a-t1 has correct hash → no error; a-t2 has wrong hash → error
+      expect(errs.some((e) => e.includes("a-t2"))).toBe(true);
+      expect(errs.every((e) => !e.includes("a-t1"))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
