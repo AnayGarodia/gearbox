@@ -1,0 +1,1 @@
+Implement `debounce(fn, delay)` in src/debounce.ts. The debounced function delays invoking `fn` until `delay` milliseconds have elapsed since the last call. If called again before the delay expires, the timer resets. The debounced function must also have a `.cancel()` method that clears any pending invocation. The file is currently a stub — implement it.

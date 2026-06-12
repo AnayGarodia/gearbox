@@ -1,0 +1,1 @@
+`Dog` in src/animal.py should call its parent `Animal.__init__` so the `name` attribute is set correctly. Currently `Dog("Rex").name` raises an `AttributeError`. Fix `Dog.__init__` to call `super().__init__` properly. Do not change `Animal`.

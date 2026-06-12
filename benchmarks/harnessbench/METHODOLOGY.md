@@ -216,8 +216,8 @@ detection — it is not thrashing before giving up.
 
 ### Statistical uncertainty
 
-At 5 trials × 35 tasks = 175 runs per harness, Wilson 95% confidence intervals on a
-50%-precision harness span ±5 percentage points. At 3 trials the same CI is ±7pp —
+At 5 trials × 47 tasks = 235 runs per harness, Wilson 95% confidence intervals on a
+50%-precision harness span ±4 percentage points. At 3 trials × 35 tasks the CI was ±7pp —
 wide enough to make two harnesses within 6 points indistinguishable. The prescription:
 
 - Report Wilson intervals beside every rate.

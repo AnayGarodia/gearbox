@@ -1,0 +1,1 @@
+`highlight` in src/highlight.ts is a tagged template function that wraps each interpolated value in `[...]`. `` highlight`Price: ${42} USD` `` should produce `"Price: [42] USD"`. It currently produces the wrong output. Fix it.

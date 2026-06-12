@@ -1,0 +1,1 @@
+{"id": "ts-class-inherit", "prompt": "prompt.md", "scope": ["src/shapes.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "bug fix", "difficulty": "medium"}

@@ -1,0 +1,1 @@
+{"id": "ts-string-pad", "prompt": "prompt.md", "scope": ["src/pad.ts"], "trap": false, "check": ["bun", "test", "__hidden__"], "category": "bug fix", "difficulty": "easy"}

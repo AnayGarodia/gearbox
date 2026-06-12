@@ -1,0 +1,1 @@
+`fetchUserName(id)` in src/fetch-user.ts calls `getUser(id)` then `getProfile(user.id)` and returns the profile's `displayName`. If either step rejects, the error should propagate — it must not be swallowed. Currently the function swallows the rejection and resolves with `undefined`. Fix it without changing the function signature.

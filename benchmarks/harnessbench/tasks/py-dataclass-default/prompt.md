@@ -1,0 +1,1 @@
+`Cart` in src/cart.py uses a dataclass. The `items` field should default to an empty list per instance, but all Cart instances currently share the same list. Fix the default so each new `Cart()` gets its own empty list.
