@@ -552,6 +552,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Reports from BACKGROUNDED delegate sub-tasks, delivered into the next
   // turn's prompt (the model asked for them; the user saw the notice).
   const pendingBackgroundRef = useRef<string[]>([]);
+  // Bumped whenever a background/spawned sub-task finishes, so the idle auto-wake
+  // effect re-runs (pendingBackgroundRef is a ref, so it can't be an effect dep).
+  const [bgWakeTick, setBgWakeTick] = useState(0);
   // The flywheel's recording hooks: what kind routed this turn (+ how it was
   // determined, for /why provenance), and the last edited turn's (kind, model)
   // so /undo can debit it as a human revert.
@@ -2314,10 +2317,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0,
           pinnedModelId: explicitModelId, cacheBreak,
           onBackground: (rep) => {
-            // Surface NOW (notice + toast), deliver the full text next turn.
+            // Surface NOW (notice + toast). The full text is delivered to the
+            // model on the next turn — auto-woken when idle, else the user's next.
             push({ kind: "notice", id: idRef.current++, text: `background sub-task #bg${rep.id} ${rep.ok ? "finished" : "FAILED"} · ${rep.task.slice(0, 70)}\n${rep.text.split("\n").slice(0, 3).join("\n")}` });
             pendingBackgroundRef.current.push(`[background sub-task #bg${rep.id} · ${rep.ok ? "finished" : "failed"}]\nTask: ${rep.task}\nReport:\n${rep.text}`);
             toast(`background sub-task #bg${rep.id} ${rep.ok ? "done" : "failed"}`, rep.ok ? "ok" : "err");
+            setBgWakeTick((t) => t + 1); // trigger the idle auto-wake effect
           },
         });
         if (account && r.headers) {
@@ -2621,15 +2626,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       agentTurnRef.current = agentInv?.agent ?? null;
       const effectivePrompt = agentInv ? agentInv.task : prompt;
       let { text: modelPrompt, attached } = expandMentions(effectivePrompt);
-      // Backgrounded delegate reports arrive with the next turn — the model
-      // requested the work and needs the result in context exactly once.
+      // Backgrounded / spawned sub-task reports arrive here. On an AUTO-WAKE (a
+      // sub-task finished while idle and triggered this turn — empty prompt) the
+      // reports ARE the content; on a normal turn they prepend to the user's.
       if (pendingBackgroundRef.current.length) {
-        modelPrompt = `${pendingBackgroundRef.current.join("\n\n")}\n\n---\n\n${modelPrompt}`;
+        const bg = pendingBackgroundRef.current.join("\n\n");
+        modelPrompt = effectivePrompt.trim() ? `${bg}\n\n---\n\n${modelPrompt}` : bg;
         pendingBackgroundRef.current = [];
       }
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
       const imagePaths = uniq([...chipImagePathsIn(modelPrompt), ...imagePathsInText(modelPrompt)]);
-      let displayPrompt = prompt;
+      let displayPrompt = prompt || "↳ background sub-task(s) finished — continuing";
       for (const path of imagePaths) {
         const marker = imageMarkerFor(path);
         modelPrompt = replaceImagePathWithMarker(modelPrompt, path, marker);
@@ -3365,6 +3372,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     setQueued([...queueRef.current]);
     if (next) void runTurn(next);
   }, [busy, runTurn]);
+
+  // Auto-wake: when a spawned/background sub-task finishes while the app is IDLE
+  // (no running turn, no queued user input), resume on its own to deliver the
+  // result to the model — "fire sub-agents, yield to the user, wake when they
+  // land." Queued user input takes precedence (a normal turn consumes the pending
+  // reports anyway). No loop risk: runTurn clears pendingBackgroundRef, so the
+  // effect only fires again when a NEW report arrives (bgWakeTick).
+  useEffect(() => {
+    if (busy || queueRef.current.length || pendingBackgroundRef.current.length === 0) return;
+    void runTurn("");
+  }, [bgWakeTick, busy, runTurn]);
 
   // Rewind the last user turn back into the composer for editing, dropping that
   // turn's transcript items + model messages.
