@@ -50,7 +50,7 @@ import { discoverModels } from "../accounts/discover.ts";
 import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDeployment, type AzureDeploymentInfo } from "../accounts/manage.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
-import { runCliTask, subscriptionEnv } from "../agent/cli-backend.ts";
+import { runCliTask, subscriptionEnv, cliScratchDir } from "../agent/cli-backend.ts";
 import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
 import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend, readAuxSpendToday } from "../accounts/ledger.ts";
 import * as gitOps from "../git/ops.ts";
@@ -1910,6 +1910,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (activeImagesRef.current.length) {
         cliPrompt += `\n\n<attached-images>\n${activeImagesRef.current.map((img) => img.path).join("\n")}\n</attached-images>\nThe user attached the image file(s) listed above — open them with your file/read tools to view them.`;
       }
+      // Headless seats can't show approval prompts, so out-of-repo work only
+      // succeeds in pre-approved dirs — point the agent at the scratch dir
+      // instead of letting it pick a blocked mktemp path under /tmp.
+      cliPrompt += `\n\nIf you need scratch space or a git worktree outside this repo, prefer ${cliScratchDir()} (pre-approved, runs without interruption); other paths still work but will pause for the user's approval. Run git from the current directory — avoid \`git -C <path>\`, which bypasses the pre-approved git commands.`;
       const r = await runCliTask({
         binary,
         prompt: cliPrompt,
@@ -3117,6 +3121,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // Swallow any stray mouse-report bytes so they never land in the composer
     // (the wheel is handled by the raw stdin listener above).
     if (/\[<\d+;\d+;\d+[Mm]/.test(input)) return;
+    // Swallow terminal-report responses (Device Attributes, status, etc.) so they
+    // never leak into the composer. These are CSI sequences with a `?`/`>` private
+    // prefix — e.g. a DA1 reply `\x1b[?1;2c` (which showed up as `[?1;2c`) — that
+    // some terminals emit unsolicited at startup/focus. A user never types them.
+    if (/\x1b?\[[?>][\d;]*[a-zA-Z]/.test(input)) return;
     // Conductor tabs: ⌃T cycles to the next session (the /tab command covers
     // create/close/jump). Only the active tab's useInput runs, so this is safe.
     if (tabs && key.ctrl && input === "t") { tabs.cycle(1); return; }
