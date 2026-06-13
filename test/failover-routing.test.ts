@@ -28,20 +28,20 @@ test("re-select routes around a cooled-down account, then back once it expires",
   const r = new RoutingSelector();
   const task = { prompt: "refactor the parser" };
 
-  // Normally deepseek wins (cheapest clearing the bar).
+  // Normally deepseek-v4-flash wins (cheapest capable, cheap-first under a net).
   const first = r.select(task);
-  expect(first.model.id).toBe("deepseek-v4-pro");
+  expect(first.model.id).toBe("deepseek-v4-flash");
 
   // Park deepseek's env key (what the runner does on its 429) → next pick differs.
   markExhausted("env:deepseek", DEFAULT_COOLDOWN_MS, "429 rate limit");
   const failedOver = r.select(task);
   expect(failedOver.model.provider).not.toBe("deepseek");
-  expect(failedOver.model.id).toBe("claude-sonnet-4-6"); // cheapest remaining that clears the bar
+  expect(failedOver.model.id).toBe("claude-haiku-4-5"); // cheapest remaining capable model
 
   // It is a skip, not a permanent ban: routing is unaffected after it would expire.
   // (clearCooldowns simulates the window resetting.)
   clearCooldowns();
-  expect(r.select(task).model.id).toBe("deepseek-v4-pro");
+  expect(r.select(task).model.id).toBe("deepseek-v4-flash");
 });
 
 // R-5: a rate-limit on ONE model must not bench the account's other models.

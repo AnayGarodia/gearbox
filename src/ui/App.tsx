@@ -71,7 +71,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, worstFailureKind, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { resolveSandboxPolicy, sandboxBackendAvailable } from "../sandbox/index.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
@@ -495,7 +495,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [selector, setSelector] = useState<ModelSelector>(initialSelector);
   const [mode, setMode] = useState<"normal" | "auto-accept" | "plan">("normal");
-  const [effort, setEffortState] = useState<Effort>("medium");
+  // "auto" = let the router pick the effort per task (the default); /effort <level>
+  // pins a concrete level, /effort auto returns to routed effort.
+  const [effort, setEffortState] = useState<Effort>("auto");
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
   // A conductor tab named from the wardrobe dresses Boo in its namesake costume;
@@ -550,6 +552,28 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Reports from BACKGROUNDED delegate sub-tasks, delivered into the next
   // turn's prompt (the model asked for them; the user saw the notice).
   const pendingBackgroundRef = useRef<string[]>([]);
+  // Bumped whenever a background/spawned sub-task finishes, so the idle auto-wake
+  // effect re-runs (pendingBackgroundRef is a ref, so it can't be an effect dep).
+  const [bgWakeTick, setBgWakeTick] = useState(0);
+  // Cap consecutive idle auto-wakes (review #10): an auto-woken turn can spawn
+  // more background work and re-wake — with the user away this could run up cost
+  // unbounded. After the cap, hold the results for the user instead of resuming.
+  // Reset whenever a real (non-wake) turn runs.
+  const autoWakeCountRef = useRef(0);
+  const MAX_AUTO_WAKES = 25;
+  // The files in play, fed to the router's difficulty estimate (review #2: this
+  // signal was never set): @mentioned files for this turn + the files edited so
+  // far this session.
+  const touchedFilesRef = useRef<string[]>([]);
+  const sessionTouchedRef = useRef<Set<string>>(new Set());
+  // The kind of check that failed on the LAST attempt, fed to the router's
+  // escalation (review #1: failureKind was never set, so a typecheck miss
+  // escalated like a reasoning miss). Set before an auto-fix re-run; cleared on a
+  // fresh user turn.
+  const lastFailureKindRef = useRef<import("../model/selector.ts").Task["failureKind"]>(undefined);
+  // The reasoning effort the current turn actually ran at, captured by the runner
+  // and recorded into the per-effort flywheel at settle.
+  const ranEffortRef = useRef<string | undefined>(undefined);
   // The flywheel's recording hooks: what kind routed this turn (+ how it was
   // determined, for /why provenance), and the last edited turn's (kind, model)
   // so /undo can debit it as a human revert.
@@ -2008,6 +2032,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       modelId?: string; // the sdk model id the binary understands (no cli: prefix)
       accountId: string;
       efforts: string[];
+      routedEffort?: string; // the router's per-task effort pick (used when /effort is "auto")
       label?: string; // model label for the phase line
       pinned: boolean; // true ⇒ explicit pin (no routing reason to show)
       deferTerminal?: boolean; // caller drives failover: suppress terminal events, return failure
@@ -2017,7 +2042,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       onEvent: OnEvent;
       signal?: AbortSignal;
     }): Promise<{ messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string } }> => {
-      const { binary, profile, modelId, accountId, efforts, label, pinned, prompt, messages, onEvent, signal } = args;
+      const { binary, profile, modelId, accountId, efforts, routedEffort, label, pinned, prompt, messages, onEvent, signal } = args;
       usedAccountRef.current = accountId;
       // Full provenance only when the route just changed; unchanged turns stay quiet
       // (the working strip + reply are enough · no per-turn "owns tools" repetition).
@@ -2031,10 +2056,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // never thrown — a mismatch must not kill a subscription turn (S-E; mirrors the
       // in-loop R-4 fix). (Note: the claude CLI doesn't take an effort flag yet, so
       // for claude this clamps then gets dropped downstream in buildCliArgs.)
-      let cliEffort = normalizeEffort(effortRef.current, efforts) ?? undefined;
-      if (cliEffort === undefined && effortRef.current !== "medium" && efforts.length) {
-        const { level: nearest } = clampEffort(effortRef.current, efforts);
-        cliEffort = normalizeEffort(nearest, efforts) ?? undefined;
+      // "auto" → use the router's per-task effort pick (routedEffort), clamped to
+      // this seat model's vocabulary; if the router gave none, fall back to the
+      // vendor binary's own default (claude drops the flag anyway). A pinned
+      // effort is honored + clamped.
+      let cliEffort: string | undefined;
+      if (effortRef.current === "auto") {
+        cliEffort = routedEffort && efforts.length ? normalizeEffort(routedEffort, efforts) ?? normalizeEffort(clampEffort(routedEffort, efforts).level, efforts) ?? undefined : undefined;
+      } else {
+        cliEffort = normalizeEffort(effortRef.current, efforts) ?? undefined;
+        if (cliEffort === undefined && effortRef.current !== "medium" && efforts.length) {
+          cliEffort = normalizeEffort(clampEffort(effortRef.current, efforts).level, efforts) ?? undefined;
+        }
       }
       const activeAccount = getAccount(accountId);
       const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
@@ -2223,7 +2256,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (showCli) onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
           const out = await runCliBackend({
             binary: choice.backend.binary, profile: choice.backend.profile, modelId: choice.model.sdkId, accountId: acct.id,
-            efforts: choice.model.efforts ?? [], label: choice.model.label,
+            efforts: choice.model.efforts ?? [], label: choice.model.label, routedEffort: choice.effort,
             pinned: false, deferTerminal: true, showProvenance: showCli, prompt, messages, onEvent, signal,
           });
           // The CLI's failure carries no producedOutput flag; an assistant message
@@ -2284,28 +2317,38 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         usedAccountRef.current = account?.id ?? null;
         cliMetaRef.current = null;
         if (account) markUsed(account.id);
-        let _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
-        if (_effortRaw === null && effortRef.current !== "medium") {
-          // The (often auto-routed) model doesn't support the active effort tier.
-          // CLAMP to the nearest supported level instead of throwing — routing
-          // picking a model with a different effort vocab must not kill the turn (R-4).
-          const supported = effortLevels(choice.model);
-          if (supported.length) {
-            const { level: nearest, clamped } = clampEffort(effortRef.current, supported);
-            _effortRaw = nearest;
-            if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
-          } // else: model has no effort control → omit effort (leave null)
+        // Effort: when the user hasn't pinned one (default "auto"), use the
+        // router's per-task pick (choice.effort, already valid for this model).
+        // A pinned effort is honored and clamped to the model's vocabulary.
+        let _effortRaw: string | null;
+        if (effortRef.current === "auto") {
+          _effortRaw = choice.effort ?? null;
+        } else {
+          _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
+          if (_effortRaw === null && effortRef.current !== "medium") {
+            // A pinned effort the (often auto-routed) model doesn't support → CLAMP
+            // to the nearest supported level instead of throwing (R-4).
+            const supported = effortLevels(choice.model);
+            if (supported.length) {
+              const { level: nearest, clamped } = clampEffort(effortRef.current, supported);
+              _effortRaw = nearest;
+              if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
+            }
+          }
         }
+        ranEffortRef.current = _effortRaw ?? undefined; // record what effort this turn ran at (per-effort flywheel)
         const r = await runTask({
           model: choice.model, messages: ctx, onEvent, signal, plan, system, creds,
           root: rootRef.current, // tools stay rooted in THIS tab's tree even when another tab owns cwd
           effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0,
           pinnedModelId: explicitModelId, cacheBreak,
           onBackground: (rep) => {
-            // Surface NOW (notice + toast), deliver the full text next turn.
+            // Surface NOW (notice + toast). The full text is delivered to the
+            // model on the next turn — auto-woken when idle, else the user's next.
             push({ kind: "notice", id: idRef.current++, text: `background sub-task #bg${rep.id} ${rep.ok ? "finished" : "FAILED"} · ${rep.task.slice(0, 70)}\n${rep.text.split("\n").slice(0, 3).join("\n")}` });
             pendingBackgroundRef.current.push(`[background sub-task #bg${rep.id} · ${rep.ok ? "finished" : "failed"}]\nTask: ${rep.task}\nReport:\n${rep.text}`);
             toast(`background sub-task #bg${rep.id} ${rep.ok ? "done" : "failed"}`, rep.ok ? "ok" : "err");
+            setBgWakeTick((t) => t + 1); // trigger the idle auto-wake effect
           },
         });
         if (account && r.headers) {
@@ -2357,7 +2400,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true, estTokens });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens });
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires, estTokens }); // directive model unavailable → fall back to routing
       }
@@ -2420,7 +2463,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: routedKind, requires, estTokens }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         // Bail only when the router hands back the exact pick we just parked
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
@@ -2538,6 +2581,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Apply effort clamping when switching to a model with different effort support.
   // Returns a suffix to append to the model-switch notice, or "" if no change.
   const applyEffortClamp = (allowed: string[]): string => {
+    if (effortRef.current === "auto") return ""; // routed effort adapts per model — nothing to clamp
     const { level, clamped } = clampEffort(effortRef.current, allowed);
     if (!clamped) return "";
     const prev = effortRef.current;
@@ -2548,6 +2592,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
 
   const setEffort = (raw: string) => {
+    // Return to routed (per-task) effort.
+    if (raw.trim().toLowerCase() === "auto") {
+      effortRef.current = "auto";
+      setEffortState("auto");
+      toast("effort → auto · routed per task");
+      return;
+    }
     const target = effortTarget();
     if (!target?.efforts.length) {
       notice("the active model does not expose reasoning efforts");
@@ -2601,15 +2652,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       agentTurnRef.current = agentInv?.agent ?? null;
       const effectivePrompt = agentInv ? agentInv.task : prompt;
       let { text: modelPrompt, attached } = expandMentions(effectivePrompt);
-      // Backgrounded delegate reports arrive with the next turn — the model
-      // requested the work and needs the result in context exactly once.
+      // Difficulty input for the router (review #2): files in play = this turn's
+      // @mentions + everything edited so far this session. A fresh user turn
+      // (attempt 0) clears the last failure kind so escalation only applies it on
+      // an actual auto-fix re-run.
+      if (attempt === 0) lastFailureKindRef.current = undefined;
+      if (effectivePrompt.trim()) autoWakeCountRef.current = 0; // a real turn resets the auto-wake budget
+      touchedFilesRef.current = uniq([...attached, ...sessionTouchedRef.current]);
+      // Backgrounded / spawned sub-task reports arrive here. On an AUTO-WAKE (a
+      // sub-task finished while idle and triggered this turn — empty prompt) the
+      // reports ARE the content; on a normal turn they prepend to the user's.
       if (pendingBackgroundRef.current.length) {
-        modelPrompt = `${pendingBackgroundRef.current.join("\n\n")}\n\n---\n\n${modelPrompt}`;
+        const bg = pendingBackgroundRef.current.join("\n\n");
+        modelPrompt = effectivePrompt.trim() ? `${bg}\n\n---\n\n${modelPrompt}` : bg;
         pendingBackgroundRef.current = [];
       }
       if (attached.length) notice(`attached ${attached.length} file${attached.length > 1 ? "s" : ""}: ${attached.join(", ")}`);
       const imagePaths = uniq([...chipImagePathsIn(modelPrompt), ...imagePathsInText(modelPrompt)]);
-      let displayPrompt = prompt;
+      let displayPrompt = prompt || "↳ background sub-task(s) finished — continuing";
       for (const path of imagePaths) {
         const marker = imageMarkerFor(path);
         modelPrompt = replaceImagePathWithMarker(modelPrompt, path, marker);
@@ -3081,6 +3141,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const turnItems = cut < 0 ? [] : collapsed.slice(cut);
           const checkItems = turnItems.filter((i): i is Extract<Item, { kind: "verification" }> => i.kind === "verification");
           const changed = uniq([...changedFiles]);
+          for (const f of changed) sessionTouchedRef.current.add(f); // feed next turn's difficulty (files in play)
           const doneChecks = checkItems.map((c) => c.intent ?? c.command);
           const failed = checkItems.filter((c) => !c.ok).map((c) => `${c.intent ?? c.command}: ${c.summary}`).slice(0, 4);
           // Honest "done with proof": on a successful edited turn, state which tier was
@@ -3095,7 +3156,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (changed.length && ranModel && ranModel !== "unknown") {
             const outcomeKind = routedKindRef.current?.kind ?? "code";
             const outcome = failed.length ? "failed" : tier && tier !== "none" ? "passed" : "unverified";
-            try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome }); } catch { /* never break settle */ }
+            try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome, effort: ranEffortRef.current }); } catch { /* never break settle */ }
             lastOutcomeKeyRef.current = { kind: outcomeKind, modelId: ranModel };
           }
           // Once per session, after a clean code-changing turn in a project whose
@@ -3144,6 +3205,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const sameFailure = Boolean(prevFp && failed.length && prevFp === failureFingerprint(failed));
           if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed, prevFingerprint: prevFp })) {
             autofixFpRef.current = failureFingerprint(failed);
+            // What KIND of check failed steers the next escalation (review #1): a
+            // test failure climbs hard to a stronger model, a mechanical
+            // (typecheck/lint/build) miss barely moves — a cheap model can fix a
+            // pinpointed compiler error.
+            lastFailureKindRef.current = worstFailureKind(failed);
             notice(`checks failed — fixing (attempt ${attempt + 1}/${MAX_AUTOFIX_ATTEMPTS})`);
             const fixPrompt = buildFixPrompt(failed);
             setTimeout(() => void runTurnRef.current?.(fixPrompt, attempt + 1), 0);
@@ -3345,6 +3411,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     setQueued([...queueRef.current]);
     if (next) void runTurn(next);
   }, [busy, runTurn]);
+
+  // Auto-wake: when a spawned/background sub-task finishes while the app is IDLE
+  // (no running turn, no queued user input), resume on its own to deliver the
+  // result to the model — "fire sub-agents, yield to the user, wake when they
+  // land." Queued user input takes precedence (a normal turn consumes the pending
+  // reports anyway). No loop risk: runTurn clears pendingBackgroundRef, so the
+  // effect only fires again when a NEW report arrives (bgWakeTick).
+  useEffect(() => {
+    if (busy || queueRef.current.length || pendingBackgroundRef.current.length === 0) return;
+    if (autoWakeCountRef.current >= MAX_AUTO_WAKES) {
+      notice(`${pendingBackgroundRef.current.length} sub-task result(s) ready — paused auto-resume after ${MAX_AUTO_WAKES} rounds. Send a message to continue.`);
+      return;
+    }
+    autoWakeCountRef.current++;
+    void runTurn("");
+  }, [bgWakeTick, busy, runTurn]);
 
   // Rewind the last user turn back into the composer for editing, dropping that
   // turn's transcript items + model messages.

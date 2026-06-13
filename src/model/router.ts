@@ -29,7 +29,17 @@ import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
-import { priorFor, priorLine, failRateFor } from "./priors.ts";
+import { priorFor, priorLine, failRateFor, effortPassRate } from "./priors.ts";
+import { estimateDifficulty, type Difficulty, type DifficultySignals } from "./difficulty.ts";
+import { qualityForKind, qualityNote, benchmarkRow } from "./benchmarks.ts";
+import { effortLevels } from "./reasoning.ts";
+import { bestEffort } from "./effort.ts";
+import { detectProofTier } from "../verify.ts";
+import { statSync } from "node:fs";
+
+// Per-turn context the effort search needs (difficulty + verifier set how much
+// effort is worth; interactive sets the value of the extra latency).
+interface EffortCtx { estInputTokens: number; difficulty: number; verifierTier: "tests" | "types" | "none"; interactive: boolean }
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -52,37 +62,47 @@ interface Candidate {
   state: AccountState;
 }
 
-// Quality bar per task kind (SWE-bench-Verified-ish, 0..1): minimum quality a
-// model must have to qualify for this task. Bounded sub-tasks (summarize,
-// classify, search) have no bar so the cheapest model wins. Real coding and
-// planning demand a strong model (0.7 clears Sonnet+ but not Haiku).
-// Kind-weighted value of quality ABOVE the bar (scoring.ts qualityWeight):
-// code/plan resolve near-ties toward the stronger model (correctness compounds
-// across a multi-step agent turn); cheap bounded kinds stay pure-cost.
-const KIND_QUALITY_WEIGHT: Record<Kind, number> = {
+// Capability FLOOR per task kind (0..1): the only quality threshold left — it
+// excludes models that are genuinely INCAPABLE of the kind, so a cheap-but-junk
+// model can never "win on price" for real work. It is NOT the old quality bar
+// (which dictated WHICH tier to use); the expected-cost objective (scoring.ts)
+// decides that from cost+latency+quality. code/plan floor out sub-0.4 models;
+// cheap bounded kinds (summarize/classify/search/chat) have no floor — quality
+// barely matters and cheapest should win.
+const CAPABILITY_FLOOR: Record<Kind, number> = {
   summarize: 0,
   classify: 0,
   search: 0,
-  chat: 0.1,
-  plan: 0.3,
-  code: 0.3,
+  chat: 0,
+  plan: 0.4,
+  code: 0.4,
 };
 
-const BAR: Record<Kind, number> = {
-  summarize: 0,
-  classify: 0,
-  search: 0.2,
-  chat: 0.3,
-  plan: 0.7,
-  code: 0.7,
+// A verification MISS is hard evidence the chosen model failed THIS task here —
+// not mere difficulty. Under a test net the objective treats a miss as cheap
+// (caught + retried), so without a hard mechanism the router would re-pick the
+// same failed cheap model forever. So each miss RAISES THE CAPABILITY FLOOR,
+// excluding the failed tier and forcing a climb to a genuinely stronger model.
+// BY HOW MUCH depends on WHAT failed (routing-bench finding): a test failure is
+// a reasoning miss → climb hard; a mechanical failure (typecheck/lint/build —
+// the compiler pinpointed the exact error) is an easy fix → barely move. This is
+// evidence-driven, not an arbitrary bar.
+const ESCALATION_FLOOR_BY_KIND: Record<NonNullable<Task["failureKind"]>, number> = {
+  test: 0.35,
+  other: 0.2,
+  build: 0.12,
+  typecheck: 0.07,
+  lint: 0.05,
 };
+const escalationFloorStep = (fk: Task["failureKind"]): number => (fk ? ESCALATION_FLOOR_BY_KIND[fk] : 0.2);
+const FLOOR_MAX = 0.9; // an escalated floor never excludes literally every model
 
-// Each failed verification raises the quality bar by ESCALATION_STEP, climbing
-// the model ladder toward stronger candidates. BAR_MAX ensures the bar never
-// excludes every model: if no candidate clears the raised bar, prepare() promotes
-// to the strongest available tier rather than dropping back to cheapest.
-const ESCALATION_STEP = 0.08;
-const BAR_MAX = 0.95;
+// The flywheel's HARD stop: a model with a MEASURED per-repo fail rate at/above
+// this (gated at ≥ MIN_N verified outcomes inside failRateFor) is EXCLUDED from
+// routing here — "it keeps failing in THIS repo" is decisive evidence no
+// benchmark or price can override. A soft cost nudge would be dominated by a big
+// price gap under a test net, so the exclusion must be hard.
+const MEASURED_FAIL_EXCLUDE = 0.5;
 
 // Unambiguous mutation or repair verbs: their presence means real work is
 // requested and the prompt should route to a strong model regardless of other
@@ -91,17 +111,49 @@ const BAR_MAX = 0.95;
 // output".
 const MUTATION = /\b(fix|implement|refactor|edit|modif|debug|rewrite|replace|add|create|delete|remove|patch|migrat|rename)\b/;
 
-// Returns a task kind ONLY when a rule fires unambiguously: a mutation verb maps
-// to "code", and explicit summarize/classify/search markers map to their kinds.
-// Returns null for ambiguous prompts (a bare question, an explanation request)
-// so the LLM classifier can handle them properly. The agent uses this to SKIP
-// the model call (and its 1-2s latency) when the signal is already clear.
+// Greeting/ack words. A short prompt made ENTIRELY of these ("hi", "ok cool",
+// "thanks!", "got it") is chat — no model call. Matched as a word SET (not a
+// giant anchored regex) so multi-token acks like "ok cool" are caught while a
+// real instruction that merely contains one ack word ("nice, refactor it") is
+// not (it has a non-ack word, and MUTATION catches it anyway).
+const ACK_WORDS = new Set([
+  "hi", "hiya", "hello", "hey", "yo", "sup", "howdy", "thanks", "thank", "you", "ty", "thx",
+  "ok", "okay", "k", "cool", "nice", "great", "perfect", "awesome", "sweet", "gotcha", "lol",
+  "yep", "yeah", "yup", "sure", "good", "morning", "afternoon", "evening", "got", "it", "sounds",
+]);
+
+// Concrete code-defect signals → real DEBUGGING, which needs cross-file tracing,
+// so it routes to a strong model EVEN when phrased as a question ("why is X
+// throwing?", "where is the memory leak?"). This is the keyword judge's biggest
+// hole: these used to fall through to the bar-0.3 "chat" fallback. Deliberately
+// keyed on concrete failure words and error-CLASS names (TypeError, KeyError),
+// never the bare word "error" — that also appears in cheap requests like "tl;dr
+// this error log" / "classify this error".
+const DEBUG = /\b(throw(s|n|ing)?|crash(es|ed|ing)?|fail(s|ed|ing|ure)?|broken|segfault|stack ?trace|traceback|exception|(type|key|value|index|name|runtime|reference|syntax|attribute|zero ?division|null ?pointer)error|times? out|timed out|memory leak|race condition|deadlock|infinite loop|stack ?overflow|regression|hang(s|ing)?|wrong (value|output|result|answer|behaviou?r)|went wrong|what'?s wrong|not working|is ?n'?t working|does ?n'?t work|wo ?n'?t (work|run|compile|build|start))\b/i;
+
+// Design / architecture signals → PLANNING, a heavy reasoning task, even when
+// phrased as a question ("how should we structure X?", "what's the tradeoff?").
+// The other big hole: the keyword judge had no notion of planning at all, so
+// these also fell to bar-0.3 chat. Both DEBUG→code and PLAN→plan land on the
+// strong tier, so a false positive here is the SAFE (merely wasteful) direction.
+const PLAN = /\b(architect(ure|ing)?|trade-?offs?)\b|\bbest (way|approach)\b|\bgood approach\b|\b(should|shall) (i|we|you)\b|\bhow (should|would|do) (i|we|you) (design|structure|architect|organi[sz]e|approach|split|break|model|scale)\b|\bplan (out|for)\b|\bdesign (a|an|the|our|your)\b|\bapproach (to|for)\b|\bhigh.level\b/i;
+
+// Returns a task kind ONLY when a rule fires with confidence; null for genuinely
+// ambiguous prompts so the LLM ladder (subscription seat, else cheapest API with
+// consent) can judge them. The agent uses a non-null result to SKIP that hop.
+// Order matters: a real change (MUTATION) or a defect/design signal (DEBUG/PLAN)
+// outranks the cheap-kind markers, because misreading hard work as cheap is the
+// only error that hurts. Cheap markers (summarize/classify/search) come last.
 export function confidentKeywordKind(prompt: string): Kind | null {
   const p = prompt.toLowerCase().trim();
   if (!p) return null;
-  // A bare greeting/ack never needs the LLM classifier hop — it's chat by definition.
-  if (/^(hi|hiya|hello|hey|yo|sup|howdy|thanks?|thank you|ty|ok(ay)?|cool|nice|lol|good (morning|afternoon|evening))[\s!.?]*$/.test(p)) return "chat";
+  // A short all-social prompt is chat by definition — never needs a model hop.
+  const words = p.replace(/[^a-z'\s]/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length > 0 && words.length <= 3 && words.every((w) => ACK_WORDS.has(w))) return "chat";
   if (MUTATION.test(p)) return "code"; // a real change is requested, use a strong model
+  // Debugging and design route to a strong model regardless of question shape.
+  if (DEBUG.test(p)) return "code";
+  if (PLAN.test(p)) return "plan";
   // "summarize" is a confident pure-summarize signal only when the prompt isn't
   // ALSO asking for tool work over the workspace: "read the files and summarize"
   // needs a model that drives tools across many files, but the summarize bar is
@@ -111,44 +163,61 @@ export function confidentKeywordKind(prompt: string): Kind | null {
     const workspaceWork = /\b(files?|codebase|repo(sitor(y|ies))?|director(y|ies)|folders?|read|scan|look (at|through)|go through|examine|analy[sz]e)\b/.test(p);
     return workspaceWork ? null : "summarize";
   }
-  if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b/.test(p)) return "classify";
+  if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b|\byes or no\b|\btrue or false\b/.test(p)) return "classify";
   if (/^(find|search|locate|grep)\b|\bwhere is\b|\bwhich file\b/.test(p)) return "search";
   return null;
 }
 
-// Question-shaped prompt with no mutation verb: "what is X", "how does Y work",
-// or anything ending in "?". Used only by the fallback below — a confident
-// keyword match (incl. MUTATION → code) always wins first.
-const QUESTIONISH = /^(how|what|who|when|where|why|which|can|does|do|is|are)\b|\?\s*$/i;
+// An explanation/concept request ("explain X", "define Y", "how does Z work") is
+// light → chat. Checked in the fallback below so that when an LLM IS available
+// these still escalate to it (confidentKeywordKind returns null for them); this
+// only fires on the keyword-only path (subscription-only / offline).
+const CONCEPT = /^(explain|describe|define|eli5|tell me about|what'?s the difference|how does)\b/i;
 
-// Conservative keyword classifier used as a fallback when the LLM classifier is
-// unavailable. A question-shaped prompt with no mutation verb falls back to
-// "chat" (a bare question never needs the code bar — "What is capital of India"
-// must not route at 0.70); everything else ambiguous defaults to "code" (high
-// bar) so real work is never silently downgraded.
+// Question-shaped prompt with no confident match: "what is X", "is Y faster".
+// Bare "do" is NOT a question opener unless followed by a pronoun, so the
+// imperative "do the needful" routes to code while "does X…" / "do you…" stay
+// questions. Used only by the fallback below — a confident keyword match always
+// wins first.
+const QUESTIONISH = /\?\s*$|^(how|what|why|who|whom|whose|when|where|which|is|are|was|were|does|did|can|could|should|would|will|may|might|has|have|had)\b|^do\s+(i|we|you|they)\b/i;
+
+// Conservative keyword classifier used as the fallback when the LLM classifier
+// is unavailable. A genuine concept/question prompt falls back to "chat" (a bare
+// question never needs the code bar — "What is capital of India" must not route
+// at 0.70); everything else ambiguous defaults to "code" (high bar) so real work
+// is never silently downgraded.
 export function classify(prompt: string): Kind {
   const confident = confidentKeywordKind(prompt);
   if (confident) return confident;
-  return QUESTIONISH.test(prompt.trim()) ? "chat" : "code";
+  const p = prompt.trim();
+  if (CONCEPT.test(p)) return "chat"; // explanation/concept request → light tier
+  return QUESTIONISH.test(p) ? "chat" : "code";
 }
 
-// Resolve quality from the canonical model profile. Uses sweBenchVerified if
-// available (primary signal), falls back to intelligenceIndex normalised to 0..1,
-// then to 0.5 as a neutral placeholder when neither is present.
-function qualityOf(c: Candidate): number {
-  const pr = profileFor(c.canonicalId ?? c.spec.id);
-  if (!pr) return 0.5;
-  if (pr.quality.sweBenchVerified != null) return pr.quality.sweBenchVerified;
-  if (pr.quality.intelligenceIndex != null) return pr.quality.intelligenceIndex / 100;
-  return 0.5;
+// Resolve quality on a 0..1 scale for a (candidate, kind). Trust order:
+//   1. the REAL benchmark corpus, read PER KIND (benchmarks.ts) — researched
+//      leaderboard data, the primary signal;
+//   2. the legacy profile scalar (mostly seeded) — sweBenchVerified, then the
+//      intelligence index normalised;
+//   3. 0.5 neutral when nothing is known.
+// Quality, 0..1, from the SINGLE source of truth: the researched benchmark
+// corpus (benchmarks.ts), read per kind. The legacy profiles.ts quality scalars
+// are deliberately NOT consulted here (review #6): they are mostly seeded and on
+// a different scale (intelligenceIndex/100 vs the corpus's AA_INDEX_REF), so
+// mixing them in one argmin compared models on incompatible numbers. A model
+// absent from the corpus is UNKNOWN (0.5) and, for code/plan, floored out by the
+// known-quality requirement in clearsFloor. profiles.ts keeps cost/latency/
+// tokenizer; only quality moved to the corpus.
+function qualityOf(c: Candidate, kind?: Kind): number {
+  const q = kind ? qualityForKind(c.canonicalId ?? c.spec.id, kind) : null;
+  return q ?? 0.5;
 }
 
-// Returns true when the profile contains at least one real quality benchmark.
-// Used by the bar-clearing predicate: a CLI seat with no benchmark is given the
-// benefit of the doubt (assumed to clear) rather than penalised for a 0.5 guess.
+// True when the benchmark corpus has a real quality for this model. The capability
+// floor uses it: a CLI seat with no benchmark gets the benefit of the doubt
+// (kept); a metered model with no benchmark is floored out of code/plan.
 function hasKnownQuality(c: Candidate): boolean {
-  const pr = profileFor(c.canonicalId ?? c.spec.id);
-  return !!pr && (pr.quality.sweBenchVerified != null || pr.quality.intelligenceIndex != null);
+  return !!benchmarkRow(c.canonicalId ?? c.spec.id);
 }
 
 function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {
@@ -225,31 +294,50 @@ function scoreId(c: Candidate): string {
   return `${c.state.accountId}::${c.spec.id}`;
 }
 
-function toScoreCandidate(c: Candidate, kind?: string, pol?: Policy, bar?: number): ScoreCandidate {
+function toScoreCandidate(c: Candidate, kind?: string, pol?: Policy, effortCtx?: EffortCtx): ScoreCandidate {
   const cost = costPair(c);
   const canonical = c.canonicalId ?? c.spec.id;
+  // RAW per-kind benchmark quality (not prior-adjusted): the flywheel enters the
+  // objective ONCE, via failRate → P(wrong) below, so folding the prior delta in
+  // here too would double-count it. (The capability FLOOR uses the prior-adjusted
+  // quality separately, to exclude a sunk model.)
+  let quality = qualityOf(c, kind as Kind | undefined);
+  let outputFactor = outputFactorFor(canonical);
+  let ttftMs = profileFor(canonical)?.latency?.ttftMs ?? 0;
+  let effort: string | undefined;
+  // Auto-effort: pick the effort level minimizing expected cost for this model+
+  // task (low for easy/netted work, high for hard/unnetted). The chosen effort's
+  // adjusted quality/outputFactor/ttft then feed the model's own score, so the
+  // model competes AT its best effort.
+  if (effortCtx) {
+    const levels = effortLevels(c.spec);
+    if (levels.length) {
+      const pick = bestEffort(
+        { quality, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, tps: tpsOf(c), ttftMs, baseOutputFactor: outputFactor },
+        levels,
+        effortCtx,
+        kind ? (level) => effortPassRate(kind, canonical, level)?.rate ?? null : undefined,
+      );
+      quality = pick.quality; outputFactor = pick.outputFactor; ttftMs = pick.ttftMs; effort = pick.level;
+    }
+  }
   return {
     id: scoreId(c),
     modelId: c.spec.id,
     inUSDPerMtok: cost.inUSDPerMtok,
     outUSDPerMtok: cost.outUSDPerMtok,
-    // Quality WITHOUT the measured prior delta: the same outcome counts
-    // already (1) sink a failer below the bar (clearsAdj) and (2) surcharge
-    // its expected cost (failRate below) — folding the delta in here as well
-    // charged the same failures a third time through the quality bonus.
-    quality: qualityOf(c),
+    quality,
     tps: tpsOf(c),
+    ttftMs,
     account: c.state,
-    // Cost realism (scoring.ts): measured per-repo fail rate → expected-retry
-    // surcharge; provider cache-read pricing → warm discount (CLI seats manage
-    // their own caching inside the vendor binary, so they carry none here);
-    // per-model output verbosity; kind-weighted quality-above-bar value.
+    // measured per-(kind,model) fail rate → the objective's P(wrong) (flywheel);
+    // cache-read pricing → warm discount (CLI seats cache inside the vendor
+    // binary → none); per-model + per-effort output verbosity → cost + latency.
     failRate: kind ? failRateFor(kind, canonical)?.rate : undefined,
     cacheReadDiscount: c.backend.kind === "cli" ? undefined : cacheReadDiscount(c.spec.provider) ?? undefined,
-    outputFactor: outputFactorFor(canonical),
-    qualityWeight: kind ? KIND_QUALITY_WEIGHT[kind as Kind] : 0,
-    qualityBar: bar,
+    outputFactor,
     preferBias: preferBiasFor(c, pol),
+    effort,
   };
 }
 
@@ -316,15 +404,38 @@ export class RoutingSelector implements ModelSelector {
   // Throws when no model supports the required capabilities.
   // Returns a `fallback` field when the enumeration is empty (no keys configured).
   private prepare(task: Task): {
-    kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
-    pool: Candidate[]; clears: Candidate[]; eligible: Candidate[]; estInputTokens: number;
+    kind: Kind; floor: number; escalate: number; required: string[]; ctx: RoutingContext;
+    pool: Candidate[]; floored: Candidate[]; eligible: Candidate[]; estInputTokens: number;
+    effDifficulty: number; verifierTier: "tests" | "types" | "none";
     pol?: Policy;
+    difficulty?: Difficulty;
     fallback?: ModelSpec;
   } {
     const kind = task.kind ?? classify(task.prompt);
     const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
-    // Each prior miss lifts the bar so the router climbs to a stronger model.
-    const bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
+    // Capability floor, RAISED by each prior miss (hard exclusion of the failed
+    // tier — see ESCALATION_FLOOR_BY_KIND). A cheap kind has no base floor, but a
+    // miss can still raise it. Capped so it never empties the pool.
+    const floor = Math.min(FLOOR_MAX, CAPABILITY_FLOOR[kind] + escalate * escalationFloorStep(task.failureKind));
+    // Verifier tier (caller-supplied, else this repo's, memoized): sets how
+    // costly a miss is in the objective — a present net makes cheap-first safe;
+    // none makes caution emerge. detectedVerifierTier returns "tests"/"types"/
+    // "none" normally; it is undefined ONLY when detection THREW. On that
+    // exception we fall back to "none" (caution) — assuming a full net ("tests")
+    // there would invert the safety property exactly when we can't see the repo
+    // (review #5): a likely-wrong cheap pick would look safe with no net to catch it.
+    const verifierTier = task.verifierTier ?? detectedVerifierTier() ?? "none";
+    // Difficulty WITHIN the kind (DESIGN: kind says WHAT, not HOW HARD). Pure,
+    // non-LLM context signals (big working set, many/large touched files, a repo
+    // where code keeps failing). Feeds the objective's P(wrong) — it raises a
+    // hard task toward a stronger model where it matters most (no verifier net),
+    // WITHOUT any arbitrary bar.
+    let difficulty: Difficulty | undefined;
+    let effDifficulty = 0;
+    if (kind === "code" || kind === "plan") {
+      difficulty = estimateDifficulty(gatherDifficultySignals(task, kind));
+      effDifficulty = difficulty.d;
+    }
     const required = task.requires ?? [];
     const ctx = buildRoutingContext(ctx_now());
     const estInputTokens = task.estTokens || NOMINAL_INPUT_TOKENS;
@@ -333,7 +444,7 @@ export class RoutingSelector implements ModelSelector {
     if (all.length === 0) {
       // No API keys or seats configured: fall back to the default model if available.
       const m = pickDefaultModel(this.fallbackId);
-      return { kind, bar, escalate, required, ctx, pool: [], clears: [], eligible: [], estInputTokens, fallback: m ?? undefined };
+      return { kind, floor, escalate, required, ctx, pool: [], floored: [], eligible: [], estInputTokens, effDifficulty, verifierTier, difficulty, fallback: m ?? undefined };
     }
     // Callers without seat dispatch machinery opt out of cli-backend candidates.
     const dispatchable = task.inLoopOnly ? all.filter((c) => c.backend.kind === "in-loop") : all;
@@ -364,32 +475,31 @@ export class RoutingSelector implements ModelSelector {
     }
     const eligible = allowed;
     const pool = applyGlobalPreference(eligible);
-    // Seats with no quality profile clear the bar unconditionally (do not
-    // penalise them on a 0.5 guess). Seats with a known-weak quality (e.g.
-    // Haiku) are still held to the bar so they are not chosen for hard tasks
-    // just because they are free and fast.
-    // Measured per-repo priors (the flywheel): a model that keeps failing
-    // verification HERE has its effective quality pulled down — enough turns
-    // of red and it sinks below the bar for this repo's work. Conservative,
-    // asymmetric, and silent until ≥8 verified outcomes exist (priors.ts).
-    const adjQuality = (c: Candidate): number => qualityOf(c) + (priorFor(kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
-    const clearsAdj = (c: Candidate): boolean =>
-      c.backend?.kind === "cli" ? !hasKnownQuality(c) || adjQuality(c) >= bar : adjQuality(c) >= bar;
-    let clears = pool.filter(clearsAdj);
-    // If the raised bar (from escalation) leaves nothing, promote to the
-    // strongest available tier. Without this, the fallback below would drop
-    // to the cheapest candidate, which is the opposite of escalating.
-    // Strength is the PRIOR-ADJUSTED quality (the same measure the bar uses):
-    // a model whose measured per-repo failures sank it must not be promoted as
-    // "strongest" on its benchmark number — the failures are why we escalated.
-    // And only UNKNOWN-quality seats get the benefit of the doubt here; a seat
-    // with a known-weak profile (e.g. Haiku) is exactly what we are escalating
-    // away from, so it is held to the same strength test as everyone else.
-    if (escalate > 0 && clears.length === 0) {
+    // Capability FLOOR (the only quality threshold left): exclude models that are
+    // genuinely incapable of this kind, so a cheap-but-junk model can never win
+    // on price. NOT the old bar — it does not pick the tier, only removes the
+    // unqualified. A CLI seat with no benchmark gets the benefit of the doubt
+    // (kept). Prior-adjusted so a model the flywheel has sunk here floors out too.
+    const adjQuality = (c: Candidate): number => qualityOf(c, kind) + (priorFor(kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
+    const clearsFloor = (c: Candidate): boolean => {
+      // Flywheel hard stop: a model proven to keep failing HERE is excluded.
+      if ((failRateFor(kind, c.canonicalId ?? c.spec.id)?.rate ?? 0) >= MEASURED_FAIL_EXCLUDE) return false;
+      if (floor === 0) return true; // cheap kinds have no floor — quality is irrelevant
+      // A CLI seat with no benchmark gets the benefit of the doubt (a known-good
+      // vendor model). A METERED model with NO known quality (e.g. a discovered
+      // gateway/Foundry model absent from both corpora) must NOT clear a code/plan
+      // floor on the 0.5 default guess (review #3) — require real, known quality.
+      if (c.backend?.kind === "cli") return !hasKnownQuality(c) || adjQuality(c) >= floor;
+      return hasKnownQuality(c) && adjQuality(c) >= floor;
+    };
+    // If the floor would empty the pool (everything is sub-floor), keep the
+    // strongest available rather than failing — a weak model beats no model.
+    let floored = floor > 0 ? pool.filter(clearsFloor) : pool;
+    if (!floored.length) {
       const top = Math.max(...pool.map(adjQuality));
-      clears = pool.filter((c) => (c.backend?.kind === "cli" && !hasKnownQuality(c)) || adjQuality(c) >= top - 1e-9);
+      floored = pool.filter((c) => (c.backend?.kind === "cli" && !hasKnownQuality(c)) || adjQuality(c) >= top - 1e-9);
     }
-    return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens, pol };
+    return { kind, floor, escalate, required, ctx, pool, floored, eligible, estInputTokens, pol, difficulty, effDifficulty, verifierTier };
   }
 
   // Return the per-kind remembered preference if it is present in the given
@@ -411,24 +521,26 @@ export class RoutingSelector implements ModelSelector {
       }
       return { model: p.fallback, reason: "only model with a key", backend: { kind: "in-loop" } };
     }
-    // Use the bar-clearing set when one exists; otherwise fall back to the full pool.
-    const candidates = p.clears.length ? p.clears : p.pool;
-    // An explicit /prefer must be searched in the ELIGIBLE set (capability- and
-    // context-filtered, but BEFORE the global preference and the bar). Otherwise
-    // "prefer haiku for code" was silently ignored when haiku sits below the
-    // code bar, or when a global preference filtered it out of the pool — a
-    // per-kind preference is the more specific instruction, so it wins.
+    // Candidates that clear the capability floor (else the whole pool).
+    const candidates = p.floored.length ? p.floored : p.pool;
+    // An explicit /prefer is searched in the ELIGIBLE set (capability- and
+    // context-filtered, but BEFORE the global preference and the floor), so
+    // "prefer haiku for code" wins even when a global preference filtered it out.
     const preferred = this.preferredIn(p.kind, p.eligible);
     if (preferred) {
       this.lastPick = { accountId: preferred.state.accountId, modelId: preferred.spec.id };
       return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
     }
 
-    // Score all bar-clearing candidates and pick the winner.
-    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, p.bar)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) });
+    // Score by expected cost-to-correct (cost + latency + quality), argmin. Each
+    // candidate is scored AT its best effort (auto-effort routing).
+    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task), difficulty: p.effDifficulty, verifierTier: p.verifierTier };
+    const effortCtx: EffortCtx = { estInputTokens: p.estInputTokens, difficulty: p.effDifficulty, verifierTier: p.verifierTier, interactive: !!task.interactive };
+    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, effortCtx)), ...flags });
     const winner = candidates.find((c) => scoreId(c) === best.candidate.id)!;
     this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
+    const hardNote = p.difficulty && p.difficulty.d > 0 ? ` · hard: ${p.difficulty.reasons.join(", ")}` : "";
     // Transparency: when a subscription seat serving this same model sat out
     // the race on a cooldown, say so — the user sees a seat turn silently
     // become a metered-API turn otherwise and reads it as a routing bug.
@@ -436,7 +548,9 @@ export class RoutingSelector implements ModelSelector {
       winner.backend?.kind !== "cli"
         ? this.cooledOut.find((c) => c.backend?.kind === "cli" && (c.canonicalId ?? c.spec.id) === (winner.canonicalId ?? winner.spec.id))
         : undefined;
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend };
+    const effort = best.candidate.effort;
+    const effortNote = effort ? ` · effort ${effort}` : "";
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + hardNote + effortNote + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend, effort };
   }
 
   // Build the full ranked scorecard for the "/why" UI panel. Scores the entire
@@ -447,44 +561,40 @@ export class RoutingSelector implements ModelSelector {
     const p = this.prepare(task);
     const entries: ScorecardEntry[] = [];
     if (p.pool.length === 0) {
-      return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: p.fallback ? `only ${p.fallback.label} has a key` : "no model available" };
+      return { kind: p.kind, bar: p.floor, prompt: task.prompt, entries, note: p.fallback ? `only ${p.fallback.label} has a key` : "no model available" };
     }
-    const candidates = p.clears.length ? p.clears : p.pool;
-    // Explicit preference overrides the bar and the global filter, matching select().
+    const candidates = p.floored.length ? p.floored : p.pool;
     const preferred = this.preferredIn(p.kind, p.eligible);
 
-    // Score the entire pool (including below-bar) so the UI can display all
-    // candidates. The winner is still determined from the bar-clearing set only.
-    // The SAME flags (warm, interactive) as select() feed every score here, so
-    // the scorecard's numbers — and its winner — match the actual pick.
-    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) };
+    // Score the WHOLE pool (incl. floored-out) so the UI shows every candidate,
+    // with the SAME expected-cost flags select() uses, so numbers + winner match.
+    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task), difficulty: p.effDifficulty, verifierTier: p.verifierTier };
+    const effortCtx: EffortCtx = { estInputTokens: p.estInputTokens, difficulty: p.effDifficulty, verifierTier: p.verifierTier, interactive: !!task.interactive };
     const scored = new Map<string, ScoredCandidate>();
-    // scoreCandidate ignores input.candidates (it scores one candidate against
-    // the flags only), so the empty array here is inert — it just satisfies the
-    // ScoreInput shape without re-listing the pool per call.
-    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind, p.pol, p.bar), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
+    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind, p.pol, effortCtx), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
       ? scoreId(preferred)
-      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, p.bar)), ...flags }).candidate.id;
+      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, effortCtx)), ...flags }).candidate.id;
 
-    // Mirror prepare()'s prior-adjusted predicate so the scorecard verdict
-    // matches what the router actually did (seat with unknown quality clears;
-    // a model whose measured per-repo prior sinks it below the bar shows
-    // "below bar" here too, exactly as select() excluded it).
-    const adjQuality = (c: Candidate): number => qualityOf(c) + (priorFor(p.kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
-    const clearsAdj = (c: Candidate): boolean =>
-      c.backend?.kind === "cli" ? !hasKnownQuality(c) || adjQuality(c) >= p.bar : adjQuality(c) >= p.bar;
+    // Mirror prepare()'s capability floor so the verdict matches what select did.
+    const adjQuality = (c: Candidate): number => qualityOf(c, p.kind) + (priorFor(p.kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
+    const clearsFloor = (c: Candidate): boolean => {
+      if ((failRateFor(p.kind, c.canonicalId ?? c.spec.id)?.rate ?? 0) >= MEASURED_FAIL_EXCLUDE) return false;
+      if (p.floor === 0) return true;
+      if (c.backend?.kind === "cli") return !hasKnownQuality(c) || adjQuality(c) >= p.floor;
+      return hasKnownQuality(c) && adjQuality(c) >= p.floor;
+    };
     for (const c of p.pool) {
       const s = scored.get(scoreId(c))!;
-      const clears = clearsAdj(c);
+      const capable = p.floor === 0 || clearsFloor(c);
       const chosen = scoreId(c) === winnerId;
       const pl = priorLine(p.kind, c.canonicalId ?? c.spec.id);
       entries.push({
         label: c.spec.label,
         backend: c.backend.kind === "cli" ? "seat" : "api",
-        quality: qualityOf(c) + (priorFor(p.kind, c.canonicalId ?? c.spec.id)?.delta ?? 0),
-        priorNote: pl ?? undefined,
-        qualitySrc: profileFor(c.canonicalId ?? c.spec.id)?.quality.src ?? "seeded",
+        quality: adjQuality(c),
+        priorNote: pl ?? qualityNote(c.canonicalId ?? c.spec.id, p.kind) ?? undefined,
+        qualitySrc: benchmarkRow(c.canonicalId ?? c.spec.id) ? "researched" : (profileFor(c.canonicalId ?? c.spec.id)?.quality.src ?? "seeded"),
         estCostPerMtok: costPerMtok(c),
         balanceText: balanceText(c.state),
         headroomText: headroomText(c.state),
@@ -493,18 +603,19 @@ export class RoutingSelector implements ModelSelector {
         headroomPct: c.state.isSubscription && c.state.rateHeadroom !== undefined ? Math.round(c.state.rateHeadroom * 100) : undefined,
         score: s.score,
         chosen,
-        verdict: chosen ? (preferred ? "preferred" : "chosen") : !clears ? "below bar" : verdictFor(c, s),
+        verdict: chosen ? (preferred ? "preferred" : "chosen") : !capable ? "below capability floor" : verdictFor(c, s),
       });
     }
-    // Sort: chosen first, then bar-clearing candidates by score (ascending, so
-    // best candidates are listed first), then below-bar candidates.
-    entries.sort((a, b) => Number(b.chosen) - Number(a.chosen) || Number(b.verdict !== "below bar") - Number(a.verdict !== "below bar") || a.score - b.score);
-    // Parity with select()'s reason line: candidates cooldown excluded from
-    // the race must be visible here too, or /why and the pick note disagree.
+    // Sort: chosen first, then capable candidates by score (ascending), then the
+    // floored-out ones last.
+    entries.sort((a, b) => Number(b.chosen) - Number(a.chosen) || Number(b.verdict !== "below capability floor") - Number(a.verdict !== "below capability floor") || a.score - b.score);
     const cooledNote = this.cooledOut.length
       ? `cooling down, not scored: ${[...new Set(this.cooledOut.map((c) => `${c.spec.label} via ${c.state.accountId}`))].join(", ")}`
       : undefined;
-    return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: cooledNote };
+    const diffNote = p.difficulty && p.difficulty.d > 0
+      ? `harder than baseline (${p.difficulty.reasons.join(", ")})`
+      : undefined;
+    return { kind: p.kind, bar: p.floor, prompt: task.prompt, entries, note: [diffNote, cooledNote].filter(Boolean).join(" · ") || undefined };
   }
 }
 
@@ -575,6 +686,57 @@ function reasonFor(c: Candidate, kind: Kind, required: string[]): string {
 // function calls Date.now(); everything else receives `now` as an argument.
 function ctx_now(): number {
   return Date.now();
+}
+
+// ── Difficulty signal gathering (cheap, non-LLM) ─────────────────────────────
+// Whether the current repo has a runnable verify check (test/build/typecheck) —
+// the "net" that makes starting on a cheaper model safe (a miss is caught, not
+// shipped). Memoized per cwd: detection reads package.json / globs once, then the
+// router reuses it on every turn so it never adds I/O to the hot path.
+// This repo's verifier tier (tests/types/none) — the "net" that decides whether
+// cheap-first is safe (a miss is caught) or risky (a miss ships). Memoized per
+// cwd: detection reads package.json / globs once, then the router reuses it so it
+// never adds I/O to the hot path. Used as the fallback when the caller does not
+// supply task.verifierTier.
+let verifierTierMemo: { cwd: string; tier: "tests" | "types" | "none" | undefined } | undefined;
+function detectedVerifierTier(): "tests" | "types" | "none" | undefined {
+  try {
+    const cwd = process.cwd();
+    if (verifierTierMemo?.cwd !== cwd) verifierTierMemo = { cwd, tier: detectProofTier(cwd, []) };
+    return verifierTierMemo.tier;
+  } catch {
+    return undefined; // detection failed → neutral, never block routing
+  }
+}
+
+// Collect the cheap, non-LLM difficulty signals for a code/plan turn from the
+// Task plus local repo state. statSync on touched files is fast; capped at 20
+// and guarded so a missing/huge file list never throws or stalls routing.
+// (The test-net signal lives in prepare()'s verifier-tier caution, not here, so
+// the no-net penalty has exactly one owner.)
+function gatherDifficultySignals(task: Task, _kind: Kind): DifficultySignals {
+  // The files in play, supplied by the caller (App threads the @mentioned files +
+  // the session's recently-changed files — see App.tsx). The router stays PURE
+  // and deterministic: no repo I/O on the routing hot path, so a pick never
+  // depends on the working tree's index state.
+  const files = task.touchedFiles ?? [];
+  let touchedBytes: number | undefined;
+  if (files.length) {
+    let sum = 0, counted = 0;
+    for (const f of files.slice(0, 20)) {
+      try { sum += statSync(f).size; counted++; } catch { /* missing file → skip */ }
+    }
+    if (counted) touchedBytes = sum;
+  }
+  // NOTE: repoFailRate is deliberately NOT a difficulty signal — the per-(kind,
+  // model) measured fail rate already enters the objective via failRate→P(wrong),
+  // and folding the repo-aggregate in here too double-counted the same evidence
+  // (review #4). Difficulty = how hard the TASK is; failRate = how the MODEL does.
+  return {
+    estTokens: task.estTokens,
+    touchedFileCount: files.length || undefined,
+    touchedBytes,
+  };
 }
 
 // Installed when the user explicitly chooses an account with `/account use`.

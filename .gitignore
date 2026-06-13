@@ -13,3 +13,7 @@ dist/
 .worktrees/
 .claude/
 .gearbox/
+
+# python bytecode cruft in fixture repos
+__pycache__/
+*.pyc
