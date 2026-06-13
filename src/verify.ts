@@ -69,6 +69,33 @@ export function provenTier(passedIntents: (string | undefined)[]): ProofTier {
   return "none";
 }
 
+// The verifier strength this workspace COULD provide, detectable BEFORE any
+// model runs (pure filesystem check — what detectVerificationCommands finds).
+// The routing-side twin of provenTier: routing scales caution to verifier
+// strength (cheap-first is safe exactly where a gate will catch a miss; with no
+// checks at all a miss is invisible, so the router raises the bar instead).
+export function detectProofTier(cwd = process.cwd(), changedFiles: string[] = []): ProofTier {
+  const cmds = detectVerificationCommands(cwd, changedFiles);
+  if (hasTestCheck(cmds)) return "tests";
+  return cmds.length ? "types" : "none";
+}
+
+// Classify a set of verification failures into the single kind routing cares
+// about. Failures arrive as "<command>: <summary>" strings, so checkIntent
+// matches on the command prefix only (the summary tail may name files like
+// foo.test.ts that would spuriously match the test regex). A test failure
+// dominates (a reasoning miss → escalate hard); otherwise the mechanical kinds
+// (a compiler/linter pinpointed the error → an easier, cheaper fix) in
+// build > typecheck > lint order; "other" when nothing matches.
+export function worstFailureKind(failures: string[]): "typecheck" | "lint" | "build" | "test" | "other" {
+  const kinds = failures.map((f) => checkIntent(f.split(":", 1)[0] ?? f));
+  if (kinds.includes("test")) return "test";
+  if (kinds.includes("build")) return "build";
+  if (kinds.includes("typecheck")) return "typecheck";
+  if (kinds.includes("lint")) return "lint";
+  return "other";
+}
+
 /** One-line failure summary from check output: the first error-looking line, clipped. */
 export function summarize(output: string): string {
   const lines = output.split("\n").map((l) => l.trim()).filter(Boolean);

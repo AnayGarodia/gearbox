@@ -31,7 +31,7 @@ import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } f
 import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
 import { priorFor, priorLine, failRateFor, repoFailRate } from "./priors.ts";
 import { estimateDifficulty, DIFFICULTY_BAR_RANGE, type Difficulty, type DifficultySignals } from "./difficulty.ts";
-import { detectVerificationCommands, hasTestCheck } from "../verify.ts";
+import { detectProofTier } from "../verify.ts";
 import { statSync } from "node:fs";
 
 type Kind = NonNullable<Task["kind"]>;
@@ -86,6 +86,23 @@ const BAR: Record<Kind, number> = {
 // to the strongest available tier rather than dropping back to cheapest.
 const ESCALATION_STEP = 0.08;
 const BAR_MAX = 0.95;
+
+// Per-failure-kind escalation step (multiplied by the escalate count). A test
+// failure climbs hard (0.18 → escalate 1 lifts a 0.7 code task to 0.88, into the
+// top tier); mechanical failures barely move (the compiler already localized the
+// fix, so a cheap model can do it); unknown keeps the original blind step.
+const ESCALATION_STEP_BY_KIND: Record<NonNullable<Task["failureKind"]>, number> = {
+  test: 0.18,
+  other: 0.08,
+  build: 0.05,
+  typecheck: 0.03,
+  lint: 0.02,
+};
+const escalationStep = (fk: Task["failureKind"]): number => (fk ? ESCALATION_STEP_BY_KIND[fk] : ESCALATION_STEP);
+
+// Bar bump for code/plan work in a repo with NO verifier net: a cheap pick's
+// miss would be invisible, so demand more quality. Bench-calibrated.
+const NO_NET_CAUTION = 0.1;
 
 // Unambiguous mutation or repair verbs: their presence means real work is
 // requested and the prompt should route to a strong model regardless of other
@@ -369,17 +386,30 @@ export class RoutingSelector implements ModelSelector {
   } {
     const kind = task.kind ?? classify(task.prompt);
     const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
-    // Each prior miss lifts the bar so the router climbs to a stronger model.
-    let bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
+    // Each prior miss lifts the bar so the router climbs to a stronger model —
+    // but BY HOW MUCH depends on WHAT failed (routing-bench finding). A test
+    // failure is a reasoning miss → climb hard toward the top tier. A mechanical
+    // failure (typecheck/lint/build — the compiler pinpointed the exact error) is
+    // an EASY, well-specified fix → barely raise the bar so a cheap model handles
+    // it. An unknown/absent failureKind keeps the original kind-blind step.
+    let bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * escalationStep(task.failureKind)) : BAR[kind];
     // Difficulty WITHIN the kind (DESIGN: kind says WHAT, not HOW HARD). Pure,
     // non-LLM: for code/plan, raise the bar from context signals (big working
-    // set, many/large touched files, a repo where code keeps failing, no test
-    // net) so a hard task climbs to a stronger model and an easy one stays cheap.
+    // set, many/large touched files, a repo where code keeps failing) so a hard
+    // task climbs to a stronger model and an easy one stays cheap.
     // No signals → d=0 → bar unchanged, so existing behavior and tests hold.
     let difficulty: Difficulty | undefined;
     if (kind === "code" || kind === "plan") {
       difficulty = estimateDifficulty(gatherDifficultySignals(task, kind));
       if (difficulty.d > 0) bar = Math.min(BAR_MAX, bar + difficulty.d * DIFFICULTY_BAR_RANGE);
+      // Verifier-tier caution (routing-bench finding): with NO net, a cheap
+      // pick's miss is invisible, so demand more quality up front. A present
+      // verifier makes cheap-first safe (the gate catches a miss), so no bump.
+      // Use the caller-supplied tier, else detect this repo's (memoized); only a
+      // genuine "none" raises the bar. This is the SINGLE owner of the no-net
+      // signal — difficulty.ts deliberately no longer feeds hasTestNet.
+      const vtier = task.verifierTier ?? detectedVerifierTier();
+      if (vtier === "none") bar = Math.min(BAR_MAX, bar + NO_NET_CAUTION);
     }
     const required = task.requires ?? [];
     const ctx = buildRoutingContext(ctx_now());
@@ -642,12 +672,17 @@ function ctx_now(): number {
 // the "net" that makes starting on a cheaper model safe (a miss is caught, not
 // shipped). Memoized per cwd: detection reads package.json / globs once, then the
 // router reuses it on every turn so it never adds I/O to the hot path.
-let testNetMemo: { cwd: string; net: boolean } | undefined;
-function hasTestNetCached(): boolean | undefined {
+// This repo's verifier tier (tests/types/none) — the "net" that decides whether
+// cheap-first is safe (a miss is caught) or risky (a miss ships). Memoized per
+// cwd: detection reads package.json / globs once, then the router reuses it so it
+// never adds I/O to the hot path. Used as the fallback when the caller does not
+// supply task.verifierTier.
+let verifierTierMemo: { cwd: string; tier: "tests" | "types" | "none" | undefined } | undefined;
+function detectedVerifierTier(): "tests" | "types" | "none" | undefined {
   try {
     const cwd = process.cwd();
-    if (testNetMemo?.cwd !== cwd) testNetMemo = { cwd, net: hasTestCheck(detectVerificationCommands(cwd, [])) };
-    return testNetMemo.net;
+    if (verifierTierMemo?.cwd !== cwd) verifierTierMemo = { cwd, tier: detectProofTier(cwd, []) };
+    return verifierTierMemo.tier;
   } catch {
     return undefined; // detection failed → neutral, never block routing
   }
@@ -656,6 +691,8 @@ function hasTestNetCached(): boolean | undefined {
 // Collect the cheap, non-LLM difficulty signals for a code/plan turn from the
 // Task plus local repo state. statSync on touched files is fast; capped at 20
 // and guarded so a missing/huge file list never throws or stalls routing.
+// (The test-net signal lives in prepare()'s verifier-tier caution, not here, so
+// the no-net penalty has exactly one owner.)
 function gatherDifficultySignals(task: Task, kind: Kind): DifficultySignals {
   const files = task.touchedFiles ?? [];
   let touchedBytes: number | undefined;
@@ -671,7 +708,6 @@ function gatherDifficultySignals(task: Task, kind: Kind): DifficultySignals {
     touchedFileCount: files.length || undefined,
     touchedBytes,
     repoFailRate: repoFailRate(kind)?.rate,
-    hasTestNet: hasTestNetCached(),
   };
 }
 
