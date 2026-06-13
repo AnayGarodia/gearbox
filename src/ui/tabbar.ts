@@ -13,9 +13,16 @@ export interface TabRow {
   needsInput: boolean;
   /** finished a turn while hidden and not yet visited — the cell flips green ✓ */
   done?: boolean;
+  /** the tab's worktree is being bootstrapped (⟳) or its setup failed (✗) */
+  setup?: "running" | "failed";
+  /** this tab can be landed into the base tab (non-base, has its own worktree) —
+   *  surfaces the clickable ⤴ merge cell when the tab is active */
+  mergeable?: boolean;
 }
 
-export type TabAction = { type: "switch"; n: number } | { type: "new" } | { type: "close" };
+export type TabAction = { type: "switch"; n: number } | { type: "new" } | { type: "close" } | { type: "merge" };
+
+const MERGE_CELL = " ⤴ ";
 
 export interface TabSegment {
   text: string; // rendered cell text (marker included) — the hit-test width truth
@@ -36,10 +43,18 @@ export interface TabSegment {
 const TITLE_MAX = 14;
 const GAP = 1; // columns between cells
 
-/** Status marker rendered after the title: needs-input beats done beats busy.
- *  The busy ● shows only on HIDDEN tabs (a background session you can't see
- *  working) — on the active tab it's noise, the working strip already says it. */
-export const tabMark = (r: TabRow): string => (r.needsInput ? "⚠" : r.done ? "✓" : r.busy && !r.active ? "●" : "");
+/** Status marker rendered after the title. Precedence: a prompt waiting (⚠)
+ *  beats a failed setup (✗) beats a hidden finish (✓) beats hidden-busy (●)
+ *  beats a setup still running (⟳). The busy ● shows only on HIDDEN tabs (a
+ *  background session you can't see working) — on the active tab it's noise, the
+ *  working strip already says it. */
+export const tabMark = (r: TabRow): string =>
+  r.needsInput ? "⚠"
+  : r.setup === "failed" ? "✗"
+  : r.done ? "✓"
+  : r.busy && !r.active ? "●"
+  : r.setup === "running" ? "⟳"
+  : "";
 
 /**
  * Lay the cells out from column `left` (0-based), never past `maxX`. Cells that
@@ -59,10 +74,15 @@ export function tabBarSegments(rows: TabRow[], left: number, maxX: number): TabS
     return { text: `${num}${title}${mark}${close}`, action: { type: "switch", n: i + 1 }, row: r, num, title, mark, close };
   });
   const plus = { text: " + ", action: { type: "new" } as TabAction, row: null };
+  // The active tab's ⤴ merge cell (only when it can be landed). Reserved
+  // alongside + so admitting tab cells never crowds it out.
+  const mergeShown = rows.some((r) => r.active && r.mergeable);
+  const mergeReserve = mergeShown ? displayWidth(MERGE_CELL) + GAP : 0;
 
-  // Reserve the + cell, then admit tab cells in order while they fit; if the
-  // active tab would be dropped, evict inactive cells before it until it fits.
-  const budget = maxX - left - (displayWidth(plus.text) + GAP);
+  // Reserve the + (and ⤴) cells, then admit tab cells in order while they fit;
+  // if the active tab would be dropped, evict inactive cells before it until it
+  // fits.
+  const budget = maxX - left - (displayWidth(plus.text) + GAP) - mergeReserve;
   const kept: typeof cells = [];
   let used = 0;
   for (const c of cells) {
@@ -83,6 +103,7 @@ export function tabBarSegments(rows: TabRow[], left: number, maxX: number): TabS
       }
     }
   }
+  if (mergeShown) kept.push({ text: MERGE_CELL, action: { type: "merge" } as TabAction, row: null });
   kept.push(plus);
 
   const segs: TabSegment[] = [];

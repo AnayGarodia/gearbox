@@ -56,7 +56,7 @@ import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsag
 import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend, readAuxSpendToday } from "../accounts/ledger.ts";
 import * as gitOps from "../git/ops.ts";
 import { invalidateGitBranch } from "./git.ts";
-import { gitConfirmOpen, gitConfirmEdit, gitConfirmSetSubmitting, gitConfirmError, gitConfirmReady, gitConfirmMessage, diffMove, diffScroll, diffSetText, type GitConfirmPanel } from "./panel.ts";
+import { gitConfirmOpen, gitConfirmEdit, gitConfirmSetSubmitting, gitConfirmError, gitConfirmReady, gitConfirmMessage, diffMove, diffScroll, diffSetText, mergeConfirmScroll, type GitConfirmPanel } from "./panel.ts";
 import { checkCaps, type BudgetCaps } from "../model/budget-guard.ts";
 import { recordChange, planUndo, type FileChange } from "../undo.ts";
 import { probeUsage } from "../accounts/usage-probe.ts";
@@ -419,6 +419,9 @@ export interface ForkPayload {
 export interface TabControl {
   create: (name?: string, opts?: { task?: string; fork?: ForkPayload }) => void;
   close: () => void;
+  /** Close the tab whose worktree is `dir` (used to archive a merged tab without
+   *  it having to be the active one). No-op for the last/busy/unknown tab. */
+  closeDir: (dir: string) => void;
   switchTo: (n: number) => void; // 1-based
   cycle: (delta: number) => void;
   list: () => { title: string; dir: string; active: boolean; status: string }[];
@@ -453,9 +456,13 @@ export interface AppProps {
    *  "wizard" → the wizard persona). Overrides the ghost pref for this
    *  instance; /ghost still re-dresses it live. */
   ghostLook?: GhostLook;
+  /** A one-shot message from the conductor about this tab's worktree setup
+   *  (`.gearbox/setup` ready or failed). Surfaced as a notice when it changes —
+   *  the only channel the conductor needs back into the active session. */
+  setupNote?: string;
 }
 
-export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows, initialPrompt, ghostLook }: AppProps) {
+export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows, initialPrompt, ghostLook, setupNote }: AppProps) {
   const { exit } = useApp();
   // The instance's workspace, FIXED at mount: per-turn root capture, the
   // session-save slug, and permission routing key off this — never off the
@@ -1240,6 +1247,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             if (act) {
               if (act.type === "new") tabsCtlRef.current.create();
               else if (act.type === "close") tabsCtlRef.current.close();
+              else if (act.type === "merge") handleCommandRef.current?.("/tab merge");
               else tabsCtlRef.current.switchTo(act.n);
               continue;
             }
@@ -1866,6 +1874,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const turnNoRef = useRef(0); // numbered sections: real prompts only (command echoes stay small)
   const echo = (text: string, numbered = false) => push({ kind: "user", id: idRef.current++, text, turnNo: numbered ? ++turnNoRef.current : undefined });
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
+
+  // Conductor → active session channel: a one-shot setup result (`.gearbox/setup`
+  // ready/failed for THIS tab's worktree) lands as a notice. Deduped by ref so a
+  // re-render with the same note doesn't repeat it.
+  const lastSetupNoteRef = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (setupNote && setupNote !== lastSetupNoteRef.current) {
+      lastSetupNoteRef.current = setupNote;
+      notice(setupNote);
+    }
+    // notice is a stable closure over setItems; only the note drives this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [setupNote]);
 
   // Surface an auto-routing hop between a metered API account and a subscription
   // seat (or between accounts). The seat preference itself is by design — a seat
@@ -3545,6 +3566,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         else if (key.downArrow) setPanel(loadSel(diffMove(p, 1)));
         else if (key.pageUp) setPanel(diffScroll(p, -Math.max(1, diffH - 1), diffH));
         else if (key.pageDown) setPanel(diffScroll(p, Math.max(1, diffH - 1), diffH));
+        return;
+      }
+      if (p.kind === "merge-confirm") {
+        if (input === "q") { setPanel(null); return; }
+        const bodyH = panelBodyHeight(viewportHeightRef.current);
+        if (key.return) { setPanel(null); handleCommand("/tab merge confirm"); return; } // land + archive
+        else if (key.pageUp) setPanel(mergeConfirmScroll(p, -Math.max(1, bodyH - 1), bodyH));
+        else if (key.pageDown) setPanel(mergeConfirmScroll(p, Math.max(1, bodyH - 1), bodyH));
+        else if (key.upArrow) setPanel(mergeConfirmScroll(p, -1, bodyH));
+        else if (key.downArrow) setPanel(mergeConfirmScroll(p, 1, bodyH));
         return;
       }
       if (p.kind === "accounts") {

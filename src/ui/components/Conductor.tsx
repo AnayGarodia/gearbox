@@ -20,6 +20,7 @@ import { lookForTabName } from "./Mascot.tsx";
 import { nextTabName, TAB_NAMES, type TabRow } from "../tabbar.ts";
 import type { ModelSelector } from "../../model/selector.ts";
 import { ensureExcluded, repoRoot, worktreeAdd } from "../../git/ops.ts";
+import { hasSetup, runSetup } from "../../setup.ts";
 
 export interface ConductorProps {
   selector: ModelSelector; // tab 1's selector (from the CLI flags)
@@ -42,18 +43,33 @@ interface TabState {
   status: SessionStatus;
   /** finished a turn while hidden, not yet visited — the cell shows ✓ green */
   unseen?: boolean;
+  /** this tab's `.gearbox/setup` is bootstrapping its worktree (⟳) or failed (✗) */
+  setup?: "running" | "failed";
+  /** one-shot setup result to surface inside this tab's session (see App.setupNote) */
+  setupNote?: string;
 }
 
 /** Pure: the masthead tab-bar rows for a tab set (always shown, even with one
  *  tab — the + cell is how parallel sessions are discovered). */
-export function tabRowsOf(tabs: { dir: string; name?: string; status: SessionStatus; unseen?: boolean }[], activeIdx: number): TabRow[] {
+export function tabRowsOf(tabs: { dir: string; name?: string; status: SessionStatus; unseen?: boolean; setup?: "running" | "failed" }[], activeIdx: number): TabRow[] {
+  const baseDir = tabs[0]?.dir;
   return tabs.map((t, i) => ({
     title: t.name || t.status.title || basename(t.dir), // a NAMED tab keeps its name; auto-title only fills unnamed ones
     active: i === activeIdx,
     busy: t.status.busy,
     needsInput: t.status.needsInput,
     done: !!t.unseen && i !== activeIdx,
+    setup: t.setup,
+    // A non-base tab with its OWN worktree can be landed into the base (tab 1).
+    // A same-dir tab (no worktree → shares tab 1's files) has nothing to merge.
+    mergeable: i > 0 && t.dir !== baseDir,
   }));
+}
+
+/** Last few lines of setup output, clipped — enough to see the failure. */
+function setupTail(output: string): string {
+  const lines = output.split("\n").map((l) => l.trimEnd()).filter(Boolean);
+  return lines.slice(-6).join("\n").slice(0, 600);
 }
 
 /** Pure: a filesystem/branch-safe tab slug. */
@@ -169,10 +185,38 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
       saveSession(snap, dir);
       resumeId = snap.id;
     }
-    const tab: TabState = { id, name: slug, dir, selector: makeSelector(), resumeId, initialPrompt: opts?.task, status: idleStatus(dir) };
+    // Bootstrap the worktree in the BACKGROUND when the tab got its own tree and
+    // the repo defines `.gearbox/setup` (install deps, codegen). Never blocks the
+    // tab: the cell shows ⟳ until it settles, then clears (or ✗ on failure with a
+    // note surfaced inside the session).
+    const isolated = !!root && dir.startsWith(join(root, ".gearbox", "tabs"));
+    const willSetup = isolated && !!root && hasSetup(root);
+    const tab: TabState = { id, name: slug, dir, selector: makeSelector(), resumeId, initialPrompt: opts?.task, status: idleStatus(dir), setup: willSetup ? "running" : undefined };
     try { process.chdir(dir); } catch { /* keep going; the App pins its own root */ }
     setTabState((s) => ({ tabs: [...s.tabs, tab], active: s.tabs.length })); // the new tab lands at the end
+    if (willSetup) {
+      void runSetup(dir)
+        .then((res) => finishSetup(id, res.ok, res.ok ? "" : setupTail(res.output)))
+        .catch((e: any) => finishSetup(id, false, String(e?.message ?? e)));
+    }
   }, [makeSelector]);
+
+  // Settle a tab's background setup: clear the ⟳ (or mark ✗) and hand the active
+  // session a one-shot note. Looked up by id — the tab may have moved/closed.
+  const finishSetup = useCallback((id: number, ok: boolean, errTail: string) => {
+    setTabState((s) => ({
+      ...s,
+      tabs: s.tabs.map((t) =>
+        t.id !== id ? t : {
+          ...t,
+          setup: ok ? undefined : "failed",
+          setupNote: ok
+            ? "✓ worktree ready — .gearbox/setup finished"
+            : `⚠ .gearbox/setup failed — this tab's worktree may be missing dependencies:\n${errTail}`,
+        },
+      ),
+    }));
+  }, []);
 
   const close = useCallback(() => {
     const list = tabsRef.current;
@@ -193,11 +237,30 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     switchTo(((activeIdxRef.current + delta + len) % len) + 1);
   }, [switchTo]);
 
+  // Close the tab whose worktree is `dir`, keeping whatever tab is active still
+  // active (used to archive a merged tab — the worktree was just removed, so the
+  // tab must go too). No-op for the last tab, a busy tab, or an unknown dir.
+  const closeDir = useCallback((dir: string) => {
+    const list = tabsRef.current;
+    if (list.length < 2) return;
+    const idx = list.findIndex((t) => t.dir === dir);
+    if (idx < 0 || list[idx]!.status.busy) return;
+    const wasActive = idx === activeIdxRef.current;
+    const curDir = list[activeIdxRef.current]?.dir;
+    const next = list.filter((_, i) => i !== idx);
+    // Archiving the active tab (the merge case) falls back to the base (tab 0);
+    // otherwise the currently-active tab stays active at its new index.
+    const nextActive = wasActive ? 0 : Math.max(0, next.findIndex((t) => t.dir === curDir));
+    try { process.chdir(next[nextActive]!.dir); } catch { /* best-effort */ }
+    setTabState({ tabs: next, active: nextActive });
+  }, []);
+
   // ONE stable control object: it reads refs, so handleCommand's useCallback
   // can hold it without staleness and without re-creating per render.
   const control = useMemo<TabControl>(() => ({
     create,
     close,
+    closeDir,
     switchTo,
     cycle,
     list: () =>
@@ -207,7 +270,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
         active: i === activeIdxRef.current,
         status: t.status.needsInput ? "needs input" : t.status.busy ? "working" : "idle",
       })),
-  }), [create, close, switchTo, cycle]);
+  }), [create, close, closeDir, switchTo, cycle]);
 
   const onStatusFor = useCallback((id: number) => (st: SessionStatus) => {
     setTabState((s) => ({
@@ -245,6 +308,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
             tabRows={rows}
             initialPrompt={t.initialPrompt}
             ghostLook={i === 0 ? undefined : lookForTabName(t.name) ?? undefined}
+            setupNote={t.setupNote}
           />
         </Box>
       ))}

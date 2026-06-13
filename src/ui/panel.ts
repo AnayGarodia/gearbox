@@ -91,7 +91,11 @@ export type PanelState =
         | { phase: "capacity-type"; selectedModel: string; index: number }
         | { phase: "deploy-name"; selectedModel: string; capacityType: string; fieldEdit: Edit; fieldError: string | null }
         | { phase: "confirm-delete"; deploymentId: string };
-    };
+    }
+  // tab merge review: scroll the tab's diff, ⏎ lands it into the base tab and
+  // archives the worktree, esc cancels. The confirm re-resolves the active tab,
+  // so the panel only needs the diff text to show.
+  | { kind: "merge-confirm"; title: string; lines: string[]; scroll: number };
 
 /** The wizard panel narrowed from the union (for the pure reducers below). */
 export type WizardPanel = Extract<PanelState, { kind: "wizard" }>;
@@ -267,6 +271,21 @@ export function diffSetText(p: DiffPanel, text: string): DiffPanel {
 export function diffScroll(p: DiffPanel, delta: number, viewH: number): DiffPanel {
   const lines = p.diff ? p.diff.split("\n").length : 0;
   const max = Math.max(0, lines - Math.max(1, viewH));
+  return { ...p, scroll: clamp(p.scroll + delta, 0, max) };
+}
+
+// ── tab merge confirm ─────────────────────────────────────────────────────────
+export type MergeConfirmPanel = Extract<PanelState, { kind: "merge-confirm" }>;
+
+/** Open the merge review for a tab's diff. `branch` names what's being landed. */
+export function mergeConfirmOpen(diff: string, branch: string): MergeConfirmPanel {
+  const lines = diff.trim() ? diff.replace(/\n$/, "").split("\n") : ["(no changes to merge)"];
+  return { kind: "merge-confirm", title: `merge ${branch} into the base tab`, lines, scroll: 0 };
+}
+
+/** Scroll the merge diff, clamped to its line count minus the view. */
+export function mergeConfirmScroll(p: MergeConfirmPanel, delta: number, viewH: number): MergeConfirmPanel {
+  const max = Math.max(0, p.lines.length - Math.max(1, viewH));
   return { ...p, scroll: clamp(p.scroll + delta, 0, max) };
 }
 

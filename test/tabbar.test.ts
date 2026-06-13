@@ -39,6 +39,30 @@ test("hit-test maps columns to actions; gaps miss", () => {
   expect(tabBarHit(segs, 0)).toBeNull(); // the wordmark
 });
 
+test("setup glyphs: running shows ⟳, failed shows ✗ (and failed outranks done)", () => {
+  expect(tabMark(row("x", { setup: "running" }))).toBe("⟳");
+  expect(tabMark(row("x", { setup: "failed" }))).toBe("✗");
+  expect(tabMark(row("x", { setup: "failed", done: true }))).toBe("✗"); // failed beats ✓
+  expect(tabMark(row("x", { setup: "running", busy: true, active: true }))).toBe("⟳"); // active hides ●
+  expect(tabMark(row("x", { setup: "failed", needsInput: true }))).toBe("⚠"); // a prompt still wins
+});
+
+test("a mergeable active tab gets a clickable ⤴ merge cell before +", () => {
+  const segs = tabBarSegments([row("main"), row("fix", { active: true, mergeable: true })], 10, 80);
+  const merge = segs.find((s) => s.action.type === "merge");
+  expect(merge).toBeTruthy();
+  expect(merge!.text).toBe(" ⤴ ");
+  // it sits just before the + cell
+  const plusIdx = segs.findIndex((s) => s.action.type === "new");
+  expect(segs.findIndex((s) => s.action.type === "merge")).toBe(plusIdx - 1);
+  expect(tabBarHit(segs, merge!.x0 + 1)).toEqual({ type: "merge" });
+});
+
+test("no merge cell when the active tab is not mergeable", () => {
+  const segs = tabBarSegments([row("main", { active: true }), row("fix", { mergeable: true })], 10, 80);
+  expect(segs.some((s) => s.action.type === "merge")).toBe(false); // mergeable but not active
+});
+
 // ── wardrobe names ────────────────────────────────────────────────────────────
 import { nextTabName, TAB_NAMES } from "../src/ui/tabbar.ts";
 
