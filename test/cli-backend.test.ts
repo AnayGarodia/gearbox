@@ -85,6 +85,48 @@ test("buildCliArgs uses each binary's stream-json flags", () => {
   expect(buildCliArgs("codex", "x", { autoApprove: true })).toContain("--dangerously-bypass-approvals-and-sandbox");
   // session resume threads through
   expect(buildCliArgs("claude", "x", { sessionId: "s9" })).toContain("s9");
+  // out-of-workspace allowances (paste temp dirs, linked-worktree git dir)
+  // extend claude's sandbox via --add-dir; codex ignores them (reads are open
+  // in its workspace-write sandbox)
+  const withDirs = buildCliArgs("claude", "x", { addDirs: ["/tmp/gearbox-paste-a", "/tmp/gearbox-paste-b"] });
+  expect(withDirs.filter((a) => a === "--add-dir").length).toBe(2);
+  expect(withDirs).toContain("/tmp/gearbox-paste-a");
+  expect(buildCliArgs("codex", "x", { addDirs: ["/tmp/gearbox-paste-a"] })).not.toContain("--add-dir");
+  // headless claude can't prompt, so safe git commands are pre-approved...
+  const allowed = buildCliArgs("claude", "x", {}).join(" ");
+  expect(allowed).toContain("--allowedTools");
+  expect(allowed).toContain("Bash(git worktree:*)");
+  expect(allowed).toContain("Bash(git status:*)");
+  // ...but not in plan/read-only mode or under yolo (bypassPermissions covers it)
+  expect(buildCliArgs("claude", "x", { readOnly: true })).not.toContain("--allowedTools");
+  expect(buildCliArgs("claude", "x", { autoApprove: true })).not.toContain("--allowedTools");
+  expect(buildCliArgs("codex", "x", {})).not.toContain("--allowedTools");
+  // a known repoRoot also emits exact `git -C <root> …` rules, since models
+  // prefix `-C <repo>` for explicitness and that defeats the plain prefix match
+  const withRoot = buildCliArgs("claude", "x", { repoRoot: "/Users/me/proj" }).join(" ");
+  expect(withRoot).toContain("Bash(git -C /Users/me/proj worktree:*)");
+  expect(withRoot).toContain("Bash(git -C /Users/me/proj status:*)");
+  // a root with spaces/commas can't be expressed in the rule grammar — skip it
+  // cleanly rather than emit a malformed rule (prompt nudge covers that case)
+  const spaced = buildCliArgs("claude", "x", { repoRoot: "/Users/me/my proj" }).join(" ");
+  expect(spaced).not.toContain("-C /Users/me/my proj");
+});
+
+test("buildCliArgs bridge mode wires the interactive permission control protocol", () => {
+  const b = buildCliArgs("claude", "MY PROMPT", { bridge: true });
+  // the prompt is delivered on stdin as stream-json, NOT as the positional arg
+  expect(b).not.toContain("MY PROMPT");
+  expect(b).toContain("--input-format");
+  expect(b).toContain("stream-json");
+  expect(b).toContain("--permission-prompt-tool");
+  expect(b).toContain("stdio");
+  // still acceptEdits + pre-grants so safe ops skip the prompt
+  expect(b).toContain("acceptEdits");
+  expect(b.join(" ")).toContain("Bash(git worktree:*)");
+  // non-bridge keeps the positional prompt and no stdin protocol
+  const nb = buildCliArgs("claude", "MY PROMPT", {});
+  expect(nb).toContain("MY PROMPT");
+  expect(nb).not.toContain("--permission-prompt-tool");
   // Full claude ids pass through UNREDUCED — the family alias ("haiku") would
   // let the CLI substitute its own default version, breaking the routed promise.
   expect(buildCliArgs("claude", "x", { modelId: "claude-haiku-4-5" })).toContain("claude-haiku-4-5");

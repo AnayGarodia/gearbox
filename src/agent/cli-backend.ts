@@ -13,9 +13,36 @@
 import type { ModelMessage } from "ai";
 import type { OnEvent, Usage } from "./events.ts";
 import { spawnProc } from "../proc.ts";
-import { readFileSync, statSync } from "node:fs";
+import { readFileSync, statSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve as resolvePath } from "node:path";
 import type { Proc } from "../proc.ts";
+import { defaultReadRoots } from "../tools.ts";
+import { requestPermission, type PermKind } from "../permission.ts";
+import { tmpdir } from "node:os";
+
+/**
+ * Map a Claude Code tool name + input to a gearbox permission request. Headless
+ * `claude -p` can't show its own approval UI, so when the interactive bridge is
+ * active (see runCliTask) each `can_use_tool` control request is translated to
+ * one of gearbox's three kinds and routed through requestPermission — the SAME
+ * in-TUI prompt the in-loop tools use, so "always"/yolo grants are shared.
+ */
+function cliToolPermission(name: string, input: any, description?: string): { kind: PermKind; title: string; detail: string } {
+  const n = (name || "").toLowerCase();
+  const path = input?.file_path ?? input?.path ?? input?.notebook_path;
+  if (n === "bash") return { kind: "shell", title: "Run a shell command", detail: String(input?.command ?? description ?? name) };
+  if (n === "write") return { kind: "write", title: "Create or overwrite a file", detail: String(path ?? description ?? name) };
+  if (n.includes("edit") || n === "update" || n === "notebookedit") return { kind: "edit", title: "Edit a file", detail: String(path ?? description ?? name) };
+  // Anything else that still asked (rare under acceptEdits + the allowlist):
+  // gate behind the shell kind so it can't run silently.
+  return { kind: "shell", title: `Use ${name}`, detail: String(description ?? path ?? name) };
+}
+
+/** Pre-approved out-of-repo scratch space for headless CLI seats (worktrees,
+ *  temp files). Exported so prompt builders can name it to the agent. */
+export function cliScratchDir(): string {
+  return join(tmpdir(), "gearbox-scratch");
+}
 
 export interface CliRate {
   utilization?: number; // 0..1, ONLY when the CLI reports a number (it often doesn't)
@@ -302,7 +329,7 @@ export function handoffDigest(messages: ModelMessage[], maxChars = 12_000): stri
   );
 }
 
-export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; readOnly?: boolean; modelId?: string; effort?: string; writableRoots?: string[] } = {}): string[] {
+export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; readOnly?: boolean; modelId?: string; effort?: string; writableRoots?: string[]; addDirs?: string[]; repoRoot?: string; bridge?: boolean } = {}): string[] {
   const model = cliModelArg(binary, opts.modelId);
   if (binary.includes("codex")) {
     // Auth still comes from CODEX_HOME, but user config can contain hooks/MCP
@@ -339,9 +366,38 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
       : ["exec", ...flags, prompt];
   }
   // claude
-  const args = ["-p", prompt, "--output-format", "stream-json", "--verbose"];
+  const args = ["-p"];
+  // Bridge mode delivers the prompt as a stream-json `user` message on stdin so
+  // the control protocol can carry permission requests back to gearbox; the
+  // non-bridge path passes the prompt as the positional arg as before.
+  if (!opts.bridge) args.push(prompt);
+  args.push("--output-format", "stream-json", "--verbose");
+  if (opts.bridge) args.push("--input-format", "stream-json", "--permission-prompt-tool", "stdio");
   if (model) args.push("--model", model);
   args.push("--permission-mode", opts.readOnly ? "plan" : opts.autoApprove ? "bypassPermissions" : "acceptEdits");
+  // Headless `claude -p` can't show its own approval UI. Two complementary
+  // mechanisms keep a turn working without /yolo:
+  //  - The interactive BRIDGE (opts.bridge, see runCliTask): any tool the CLI
+  //    would prompt for fires a `can_use_tool` control request that gearbox
+  //    answers from its OWN permission prompt. This is the general fix.
+  //  - Pre-grants below skip the prompt entirely for things that are always
+  //    safe, so the bridge only bothers the user with genuinely novel actions:
+  //    --add-dir (pasted-screenshot temp dirs, a linked worktree's real git
+  //    dir, the scratch dir) and --allowedTools (read-only git + worktree mgmt).
+  for (const d of opts.addDirs ?? []) args.push("--add-dir", d);
+  if (!opts.readOnly && !opts.autoApprove) {
+    // The allow-rule grammar matches a command PREFIX: `Bash(git worktree:*)`
+    // only fires when the command literally starts with `git worktree`. Models
+    // often write `git -C <repo> worktree …` for explicitness, and the inserted
+    // `-C <path>` defeats the prefix match (this exact gap declined a worktree
+    // create 3× in testing). We can't enumerate arbitrary `-C` paths, but we DO
+    // know the repo root, so we also emit an exact `git -C <root> …` rule for it.
+    // (The prompt also tells the agent to drop -C — this is the safety net.)
+    const cmds = ["status", "log", "diff", "show", "branch", "worktree"];
+    const rules = cmds.map((c) => `Bash(git ${c}:*)`);
+    if (opts.repoRoot && !/[\s,()]/.test(opts.repoRoot)) for (const c of cmds) rules.push(`Bash(git -C ${opts.repoRoot} ${c}:*)`);
+    args.push("--allowedTools", rules.join(","));
+  }
   if (opts.sessionId) args.push("--resume", opts.sessionId);
   return args;
 }
@@ -415,8 +471,22 @@ export async function runCliTask(opts: {
   deferTerminal?: boolean; // suppress terminal error/done + return `failure` instead (caller drives failover)
 }): Promise<CliResult> {
   const { binary, prompt, messages, onEvent, signal } = opts;
+  // Codex's workspace-write sandbox blocks writes to a worktree's real git dir;
+  // give it those roots explicitly.
   const wr = binary.includes("codex") ? worktreeGitRoots(opts.cwd ?? process.cwd()) : [];
-  const args = buildCliArgs(binary, prompt, { writableRoots: wr, sessionId: opts.sessionId, autoApprove: opts.autoApprove, readOnly: opts.readOnly, modelId: opts.modelId, effort: opts.effort });
+  // Same out-of-workspace allowances the in-loop tools get (paste temp dirs,
+  // linked-worktree git dir), plus the gearbox scratch dir so the headless
+  // agent has somewhere pre-approved to put worktrees/scratch files outside
+  // the repo — best-effort; an fs hiccup must not kill the turn.
+  let addDirs: string[] = [];
+  try { addDirs = defaultReadRoots(opts.cwd ?? process.cwd()); } catch { /* keep empty */ }
+  try { mkdirSync(cliScratchDir(), { recursive: true }); addDirs.push(cliScratchDir()); } catch { /* keep going */ }
+  // Interactive permission bridge: only `claude` speaks the control protocol,
+  // and only when we're NOT already auto-approving (yolo → bypassPermissions)
+  // or read-only (plan, no mutations). When on, the prompt rides stdin as
+  // stream-json and `can_use_tool` requests route to gearbox's own prompt.
+  const bridge = binary.includes("claude") && !opts.autoApprove && !opts.readOnly;
+  const args = buildCliArgs(binary, prompt, { writableRoots: wr, sessionId: opts.sessionId, autoApprove: opts.autoApprove, readOnly: opts.readOnly, modelId: opts.modelId, effort: opts.effort, addDirs, repoRoot: opts.cwd ?? process.cwd(), bridge });
   const state = newState();
   let failureMessage: string | undefined;
   const fail = (message: string) => {
@@ -427,12 +497,37 @@ export async function runCliTask(opts: {
 
   let proc: Proc;
   try {
-    proc = spawnProc([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd(), env: subscriptionEnv(binary, opts.profile, opts.oauthToken) });
+    proc = spawnProc([binary, ...args], { stdin: bridge ? "pipe" : "ignore", stdout: "pipe", stderr: "pipe", cwd: opts.cwd ?? process.cwd(), env: subscriptionEnv(binary, opts.profile, opts.oauthToken) });
   } catch (e: any) {
     fail(`couldn't start ${binary}: ${e?.message ?? e}`);
     if (!opts.deferTerminal) onEvent({ type: "done", usage: state.usage });
     return { ...finalize(state), failure: { message: failureMessage! } };
   }
+
+  // ── interactive permission bridge (claude control protocol over stdin) ──────
+  const send = (o: any) => { try { proc.stdin?.write(JSON.stringify(o) + "\n"); } catch { /* stdin closed */ } };
+  let userSent = false;
+  const sendUser = () => { if (userSent) return; userSent = true; send({ type: "user", message: { role: "user", content: prompt } }); };
+  let initFallback: ReturnType<typeof setTimeout> | undefined;
+  if (bridge) {
+    // Initialize, then deliver the prompt once the CLI acks (with a fallback in
+    // case the ack never arrives, so the turn can't deadlock before it starts).
+    send({ type: "control_request", request_id: "gearbox-init", request: { subtype: "initialize" } });
+    initFallback = setTimeout(sendUser, 1500);
+  }
+  // Answer one can_use_tool request via gearbox's permission broker. Awaited in
+  // the read loop, which is fine: the CLI blocks for the response anyway.
+  const answerPermission = async (requestId: string, req: any) => {
+    const { kind, title, detail } = cliToolPermission(req?.tool_name, req?.input, req?.description);
+    let ok = false;
+    try { ok = await requestPermission({ kind, title, detail, root: opts.cwd ?? process.cwd() }); } catch { ok = false; }
+    send({
+      type: "control_response",
+      response: ok
+        ? { subtype: "success", request_id: requestId, response: { behavior: "allow", updatedInput: req?.input ?? {} } }
+        : { subtype: "success", request_id: requestId, response: { behavior: "deny", message: "Denied in gearbox." } },
+    });
+  };
 
   // SIGTERM, then escalate to SIGKILL if the vendor CLI ignores it — a wedged
   // claude/codex (e.g. stuck in a network wait) would otherwise keep `await
@@ -450,6 +545,24 @@ export async function runCliTask(opts: {
   let stderr = "";
   let sawEvent = false;
   try {
+    // Handle one parsed stdout message. Control-protocol frames (bridge mode)
+    // are consumed here and never forwarded to mapCliEvent — they're transport,
+    // not assistant content. Returns once any async permission prompt settles.
+    const handleMessage = async (m: any): Promise<void> => {
+      if (bridge) {
+        if (m?.type === "control_response") {
+          if (m.response?.request_id === "gearbox-init") { if (initFallback) clearTimeout(initFallback); sendUser(); }
+          return;
+        }
+        if (m?.type === "control_request") {
+          if (m.request?.subtype === "can_use_tool") await answerPermission(m.request_id, m.request);
+          return; // ignore other control_request subtypes (we registered no hooks)
+        }
+      }
+      mapCliEvent(binary, m, state, onEvent);
+      sawEvent = true;
+      if (bridge && m?.type === "result") { try { proc.stdin?.end(); } catch { /* already closed */ } }
+    };
     const readStdout = async () => {
       for await (const chunk of proc.stdout as any) {
         buf += outDec.decode(chunk, { stream: true });
@@ -459,21 +572,15 @@ export async function runCliTask(opts: {
           buf = buf.slice(nl + 1);
           const t = line.trim();
           if (!t) continue;
-          try {
-            mapCliEvent(binary, JSON.parse(t), state, onEvent);
-            sawEvent = true;
-          } catch {
-            /* non-JSON line */
-          }
+          let m: any;
+          try { m = JSON.parse(t); } catch { continue; /* non-JSON line */ }
+          await handleMessage(m);
         }
       }
       if (buf.trim()) {
-        try {
-          mapCliEvent(binary, JSON.parse(buf.trim()), state, onEvent);
-          sawEvent = true;
-        } catch {
-          /* trailing non-JSON */
-        }
+        let m: any;
+        try { m = JSON.parse(buf.trim()); } catch { return; /* trailing non-JSON */ }
+        await handleMessage(m);
       }
     };
     const readStderr = async () => {
@@ -487,6 +594,7 @@ export async function runCliTask(opts: {
     if (!signal?.aborted) fail(e?.message ?? String(e));
   } finally {
     if (killTimer) clearTimeout(killTimer);
+    if (initFallback) clearTimeout(initFallback);
     signal?.removeEventListener("abort", onAbort);
   }
   if (!signal?.aborted) {
