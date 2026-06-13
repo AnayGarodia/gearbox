@@ -143,6 +143,21 @@ export function failRateFor(kind: string, modelId: string, cwd?: string): { rate
   return { rate, n };
 }
 
+/** Repo-wide (model-agnostic) failure rate for a kind: aggregates every model's
+ *  outcomes for (repo, kind). Feeds the difficulty estimator — a repo where code
+ *  tasks fail a lot is HARD, so the router should start stronger regardless of
+ *  which model. Same gating + undo weighting as failRateFor. Null below MIN_N. */
+export function repoFailRate(kind: string, cwd?: string): { rate: number; n: number } | null {
+  const byModel = cached().repos[repoSlug(cwd)]?.[kind];
+  if (!byModel) return null;
+  let passed = 0, failed = 0, undone = 0;
+  for (const c of Object.values(byModel)) { passed += c.passed; failed += c.failed; undone += c.undone; }
+  const n = passed + failed + undone;
+  if (n < MIN_N) return null;
+  const fails = failed + UNDO_WEIGHT * undone;
+  return { rate: fails / (passed + fails), n };
+}
+
 /** Human line for /why: "measured here: 7/9 ✓ (−0.04)". Null when no prior. */
 export function priorLine(kind: string, modelId: string, repo?: string): string | null {
   const p = priorFor(kind, modelId, repo);

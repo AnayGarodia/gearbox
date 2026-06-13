@@ -29,7 +29,10 @@ import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
-import { priorFor, priorLine, failRateFor } from "./priors.ts";
+import { priorFor, priorLine, failRateFor, repoFailRate } from "./priors.ts";
+import { estimateDifficulty, DIFFICULTY_BAR_RANGE, type Difficulty, type DifficultySignals } from "./difficulty.ts";
+import { detectVerificationCommands, hasTestCheck } from "../verify.ts";
+import { statSync } from "node:fs";
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -91,17 +94,49 @@ const BAR_MAX = 0.95;
 // output".
 const MUTATION = /\b(fix|implement|refactor|edit|modif|debug|rewrite|replace|add|create|delete|remove|patch|migrat|rename)\b/;
 
-// Returns a task kind ONLY when a rule fires unambiguously: a mutation verb maps
-// to "code", and explicit summarize/classify/search markers map to their kinds.
-// Returns null for ambiguous prompts (a bare question, an explanation request)
-// so the LLM classifier can handle them properly. The agent uses this to SKIP
-// the model call (and its 1-2s latency) when the signal is already clear.
+// Greeting/ack words. A short prompt made ENTIRELY of these ("hi", "ok cool",
+// "thanks!", "got it") is chat — no model call. Matched as a word SET (not a
+// giant anchored regex) so multi-token acks like "ok cool" are caught while a
+// real instruction that merely contains one ack word ("nice, refactor it") is
+// not (it has a non-ack word, and MUTATION catches it anyway).
+const ACK_WORDS = new Set([
+  "hi", "hiya", "hello", "hey", "yo", "sup", "howdy", "thanks", "thank", "you", "ty", "thx",
+  "ok", "okay", "k", "cool", "nice", "great", "perfect", "awesome", "sweet", "gotcha", "lol",
+  "yep", "yeah", "yup", "sure", "good", "morning", "afternoon", "evening", "got", "it", "sounds",
+]);
+
+// Concrete code-defect signals → real DEBUGGING, which needs cross-file tracing,
+// so it routes to a strong model EVEN when phrased as a question ("why is X
+// throwing?", "where is the memory leak?"). This is the keyword judge's biggest
+// hole: these used to fall through to the bar-0.3 "chat" fallback. Deliberately
+// keyed on concrete failure words and error-CLASS names (TypeError, KeyError),
+// never the bare word "error" — that also appears in cheap requests like "tl;dr
+// this error log" / "classify this error".
+const DEBUG = /\b(throw(s|n|ing)?|crash(es|ed|ing)?|fail(s|ed|ing|ure)?|broken|segfault|stack ?trace|traceback|exception|(type|key|value|index|name|runtime|reference|syntax|attribute|zero ?division|null ?pointer)error|times? out|timed out|memory leak|race condition|deadlock|infinite loop|stack ?overflow|regression|hang(s|ing)?|wrong (value|output|result|answer|behaviou?r)|went wrong|what'?s wrong|not working|is ?n'?t working|does ?n'?t work|wo ?n'?t (work|run|compile|build|start))\b/i;
+
+// Design / architecture signals → PLANNING, a heavy reasoning task, even when
+// phrased as a question ("how should we structure X?", "what's the tradeoff?").
+// The other big hole: the keyword judge had no notion of planning at all, so
+// these also fell to bar-0.3 chat. Both DEBUG→code and PLAN→plan land on the
+// strong tier, so a false positive here is the SAFE (merely wasteful) direction.
+const PLAN = /\b(architect(ure|ing)?|trade-?offs?)\b|\bbest (way|approach)\b|\bgood approach\b|\b(should|shall) (i|we|you)\b|\bhow (should|would|do) (i|we|you) (design|structure|architect|organi[sz]e|approach|split|break|model|scale)\b|\bplan (out|for)\b|\bdesign (a|an|the|our|your)\b|\bapproach (to|for)\b|\bhigh.level\b/i;
+
+// Returns a task kind ONLY when a rule fires with confidence; null for genuinely
+// ambiguous prompts so the LLM ladder (subscription seat, else cheapest API with
+// consent) can judge them. The agent uses a non-null result to SKIP that hop.
+// Order matters: a real change (MUTATION) or a defect/design signal (DEBUG/PLAN)
+// outranks the cheap-kind markers, because misreading hard work as cheap is the
+// only error that hurts. Cheap markers (summarize/classify/search) come last.
 export function confidentKeywordKind(prompt: string): Kind | null {
   const p = prompt.toLowerCase().trim();
   if (!p) return null;
-  // A bare greeting/ack never needs the LLM classifier hop — it's chat by definition.
-  if (/^(hi|hiya|hello|hey|yo|sup|howdy|thanks?|thank you|ty|ok(ay)?|cool|nice|lol|good (morning|afternoon|evening))[\s!.?]*$/.test(p)) return "chat";
+  // A short all-social prompt is chat by definition — never needs a model hop.
+  const words = p.replace(/[^a-z'\s]/g, " ").split(/\s+/).filter(Boolean);
+  if (words.length > 0 && words.length <= 3 && words.every((w) => ACK_WORDS.has(w))) return "chat";
   if (MUTATION.test(p)) return "code"; // a real change is requested, use a strong model
+  // Debugging and design route to a strong model regardless of question shape.
+  if (DEBUG.test(p)) return "code";
+  if (PLAN.test(p)) return "plan";
   // "summarize" is a confident pure-summarize signal only when the prompt isn't
   // ALSO asking for tool work over the workspace: "read the files and summarize"
   // needs a model that drives tools across many files, but the summarize bar is
@@ -111,25 +146,35 @@ export function confidentKeywordKind(prompt: string): Kind | null {
     const workspaceWork = /\b(files?|codebase|repo(sitor(y|ies))?|director(y|ies)|folders?|read|scan|look (at|through)|go through|examine|analy[sz]e)\b/.test(p);
     return workspaceWork ? null : "summarize";
   }
-  if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b/.test(p)) return "classify";
+  if (/\bclassif|\bcategori[sz]|\blabel this\b|\bsentiment\b|\byes or no\b|\btrue or false\b/.test(p)) return "classify";
   if (/^(find|search|locate|grep)\b|\bwhere is\b|\bwhich file\b/.test(p)) return "search";
   return null;
 }
 
-// Question-shaped prompt with no mutation verb: "what is X", "how does Y work",
-// or anything ending in "?". Used only by the fallback below — a confident
-// keyword match (incl. MUTATION → code) always wins first.
-const QUESTIONISH = /^(how|what|who|when|where|why|which|can|does|do|is|are)\b|\?\s*$/i;
+// An explanation/concept request ("explain X", "define Y", "how does Z work") is
+// light → chat. Checked in the fallback below so that when an LLM IS available
+// these still escalate to it (confidentKeywordKind returns null for them); this
+// only fires on the keyword-only path (subscription-only / offline).
+const CONCEPT = /^(explain|describe|define|eli5|tell me about|what'?s the difference|how does)\b/i;
 
-// Conservative keyword classifier used as a fallback when the LLM classifier is
-// unavailable. A question-shaped prompt with no mutation verb falls back to
-// "chat" (a bare question never needs the code bar — "What is capital of India"
-// must not route at 0.70); everything else ambiguous defaults to "code" (high
-// bar) so real work is never silently downgraded.
+// Question-shaped prompt with no confident match: "what is X", "is Y faster".
+// Bare "do" is NOT a question opener unless followed by a pronoun, so the
+// imperative "do the needful" routes to code while "does X…" / "do you…" stay
+// questions. Used only by the fallback below — a confident keyword match always
+// wins first.
+const QUESTIONISH = /\?\s*$|^(how|what|why|who|whom|whose|when|where|which|is|are|was|were|does|did|can|could|should|would|will|may|might|has|have|had)\b|^do\s+(i|we|you|they)\b/i;
+
+// Conservative keyword classifier used as the fallback when the LLM classifier
+// is unavailable. A genuine concept/question prompt falls back to "chat" (a bare
+// question never needs the code bar — "What is capital of India" must not route
+// at 0.70); everything else ambiguous defaults to "code" (high bar) so real work
+// is never silently downgraded.
 export function classify(prompt: string): Kind {
   const confident = confidentKeywordKind(prompt);
   if (confident) return confident;
-  return QUESTIONISH.test(prompt.trim()) ? "chat" : "code";
+  const p = prompt.trim();
+  if (CONCEPT.test(p)) return "chat"; // explanation/concept request → light tier
+  return QUESTIONISH.test(p) ? "chat" : "code";
 }
 
 // Resolve quality from the canonical model profile. Uses sweBenchVerified if
@@ -319,12 +364,23 @@ export class RoutingSelector implements ModelSelector {
     kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
     pool: Candidate[]; clears: Candidate[]; eligible: Candidate[]; estInputTokens: number;
     pol?: Policy;
+    difficulty?: Difficulty;
     fallback?: ModelSpec;
   } {
     const kind = task.kind ?? classify(task.prompt);
     const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
     // Each prior miss lifts the bar so the router climbs to a stronger model.
-    const bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
+    let bar = escalate > 0 ? Math.min(BAR_MAX, BAR[kind] + escalate * ESCALATION_STEP) : BAR[kind];
+    // Difficulty WITHIN the kind (DESIGN: kind says WHAT, not HOW HARD). Pure,
+    // non-LLM: for code/plan, raise the bar from context signals (big working
+    // set, many/large touched files, a repo where code keeps failing, no test
+    // net) so a hard task climbs to a stronger model and an easy one stays cheap.
+    // No signals → d=0 → bar unchanged, so existing behavior and tests hold.
+    let difficulty: Difficulty | undefined;
+    if (kind === "code" || kind === "plan") {
+      difficulty = estimateDifficulty(gatherDifficultySignals(task, kind));
+      if (difficulty.d > 0) bar = Math.min(BAR_MAX, bar + difficulty.d * DIFFICULTY_BAR_RANGE);
+    }
     const required = task.requires ?? [];
     const ctx = buildRoutingContext(ctx_now());
     const estInputTokens = task.estTokens || NOMINAL_INPUT_TOKENS;
@@ -333,7 +389,7 @@ export class RoutingSelector implements ModelSelector {
     if (all.length === 0) {
       // No API keys or seats configured: fall back to the default model if available.
       const m = pickDefaultModel(this.fallbackId);
-      return { kind, bar, escalate, required, ctx, pool: [], clears: [], eligible: [], estInputTokens, fallback: m ?? undefined };
+      return { kind, bar, escalate, required, ctx, pool: [], clears: [], eligible: [], estInputTokens, difficulty, fallback: m ?? undefined };
     }
     // Callers without seat dispatch machinery opt out of cli-backend candidates.
     const dispatchable = task.inLoopOnly ? all.filter((c) => c.backend.kind === "in-loop") : all;
@@ -385,11 +441,11 @@ export class RoutingSelector implements ModelSelector {
     // And only UNKNOWN-quality seats get the benefit of the doubt here; a seat
     // with a known-weak profile (e.g. Haiku) is exactly what we are escalating
     // away from, so it is held to the same strength test as everyone else.
-    if (escalate > 0 && clears.length === 0) {
+    if ((escalate > 0 || (difficulty?.d ?? 0) > 0) && clears.length === 0) {
       const top = Math.max(...pool.map(adjQuality));
       clears = pool.filter((c) => (c.backend?.kind === "cli" && !hasKnownQuality(c)) || adjQuality(c) >= top - 1e-9);
     }
-    return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens, pol };
+    return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens, pol, difficulty };
   }
 
   // Return the per-kind remembered preference if it is present in the given
@@ -429,6 +485,7 @@ export class RoutingSelector implements ModelSelector {
     const winner = candidates.find((c) => scoreId(c) === best.candidate.id)!;
     this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
+    const hardNote = p.difficulty && p.difficulty.d > 0 ? ` · hard: ${p.difficulty.reasons.join(", ")}` : "";
     // Transparency: when a subscription seat serving this same model sat out
     // the race on a cooldown, say so — the user sees a seat turn silently
     // become a metered-API turn otherwise and reads it as a routing bug.
@@ -436,7 +493,7 @@ export class RoutingSelector implements ModelSelector {
       winner.backend?.kind !== "cli"
         ? this.cooledOut.find((c) => c.backend?.kind === "cli" && (c.canonicalId ?? c.spec.id) === (winner.canonicalId ?? winner.spec.id))
         : undefined;
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend };
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + hardNote + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend };
   }
 
   // Build the full ranked scorecard for the "/why" UI panel. Scores the entire
@@ -504,7 +561,10 @@ export class RoutingSelector implements ModelSelector {
     const cooledNote = this.cooledOut.length
       ? `cooling down, not scored: ${[...new Set(this.cooledOut.map((c) => `${c.spec.label} via ${c.state.accountId}`))].join(", ")}`
       : undefined;
-    return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: cooledNote };
+    const diffNote = p.difficulty && p.difficulty.d > 0
+      ? `harder than baseline (${p.difficulty.reasons.join(", ")}) → bar ${p.bar.toFixed(2)}`
+      : undefined;
+    return { kind: p.kind, bar: p.bar, prompt: task.prompt, entries, note: [diffNote, cooledNote].filter(Boolean).join(" · ") || undefined };
   }
 }
 
@@ -575,6 +635,44 @@ function reasonFor(c: Candidate, kind: Kind, required: string[]): string {
 // function calls Date.now(); everything else receives `now` as an argument.
 function ctx_now(): number {
   return Date.now();
+}
+
+// ── Difficulty signal gathering (cheap, non-LLM) ─────────────────────────────
+// Whether the current repo has a runnable verify check (test/build/typecheck) —
+// the "net" that makes starting on a cheaper model safe (a miss is caught, not
+// shipped). Memoized per cwd: detection reads package.json / globs once, then the
+// router reuses it on every turn so it never adds I/O to the hot path.
+let testNetMemo: { cwd: string; net: boolean } | undefined;
+function hasTestNetCached(): boolean | undefined {
+  try {
+    const cwd = process.cwd();
+    if (testNetMemo?.cwd !== cwd) testNetMemo = { cwd, net: hasTestCheck(detectVerificationCommands(cwd, [])) };
+    return testNetMemo.net;
+  } catch {
+    return undefined; // detection failed → neutral, never block routing
+  }
+}
+
+// Collect the cheap, non-LLM difficulty signals for a code/plan turn from the
+// Task plus local repo state. statSync on touched files is fast; capped at 20
+// and guarded so a missing/huge file list never throws or stalls routing.
+function gatherDifficultySignals(task: Task, kind: Kind): DifficultySignals {
+  const files = task.touchedFiles ?? [];
+  let touchedBytes: number | undefined;
+  if (files.length) {
+    let sum = 0, counted = 0;
+    for (const f of files.slice(0, 20)) {
+      try { sum += statSync(f).size; counted++; } catch { /* missing file → skip */ }
+    }
+    if (counted) touchedBytes = sum;
+  }
+  return {
+    estTokens: task.estTokens,
+    touchedFileCount: files.length || undefined,
+    touchedBytes,
+    repoFailRate: repoFailRate(kind)?.rate,
+    hasTestNet: hasTestNetCached(),
+  };
 }
 
 // Installed when the user explicitly chooses an account with `/account use`.
