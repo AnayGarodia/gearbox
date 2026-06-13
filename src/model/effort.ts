@@ -94,13 +94,27 @@ export interface EffortPick {
  * ttft) so the caller can score the model at its best effort. Empty vocab →
  * level undefined and the model's base numbers unchanged.
  */
-export function bestEffort(model: EffortModel, levels: string[], ctx: ObjectiveContext): EffortPick {
+export function bestEffort(
+  model: EffortModel,
+  levels: string[],
+  ctx: ObjectiveContext,
+  // The flywheel's self-correction: measured pass rate for this (model, kind) at
+  // a given effort level HERE (priors.effortPassRate), or null below MIN_N. When
+  // present, the modeled quality is blended toward measured reality — so "high
+  // effort actually pays off in this repo" (or doesn't) is learned over time
+  // rather than left to the conservative estimate.
+  measured?: (level: string) => number | null,
+): EffortPick {
   if (!levels.length) {
     return { level: undefined, outputFactor: model.baseOutputFactor, quality: model.quality, ttftMs: model.ttftMs };
   }
   // Evaluate each level through the objective; keep the cheapest.
   const ordered = levels.slice().sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
-  const qualityAt = (level: string) => clamp01(model.quality + qualityGainFromEffort(level, ctx.difficulty));
+  const qualityAt = (level: string) => {
+    const modeled = clamp01(model.quality + qualityGainFromEffort(level, ctx.difficulty));
+    const m = measured?.(level);
+    return m != null ? (modeled + m) / 2 : modeled; // equal-weight blend toward measured reality
+  };
   let best: { level: string; cost: number; e: EffortEffect } | undefined;
   for (const level of ordered) {
     const e = effortEffect(level);

@@ -571,6 +571,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // escalated like a reasoning miss). Set before an auto-fix re-run; cleared on a
   // fresh user turn.
   const lastFailureKindRef = useRef<import("../model/selector.ts").Task["failureKind"]>(undefined);
+  // The reasoning effort the current turn actually ran at, captured by the runner
+  // and recorded into the per-effort flywheel at settle.
+  const ranEffortRef = useRef<string | undefined>(undefined);
   // The flywheel's recording hooks: what kind routed this turn (+ how it was
   // determined, for /why provenance), and the last edited turn's (kind, model)
   // so /undo can debit it as a human revert.
@@ -2327,6 +2330,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             }
           }
         }
+        ranEffortRef.current = _effortRaw ?? undefined; // record what effort this turn ran at (per-effort flywheel)
         const r = await runTask({
           model: choice.model, messages: ctx, onEvent, signal, plan, system, creds,
           root: rootRef.current, // tools stay rooted in THIS tab's tree even when another tab owns cwd
@@ -3146,7 +3150,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (changed.length && ranModel && ranModel !== "unknown") {
             const outcomeKind = routedKindRef.current?.kind ?? "code";
             const outcome = failed.length ? "failed" : tier && tier !== "none" ? "passed" : "unverified";
-            try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome }); } catch { /* never break settle */ }
+            try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome, effort: ranEffortRef.current }); } catch { /* never break settle */ }
             lastOutcomeKeyRef.current = { kind: outcomeKind, modelId: ranModel };
           }
           // Once per session, after a clean code-changing turn in a project whose

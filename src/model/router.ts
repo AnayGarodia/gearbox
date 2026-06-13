@@ -29,7 +29,7 @@ import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
-import { priorFor, priorLine, failRateFor } from "./priors.ts";
+import { priorFor, priorLine, failRateFor, effortPassRate } from "./priors.ts";
 import { estimateDifficulty, type Difficulty, type DifficultySignals } from "./difficulty.ts";
 import { qualityForKind, qualityNote, benchmarkRow } from "./benchmarks.ts";
 import { effortLevels } from "./reasoning.ts";
@@ -319,6 +319,7 @@ function toScoreCandidate(c: Candidate, kind?: string, pol?: Policy, effortCtx?:
         { quality, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, tps: tpsOf(c), ttftMs, baseOutputFactor: outputFactor },
         levels,
         effortCtx,
+        kind ? (level) => effortPassRate(kind, canonical, level)?.rate ?? null : undefined,
       );
       quality = pick.quality; outputFactor = pick.outputFactor; ttftMs = pick.ttftMs; effort = pick.level;
     }
