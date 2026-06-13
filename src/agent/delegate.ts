@@ -77,6 +77,24 @@ const SUBAGENT_SYSTEM = [
 // within this process lifetime. Not cryptographically unique, just stable.
 let counter = 0;
 
+// ── delegation guards (fix the "orchestrator delegates its WHOLE task to a
+// SECOND copy of itself" pathology the user hit) ─────────────────────────────
+
+const wordSet = (s: string): Set<string> => new Set(s.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+
+/** True when a delegated `task` is essentially the orchestrator's ENTIRE prompt
+ *  (it covers most of the prompt's significant words). Offloading the whole turn
+ *  to one sub-agent is pure overhead + context loss — the orchestrator should do
+ *  it itself or split it into bounded pieces. */
+export function isWholeTask(task: string, orchestratorPrompt: string): boolean {
+  const p = wordSet(orchestratorPrompt);
+  if (p.size < 5) return false; // too short to judge
+  const t = wordSet(task);
+  let common = 0;
+  for (const w of p) if (t.has(w)) common++;
+  return common / p.size >= 0.7;
+}
+
 // The sub-agent's first meaningful output line, used as the tool-end summary.
 // This is far more useful than repeating the model label (already shown in the
 // tool head), and it fits in the one-line summary slot the UI reserves.
@@ -388,8 +406,8 @@ function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean 
 
 // ── exported tool factory ─────────────────────────────────────────────────────
 
-export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void }): Record<string, Tool<any, any>> {
-  const { onEvent, signal, run, runCli, onBackground } = opts;
+export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; orchestratorModelId?: string; orchestratorPrompt?: string }): Record<string, Tool<any, any>> {
+  const { onEvent, signal, run, runCli, onBackground, orchestratorModelId, orchestratorPrompt } = opts;
 
   // ── delegate (sequential, single task) ──────────────────────────────────────
   const delegate = tool({
@@ -401,8 +419,22 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       background: z.boolean().optional().describe("true = don't wait: keep working while the sub-agent runs; its report arrives in the conversation when it finishes. Use for research/long tasks whose result you don't need THIS turn."),
     }),
     execute: async ({ task, kind, background }) => {
+      // GUARD 1 (whole-task): refuse to offload essentially the entire turn to a
+      // single sub-agent — that's pure overhead + context loss, and it's how a
+      // "Sonnet delegates the whole task to Sonnet" pathology happens.
+      if (orchestratorPrompt && isWholeTask(task, orchestratorPrompt)) {
+        return "Not delegating: that is essentially this whole task. Do it yourself, or split it into smaller, bounded sub-tasks (one file or area each) and delegate those — delegation is for offloading a CHUNK, not the entire turn.";
+      }
       const routed = routeSubTask(task, kind, opts.pinnedModelId);
       if ("error" in routed) return `delegation skipped: ${routed.error}. Do it yourself.`;
+      // GUARD 2 (same-model): a SEQUENTIAL delegate to your own model adds latency
+      // and loses context for zero benefit (no cheaper/specialist model, no
+      // concurrency). Refuse and tell the orchestrator to do it inline. Background
+      // and delegate_parallel are exempt — there the benefit is concurrency, so
+      // running the same model in parallel is legitimate.
+      if (!background && orchestratorModelId && !routed.cli && routed.model.id === orchestratorModelId) {
+        return `Not delegating: that routes to ${routed.model.label} — the same model you're already running, so a sequential delegate just adds latency and loses context. Do it inline. (Delegate when a cheaper/faster/specialist model fits the sub-task, or use delegate_parallel / background:true for concurrency.)`;
+      }
       // Background mode: fire-and-continue. The live activity line still
       // streams (the rail shows it running); the report is delivered to the
       // conversation by the host when it settles.

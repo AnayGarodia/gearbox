@@ -322,7 +322,18 @@ export async function runTask(opts: {
     const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content: p.prompt }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries });
     return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
   };
-  const delegateTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground }) : undefined;
+  // The orchestrator's own model + this turn's prompt feed the delegation guards
+  // (don't delegate the whole task; don't sequentially delegate to your own model).
+  const lastUserPrompt = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.role !== "user") continue;
+      const c = (m as any).content;
+      return typeof c === "string" ? c : Array.isArray(c) ? c.map((p: any) => (typeof p === "string" ? p : p?.type === "text" ? p.text ?? "" : "")).join(" ") : "";
+    }
+    return "";
+  })();
+  const delegateTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground, orchestratorModelId: model.id, orchestratorPrompt: lastUserPrompt }) : undefined;
   // Caller overrides merge LAST so they can replace built-ins by name.
   const extraTools = delegateTools || opts.extraTools ? { ...delegateTools, ...opts.extraTools } : undefined;
   // Loop guard: the 3rd/4th consecutive identical tool call is blocked with a
