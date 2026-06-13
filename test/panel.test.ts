@@ -1,8 +1,26 @@
 import { test, expect } from "bun:test";
 import {
   clampIndex, clampScroll, panelBodyHeight, windowStart,
-  filterModelRows, appendFilter, backspaceFilter, type PanelModelRow, type PanelState,
+  filterModelRows, appendFilter, backspaceFilter, mergeConfirmOpen, mergeConfirmScroll, type PanelModelRow, type PanelState,
 } from "../src/ui/panel.ts";
+
+test("mergeConfirmOpen splits the diff into lines and titles the branch", () => {
+  const p = mergeConfirmOpen("@@ -1 +1 @@\n-old\n+new\n", "tab/fix");
+  expect(p.kind).toBe("merge-confirm");
+  expect(p.title).toContain("tab/fix");
+  expect(p.lines).toEqual(["@@ -1 +1 @@", "-old", "+new"]);
+  expect(p.scroll).toBe(0);
+});
+
+test("mergeConfirmOpen shows a placeholder when there is no diff", () => {
+  expect(mergeConfirmOpen("", "tab/x").lines).toEqual(["(no changes to merge)"]);
+});
+
+test("mergeConfirmScroll clamps to [0, lines - view]", () => {
+  const p = mergeConfirmOpen(Array.from({ length: 10 }, (_, i) => `l${i}`).join("\n"), "b");
+  expect(mergeConfirmScroll(p, -5, 4).scroll).toBe(0); // can't go negative
+  expect(mergeConfirmScroll(p, 100, 4).scroll).toBe(6); // 10 lines - 4 view
+});
 
 test("clampIndex keeps selection in range (and 0 when empty)", () => {
   expect(clampIndex(5, 3)).toBe(2);

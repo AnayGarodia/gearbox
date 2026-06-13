@@ -319,6 +319,20 @@ export function Panel({
       const scrollable = diffLines !== null && diffLines.length > diffH;
       hint = `↑↓ file${scrollable ? " · PgUp PgDn scroll diff" : ""} · esc close`;
     }
+  } else if (panel.kind === "merge-confirm") {
+    // One scrollable pane: the tab's diff (what will land), tinted like /diff.
+    const visible = panel.lines.slice(panel.scroll, panel.scroll + bodyH);
+    const tint = (l: string): string =>
+      l.startsWith("+") ? color.ok : l.startsWith("-") ? color.err : l.startsWith("@@") ? color.accent : color.dim;
+    body = (
+      <Box flexDirection="column" paddingX={1}>
+        {visible.map((l, i) => (
+          <Text key={panel.scroll + i} color={tint(l)}>{truncate(l, Math.max(8, innerW - 2))}</Text>
+        ))}
+      </Box>
+    );
+    const scrollable = panel.lines.length > bodyH;
+    hint = `⏎ merge into the base tab${scrollable ? " · PgUp PgDn scroll" : ""} · esc cancel`;
   } else if (panel.kind === "git-confirm") {
     const fw = fieldWindow(panel.subject.value, panel.subject.cursor, Math.max(8, innerW - 4));
     // Budget with the RENDERED file rows (≤6 + "+N more"), not the raw staged

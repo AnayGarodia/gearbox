@@ -22,6 +22,20 @@ test("tabRowsOf: maps status + active flag; falls back to the dir basename", () 
   expect(rows[2]!.needsInput).toBe(true);
 });
 
+test("tabRowsOf: carries setup state; marks non-base worktree tabs mergeable", () => {
+  const rows = tabRowsOf(
+    [
+      { dir: "/x/main", status: status(false) }, // base (tab 0): never mergeable
+      { dir: "/x/.gearbox/tabs/fix", status: status(false), setup: "running" },
+      { dir: "/x/.gearbox/tabs/docs", status: status(false), setup: "failed" },
+      { dir: "/x/main", status: status(false) }, // same-dir tab (no worktree): not mergeable
+    ],
+    0,
+  );
+  expect(rows.map((r) => r.setup)).toEqual([undefined, "running", "failed", undefined]);
+  expect(rows.map((r) => r.mergeable)).toEqual([false, true, true, false]);
+});
+
 test("tabRowsOf: unseen marks done on hidden tabs only (the active tab has no badge to ack)", () => {
   const rows = tabRowsOf(
     [
