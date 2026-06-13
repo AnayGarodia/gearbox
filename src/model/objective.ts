@@ -67,8 +67,12 @@ export const DEFAULT_OBJECTIVE_WEIGHTS: ObjectiveWeights = {
   escalationUSD: 0.1,
   recoverySeconds: 8,
   shipWrongUSD: 2.0,
-  vTimeInteractiveUSDPerSec: 0.02,
-  vTimeBackgroundUSDPerSec: 0.001,
+  // Interactive value-of-a-second: calibrated so latency flips a SMALL cost gap
+  // toward the faster model (a near-tie when you're waiting) but never pays a
+  // large premium for speed — a clearly cheaper model still wins. Background is
+  // exactly 0: when nobody is waiting, latency must not sway the pick at all.
+  vTimeInteractiveUSDPerSec: 0.001,
+  vTimeBackgroundUSDPerSec: 0,
   difficultyToFailure: 0.5,
 };
 
@@ -116,27 +120,42 @@ function pWrong(c: ObjectiveCandidate, x: ObjectiveContext, w: ObjectiveWeights)
   return withDifficulty;
 }
 
-/** The expected cost to a CORRECT result for one candidate, in dollars. */
-export function effectiveCost(c: ObjectiveCandidate, x: ObjectiveContext): ObjectiveResult {
+// $/second of the user's attention: high when they're waiting on this turn,
+// ~0 for background/delegated work (so latency only sways a pick when it matters).
+function valueOfTime(x: ObjectiveContext, w: ObjectiveWeights): number {
+  return x.interactive ? w.vTimeInteractiveUSDPerSec : w.vTimeBackgroundUSDPerSec;
+}
+
+/** The LATENCY component of expected cost: expected wall-clock × value-of-time. */
+export function latencyCostOf(c: ObjectiveCandidate, x: ObjectiveContext): number {
   const w = x.weights ?? DEFAULT_OBJECTIVE_WEIGHTS;
-  const dollars = attemptDollars(c, x.estInputTokens);
-  const seconds = attemptSeconds(c, x.estInputTokens);
+  return attemptSeconds(c, x.estInputTokens) * valueOfTime(x, w);
+}
 
-  const vTime = x.interactive ? w.vTimeInteractiveUSDPerSec : w.vTimeBackgroundUSDPerSec;
-  const latencyCost = seconds * vTime;
-
+/** The QUALITY component of expected cost: P(wrong) × cost-of-a-wrong-result.
+ *  cost-of-wrong is a RECOVERY cost, the SAME whichever model erred (so an
+ *  expensive model is never charged MORE for missing — quality lowers this only
+ *  through P(wrong)):
+ *    - caught miss (a verifier exists): rerun/escalate → escalationUSD + the
+ *      user's recovery wait if interactive. Small ⇒ cheap-first is safe.
+ *    - silently-shipped miss (NO verifier): the ship-wrong damage, large ⇒
+ *      quality dominates and a strong model wins. This is where "no net → be
+ *      cautious" EMERGES instead of being a hand-set bar bump. */
+export function wrongCostOf(c: ObjectiveCandidate, x: ObjectiveContext): { wrongCost: number; pWrong: number } {
+  const w = x.weights ?? DEFAULT_OBJECTIVE_WEIGHTS;
   const p = pWrong(c, x, w);
-  // What a wrong result costs — a RECOVERY cost, the same whichever model erred
-  // (so an expensive model is never charged MORE for missing; quality lowers
-  // this only through P(wrong)):
-  //   - a caught miss (a verifier exists): rerun/escalate → escalationUSD + the
-  //     user's wait during recovery if interactive. Small ⇒ cheap-first is safe.
-  //   - a silently-shipped miss (NO verifier): the ship-wrong damage, large ⇒
-  //     quality dominates and a strong model wins. This is where "no net → be
-  //     cautious" EMERGES instead of being a hand-set bar bump.
   const shipWrong = x.verifierTier === "none" ? w.shipWrongUSD : x.verifierTier === "types" ? w.shipWrongUSD * 0.4 : 0;
-  const costOfWrong = w.escalationUSD + w.recoverySeconds * vTime + shipWrong;
-  const wrongCost = p * costOfWrong;
+  const costOfWrong = w.escalationUSD + w.recoverySeconds * valueOfTime(x, w) + shipWrong;
+  return { wrongCost: p * costOfWrong, pWrong: p };
+}
 
-  return { total: dollars + latencyCost + wrongCost, dollars, latencyCost, wrongCost, pWrong: p, seconds };
+/** The expected cost to a CORRECT result for one candidate, in dollars —
+ *  dollars(attempt) + latency-cost + wrong-cost. Used standalone (tests, /why);
+ *  the live scorer (scoring.ts) owns the dollar economics itself and adds the
+ *  latency-cost + wrong-cost components from this module. */
+export function effectiveCost(c: ObjectiveCandidate, x: ObjectiveContext): ObjectiveResult {
+  const dollars = attemptDollars(c, x.estInputTokens);
+  const latencyCost = latencyCostOf(c, x);
+  const { wrongCost, pWrong: p } = wrongCostOf(c, x);
+  return { total: dollars + latencyCost + wrongCost, dollars, latencyCost, wrongCost, pWrong: p, seconds: attemptSeconds(c, x.estInputTokens) };
 }

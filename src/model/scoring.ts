@@ -24,6 +24,7 @@
 //   - The latencyBonus is scaled by costEst, so a near-tie favors the snappier
 //     model, but a clearly cheaper model still wins on cost.
 import type { AccountState } from "./routing-context.ts";
+import { latencyCostOf, wrongCostOf, type ObjectiveCandidate, type ObjectiveContext } from "./objective.ts";
 
 // The minimal numeric view of a candidate the scorer needs. The router adapts
 // a (ModelSpec, profile, AccountState) triple into this shape, keeping the
@@ -40,7 +41,8 @@ export interface ScoreCandidate {
   inUSDPerMtok: number;
   outUSDPerMtok: number;
   quality: number; // normalised 0..1; arrives prior-adjusted (router adds the per-repo measured delta)
-  tps: number; // tokens per second, used for the latency-class tie-break
+  tps: number; // tokens per second — feeds the latency-cost term (expected wall-clock)
+  ttftMs?: number; // time-to-first-token in ms (latency-cost term); 0/absent → a neutral default
   account: AccountState; // the backing seat or API key
   // ── cost-realism inputs (all optional; absent = the old behavior) ──────────
   // Measured per-repo verify-fail rate (priors.failRateFor). A model that fails
@@ -84,6 +86,7 @@ export interface ScoreWeights {
   wApiThrottle: number; // push away from a metered key whose live RPM/TPM window is near-empty
   wLatency: number; // interactive only: pull faster models forward; 0 disables the term
   wRetry: number; // expected-retry multiplier on the measured verify-fail rate (failure-adjusted cost)
+  wQuotaBurn: number; // a seat's residual cost: quota burned ∝ the model's metered weight (a heavier model drains the window faster, so it is NOT truly free)
   cachedShare: number; // fraction of input assumed cache-READABLE on the warm model (system+history prefix)
   planHeadroomKnee: number; // headroom >= knee means the seat is treated as free; below this, ramps toward cost
   apiThrottleKnee: number; // API headroom >= knee is ignored as per-minute noise; below this, ramps
@@ -101,6 +104,13 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
   // plus the escalated retry on a stronger model), so expected cost grows by
   // 1.5× the fail rate. Conservative: the real cost includes the user's time.
   wRetry: 1.5,
+  // A seat is ~free in DOLLARS but burns a limited window. Quota burned scales
+  // with the model's metered weight (a 5×-pricier model drains ~5× the window),
+  // so a seat's residual cost = 10% of its metered sticker. Small enough that a
+  // seat still crushes a metered key, large enough that among FREE seats the
+  // lighter model wins for work it handles — and a harder task (higher wrongCost)
+  // still justifies the heavier seat.
+  wQuotaBurn: 0.1,
   // In a settled session the byte-stable prefix (system + history before the
   // cache break) dominates the request; ~70% of input re-reads from cache on
   // the warm model. Used only where the provider actually discounts cache reads.
@@ -131,22 +141,30 @@ export interface ScoreInput {
   estOutputTokens?: number; // defaults to 0.2 * input (agent turns are heavily input-dominated)
   warm?: { accountId: string; modelId: string }; // the currently loaded model, if any
   interactive?: boolean; // true when the user is waiting (foreground turn), false for background
+  // Expected-cost context (the principled replacement for the quality bar): how
+  // hard this turn is (0..1, raises P(wrong) for weak models) and whether a
+  // verifier net exists (sets the cost of a miss). Absent → difficulty 0 and a
+  // present net (neutral — no extra quality pressure), so cheap kinds and
+  // un-contextualized calls behave as cheapest-wins.
+  difficulty?: number;
+  verifierTier?: "tests" | "types" | "none";
 }
 
 // Per-term breakdown returned alongside the total score. Kept separate from the
 // total so callers (scorecard UI, tests) can inspect individual contributions.
 export interface ScoreTerms {
-  costEst: number; // cache-aware, failure-adjusted expected cost (the real number being minimized)
-  stickerCost: number; // plain tokens × price, before cache/retry adjustments (informational)
-  retryPenalty: number; // the failure-adjusted surcharge included in costEst
+  costEst: number; // cache-aware dollar cost of one attempt (the account-economics term)
+  stickerCost: number; // plain tokens × price, before cache adjustment (informational)
   cacheSavings: number; // the warm-model cache discount included in costEst (0 when cold / no caching)
   scarcity: number;
   switchPenalty: number;
   limitPenalty: number;
   apiThrottlePenalty: number;
-  planBonus: number; // subtracted in the score
-  latencyBonus: number; // subtracted in the score (interactive: faster models get a higher bonus)
-  qualityBonus: number; // subtracted in the score (kind-weighted value of quality above the bar)
+  planBonus: number; // subtracted in the score (a flat-rate seat is ~free until its window empties)
+  quotaBurn: number; // ADDED: a seat's residual window cost ∝ model weight (0 for metered keys)
+  latencyCost: number; // ADDED: expected wall-clock × value-of-time (0 in background)
+  wrongCost: number; // ADDED: P(wrong) × cost-of-a-wrong-result (the principled quality term)
+  pWrong: number; // P(wrong) used in wrongCost (informational, for /why)
   preferBonus: number; // subtracted in the score (standing user preference: account order / spend-first)
   meteredEquiv: number; // what a subscription pick would have cost at metered rates (informational)
 }
@@ -188,15 +206,10 @@ export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCand
     cacheSavings = (inTok / 1e6) * c.inUSDPerMtok * w.cachedShare * (1 - c.cacheReadDiscount);
   }
 
-  // Failure-adjusted expected cost: a model with a measured verify-fail rate
-  // here costs sticker × (1 + wRetry·failRate) to actually deliver green —
-  // failures trigger iterate-to-green re-runs and an escalated retry. This is
-  // what makes "cheapest that clears the bar" mean cheapest DELIVERED, not
-  // cheapest attempted.
-  const retryPenalty = (stickerCost - cacheSavings) * w.wRetry * (c.failRate ?? 0);
-
-  // The cost actually minimized: cache-aware, failure-adjusted.
-  const costEst = stickerCost - cacheSavings + retryPenalty;
+  // The dollar cost of ONE attempt (cache-aware). Failure cost is NO LONGER
+  // folded in here — it now lives in the principled wrongCost term below
+  // (P(wrong) × cost-of-a-wrong-result), so the two never double-count.
+  const costEst = stickerCost - cacheSavings;
 
   // Plan bonus: a flat-rate seat costs nothing marginal until its window empties.
   // Full bonus (= costEst * wPlan) while headroom >= knee, fading linearly to 0
@@ -245,40 +258,47 @@ export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCand
   // the warm one banks the discount) is intentional stickiness, not an error.
   const switchPenalty = input.warm && !isWarm ? w.wSwitch * costEst : 0;
 
-  // Latency bonus: when the user is waiting (interactive foreground turn), pull
-  // faster models forward by a fraction of this turn's cost. Scaled by costEst
-  // so the bonus is always proportional to cost: a clearly cheaper model still
-  // wins, but a near-tie resolves in favor of the snappier one. Background and
-  // delegated turns omit `interactive`, leaving latencyBonus at 0 so cheapest
-  // wins unconditionally. tps = 0 (unknown) maps to 0.5 (mid-speed) rather than
-  // 0 (slow), so missing data is treated neutrally.
-  let latencyBonus = 0;
-  if (input.interactive) {
-    const speed = c.tps > 0 ? clamp(c.tps / TPS_REF, 0, 1) : 0.5;
-    latencyBonus = w.wLatency * speed * costEst;
-  }
+  // ── The principled quality + latency terms (expected-cost-to-correct) ──────
+  // These REPLACE the old ad-hoc qualityBonus (surplus above an arbitrary bar)
+  // and latencyBonus (speed × cost). Both come from the pure objective module so
+  // the math has one home. They are ADDED (a cost), not subtracted (a bonus):
+  // a likely-wrong or slow candidate costs more.
+  const objC: ObjectiveCandidate = {
+    inUSDPerMtok: c.inUSDPerMtok, outUSDPerMtok: c.outUSDPerMtok,
+    quality: c.quality, tps: c.tps, ttftMs: c.ttftMs ?? 0, outputFactor: c.outputFactor ?? 0.2,
+  };
+  const objX: ObjectiveContext = {
+    estInputTokens: inTok,
+    difficulty: input.difficulty ?? 0,
+    verifierTier: input.verifierTier ?? "tests", // unknown net → neutral (no extra quality pressure)
+    interactive: input.interactive ?? false,
+    repoFailRate: c.failRate, // the measured per-repo flywheel signal, when known
+  };
+  // Latency only bites when interactive (value-of-time ~0 in background), so a
+  // background/delegated turn stays cheapest-wins. wrongCost rises with P(wrong)
+  // = f(quality, difficulty, repo prior) and with the cost of a miss (large when
+  // no verifier net, small when one will catch it) — this is what makes
+  // cheap-first safe with tests and caution emerge without a verifier.
+  const latencyCost = latencyCostOf(objC, objX);
+  const { wrongCost, pWrong } = wrongCostOf(objC, objX);
 
-  // Quality bonus: above-bar quality is worth a kind-weighted, REFERENCE-priced
-  // amount (not a fraction of the candidate's own cost — that gave expensive
-  // models bigger bonuses just for being expensive). The reference is a fixed
-  // $/Mtok turn price, so the bonus rewards quality alone and a genuinely
-  // cheaper model still wins any real cost gap. Subscription seats skip it:
-  // their true marginal cost is QUOTA burn (a pricier model drains the 5h
-  // window faster), which the cheapest-clearing default already respects.
-  const refCost = (inTok / 1e6) * QUALITY_REF_USD_PER_MTOK;
-  const qualitySurplus = clamp(c.quality - (c.qualityBar ?? 0), 0, 1);
-  const qualityBonus = a.isSubscription ? 0 : (c.qualityWeight ?? 0) * qualitySurplus * refCost;
+  // Quota-burn: a subscription seat's dollars are cancelled by planBonus, but it
+  // still consumes a limited window in proportion to the model's metered weight.
+  // So a seat carries a small residual ∝ its sticker price — a heavier model on
+  // the SAME free seat is not truly free. Metered keys pay real dollars already,
+  // so they carry no quota-burn term.
+  const quotaBurn = a.isSubscription ? w.wQuotaBurn * stickerCost : 0;
 
   // Standing-preference bias (policy accountOrder / useFirst), already scaled
   // to a fraction of cost by the router.
   const preferBonus = (c.preferBias ?? 0) * costEst;
 
-  const score = costEst + scarcity + switchPenalty + limitPenalty + apiThrottlePenalty - planBonus - latencyBonus - qualityBonus - preferBonus;
+  const score = costEst + scarcity + switchPenalty + limitPenalty + apiThrottlePenalty + quotaBurn - planBonus - preferBonus + latencyCost + wrongCost;
   return {
     candidate: c,
     score,
     costEst,
-    terms: { costEst, stickerCost, retryPenalty, cacheSavings, scarcity, switchPenalty, limitPenalty, apiThrottlePenalty, planBonus, latencyBonus, qualityBonus, preferBonus, meteredEquiv },
+    terms: { costEst, stickerCost, cacheSavings, scarcity, switchPenalty, limitPenalty, apiThrottlePenalty, planBonus, quotaBurn, latencyCost, wrongCost, pWrong, preferBonus, meteredEquiv },
   };
 }
 
