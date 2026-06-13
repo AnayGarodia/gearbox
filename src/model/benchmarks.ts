@@ -129,6 +129,13 @@ const ALIAS: Record<string, string> = {
   "vertex/gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
   "vertex/gemini-3.5-flash": "gemini-3.5-flash",
   "vertex/gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+  // Provider-prefixed registry ids → the canonical benchmark key (the catalog
+  // prefixes some providers, e.g. xai/grok-4.3, google/gemini-3.1-flash-lite).
+  "xai/grok-4.3": "grok-4.3",
+  "xai/grok-4.1-fast": "grok-4.1-fast",
+  "google/gemini-3.1-flash-lite": "gemini-3.1-flash-lite",
+  "google/gemini-3.1-pro-preview": "gemini-3.1-pro-preview",
+  "google/gemini-3.5-flash": "gemini-3.5-flash",
 };
 
 export function benchmarkRow(modelId: string): BenchmarkRow | undefined {
@@ -197,3 +204,37 @@ export function qualityNote(modelId: string, kind: Kind): string | null {
 const BENCH_LABEL: Partial<Record<keyof BenchmarkRow, string>> = {
   sweVerified: "SWE", aiderPolyglot: "Aider", liveCodeBench: "LCB", gpqaDiamond: "GPQA",
 };
+
+// ── Freshness (the corpus rots as models update) ─────────────────────────────
+// Leaderboard scores go stale: a new model version ships, scores move. Re-research
+// a row after this many months. The staleness check + the coverage check (a
+// routable model with NO row) are surfaced by scripts/refresh-benchmarks.ts and
+// guarded by test/benchmarks-freshness.test.ts.
+export const STALENESS_MONTHS = 9;
+
+function monthsSince(asOf: string, nowMs: number): number {
+  const m = /^(\d{4})-(\d{2})$/.exec(asOf);
+  if (!m) return Infinity; // malformed asOf → treat as stale
+  const then = Number(m[1]) * 12 + (Number(m[2]) - 1);
+  const d = new Date(nowMs);
+  const now = d.getUTCFullYear() * 12 + d.getUTCMonth();
+  return now - then;
+}
+
+/** Benchmark rows older than STALENESS_MONTHS as of `nowMs` — the refresh list. */
+export function staleBenchmarks(nowMs: number): { id: string; asOf: string; months: number }[] {
+  return Object.entries(BENCHMARKS)
+    .map(([id, r]) => ({ id, asOf: r.asOf, months: monthsSince(r.asOf, nowMs) }))
+    .filter((x) => x.months >= STALENESS_MONTHS);
+}
+
+/** All distinct (id, row) entries — for the refresh report + freshness test. */
+export function allBenchmarks(): [string, BenchmarkRow][] {
+  return Object.entries(BENCHMARKS);
+}
+
+/** Routable model ids with NO benchmark coverage (directly or via alias) — the
+ *  "needs a row" list. Pass the routable ids (providers.modelRegistry). */
+export function uncoveredModels(routableIds: string[]): string[] {
+  return routableIds.filter((id) => !benchmarkRow(id));
+}

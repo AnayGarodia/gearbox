@@ -41,5 +41,6 @@ test("bestEffort blends toward measured reality: a level that PASSES here is fav
   const noData = bestEffort(model, ["low", "medium", "high"], ctx);
   // with the measured boost, high's quality is higher than the purely-modeled run
   expect(withData.quality).toBeGreaterThan(noData.quality - 1e-9);
-  expect(["medium", "high"]).toContain(withData.level);
+  expect(withData.level).toBeDefined();
+  expect(["medium", "high"]).toContain(withData.level!);
 });

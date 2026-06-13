@@ -200,27 +200,24 @@ export function classify(prompt: string): Kind {
 //   2. the legacy profile scalar (mostly seeded) — sweBenchVerified, then the
 //      intelligence index normalised;
 //   3. 0.5 neutral when nothing is known.
+// Quality, 0..1, from the SINGLE source of truth: the researched benchmark
+// corpus (benchmarks.ts), read per kind. The legacy profiles.ts quality scalars
+// are deliberately NOT consulted here (review #6): they are mostly seeded and on
+// a different scale (intelligenceIndex/100 vs the corpus's AA_INDEX_REF), so
+// mixing them in one argmin compared models on incompatible numbers. A model
+// absent from the corpus is UNKNOWN (0.5) and, for code/plan, floored out by the
+// known-quality requirement in clearsFloor. profiles.ts keeps cost/latency/
+// tokenizer; only quality moved to the corpus.
 function qualityOf(c: Candidate, kind?: Kind): number {
-  const id = c.canonicalId ?? c.spec.id;
-  if (kind) {
-    const q = qualityForKind(id, kind);
-    if (q != null) return q;
-  }
-  const pr = profileFor(id);
-  if (!pr) return 0.5;
-  if (pr.quality.sweBenchVerified != null) return pr.quality.sweBenchVerified;
-  if (pr.quality.intelligenceIndex != null) return pr.quality.intelligenceIndex / 100;
-  return 0.5;
+  const q = kind ? qualityForKind(c.canonicalId ?? c.spec.id, kind) : null;
+  return q ?? 0.5;
 }
 
-// Returns true when a real quality benchmark exists (corpus OR profile). Used by
-// the capability floor: a CLI seat with no benchmark is given the benefit of the
-// doubt (kept) rather than floored out on a 0.5 guess.
+// True when the benchmark corpus has a real quality for this model. The capability
+// floor uses it: a CLI seat with no benchmark gets the benefit of the doubt
+// (kept); a metered model with no benchmark is floored out of code/plan.
 function hasKnownQuality(c: Candidate): boolean {
-  const id = c.canonicalId ?? c.spec.id;
-  if (benchmarkRow(id)) return true;
-  const pr = profileFor(id);
-  return !!pr && (pr.quality.sweBenchVerified != null || pr.quality.intelligenceIndex != null);
+  return !!benchmarkRow(c.canonicalId ?? c.spec.id);
 }
 
 function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {

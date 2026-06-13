@@ -2032,6 +2032,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       modelId?: string; // the sdk model id the binary understands (no cli: prefix)
       accountId: string;
       efforts: string[];
+      routedEffort?: string; // the router's per-task effort pick (used when /effort is "auto")
       label?: string; // model label for the phase line
       pinned: boolean; // true ⇒ explicit pin (no routing reason to show)
       deferTerminal?: boolean; // caller drives failover: suppress terminal events, return failure
@@ -2041,7 +2042,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       onEvent: OnEvent;
       signal?: AbortSignal;
     }): Promise<{ messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string } }> => {
-      const { binary, profile, modelId, accountId, efforts, label, pinned, prompt, messages, onEvent, signal } = args;
+      const { binary, profile, modelId, accountId, efforts, routedEffort, label, pinned, prompt, messages, onEvent, signal } = args;
       usedAccountRef.current = accountId;
       // Full provenance only when the route just changed; unchanged turns stay quiet
       // (the working strip + reply are enough · no per-turn "owns tools" repetition).
@@ -2055,13 +2056,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // never thrown — a mismatch must not kill a subscription turn (S-E; mirrors the
       // in-loop R-4 fix). (Note: the claude CLI doesn't take an effort flag yet, so
       // for claude this clamps then gets dropped downstream in buildCliArgs.)
-      // "auto" on a subscription seat → let the vendor binary use its own default
-      // effort (the seat path owns its reasoning config; claude drops the flag
-      // anyway). A pinned effort is honored + clamped to the seat model's vocab.
-      let cliEffort = effortRef.current === "auto" ? undefined : normalizeEffort(effortRef.current, efforts) ?? undefined;
-      if (effortRef.current !== "auto" && cliEffort === undefined && effortRef.current !== "medium" && efforts.length) {
-        const { level: nearest } = clampEffort(effortRef.current, efforts);
-        cliEffort = normalizeEffort(nearest, efforts) ?? undefined;
+      // "auto" → use the router's per-task effort pick (routedEffort), clamped to
+      // this seat model's vocabulary; if the router gave none, fall back to the
+      // vendor binary's own default (claude drops the flag anyway). A pinned
+      // effort is honored + clamped.
+      let cliEffort: string | undefined;
+      if (effortRef.current === "auto") {
+        cliEffort = routedEffort && efforts.length ? normalizeEffort(routedEffort, efforts) ?? normalizeEffort(clampEffort(routedEffort, efforts).level, efforts) ?? undefined : undefined;
+      } else {
+        cliEffort = normalizeEffort(effortRef.current, efforts) ?? undefined;
+        if (cliEffort === undefined && effortRef.current !== "medium" && efforts.length) {
+          cliEffort = normalizeEffort(clampEffort(effortRef.current, efforts).level, efforts) ?? undefined;
+        }
       }
       const activeAccount = getAccount(accountId);
       const activeName = activeAccount ? accountName(activeAccount).match(/\((.*)\)/)?.[1] : undefined;
@@ -2250,7 +2256,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (showCli) onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
           const out = await runCliBackend({
             binary: choice.backend.binary, profile: choice.backend.profile, modelId: choice.model.sdkId, accountId: acct.id,
-            efforts: choice.model.efforts ?? [], label: choice.model.label,
+            efforts: choice.model.efforts ?? [], label: choice.model.label, routedEffort: choice.effort,
             pinned: false, deferTerminal: true, showProvenance: showCli, prompt, messages, onEvent, signal,
           });
           // The CLI's failure carries no producedOutput flag; an assistant message
