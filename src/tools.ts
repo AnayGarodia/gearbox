@@ -47,7 +47,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readFile, writeFile, readdir, stat } from "node:fs/promises";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
 import { applyEdit } from "./edit.ts";
@@ -127,6 +127,66 @@ function realResolve(abs: string): string {
   } catch {
     return abs;
   }
+}
+
+// Paste/attachment temp dirs created BY THIS PROCESS (clipboard-image.ts
+// registers each one). READ-ONLY tools may reach into these even though they sit
+// outside the workspace root. We track the exact dirs this session created
+// rather than globbing tmpdir for `gearbox-paste-*`: a glob would also whitelist
+// EVERY other gearbox session's (and other users') attachment dirs on the box,
+// letting a prompt-injected agent enumerate and read screenshots it never owned.
+// (Residual: Conductor tabs share one process, so this is process- not
+// per-tab-scoped — acceptable, same user/trust domain; the old glob crossed
+// processes and users.)
+const sessionAttachmentDirs = new Set<string>();
+
+/** Record a temp dir this session created for an attachment, so READ-ONLY tools
+ *  may open files under it (it lives outside the workspace root). */
+export function registerAttachmentDir(dir: string): void {
+  try { sessionAttachmentDirs.add(realpathSync(dir)); } catch { sessionAttachmentDirs.add(dir); }
+}
+
+/**
+ * Directories that READ-ONLY tools may access even though they sit outside the
+ * workspace root. Two cases, both born from worktree isolation:
+ *
+ *  - Pasted screenshots: clipboard-image.ts writes attachments to
+ *    mkdtemp(tmpdir()/gearbox-paste-*) — outside every repo and worktree, and
+ *    registered (above) so a sub-agent rooted in a worktree can still open them.
+ *  - Linked worktrees: `<root>/.git` is a pointer FILE whose real git dir lives
+ *    under the MAIN repo's .git/worktrees/<name> — outside the worktree root.
+ *    Git metadata reads would otherwise be refused as workspace escapes.
+ */
+export function defaultReadRoots(root: string): string[] {
+  const roots: string[] = [...sessionAttachmentDirs];
+  try {
+    const dotgit = join(root, ".git");
+    if (existsSync(dotgit) && statSync(dotgit).isFile()) {
+      const m = readFileSync(dotgit, "utf8").match(/^gitdir:\s*(.+)$/m);
+      if (m) roots.push(resolve(root, m[1]!.trim()));
+    }
+  } catch { /* unreadable .git pointer: skip */ }
+  return roots;
+}
+
+/**
+ * A resolver for READ-ONLY tools: like makeSafe(root), but additionally allows
+ * paths inside any of `extra` (attachment temp dirs, the linked worktree's real
+ * git dir). Mutating tools keep the strict root-only resolver.
+ */
+function makeSafeRead(root: string, extra: string[]) {
+  const safe = makeSafe(root);
+  const allowed = extra.map((p) => { try { return realpathSync(p); } catch { return p; } });
+  return (path: string): string => {
+    try {
+      return safe(path);
+    } catch (err) {
+      const abs = isAbsolute(path) ? path : resolve(root, path);
+      const real = realResolve(abs);
+      for (const a of allowed) if (!relative(a, real).startsWith("..")) return abs;
+      throw err;
+    }
+  };
 }
 
 /**
@@ -259,8 +319,9 @@ function notFoundHint(path: string, before: string, find: string): string {
  * Pass onEvent to receive file-change and tool-output events for the UI and
  * undo stack.
  */
-export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
+export function createTools(onEvent?: OnEvent, root: string = process.cwd(), extraReadRoots: string[] = []) {
   const safe = makeSafe(root);
+  const safeRead = makeSafeRead(root, [...defaultReadRoots(root), ...extraReadRoots]);
   return {
   /**
    * Read a file from the workspace.
@@ -279,7 +340,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
       offset: z.number().int().min(1).optional().describe("1-based line to start reading from"),
       limit: z.number().int().min(1).optional().describe("max number of lines to read from offset"),
     }),
-    execute: async ({ path, offset, limit }) => readRanged(safe(path), path, offset, limit),
+    execute: async ({ path, offset, limit }) => readRanged(safeRead(path), path, offset, limit),
   }),
 
   /**
@@ -485,7 +546,7 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd()) {
     description: "List entries in a directory (defaults to the workspace root).",
     inputSchema: z.object({ path: z.string().default(".") }),
     execute: async ({ path }) => {
-      const abs = safe(path);
+      const abs = safeRead(path);
       const entries = await readdir(abs);
       const rows = await Promise.all(
         entries.map(async (e) => {
@@ -678,9 +739,9 @@ function readOnlySubset(all: ReturnType<typeof createTools>) {
  */
 export async function createToolset(
   onEvent?: OnEvent,
-  opts: { readOnly?: boolean; extraTools?: Record<string, Tool<any, any>>; root?: string } = {},
+  opts: { readOnly?: boolean; extraTools?: Record<string, Tool<any, any>>; root?: string; extraReadRoots?: string[] } = {},
 ) {
-  const all = createTools(onEvent, opts.root); // root scopes every file/shell op (worktree isolation)
+  const all = createTools(onEvent, opts.root, opts.extraReadRoots); // root scopes every file/shell op (worktree isolation)
   const base = opts.readOnly ? readOnlySubset(all) : all;
   const set: Record<string, Tool<any, any>> = { ...base, ...(await mcpTools(onEvent, Boolean(opts.readOnly))) };
   // extraTools (the delegate tools) are injected by run.ts at depth 0 only — sub-
