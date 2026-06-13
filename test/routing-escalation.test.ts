@@ -1,51 +1,56 @@
-// Failure-kind-aware escalation + verifier-tier caution (routing-bench-validated
-// ideas, built onto the live engine). Asserted via the /why scorecard's `bar`,
-// so the tests are deterministic regardless of which accounts are configured.
-//
-//   - A TEST failure is a reasoning miss → climb hard toward the top tier.
-//   - A MECHANICAL failure (typecheck/lint/build — the compiler pinpointed the
-//     exact error) is an easy fix → barely raise the bar; a cheap model handles it.
-//   - NO verifier net → a cheap miss is invisible → raise the bar (be cautious);
-//     a present net → cheap-first is safe, no extra caution.
-import { test, expect } from "bun:test";
+// Failure-kind-aware escalation + verifier-tier caution, under the expected-cost
+// engine (no arbitrary bar). Asserted via the ACTUAL pick, with an isolated
+// account store (env keys only) so results are deterministic.
+import { test, expect, afterEach } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { RoutingSelector } from "../src/model/router.ts";
 
-const bar = (t: Parameters<RoutingSelector["explain"]>[0]) => new RoutingSelector().explain(t).bar;
+process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-esc-"));
+const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "DEEPSEEK_API_KEY"];
+const saved: Record<string, string | undefined> = {};
+function only(...present: string[]) {
+  for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+  for (const k of present) process.env[k] = "test-key";
+}
+afterEach(() => { for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
 
-test("a test failure escalates HARDER than a mechanical (typecheck) failure", () => {
-  const t = { prompt: "fix the parser", kind: "code" as const, escalate: 1 };
-  const testFail = bar({ ...t, failureKind: "test" });
-  const typeFail = bar({ ...t, failureKind: "typecheck" });
-  expect(testFail).toBeGreaterThan(typeFail);
+const pick = (t: Parameters<RoutingSelector["select"]>[0]) => new RoutingSelector().select(t).model.id;
+// A repo with a test net: a code task is supplied verifierTier "tests" so the
+// objective treats a miss as cheap → cheap-first; "none" removes the net.
+const code = (extra: object = {}) => ({ prompt: "refactor the parser", kind: "code" as const, verifierTier: "tests" as const, ...extra });
+
+test("with a test net, code routes cheap-first (cheapest model clearing the capability floor)", () => {
+  only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+  expect(pick(code())).toBe("deepseek-v4-flash"); // cheapest clearing the 0.4 floor
 });
 
-test("a mechanical failure barely raises the bar (cheap model can fix a pinpointed error)", () => {
-  const base = bar({ prompt: "fix the parser", kind: "code" });
-  const typeFail = bar({ prompt: "fix the parser", kind: "code", escalate: 1, failureKind: "typecheck" });
-  // It rises (it did miss once) but stays well below a test failure's jump.
-  expect(typeFail).toBeGreaterThanOrEqual(base);
-  expect(typeFail - base).toBeLessThan(0.08);
+test("a TEST failure climbs hard off the failed cheap model; a MECHANICAL one barely moves", () => {
+  only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+  // a test failure is a reasoning miss → raise the floor hard → climb to a strong model
+  expect(pick(code({ escalate: 1, failureKind: "test" }))).toBe("claude-sonnet-4-6");
+  // a typecheck failure is an easy, pinpointed fix → floor barely rises → stay cheap
+  expect(pick(code({ escalate: 1, failureKind: "typecheck" }))).toBe("deepseek-v4-flash");
 });
 
-test("a test failure at escalate 1 lifts the bar into the top tier", () => {
-  const testFail = bar({ prompt: "fix the parser", kind: "code", escalate: 1, failureKind: "test" });
-  expect(testFail).toBeGreaterThanOrEqual(0.85);
+test("repeated misses climb to the strongest tier", () => {
+  only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+  expect(pick(code({ escalate: 3 }))).toBe("claude-opus-4-8");
 });
 
-test("no verifier net raises the bar above a repo that has tests (same code task)", () => {
-  const withNet = bar({ prompt: "add a helper", kind: "code", verifierTier: "tests" });
-  const noNet = bar({ prompt: "add a helper", kind: "code", verifierTier: "none" });
-  expect(noNet).toBeGreaterThan(withNet);
+test("NO verifier net makes quality dominate — code routes to the strongest, not the cheapest", () => {
+  only("ANTHROPIC_API_KEY");
+  // With a net, the cheapest capable model (haiku) wins; with no net, a silent
+  // miss is expensive, so the objective climbs to the strongest available.
+  expect(pick(code({ verifierTier: "tests" }))).toBe("claude-haiku-4-5");
+  expect(pick(code({ verifierTier: "none" }))).toBe("claude-opus-4-8");
 });
 
-test("verifier tier never lifts a cheap kind off its low bar", () => {
-  const withNet = bar({ prompt: "what is a closure", kind: "chat", verifierTier: "tests" });
-  const noNet = bar({ prompt: "what is a closure", kind: "chat", verifierTier: "none" });
-  expect(noNet).toBe(withNet);
-});
-
-test("kind-blind escalation (no failureKind) still works — back-compat", () => {
-  const base = bar({ prompt: "fix the parser", kind: "code" });
-  const esc = bar({ prompt: "fix the parser", kind: "code", escalate: 2 });
-  expect(esc).toBeGreaterThan(base);
+test("difficulty never lifts a cheap kind off the cheapest model", () => {
+  only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+  // chat has no floor and a tiny miss cost → cheapest wins regardless of signals.
+  const plain = pick({ prompt: "what is a closure", kind: "chat" });
+  const heavy = pick({ prompt: "what is a closure", kind: "chat", estTokens: 50_000 });
+  expect(heavy).toBe(plain);
 });

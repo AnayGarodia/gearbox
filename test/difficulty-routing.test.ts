@@ -1,31 +1,43 @@
-// The difficulty axis wired into the router: the SAME code prompt routes to a
-// higher bar when the context says it's hard (big working set, many files), and
-// cheap kinds are never touched. Asserted via the /why scorecard's `bar`, so the
-// test is deterministic regardless of which accounts are configured.
-import { test, expect } from "bun:test";
+// The difficulty axis wired into the expected-cost engine: a harder code task
+// (big working set / many files) climbs to a stronger model than an easy one,
+// from non-LLM context signals alone — and cheap kinds are never touched.
+// Isolated account store so picks are deterministic.
+import { test, expect, afterEach } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { RoutingSelector } from "../src/model/router.ts";
 
-test("a heavy code task raises the bar above the bare-prompt baseline (context, not words)", () => {
-  const r = new RoutingSelector();
-  const base = r.explain({ prompt: "refactor the parser", kind: "code" }).bar;
-  const hard = r.explain({
-    prompt: "refactor the parser",
-    kind: "code",
-    estTokens: 400_000,
-    touchedFiles: Array.from({ length: 30 }, (_, i) => `module-${i}.ts`),
-  }).bar;
-  expect(hard).toBeGreaterThan(base);
-  expect(hard).toBeLessThanOrEqual(0.95);
+process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-diff-"));
+const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "DEEPSEEK_API_KEY"];
+const saved: Record<string, string | undefined> = {};
+function only(...present: string[]) {
+  for (const k of KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
+  for (const k of present) process.env[k] = "test-key";
+}
+afterEach(() => { for (const k of KEYS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; } });
+
+// Coarse capability tier of a model id, for "climbed to a stronger model" checks.
+const tier = (id: string) => ({ "claude-haiku-4-5": 1, "deepseek-v4-flash": 1, "deepseek-v4-pro": 1, "claude-sonnet-4-6": 2, "gpt-5.5": 2, "claude-opus-4-8": 3 } as Record<string, number>)[id] ?? 0;
+const pick = (t: Parameters<RoutingSelector["select"]>[0]) => new RoutingSelector().select(t).model.id;
+
+test("a hard code task with no net routes to a strong model, never weaker than the easy baseline (token cost held equal)", () => {
+  only("ANTHROPIC_API_KEY");
+  // estTokens held EQUAL so only the difficulty signal (file count) varies — a
+  // bigger working set would otherwise raise the expensive model's dollar cost,
+  // which is a separate (also real) effect we don't want to confound here.
+  const easy = pick({ prompt: "fix it", kind: "code", verifierTier: "none", estTokens: 16_000, touchedFiles: ["a.ts"] });
+  const hard = pick({ prompt: "fix it", kind: "code", verifierTier: "none", estTokens: 16_000, touchedFiles: Array.from({ length: 20 }, (_, i) => `module-${i}.ts`) });
+  expect(tier(hard)).toBeGreaterThanOrEqual(tier(easy));
+  expect(tier(hard)).toBeGreaterThanOrEqual(2); // a hard, unnetted code task earns a strong model
 });
 
-test("difficulty never touches cheap kinds — chat stays at its low bar even with heavy signals", () => {
-  const r = new RoutingSelector();
-  const base = r.explain({ prompt: "what is a closure", kind: "chat" }).bar;
-  const withSignals = r.explain({
-    prompt: "what is a closure",
-    kind: "chat",
-    estTokens: 400_000,
-    touchedFiles: Array.from({ length: 30 }, (_, i) => `m-${i}.ts`),
-  }).bar;
+test("difficulty never touches a cheap kind — chat picks the cheapest regardless of heavy signals", () => {
+  only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+  const base = pick({ prompt: "what is a closure", kind: "chat" });
+  const withSignals = pick({
+    prompt: "what is a closure", kind: "chat",
+    estTokens: 50_000, touchedFiles: Array.from({ length: 20 }, (_, i) => `m-${i}.ts`),
+  });
   expect(withSignals).toBe(base);
 });

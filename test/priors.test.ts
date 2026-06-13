@@ -105,17 +105,19 @@ test("failRateFor: unknown model / kind / repo → null", () => {
 });
 
 test("ROUTER: a model that keeps failing verification HERE stops being routed here", () => {
-  // deepseek-v4-pro normally wins code (cheapest clearing the 0.7 bar).
+  // deepseek-v4-flash normally wins code (cheapest capable, cheap-first).
   const r = new RoutingSelector();
   const task = { prompt: "refactor the parser", kind: "code" as const };
-  expect(r.select(task).model.id).toBe("deepseek-v4-pro");
-  // Eight failed verifications in THIS repo sink it below the bar → routing
-  // climbs to the next candidate without any cooldown or error.
+  const winner = r.select(task).model.id;
+  expect(winner).toBe("deepseek-v4-flash");
+  // Eight failed verifications in THIS repo are decisive measured evidence →
+  // the model is excluded here and routing climbs to the next candidate, no
+  // cooldown, no error. (A measured fail rate ≥ 0.5 is the flywheel's hard stop.)
   const repo = process.cwd().replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root";
-  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "deepseek-v4-pro", outcome: "failed", repo });
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "deepseek-v4-flash", outcome: "failed", repo });
   clearPriorsCache();
   const after = r.select(task);
-  expect(after.model.id).not.toBe("deepseek-v4-pro");
+  expect(after.model.id).not.toBe("deepseek-v4-flash");
 });
 
 // ── decay: cap-and-halve so old evidence fades ───────────────────────────────

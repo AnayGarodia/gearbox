@@ -61,12 +61,14 @@ test("a cheap task can route to the free claude seat once haiku is exposed", () 
   expect(choice.backend?.kind).toBe("cli");
 });
 
-test("a configured subscription seat wins over the same model on a metered key", () => {
+test("a configured subscription seat wins over a metered key (free seat beats metered dollars)", () => {
   putAccount(claudeSeat());
   const choice = new RoutingSelector().select({ prompt: "refactor the parser" });
-  expect(choice.backend?.kind).toBe("cli");
+  expect(choice.backend?.kind).toBe("cli"); // the free seat wins over the metered key
   expect((choice.backend as any).binary).toBe("claude");
-  expect(choice.model.sdkId).toBe("claude-sonnet-4-6"); // same model, free seat
+  // Among the free seat's models, quota-burn favours the lightest capable one
+  // (a heavier model drains the window faster), so haiku wins cheap-first.
+  expect(choice.model.sdkId).toBe("claude-haiku-4-5");
 });
 
 test("an exhausted seat fails over to the metered API model", () => {
@@ -76,7 +78,7 @@ test("an exhausted seat fails over to the metered API model", () => {
   recordRateLimits("claude-max", [{ utilization: 0.99, type: "seven_day", resetsAt: futureSec() }]);
   const choice = new RoutingSelector().select({ prompt: "refactor the parser" });
   expect(choice.backend?.kind).toBe("in-loop"); // back to the Anthropic key
-  expect(choice.model.id).toBe("claude-sonnet-4-6");
+  expect(choice.model.id).toBe("claude-haiku-4-5"); // cheapest metered model, cheap-first
 });
 
 test("an EXPIRED rate window is ignored — a seat whose limit already reset is fresh again", () => {
