@@ -20,9 +20,9 @@ function makeTool(run: any, events: any[] = []) {
   return makeDelegateTools({ onEvent: (e) => events.push(e), run }).delegate;
 }
 
-test("exposes both delegate and delegate_parallel", () => {
+test("exposes the delegation tools: delegate, delegate_parallel, spawn_subagent, collect_subagents", () => {
   const set = makeDelegateTools({ onEvent: () => {}, run: async () => ({ text: "", usage: { inputTokens: 0, outputTokens: 0 } }) });
-  expect(Object.keys(set).sort()).toEqual(["delegate", "delegate_parallel"]);
+  expect(Object.keys(set).sort()).toEqual(["collect_subagents", "delegate", "delegate_parallel", "spawn_subagent"]);
 });
 
 test("routes a sub-task, runs the sub-agent, returns its report", async () => {

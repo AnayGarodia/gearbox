@@ -572,5 +572,111 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
     },
   });
 
-  return { delegate, delegate_parallel };
+  // ── spawn_subagent / collect_subagents (async fan-out: fire many, keep
+  // working, collect when you need them) ───────────────────────────────────────
+  // Unlike delegate_parallel (which BLOCKS until all finish), spawn returns
+  // immediately so the orchestrator can fire many sub-agents AND keep doing its
+  // own work; collect gathers the finished ones (optionally waiting). Each spawn
+  // runs in its own git worktree (when in a repo) so concurrent writes are
+  // isolated and merged back on collect; in a non-repo, sub-agents run in the
+  // main workspace (fine for read/research fan-out).
+  type SpawnJob = {
+    num: number;
+    task: string;
+    label: string;
+    dir?: string; // worktree (git repo) or undefined (main workspace)
+    settled?: { ok: boolean; text: string; changed: { path: string; deleted: boolean }[] };
+    promise: Promise<{ ok: boolean; text: string; changed: { path: string; deleted: boolean }[] }>;
+  };
+  const spawned: SpawnJob[] = [];
+  const collectedNums = new Set<number>();
+  // Concurrency cap so 20-30 spawns don't open 20-30 model streams at once.
+  const SPAWN_CAP = 8;
+  let runningSpawns = 0;
+  const slotQueue: (() => void)[] = [];
+  const withSlot = async <T,>(fn: () => Promise<T>): Promise<T> => {
+    if (runningSpawns >= SPAWN_CAP) await new Promise<void>((r) => slotQueue.push(r));
+    runningSpawns++;
+    try { return await fn(); }
+    finally { runningSpawns--; slotQueue.shift()?.(); }
+  };
+
+  const spawn_subagent = tool({
+    description:
+      "Fire a sub-task to a fresh, best-routed sub-agent and KEEP WORKING — it runs in the background (in its own isolated git worktree when in a repo) and returns a job id immediately. Call it many times to fan out (research several files at once, generate several modules, etc.), then `collect_subagents` to gather the results when you need them. Use this instead of `delegate` when you have independent work to do WHILE the sub-agents run; use `delegate_parallel` when you just want to block until a small fixed batch finishes. Make each `task` completely self-contained (the sub-agent does not see this conversation).",
+    inputSchema: z.object({
+      task: z.string().describe("The complete, self-contained sub-task: what to do, which files, constraints, definition of done."),
+      kind: KIND.optional().describe("Optional task-kind hint to steer model routing (inferred if omitted)."),
+    }),
+    execute: async ({ task, kind }) => {
+      if (orchestratorPrompt && isWholeTask(task, orchestratorPrompt)) {
+        return "Not spawning: that is essentially this whole task. Split it into smaller, independent sub-tasks and spawn those.";
+      }
+      const routed = routeSubTask(task, kind, opts.pinnedModelId);
+      if ("error" in routed) return `spawn skipped: ${routed.error}. Do it yourself.`;
+      const num = ++counter;
+      const repoRoot = gitToplevel();
+      let dir: string | undefined;
+      if (repoRoot) {
+        const d = join(tmpdir(), `gearbox-spawn-${num}-${Date.now()}`);
+        if (addSeededWorktree(repoRoot, d)) dir = d;
+      }
+      const jid = `spawn-${num}`;
+      onEvent({ type: "tool-start", id: jid, name: "spawn_subagent", arg: `#${num} → ${routed.model.label}${routed.cli ? " (subscription)" : ""} · ${clipTask(task, 60)}` });
+      const promise = withSlot(async () => {
+        let res: { ok: boolean; text: string };
+        try { res = await runOne(run, routed, task, { signal, root: dir, runCli, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, activity: line }) }); }
+        catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
+        const changed = res.ok && dir ? changesIn(dir, true) : [];
+        onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: reportLine(res.text) || routed.model.label });
+        return { ...res, changed };
+      });
+      const job: SpawnJob = { num, task, label: routed.model.label, dir, promise };
+      job.promise.then((s) => { job.settled = s; }).catch(() => {});
+      spawned.push(job);
+      return `Spawned sub-task #${num} on ${routed.model.label} (running in the background). Keep working; call collect_subagents when you need its result. ${spawned.filter((j) => !collectedNums.has(j.num)).length} sub-task(s) outstanding.`;
+    },
+  });
+
+  const collect_subagents = tool({
+    description:
+      "Gather results from sub-agents started with spawn_subagent. By default it WAITS for all still-running spawned sub-tasks and returns their reports (merging each one's file changes back into your workspace). Set wait:false to grab only the ones that have already finished without blocking. Call this once you've run out of other work to do, or whenever you need a spawned result to continue.",
+    inputSchema: z.object({
+      wait: z.boolean().optional().describe("true (default) = wait for all outstanding spawned sub-tasks; false = return only the ones already finished."),
+    }),
+    execute: async ({ wait = true }) => {
+      const outstanding = spawned.filter((j) => !collectedNums.has(j.num));
+      if (!outstanding.length) return "No spawned sub-tasks to collect.";
+      const ready = wait ? outstanding : outstanding.filter((j) => j.settled);
+      if (!ready.length) return `Nothing finished yet (${outstanding.length} still running). Keep working, or call collect_subagents with wait:true.`;
+      const results = await Promise.all(ready.map(async (j) => ({ j, s: j.settled ?? (await j.promise) })));
+      const repoRoot = gitToplevel();
+      // Merge each finished worktree back (reuse the same per-file apply/3-way
+      // logic as delegate_parallel), then clean the worktree up.
+      const writers = new Map<string, { dir: string; deleted: boolean }[]>();
+      if (repoRoot) for (const { j, s } of results) if (j.dir) for (const c of s.changed) writers.set(c.path, [...(writers.get(c.path) ?? []), { dir: j.dir, deleted: c.deleted }]);
+      let applied = 0, autoMerged = 0;
+      const conflicted: string[] = [];
+      if (repoRoot) for (const [path, who] of writers) {
+        const dst = join(repoRoot, path);
+        const existed = existsSync(dst);
+        const before = existed ? (() => { try { return readFileSync(dst, "utf8"); } catch { return ""; } })() : "";
+        if (who.length === 1) {
+          const w = who[0]!;
+          try { if (w.deleted) { if (existed) rmSync(dst, { force: true }); } else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(join(w.dir, path), dst); } applied++; } catch { continue; }
+        } else {
+          if (mergeFileBack(repoRoot, path, who.filter((w) => !w.deleted).map((w) => w.dir))) conflicted.push(path);
+          autoMerged++;
+        }
+        onEvent({ type: "file-change", path: relative(process.cwd(), dst), before, existed });
+      }
+      for (const { j } of results) { collectedNums.add(j.num); if (repoRoot && j.dir) removeWorktree(repoRoot, j.dir); }
+      const remaining = spawned.filter((x) => !collectedNums.has(x.num)).length;
+      const lines = results.map(({ j, s }) => `#${j.num} (${j.label}): ${subAgentDigest(s.text, s.changed)}`);
+      const head = `Collected ${results.length} sub-task(s)${applied || autoMerged ? ` · applied ${applied}${autoMerged ? `, 3-way-merged ${autoMerged}` : ""} file change(s)` : ""}${conflicted.length ? ` · conflict markers in ${conflicted.join(", ")}` : ""}${remaining ? ` · ${remaining} still outstanding` : ""}.`;
+      return [head, "", ...lines].join("\n");
+    },
+  });
+
+  return { delegate, delegate_parallel, spawn_subagent, collect_subagents };
 }
