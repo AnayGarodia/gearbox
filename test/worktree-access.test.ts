@@ -1,29 +1,37 @@
 // Worktree sandbox escapes that are deliberately ALLOWED for read-only tools:
-//  - pasted screenshots in tmpdir()/gearbox-paste-* (outside every workspace)
+//  - pasted screenshots THIS SESSION registered (outside every workspace)
 //  - the real git dir of a linked worktree (<root>/.git is a pointer FILE)
-// Mutating tools stay jailed to the root.
+// Mutating tools stay jailed to the root. A paste dir from ANOTHER session (not
+// registered in this process) stays unreadable — it is not globbed in.
 import { test, expect } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createTools } from "../src/tools.ts";
+import { createTools, registerAttachmentDir } from "../src/tools.ts";
 
 const exec = async (t: any, input: any) => (t as any).execute(input, {} as any);
 
-test("read_file allows a gearbox-paste temp attachment from a foreign root", async () => {
+test("read_file allows a REGISTERED gearbox-paste attachment, rejects an unregistered one", async () => {
   const paste = mkdtempSync(join(realpathSync(tmpdir()), "gearbox-paste-"));
   const img = join(paste, "clipboard.png");
   writeFileSync(img, "not-really-a-png");
+  // a second paste dir this session never created (stands in for another session)
+  const foreign = mkdtempSync(join(realpathSync(tmpdir()), "gearbox-paste-"));
+  writeFileSync(join(foreign, "secret.png"), "another-session-screenshot");
   const root = mkdtempSync(join(realpathSync(tmpdir()), "gearbox-ws-"));
   try {
+    registerAttachmentDir(paste); // clipboard-image.ts does this on creation
     const tools = createTools(undefined, root);
     const out = await exec(tools.read_file, { path: img });
     expect(String(out)).toContain("not-really-a-png");
-    // but writes there are still refused
+    // a foreign session's paste dir is NOT readable (the security fix)
+    await expect(exec(tools.read_file, { path: join(foreign, "secret.png") })).rejects.toThrow(/escapes workspace/);
+    // and writes into our own paste dir are still refused
     await expect(exec(tools.write_file, { path: join(paste, "x.txt"), content: "no" })).rejects.toThrow(/escapes workspace/);
   } finally {
     rmSync(paste, { recursive: true, force: true });
+    rmSync(foreign, { recursive: true, force: true });
     rmSync(root, { recursive: true, force: true });
   }
 });

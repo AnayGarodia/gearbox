@@ -92,24 +92,27 @@ test("buildCliArgs uses each binary's stream-json flags", () => {
   expect(withDirs.filter((a) => a === "--add-dir").length).toBe(2);
   expect(withDirs).toContain("/tmp/gearbox-paste-a");
   expect(buildCliArgs("codex", "x", { addDirs: ["/tmp/gearbox-paste-a"] })).not.toContain("--add-dir");
-  // headless claude can't prompt, so safe git commands are pre-approved...
+  // headless claude can't prompt, so read-only git verbs are pre-approved...
   const allowed = buildCliArgs("claude", "x", {}).join(" ");
   expect(allowed).toContain("--allowedTools");
-  expect(allowed).toContain("Bash(git worktree:*)");
   expect(allowed).toContain("Bash(git status:*)");
-  // ...but not in plan/read-only mode or under yolo (bypassPermissions covers it)
+  // ...but the MUTATING `worktree` is NOT silently granted — it goes through the
+  // bridge prompt (its add/remove write outside the repo)
+  expect(allowed).not.toContain("Bash(git worktree:*)");
+  // ...and not in plan/read-only mode or under yolo (bypassPermissions covers it)
   expect(buildCliArgs("claude", "x", { readOnly: true })).not.toContain("--allowedTools");
   expect(buildCliArgs("claude", "x", { autoApprove: true })).not.toContain("--allowedTools");
   expect(buildCliArgs("codex", "x", {})).not.toContain("--allowedTools");
   // a known repoRoot also emits exact `git -C <root> …` rules, since models
   // prefix `-C <repo>` for explicitness and that defeats the plain prefix match
   const withRoot = buildCliArgs("claude", "x", { repoRoot: "/Users/me/proj" }).join(" ");
-  expect(withRoot).toContain("Bash(git -C /Users/me/proj worktree:*)");
   expect(withRoot).toContain("Bash(git -C /Users/me/proj status:*)");
-  // a root with spaces/commas can't be expressed in the rule grammar — skip it
-  // cleanly rather than emit a malformed rule (prompt nudge covers that case)
+  // a root with spaces/commas/colons can't be expressed in the rule grammar —
+  // skip it cleanly rather than emit a malformed rule (prompt nudge covers it)
   const spaced = buildCliArgs("claude", "x", { repoRoot: "/Users/me/my proj" }).join(" ");
   expect(spaced).not.toContain("-C /Users/me/my proj");
+  const coloned = buildCliArgs("claude", "x", { repoRoot: "/Users/me/pr:oj" }).join(" ");
+  expect(coloned).not.toContain("-C /Users/me/pr:oj");
 });
 
 test("buildCliArgs bridge mode wires the interactive permission control protocol", () => {
@@ -122,7 +125,7 @@ test("buildCliArgs bridge mode wires the interactive permission control protocol
   expect(b).toContain("stdio");
   // still acceptEdits + pre-grants so safe ops skip the prompt
   expect(b).toContain("acceptEdits");
-  expect(b.join(" ")).toContain("Bash(git worktree:*)");
+  expect(b.join(" ")).toContain("Bash(git status:*)");
   // non-bridge keeps the positional prompt and no stdin protocol
   const nb = buildCliArgs("claude", "MY PROMPT", {});
   expect(nb).toContain("MY PROMPT");

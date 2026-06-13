@@ -383,19 +383,27 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
   //  - Pre-grants below skip the prompt entirely for things that are always
   //    safe, so the bridge only bothers the user with genuinely novel actions:
   //    --add-dir (pasted-screenshot temp dirs, a linked worktree's real git
-  //    dir, the scratch dir) and --allowedTools (read-only git + worktree mgmt).
+  //    dir, the scratch dir) and --allowedTools (read-only git verbs).
   for (const d of opts.addDirs ?? []) args.push("--add-dir", d);
   if (!opts.readOnly && !opts.autoApprove) {
-    // The allow-rule grammar matches a command PREFIX: `Bash(git worktree:*)`
-    // only fires when the command literally starts with `git worktree`. Models
-    // often write `git -C <repo> worktree …` for explicitness, and the inserted
-    // `-C <path>` defeats the prefix match (this exact gap declined a worktree
-    // create 3× in testing). We can't enumerate arbitrary `-C` paths, but we DO
-    // know the repo root, so we also emit an exact `git -C <root> …` rule for it.
-    // (The prompt also tells the agent to drop -C — this is the safety net.)
-    const cmds = ["status", "log", "diff", "show", "branch", "worktree"];
+    // Pre-grant only READ-ONLY git verbs (no `worktree` — its add/remove mutate
+    // the filesystem outside the repo, so it goes through the bridge prompt like
+    // any other novel action rather than running silently). SAFETY ASSUMPTION:
+    // the `:*` suffix wildcard relies on `claude` splitting compound commands and
+    // re-checking each segment (so `git status && rm -rf` is NOT auto-approved);
+    // verified against claude v2.1.170. If a future CLI drops that split, these
+    // become a chaining vector — re-verify on CLI upgrades.
+    // The allow-rule grammar matches a command PREFIX: `Bash(git status:*)` only
+    // fires when the command literally starts with `git status`. Models often
+    // write `git -C <repo> status …` for explicitness, and the inserted `-C
+    // <path>` defeats the prefix match. We can't enumerate arbitrary `-C` paths,
+    // but we DO know the repo root, so we also emit an exact `git -C <root> …`
+    // rule for it. (The prompt also tells the agent to drop -C — a safety net.)
+    const cmds = ["status", "log", "diff", "show", "branch"];
     const rules = cmds.map((c) => `Bash(git ${c}:*)`);
-    if (opts.repoRoot && !/[\s,()]/.test(opts.repoRoot)) for (const c of cmds) rules.push(`Bash(git -C ${opts.repoRoot} ${c}:*)`);
+    // Reject `:` too — it's the grammar's command/args separator, so a repo path
+    // containing it would emit a malformed (over/under-matching) rule.
+    if (opts.repoRoot && !/[\s,():]/.test(opts.repoRoot)) for (const c of cmds) rules.push(`Bash(git -C ${opts.repoRoot} ${c}:*)`);
     args.push("--allowedTools", rules.join(","));
   }
   if (opts.sessionId) args.push("--resume", opts.sessionId);

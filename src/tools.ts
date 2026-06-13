@@ -47,8 +47,7 @@
 import { tool, type Tool } from "ai";
 import { z } from "zod";
 import { readFile, writeFile, readdir, stat } from "node:fs/promises";
-import { existsSync, realpathSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { resolve, relative, isAbsolute, dirname, basename, join } from "node:path";
 import { computeDiff, diffStat } from "./diff.ts";
 import { applyEdit } from "./edit.ts";
@@ -130,23 +129,36 @@ function realResolve(abs: string): string {
   }
 }
 
+// Paste/attachment temp dirs created BY THIS PROCESS (clipboard-image.ts
+// registers each one). READ-ONLY tools may reach into these even though they sit
+// outside the workspace root. We track the exact dirs this session created
+// rather than globbing tmpdir for `gearbox-paste-*`: a glob would also whitelist
+// EVERY other gearbox session's (and other users') attachment dirs on the box,
+// letting a prompt-injected agent enumerate and read screenshots it never owned.
+// (Residual: Conductor tabs share one process, so this is process- not
+// per-tab-scoped — acceptable, same user/trust domain; the old glob crossed
+// processes and users.)
+const sessionAttachmentDirs = new Set<string>();
+
+/** Record a temp dir this session created for an attachment, so READ-ONLY tools
+ *  may open files under it (it lives outside the workspace root). */
+export function registerAttachmentDir(dir: string): void {
+  try { sessionAttachmentDirs.add(realpathSync(dir)); } catch { sessionAttachmentDirs.add(dir); }
+}
+
 /**
  * Directories that READ-ONLY tools may access even though they sit outside the
  * workspace root. Two cases, both born from worktree isolation:
  *
  *  - Pasted screenshots: clipboard-image.ts writes attachments to
- *    mkdtemp(tmpdir()/gearbox-paste-*) — outside every repo and worktree. A
- *    sub-agent rooted in a worktree must still be able to open them.
+ *    mkdtemp(tmpdir()/gearbox-paste-*) — outside every repo and worktree, and
+ *    registered (above) so a sub-agent rooted in a worktree can still open them.
  *  - Linked worktrees: `<root>/.git` is a pointer FILE whose real git dir lives
  *    under the MAIN repo's .git/worktrees/<name> — outside the worktree root.
  *    Git metadata reads would otherwise be refused as workspace escapes.
  */
 export function defaultReadRoots(root: string): string[] {
-  const roots: string[] = [];
-  try {
-    const t = realpathSync(tmpdir());
-    for (const d of readdirSync(t)) if (d.startsWith("gearbox-paste-")) roots.push(join(t, d));
-  } catch { /* no tmpdir access: skip */ }
+  const roots: string[] = [...sessionAttachmentDirs];
   try {
     const dotgit = join(root, ".git");
     if (existsSync(dotgit) && statSync(dotgit).isFile()) {

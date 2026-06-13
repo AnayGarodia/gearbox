@@ -3400,7 +3400,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // never leak into the composer. These are CSI sequences with a `?`/`>` private
     // prefix — e.g. a DA1 reply `\x1b[?1;2c` (which showed up as `[?1;2c`) — that
     // some terminals emit unsolicited at startup/focus. A user never types them.
-    if (/\x1b?\[[?>][\d;]*[a-zA-Z]/.test(input)) return;
+    // Anchored ^…$ (one or more reports, whole chunk): an unanchored test would
+    // also drop a PASTE that merely CONTAINS such a substring (e.g. code with
+    // `[?1c`), silently losing real input.
+    if (/^(?:\x1b?\[[?>][\d;]*[a-zA-Z])+$/.test(input)) return;
     // Conductor tabs: ⌃T cycles to the next session (the /tab command covers
     // create/close/jump). Only the active tab's useInput runs, so this is safe.
     if (tabs && key.ctrl && input === "t") { tabs.cycle(1); return; }
