@@ -333,7 +333,9 @@ export async function runTask(opts: {
     }
     return "";
   })();
-  const delegateTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground, orchestratorModelId: model.id, orchestratorPrompt: lastUserPrompt }) : undefined;
+  // Sweep any worktrees from spawn_subagent jobs the model never collected (#8).
+  const spawnCleanup: { current?: () => void } = {};
+  const delegateTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground, orchestratorModelId: model.id, orchestratorPrompt: lastUserPrompt, spawnCleanup }) : undefined;
   // Caller overrides merge LAST so they can replace built-ins by name.
   const extraTools = delegateTools || opts.extraTools ? { ...delegateTools, ...opts.extraTools } : undefined;
   // Loop guard: the 3rd/4th consecutive identical tool call is blocked with a
@@ -604,6 +606,7 @@ export async function runTask(opts: {
       /* keep prior messages; multi-turn still works from input history */
     }
   }
+  spawnCleanup.current?.(); // sweep uncollected spawn_subagent worktrees (#8)
   const failure = errored ? { message: failureMessage ?? cleanError(failureRaw), raw: failureRaw, producedOutput } : undefined;
   if (!opts.deferTerminal) {
     // A "blocked" phase (no "finished") signals the turn failed. The assistant

@@ -406,7 +406,7 @@ function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean 
 
 // ── exported tool factory ─────────────────────────────────────────────────────
 
-export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; orchestratorModelId?: string; orchestratorPrompt?: string }): Record<string, Tool<any, any>> {
+export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; orchestratorModelId?: string; orchestratorPrompt?: string; spawnCleanup?: { current?: () => void } }): Record<string, Tool<any, any>> {
   const { onEvent, signal, run, runCli, onBackground, orchestratorModelId, orchestratorPrompt } = opts;
 
   // ── delegate (sequential, single task) ──────────────────────────────────────
@@ -590,6 +590,15 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
   };
   const spawned: SpawnJob[] = [];
   const collectedNums = new Set<number>();
+  // Turn-end teardown (review #8): spawn_subagent creates a worktree per job, but
+  // cleanup otherwise lives only in collect_subagents — so a turn that spawns and
+  // ends without collecting (model forgets, errors, or the user aborts) would
+  // orphan the temp dirs + git worktree registrations. run.ts calls this in a
+  // finally to sweep any uncollected ones.
+  if (opts.spawnCleanup) opts.spawnCleanup.current = () => {
+    const root = gitToplevel();
+    for (const j of spawned) if (!collectedNums.has(j.num) && j.dir && root) { collectedNums.add(j.num); removeWorktree(root, j.dir); }
+  };
   // Concurrency cap so 20-30 spawns don't open 20-30 model streams at once.
   const SPAWN_CAP = 8;
   let runningSpawns = 0;
@@ -623,11 +632,15 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       }
       const jid = `spawn-${num}`;
       onEvent({ type: "tool-start", id: jid, name: "spawn_subagent", arg: `#${num} → ${routed.model.label}${routed.cli ? " (subscription)" : ""} · ${clipTask(task, 60)}` });
+      // The job promise NEVER rejects — every failure (the sub-agent, OR the git
+      // staging in changesIn, which runs outside runOne's try) degrades to a
+      // per-job error so one bad spawn can't blow up collect_subagents (review #9).
       const promise = withSlot(async () => {
         let res: { ok: boolean; text: string };
         try { res = await runOne(run, routed, task, { signal, root: dir, runCli, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, activity: line }) }); }
         catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
-        const changed = res.ok && dir ? changesIn(dir, true) : [];
+        let changed: { path: string; deleted: boolean }[] = [];
+        try { if (res.ok && dir) changed = changesIn(dir, true); } catch { /* git staging error → no merge, keep the report */ }
         onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: reportLine(res.text) || routed.model.label });
         return { ...res, changed };
       });

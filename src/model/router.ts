@@ -29,7 +29,7 @@ import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
-import { priorFor, priorLine, failRateFor, repoFailRate } from "./priors.ts";
+import { priorFor, priorLine, failRateFor } from "./priors.ts";
 import { estimateDifficulty, type Difficulty, type DifficultySignals } from "./difficulty.ts";
 import { qualityForKind, qualityNote, benchmarkRow } from "./benchmarks.ts";
 import { effortLevels } from "./reasoning.ts";
@@ -421,8 +421,12 @@ export class RoutingSelector implements ModelSelector {
     const floor = Math.min(FLOOR_MAX, CAPABILITY_FLOOR[kind] + escalate * escalationFloorStep(task.failureKind));
     // Verifier tier (caller-supplied, else this repo's, memoized): sets how
     // costly a miss is in the objective — a present net makes cheap-first safe;
-    // none makes caution emerge. NOT a bar bump.
-    const verifierTier = task.verifierTier ?? detectedVerifierTier() ?? "tests";
+    // none makes caution emerge. detectedVerifierTier returns "tests"/"types"/
+    // "none" normally; it is undefined ONLY when detection THREW. On that
+    // exception we fall back to "none" (caution) — assuming a full net ("tests")
+    // there would invert the safety property exactly when we can't see the repo
+    // (review #5): a likely-wrong cheap pick would look safe with no net to catch it.
+    const verifierTier = task.verifierTier ?? detectedVerifierTier() ?? "none";
     // Difficulty WITHIN the kind (DESIGN: kind says WHAT, not HOW HARD). Pure,
     // non-LLM context signals (big working set, many/large touched files, a repo
     // where code keeps failing). Feeds the objective's P(wrong) — it raises a
@@ -482,7 +486,13 @@ export class RoutingSelector implements ModelSelector {
     const clearsFloor = (c: Candidate): boolean => {
       // Flywheel hard stop: a model proven to keep failing HERE is excluded.
       if ((failRateFor(kind, c.canonicalId ?? c.spec.id)?.rate ?? 0) >= MEASURED_FAIL_EXCLUDE) return false;
-      return c.backend?.kind === "cli" ? !hasKnownQuality(c) || adjQuality(c) >= floor : adjQuality(c) >= floor;
+      if (floor === 0) return true; // cheap kinds have no floor — quality is irrelevant
+      // A CLI seat with no benchmark gets the benefit of the doubt (a known-good
+      // vendor model). A METERED model with NO known quality (e.g. a discovered
+      // gateway/Foundry model absent from both corpora) must NOT clear a code/plan
+      // floor on the 0.5 default guess (review #3) — require real, known quality.
+      if (c.backend?.kind === "cli") return !hasKnownQuality(c) || adjQuality(c) >= floor;
+      return hasKnownQuality(c) && adjQuality(c) >= floor;
     };
     // If the floor would empty the pool (everything is sub-floor), keep the
     // strongest available rather than failing — a weak model beats no model.
@@ -572,7 +582,9 @@ export class RoutingSelector implements ModelSelector {
     const adjQuality = (c: Candidate): number => qualityOf(c, p.kind) + (priorFor(p.kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
     const clearsFloor = (c: Candidate): boolean => {
       if ((failRateFor(p.kind, c.canonicalId ?? c.spec.id)?.rate ?? 0) >= MEASURED_FAIL_EXCLUDE) return false;
-      return c.backend?.kind === "cli" ? !hasKnownQuality(c) || adjQuality(c) >= p.floor : adjQuality(c) >= p.floor;
+      if (p.floor === 0) return true;
+      if (c.backend?.kind === "cli") return !hasKnownQuality(c) || adjQuality(c) >= p.floor;
+      return hasKnownQuality(c) && adjQuality(c) >= p.floor;
     };
     for (const c of p.pool) {
       const s = scored.get(scoreId(c))!;
@@ -704,7 +716,11 @@ function detectedVerifierTier(): "tests" | "types" | "none" | undefined {
 // and guarded so a missing/huge file list never throws or stalls routing.
 // (The test-net signal lives in prepare()'s verifier-tier caution, not here, so
 // the no-net penalty has exactly one owner.)
-function gatherDifficultySignals(task: Task, kind: Kind): DifficultySignals {
+function gatherDifficultySignals(task: Task, _kind: Kind): DifficultySignals {
+  // The files in play, supplied by the caller (App threads the @mentioned files +
+  // the session's recently-changed files — see App.tsx). The router stays PURE
+  // and deterministic: no repo I/O on the routing hot path, so a pick never
+  // depends on the working tree's index state.
   const files = task.touchedFiles ?? [];
   let touchedBytes: number | undefined;
   if (files.length) {
@@ -714,11 +730,14 @@ function gatherDifficultySignals(task: Task, kind: Kind): DifficultySignals {
     }
     if (counted) touchedBytes = sum;
   }
+  // NOTE: repoFailRate is deliberately NOT a difficulty signal — the per-(kind,
+  // model) measured fail rate already enters the objective via failRate→P(wrong),
+  // and folding the repo-aggregate in here too double-counted the same evidence
+  // (review #4). Difficulty = how hard the TASK is; failRate = how the MODEL does.
   return {
     estTokens: task.estTokens,
     touchedFileCount: files.length || undefined,
     touchedBytes,
-    repoFailRate: repoFailRate(kind)?.rate,
   };
 }
 

@@ -60,15 +60,6 @@ export interface ScoreCandidate {
   // outputFactorFor). Reasoning models emit several times the default 0.2 —
   // at output prices that's where "cheap" thinking models stop being cheap.
   outputFactor?: number;
-  // Kind-weighted value of quality ABOVE the bar (router sets ~0.3 for
-  // code/plan, 0 for cheap kinds): a near-tie resolves toward the stronger
-  // model where correctness compounds, while cheap kinds stay pure-cost.
-  qualityWeight?: number;
-  // The task's quality bar — the bonus pays only for SURPLUS above it.
-  // Rewarding absolute quality let a pricey metered model outscore a free
-  // seat purely on its benchmark number; surplus rewards only what the task
-  // didn't already demand.
-  qualityBar?: number;
   // Standing user-preference bias as a FRACTION of this turn's cost, computed
   // by the router from the policy (accountOrder rank, useFirst drain bias).
   // Positive = preferred (subtracted from the score). Cost-commensurate, so a
@@ -124,17 +115,6 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
   apiThrottleKnee: 0.15,
   scarcityStaleMs: 15 * 60_000,
 };
-
-// The reference tps at or above which a model is considered fully "fast"
-// (approximately haiku-class at ~150 tok/s). Models with no latency data (tps 0)
-// are treated as mid-speed (0.5) rather than assumed slow, so missing data is
-// never punished.
-const TPS_REF = 150;
-
-// Reference turn price for the quality bonus (blended $/Mtok of a mid-tier
-// coding model): quality above the bar is worth qualityWeight × quality × this,
-// independent of the candidate's own price.
-const QUALITY_REF_USD_PER_MTOK = 5;
 
 // All inputs needed for a scoring run. Inject `now` (from Date.now()) so callers
 // control the staleness check; this keeps the function deterministic in tests.

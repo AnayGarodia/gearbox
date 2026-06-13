@@ -71,7 +71,7 @@ import { fetchUrlText, urlsInText } from "../fetch.ts";
 import { imageChipLabel, imageContent, imagePathsInText, isImageFilePath, loadImageAttachment, replaceImagePathWithMarker, type ImageAttachment } from "../image.ts";
 import { missingRequirements, capabilitySummary, type ModelRequirement } from "../model/capabilities.ts";
 import { writeProjectGuide } from "../init.ts";
-import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
+import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, worstFailureKind, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { resolveSandboxPolicy, sandboxBackendAvailable } from "../sandbox/index.ts";
 import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
@@ -555,6 +555,22 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // Bumped whenever a background/spawned sub-task finishes, so the idle auto-wake
   // effect re-runs (pendingBackgroundRef is a ref, so it can't be an effect dep).
   const [bgWakeTick, setBgWakeTick] = useState(0);
+  // Cap consecutive idle auto-wakes (review #10): an auto-woken turn can spawn
+  // more background work and re-wake — with the user away this could run up cost
+  // unbounded. After the cap, hold the results for the user instead of resuming.
+  // Reset whenever a real (non-wake) turn runs.
+  const autoWakeCountRef = useRef(0);
+  const MAX_AUTO_WAKES = 25;
+  // The files in play, fed to the router's difficulty estimate (review #2: this
+  // signal was never set): @mentioned files for this turn + the files edited so
+  // far this session.
+  const touchedFilesRef = useRef<string[]>([]);
+  const sessionTouchedRef = useRef<Set<string>>(new Set());
+  // The kind of check that failed on the LAST attempt, fed to the router's
+  // escalation (review #1: failureKind was never set, so a typecheck miss
+  // escalated like a reasoning miss). Set before an auto-fix re-run; cleared on a
+  // fresh user turn.
+  const lastFailureKindRef = useRef<import("../model/selector.ts").Task["failureKind"]>(undefined);
   // The flywheel's recording hooks: what kind routed this turn (+ how it was
   // determined, for /why provenance), and the last edited turn's (kind, model)
   // so /undo can debit it as a human revert.
@@ -2374,7 +2390,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true, estTokens });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens });
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires, estTokens }); // directive model unavailable → fall back to routing
       }
@@ -2437,7 +2453,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: routedKind, requires, estTokens }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         // Bail only when the router hands back the exact pick we just parked
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
@@ -2626,6 +2642,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       agentTurnRef.current = agentInv?.agent ?? null;
       const effectivePrompt = agentInv ? agentInv.task : prompt;
       let { text: modelPrompt, attached } = expandMentions(effectivePrompt);
+      // Difficulty input for the router (review #2): files in play = this turn's
+      // @mentions + everything edited so far this session. A fresh user turn
+      // (attempt 0) clears the last failure kind so escalation only applies it on
+      // an actual auto-fix re-run.
+      if (attempt === 0) lastFailureKindRef.current = undefined;
+      if (effectivePrompt.trim()) autoWakeCountRef.current = 0; // a real turn resets the auto-wake budget
+      touchedFilesRef.current = uniq([...attached, ...sessionTouchedRef.current]);
       // Backgrounded / spawned sub-task reports arrive here. On an AUTO-WAKE (a
       // sub-task finished while idle and triggered this turn — empty prompt) the
       // reports ARE the content; on a normal turn they prepend to the user's.
@@ -3108,6 +3131,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const turnItems = cut < 0 ? [] : collapsed.slice(cut);
           const checkItems = turnItems.filter((i): i is Extract<Item, { kind: "verification" }> => i.kind === "verification");
           const changed = uniq([...changedFiles]);
+          for (const f of changed) sessionTouchedRef.current.add(f); // feed next turn's difficulty (files in play)
           const doneChecks = checkItems.map((c) => c.intent ?? c.command);
           const failed = checkItems.filter((c) => !c.ok).map((c) => `${c.intent ?? c.command}: ${c.summary}`).slice(0, 4);
           // Honest "done with proof": on a successful edited turn, state which tier was
@@ -3171,6 +3195,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const sameFailure = Boolean(prevFp && failed.length && prevFp === failureFingerprint(failed));
           if (shouldAutoFix({ mode: verifyRef.current, attempt, failures: failed, changedFiles: changed, prevFingerprint: prevFp })) {
             autofixFpRef.current = failureFingerprint(failed);
+            // What KIND of check failed steers the next escalation (review #1): a
+            // test failure climbs hard to a stronger model, a mechanical
+            // (typecheck/lint/build) miss barely moves — a cheap model can fix a
+            // pinpointed compiler error.
+            lastFailureKindRef.current = worstFailureKind(failed);
             notice(`checks failed — fixing (attempt ${attempt + 1}/${MAX_AUTOFIX_ATTEMPTS})`);
             const fixPrompt = buildFixPrompt(failed);
             setTimeout(() => void runTurnRef.current?.(fixPrompt, attempt + 1), 0);
@@ -3381,6 +3410,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // effect only fires again when a NEW report arrives (bgWakeTick).
   useEffect(() => {
     if (busy || queueRef.current.length || pendingBackgroundRef.current.length === 0) return;
+    if (autoWakeCountRef.current >= MAX_AUTO_WAKES) {
+      notice(`${pendingBackgroundRef.current.length} sub-task result(s) ready — paused auto-resume after ${MAX_AUTO_WAKES} rounds. Send a message to continue.`);
+      return;
+    }
+    autoWakeCountRef.current++;
     void runTurn("");
   }, [bgWakeTick, busy, runTurn]);
 
