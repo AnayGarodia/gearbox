@@ -79,6 +79,11 @@ export interface ModelChoice {
   model: ModelSpec;
   reason: string; // shown in the UI; becomes the routing scorecard later
   backend?: Backend; // how to run it (absent means in-loop). Set by RoutingSelector.
+  // Auto-routed reasoning effort for this turn (low … xhigh/max), chosen by the
+  // expected-cost objective across the model's effort vocabulary. Absent when the
+  // model has no effort control or the selector is a hard pin. The runner uses it
+  // unless the user explicitly pinned an effort with /effort.
+  effort?: string;
 }
 
 // One row in the "/why" scorecard: the full per-candidate breakdown that lets

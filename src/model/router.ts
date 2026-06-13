@@ -32,8 +32,14 @@ import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./
 import { priorFor, priorLine, failRateFor, repoFailRate } from "./priors.ts";
 import { estimateDifficulty, type Difficulty, type DifficultySignals } from "./difficulty.ts";
 import { qualityForKind, qualityNote, benchmarkRow } from "./benchmarks.ts";
+import { effortLevels } from "./reasoning.ts";
+import { bestEffort } from "./effort.ts";
 import { detectProofTier } from "../verify.ts";
 import { statSync } from "node:fs";
+
+// Per-turn context the effort search needs (difficulty + verifier set how much
+// effort is worth; interactive sets the value of the extra latency).
+interface EffortCtx { estInputTokens: number; difficulty: number; verifierTier: "tests" | "types" | "none"; interactive: boolean }
 
 type Kind = NonNullable<Task["kind"]>;
 
@@ -291,30 +297,49 @@ function scoreId(c: Candidate): string {
   return `${c.state.accountId}::${c.spec.id}`;
 }
 
-function toScoreCandidate(c: Candidate, kind?: string, pol?: Policy): ScoreCandidate {
+function toScoreCandidate(c: Candidate, kind?: string, pol?: Policy, effortCtx?: EffortCtx): ScoreCandidate {
   const cost = costPair(c);
   const canonical = c.canonicalId ?? c.spec.id;
+  // RAW per-kind benchmark quality (not prior-adjusted): the flywheel enters the
+  // objective ONCE, via failRate → P(wrong) below, so folding the prior delta in
+  // here too would double-count it. (The capability FLOOR uses the prior-adjusted
+  // quality separately, to exclude a sunk model.)
+  let quality = qualityOf(c, kind as Kind | undefined);
+  let outputFactor = outputFactorFor(canonical);
+  let ttftMs = profileFor(canonical)?.latency?.ttftMs ?? 0;
+  let effort: string | undefined;
+  // Auto-effort: pick the effort level minimizing expected cost for this model+
+  // task (low for easy/netted work, high for hard/unnetted). The chosen effort's
+  // adjusted quality/outputFactor/ttft then feed the model's own score, so the
+  // model competes AT its best effort.
+  if (effortCtx) {
+    const levels = effortLevels(c.spec);
+    if (levels.length) {
+      const pick = bestEffort(
+        { quality, inUSDPerMtok: cost.inUSDPerMtok, outUSDPerMtok: cost.outUSDPerMtok, tps: tpsOf(c), ttftMs, baseOutputFactor: outputFactor },
+        levels,
+        effortCtx,
+      );
+      quality = pick.quality; outputFactor = pick.outputFactor; ttftMs = pick.ttftMs; effort = pick.level;
+    }
+  }
   return {
     id: scoreId(c),
     modelId: c.spec.id,
     inUSDPerMtok: cost.inUSDPerMtok,
     outUSDPerMtok: cost.outUSDPerMtok,
-    // RAW per-kind benchmark quality (not prior-adjusted): the flywheel enters
-    // the objective ONCE, via failRate → P(wrong) below, so folding the prior
-    // delta in here too would double-count it. (The capability FLOOR does use
-    // the prior-adjusted quality, separately, to exclude a sunk model.)
-    quality: qualityOf(c, kind as Kind | undefined),
+    quality,
     tps: tpsOf(c),
-    ttftMs: profileFor(canonical)?.latency?.ttftMs ?? 0,
+    ttftMs,
     account: c.state,
-    // Cost realism (scoring.ts): measured per-(kind,model) fail rate → the
-    // objective's P(wrong) (the flywheel); provider cache-read pricing → warm
-    // discount (CLI seats manage caching inside the vendor binary → none here);
-    // per-model output verbosity → cost + latency.
+    // measured per-(kind,model) fail rate → the objective's P(wrong) (flywheel);
+    // cache-read pricing → warm discount (CLI seats cache inside the vendor
+    // binary → none); per-model + per-effort output verbosity → cost + latency.
     failRate: kind ? failRateFor(kind, canonical)?.rate : undefined,
     cacheReadDiscount: c.backend.kind === "cli" ? undefined : cacheReadDiscount(c.spec.provider) ?? undefined,
-    outputFactor: outputFactorFor(canonical),
+    outputFactor,
     preferBias: preferBiasFor(c, pol),
+    effort,
   };
 }
 
@@ -499,9 +524,11 @@ export class RoutingSelector implements ModelSelector {
       return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
     }
 
-    // Score by expected cost-to-correct (cost + latency + quality), argmin.
+    // Score by expected cost-to-correct (cost + latency + quality), argmin. Each
+    // candidate is scored AT its best effort (auto-effort routing).
     const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task), difficulty: p.effDifficulty, verifierTier: p.verifierTier };
-    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol)), ...flags });
+    const effortCtx: EffortCtx = { estInputTokens: p.estInputTokens, difficulty: p.effDifficulty, verifierTier: p.verifierTier, interactive: !!task.interactive };
+    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, effortCtx)), ...flags });
     const winner = candidates.find((c) => scoreId(c) === best.candidate.id)!;
     this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
@@ -513,7 +540,9 @@ export class RoutingSelector implements ModelSelector {
       winner.backend?.kind !== "cli"
         ? this.cooledOut.find((c) => c.backend?.kind === "cli" && (c.canonicalId ?? c.spec.id) === (winner.canonicalId ?? winner.spec.id))
         : undefined;
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + hardNote + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend };
+    const effort = best.candidate.effort;
+    const effortNote = effort ? ` · effort ${effort}` : "";
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + hardNote + effortNote + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend, effort };
   }
 
   // Build the full ranked scorecard for the "/why" UI panel. Scores the entire
@@ -532,11 +561,12 @@ export class RoutingSelector implements ModelSelector {
     // Score the WHOLE pool (incl. floored-out) so the UI shows every candidate,
     // with the SAME expected-cost flags select() uses, so numbers + winner match.
     const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task), difficulty: p.effDifficulty, verifierTier: p.verifierTier };
+    const effortCtx: EffortCtx = { estInputTokens: p.estInputTokens, difficulty: p.effDifficulty, verifierTier: p.verifierTier, interactive: !!task.interactive };
     const scored = new Map<string, ScoredCandidate>();
-    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind, p.pol), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
+    for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind, p.pol, effortCtx), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);
     const winnerId = preferred
       ? scoreId(preferred)
-      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol)), ...flags }).candidate.id;
+      : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, effortCtx)), ...flags }).candidate.id;
 
     // Mirror prepare()'s capability floor so the verdict matches what select did.
     const adjQuality = (c: Candidate): number => qualityOf(c, p.kind) + (priorFor(p.kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);

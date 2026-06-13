@@ -74,6 +74,11 @@ export interface ScoreCandidate {
   // Positive = preferred (subtracted from the score). Cost-commensurate, so a
   // clearly cheaper rival still wins; preference resolves the near-ties.
   preferBias?: number;
+  // The reasoning effort this candidate is being scored AT (the router's
+  // best-effort pick for this model+task). Carry-through only — the scorer reads
+  // quality/outputFactor/ttftMs, which already reflect the effort; this just lets
+  // the winner report which effort it ran at.
+  effort?: string;
 }
 
 // Tunable weights. Defaults are calibrated to match the heuristic described in

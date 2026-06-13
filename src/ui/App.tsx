@@ -495,7 +495,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [suggestion, setSuggestion] = useState<string | null>(null);
   const [selector, setSelector] = useState<ModelSelector>(initialSelector);
   const [mode, setMode] = useState<"normal" | "auto-accept" | "plan">("normal");
-  const [effort, setEffortState] = useState<Effort>("medium");
+  // "auto" = let the router pick the effort per task (the default); /effort <level>
+  // pins a concrete level, /effort auto returns to routed effort.
+  const [effort, setEffortState] = useState<Effort>("auto");
   const [elapsed, setElapsed] = useState(0);
   const [verb, setVerb] = useState("Spinning up");
   // A conductor tab named from the wardrobe dresses Boo in its namesake costume;
@@ -2031,8 +2033,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // never thrown — a mismatch must not kill a subscription turn (S-E; mirrors the
       // in-loop R-4 fix). (Note: the claude CLI doesn't take an effort flag yet, so
       // for claude this clamps then gets dropped downstream in buildCliArgs.)
-      let cliEffort = normalizeEffort(effortRef.current, efforts) ?? undefined;
-      if (cliEffort === undefined && effortRef.current !== "medium" && efforts.length) {
+      // "auto" on a subscription seat → let the vendor binary use its own default
+      // effort (the seat path owns its reasoning config; claude drops the flag
+      // anyway). A pinned effort is honored + clamped to the seat model's vocab.
+      let cliEffort = effortRef.current === "auto" ? undefined : normalizeEffort(effortRef.current, efforts) ?? undefined;
+      if (effortRef.current !== "auto" && cliEffort === undefined && effortRef.current !== "medium" && efforts.length) {
         const { level: nearest } = clampEffort(effortRef.current, efforts);
         cliEffort = normalizeEffort(nearest, efforts) ?? undefined;
       }
@@ -2284,17 +2289,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         usedAccountRef.current = account?.id ?? null;
         cliMetaRef.current = null;
         if (account) markUsed(account.id);
-        let _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
-        if (_effortRaw === null && effortRef.current !== "medium") {
-          // The (often auto-routed) model doesn't support the active effort tier.
-          // CLAMP to the nearest supported level instead of throwing — routing
-          // picking a model with a different effort vocab must not kill the turn (R-4).
-          const supported = effortLevels(choice.model);
-          if (supported.length) {
-            const { level: nearest, clamped } = clampEffort(effortRef.current, supported);
-            _effortRaw = nearest;
-            if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
-          } // else: model has no effort control → omit effort (leave null)
+        // Effort: when the user hasn't pinned one (default "auto"), use the
+        // router's per-task pick (choice.effort, already valid for this model).
+        // A pinned effort is honored and clamped to the model's vocabulary.
+        let _effortRaw: string | null;
+        if (effortRef.current === "auto") {
+          _effortRaw = choice.effort ?? null;
+        } else {
+          _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
+          if (_effortRaw === null && effortRef.current !== "medium") {
+            // A pinned effort the (often auto-routed) model doesn't support → CLAMP
+            // to the nearest supported level instead of throwing (R-4).
+            const supported = effortLevels(choice.model);
+            if (supported.length) {
+              const { level: nearest, clamped } = clampEffort(effortRef.current, supported);
+              _effortRaw = nearest;
+              if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
+            }
+          }
         }
         const r = await runTask({
           model: choice.model, messages: ctx, onEvent, signal, plan, system, creds,
@@ -2538,6 +2550,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Apply effort clamping when switching to a model with different effort support.
   // Returns a suffix to append to the model-switch notice, or "" if no change.
   const applyEffortClamp = (allowed: string[]): string => {
+    if (effortRef.current === "auto") return ""; // routed effort adapts per model — nothing to clamp
     const { level, clamped } = clampEffort(effortRef.current, allowed);
     if (!clamped) return "";
     const prev = effortRef.current;
@@ -2548,6 +2561,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
 
   const setEffort = (raw: string) => {
+    // Return to routed (per-task) effort.
+    if (raw.trim().toLowerCase() === "auto") {
+      effortRef.current = "auto";
+      setEffortState("auto");
+      toast("effort → auto · routed per task");
+      return;
+    }
     const target = effortTarget();
     if (!target?.efforts.length) {
       notice("the active model does not expose reasoning efforts");
