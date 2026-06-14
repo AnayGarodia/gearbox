@@ -50,13 +50,20 @@ export async function getSecret(ref: string): Promise<string | null> {
   }
   const f = fileGet(ref);
   if (f != null) return f;
-  // Cross-runtime recovery: keys added under Bun (dev) land in the OS keychain,
-  // but the PUBLISHED binary runs under node, where `Bun.secrets` is unavailable —
-  // so it would otherwise never see them. On macOS, read the keychain via the
-  // `security` CLI as a fallback. (Bun already reads the file store via the line
-  // above, so the reverse direction — node-added file keys under Bun — works too.)
+  // Cross-runtime recovery: keys added under Bun (dev) or an older standalone
+  // binary land in the OS keychain, but the PUBLISHED binary runs under node,
+  // where `Bun.secrets` is unavailable — so it would otherwise never see them.
+  // On macOS, read the keychain via the `security` CLI as a fallback.
   if (typeof Bun === "undefined" && mode() !== "file") {
-    return keychainCliGet(ref);
+    const v = keychainCliGet(ref);
+    // Migrate-on-read: persist into the file store so EVERY later read hits the
+    // line above and never touches the keychain again. Without this, node reads
+    // the keychain on every run and macOS re-prompts for the login password each
+    // time (the `security` CLI isn't in the item's ACL). One read, then silent.
+    if (v != null) {
+      try { fileSet(ref, v); } catch { /* best-effort; recovery still returns v */ }
+    }
+    return v;
   }
   return null;
 }
