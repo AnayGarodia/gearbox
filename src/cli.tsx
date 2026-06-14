@@ -210,6 +210,7 @@ async function runCliOnboarding(): Promise<boolean> {
   const { subscriptionEnv } = await import("./agent/cli-backend.ts");
   const { detectProviderByKey } = await import("./accounts/catalog.ts");
   const { which } = await import("./proc.ts");
+  const { promptMultiSelect } = await import("./ui/checkbox.ts");
   const pipedAnswers = process.stdin.isTTY ? null : (await readStdin()).split(/\r?\n/);
   const rl = pipedAnswers ? null : createInterface({ input: process.stdin, output: process.stdout });
   const ask = async (q: string) => {
@@ -301,9 +302,30 @@ async function runCliOnboarding(): Promise<boolean> {
         continue;
       }
       if (action === "import") {
-        for (const c of env) await importEnvCred(c);
-        for (const c of cloud) await importCloudCred(c);
-        console.log(ok(`Imported ${env.length + cloud.length} credential${env.length + cloud.length === 1 ? "" : "s"}.`));
+        // Checkbox: pick WHICH detected credentials to import (not all-or-nothing).
+        const detected = [
+          ...env.map((c) => ({ kind: "env" as const, c, label: `${c.label} · ${c.envVar}` })),
+          ...cloud.map((c) => ({ kind: "cloud" as const, c, label: `${c.label} · ${c.source}` })),
+        ];
+        rl?.pause(); // hand stdin to the raw-mode picker, then take it back
+        const picked = await promptMultiSelect(detected.map((d) => d.label), {
+          title: accent("Detected credentials — space to toggle, ⏎ to import:"),
+          colors: { R: "\x1b[0m", C: "\x1b[36m", G: "\x1b[32m", D: "\x1b[2m", B: "\x1b[1m" },
+          readLine: pipedAnswers ? async () => pipedAnswers.shift() ?? "all" : undefined,
+        });
+        rl?.resume();
+        if (!picked || picked.length === 0) {
+          console.log(dim("Nothing imported."));
+          continue;
+        }
+        let imported = 0;
+        for (const i of picked) {
+          const d = detected[i]!;
+          if (d.kind === "env") await importEnvCred(d.c);
+          else await importCloudCred(d.c);
+          imported++;
+        }
+        console.log(ok(`Imported ${imported} credential${imported === 1 ? "" : "s"}.`));
         didAdd = true;
       }
       if (action === "paste") {
