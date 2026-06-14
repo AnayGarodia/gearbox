@@ -766,26 +766,39 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         }
         if (it.preview) {
           const lines = it.preview.split("\n");
-          const shown = expand ? lines : lines.slice(0, 8);
-          const codeWidth = Math.max(width - 6, 24);
-          const docState = { open: false };
-          out.push(...indent([padBg([
-            { text: "┌─ ", color: color.accentDim, bg: color.codeBg },
-            { text: expand ? "full code" : "preview", color: color.accent, bold: true, bg: color.codeBg },
-            { text: expand ? ` · ${it.previewLines ?? lines.length} lines` : ` · ${shown.length} of ${it.previewLines ?? "?"} shown`, color: color.faint, bg: color.codeBg },
-          ], codeWidth, color.codeBg)], 3));
-          for (let i = 0; i < shown.length; i++) {
-            // Clean tinted rows — no "│ NN │" double-bar gutter (it read as a
-            // cluttered dump). The framed header above carries the line count.
-            out.push(padBg(clipSpans([
-              { text: "   ", bg: color.codeBg },
-              ...previewHighlight(shown[i]!, it.previewLang, docState).map((s) => ({ ...s, bg: color.codeBg })),
-            ], codeWidth), codeWidth, color.codeBg));
+          const total = it.previewLines ?? lines.length;
+          // A SETTLED write/edit collapses to one line — stacking several 8-line
+          // code dumps turned the transcript into a wall. The head already shows
+          // the filename + diff stat; ⌃O re-opens the full code when you want it.
+          // While RUNNING (streaming) or when expanded, show the framed preview.
+          if (it.status !== "running" && !expand) {
+            out.push(...indent([[
+              { text: "└─ ", color: color.accentDim },
+              { text: `${total} line${total === 1 ? "" : "s"}`, color: color.faint },
+              { text: "  ·  ⌃O to view", color: color.faint },
+            ]], 3));
+          } else {
+            const shown = expand ? lines : lines.slice(0, 8);
+            const codeWidth = Math.max(width - 6, 24);
+            const docState = { open: false };
+            out.push(...indent([padBg([
+              { text: "┌─ ", color: color.accentDim, bg: color.codeBg },
+              { text: expand ? "full code" : "preview", color: color.accent, bold: true, bg: color.codeBg },
+              { text: expand ? ` · ${total} lines` : ` · ${shown.length} of ${total} shown`, color: color.faint, bg: color.codeBg },
+            ], codeWidth, color.codeBg)], 3));
+            for (let i = 0; i < shown.length; i++) {
+              // Clean tinted rows — no "│ NN │" double-bar gutter (it read as a
+              // cluttered dump). The framed header above carries the line count.
+              out.push(padBg(clipSpans([
+                { text: "   ", bg: color.codeBg },
+                ...previewHighlight(shown[i]!, it.previewLang, docState).map((s) => ({ ...s, bg: color.codeBg })),
+              ], codeWidth), codeWidth, color.codeBg));
+            }
+            out.push(...indent([padBg([
+              { text: "└─ ", color: color.accentDim, bg: color.codeBg },
+              { text: total > shown.length ? "⌃O expands full code" : expand ? "⌃O collapses preview" : "", color: color.faint, bg: color.codeBg },
+            ], codeWidth, color.codeBg)], 3));
           }
-          out.push(...indent([padBg([
-            { text: "└─ ", color: color.accentDim, bg: color.codeBg },
-            { text: (it.previewLines ?? 0) > shown.length ? "⌃O expands full code" : expand ? "⌃O collapses preview" : "", color: color.faint, bg: color.codeBg },
-          ], codeWidth, color.codeBg)], 3));
         }
         const outTail = it.outputTail ?? it.stream;
         const outCount = it.outputLines ?? it.streamCount ?? 0;
