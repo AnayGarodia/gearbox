@@ -115,8 +115,12 @@ function pWrong(c: ObjectiveCandidate, x: ObjectiveContext, w: ObjectiveWeights)
   const withDifficulty = clamp01(base + x.difficulty * w.difficultyToFailure * base);
   // A measured repo fail rate is direct evidence — average it in (equal weight)
   // so the flywheel pulls the estimate toward observed reality without erasing
-  // the benchmark prior.
-  if (x.repoFailRate !== undefined) return clamp01((withDifficulty + x.repoFailRate) / 2);
+  // the benchmark prior. Clamp the incoming rate first: a corrupt/NaN/out-of-range
+  // prior would otherwise poison P(wrong) (NaN survives the outer clamp, and a
+  // negative rate silently understates risk), flipping the routing decision.
+  if (x.repoFailRate !== undefined && Number.isFinite(x.repoFailRate)) {
+    return clamp01((withDifficulty + clamp01(x.repoFailRate)) / 2);
+  }
   return withDifficulty;
 }
 

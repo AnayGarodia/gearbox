@@ -144,6 +144,9 @@ const clipTask = (s: string, max: number): string => {
 type Routed = {
   model: ModelSpec;
   account?: Account;
+  // The CURATED model this pick mirrors when model.id is a seat/alias — used to
+  // compare against the orchestrator's model canonically (the same-model guard).
+  canonicalId?: string;
   // Set when the sub-task is hosted by a vendor subscription seat (S-B): the
   // sub-agent then runs through the vendor binary (its own loop + tools) in the
   // sub-task's workspace root, instead of the in-loop API.
@@ -184,7 +187,7 @@ function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?:
     return { model: choice.model, cli: { binary: choice.backend.binary, profile: choice.backend.profile, account: choice.backend.account } };
   }
   const account = choice.backend?.kind === "in-loop" ? choice.backend.account : undefined;
-  return { model: choice.model, account };
+  return { model: choice.model, account, canonicalId: choice.canonicalId };
 }
 
 // ── activity reporting ────────────────────────────────────────────────────────
@@ -435,7 +438,12 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       // concurrency). Refuse and tell the orchestrator to do it inline. Background
       // and delegate_parallel are exempt — there the benefit is concurrency, so
       // running the same model in parallel is legitimate.
-      if (!background && orchestratorModelId && !routed.cli && routed.model.id === orchestratorModelId) {
+      // Compare CANONICALLY: a sub-task can route to the same model via a
+      // seat/alias (e.g. a bedrock or vertex deployment) whose spec id differs
+      // from the orchestrator's id. The orchestrator runs in-loop, so its id is
+      // already a canonical registry id; fall back to the raw id when the pick
+      // has no canonical mapping (it is itself canonical).
+      if (!background && orchestratorModelId && !routed.cli && (routed.canonicalId ?? routed.model.id) === orchestratorModelId) {
         return `Not delegating: that routes to ${routed.model.label} — the same model you're already running, so a sequential delegate just adds latency and loses context. Do it inline. (Delegate when a cheaper/faster/specialist model fits the sub-task, or use delegate_parallel / background:true for concurrency.)`;
       }
       // Background mode: fire-and-continue. The live activity line still

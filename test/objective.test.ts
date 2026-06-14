@@ -53,6 +53,21 @@ test("a measured repo fail-rate raises expected cost (the flywheel feeds the sam
   expect(flaky).toBeGreaterThan(clean);
 });
 
+test("a corrupt repo fail-rate (NaN / out of [0,1]) can't poison the objective", () => {
+  // A NaN would otherwise survive the outer clamp and make total NaN; a negative
+  // rate would silently understate risk below the no-evidence baseline.
+  const baseline = E({ quality: 0.8 }, { repoFailRate: undefined, verifierTier: "none" });
+  for (const bad of [NaN, -1, 2, Infinity]) {
+    const r = effectiveCost(cand({ quality: 0.8 }), ctx({ repoFailRate: bad, verifierTier: "none" }));
+    expect(Number.isFinite(r.total)).toBe(true);
+    expect(r.wrongCost).toBeGreaterThanOrEqual(0);
+  }
+  // A clamped-to-1 rate is the worst case; it must not read as LESS risky than
+  // having no measurement at all.
+  const worst = E({ quality: 0.8 }, { repoFailRate: 2, verifierTier: "none" });
+  expect(worst).toBeGreaterThanOrEqual(baseline);
+});
+
 test("breakdown exposes the three components for /why", () => {
   const r = effectiveCost(cand(), ctx({ interactive: true, verifierTier: "none" }));
   expect(r.dollars).toBeGreaterThan(0);

@@ -95,7 +95,10 @@ export type PanelState =
   // tab merge review: scroll the tab's diff, ⏎ lands it into the base tab and
   // archives the worktree, esc cancels. The confirm re-resolves the active tab,
   // so the panel only needs the diff text to show.
-  | { kind: "merge-confirm"; title: string; lines: string[]; scroll: number };
+  // `head` is the tab branch's HEAD sha captured when the review opened, so the
+  // confirm step can detect commits that landed while the panel sat open and
+  // refuse to merge a diff the user never saw.
+  | { kind: "merge-confirm"; title: string; lines: string[]; scroll: number; head?: string };
 
 /** The wizard panel narrowed from the union (for the pure reducers below). */
 export type WizardPanel = Extract<PanelState, { kind: "wizard" }>;
@@ -277,10 +280,11 @@ export function diffScroll(p: DiffPanel, delta: number, viewH: number): DiffPane
 // ── tab merge confirm ─────────────────────────────────────────────────────────
 export type MergeConfirmPanel = Extract<PanelState, { kind: "merge-confirm" }>;
 
-/** Open the merge review for a tab's diff. `branch` names what's being landed. */
-export function mergeConfirmOpen(diff: string, branch: string): MergeConfirmPanel {
+/** Open the merge review for a tab's diff. `branch` names what's being landed.
+ *  `head` is the branch HEAD sha at open time, checked again on confirm. */
+export function mergeConfirmOpen(diff: string, branch: string, head?: string): MergeConfirmPanel {
   const lines = diff.trim() ? diff.replace(/\n$/, "").split("\n") : ["(no changes to merge)"];
-  return { kind: "merge-confirm", title: `merge ${branch} into the base tab`, lines, scroll: 0 };
+  return { kind: "merge-confirm", title: `merge ${branch} into the base tab`, lines, scroll: 0, head };
 }
 
 /** Scroll the merge diff, clamped to its line count minus the view. */

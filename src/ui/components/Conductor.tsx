@@ -66,10 +66,21 @@ export function tabRowsOf(tabs: { dir: string; name?: string; status: SessionSta
   }));
 }
 
-/** Last few lines of setup output, clipped — enough to see the failure. */
+/** Last few lines of setup output, clipped — enough to see the failure.
+ *  Falls back to a marker when nothing was captured, so the failure note is
+ *  never a bare "failed —" with no detail. */
 function setupTail(output: string): string {
   const lines = output.split("\n").map((l) => l.trimEnd()).filter(Boolean);
-  return lines.slice(-6).join("\n").slice(0, 600);
+  const tail = lines.slice(-6).join("\n").slice(0, 600);
+  return tail || "(no output captured)";
+}
+
+/** Best-effort human string for a thrown value — an Error's message, a plain
+ *  string, else JSON so a `{ code }` object never renders as "[object Object]". */
+function errText(e: unknown): string {
+  if (e instanceof Error) return e.message || e.name;
+  if (typeof e === "string") return e;
+  try { return JSON.stringify(e); } catch { return String(e); }
 }
 
 /** Pure: a filesystem/branch-safe tab slug. */
@@ -197,7 +208,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     if (willSetup) {
       void runSetup(dir)
         .then((res) => finishSetup(id, res.ok, res.ok ? "" : setupTail(res.output)))
-        .catch((e: any) => finishSetup(id, false, String(e?.message ?? e)));
+        .catch((e: unknown) => finishSetup(id, false, setupTail(errText(e))));
     }
   }, [makeSelector]);
 
@@ -240,11 +251,14 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
   // Close the tab whose worktree is `dir`, keeping whatever tab is active still
   // active (used to archive a merged tab — the worktree was just removed, so the
   // tab must go too). No-op for the last tab, a busy tab, or an unknown dir.
-  const closeDir = useCallback((dir: string) => {
+  // Returns true when the tab was found and removed, false when it couldn't be
+  // (only tab left, mid-turn, or already gone) so callers don't claim a tab was
+  // archived when it is still mounted.
+  const closeDir = useCallback((dir: string): boolean => {
     const list = tabsRef.current;
-    if (list.length < 2) return;
+    if (list.length < 2) return false;
     const idx = list.findIndex((t) => t.dir === dir);
-    if (idx < 0 || list[idx]!.status.busy) return;
+    if (idx < 0 || list[idx]!.status.busy) return false;
     const wasActive = idx === activeIdxRef.current;
     const curDir = list[activeIdxRef.current]?.dir;
     const next = list.filter((_, i) => i !== idx);
@@ -253,6 +267,7 @@ export function Conductor({ selector, makeSelector, fullscreen, resumeId }: Cond
     const nextActive = wasActive ? 0 : Math.max(0, next.findIndex((t) => t.dir === curDir));
     try { process.chdir(next[nextActive]!.dir); } catch { /* best-effort */ }
     setTabState({ tabs: next, active: nextActive });
+    return true;
   }, []);
 
   // ONE stable control object: it reads refs, so handleCommand's useCallback

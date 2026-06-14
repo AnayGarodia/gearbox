@@ -550,7 +550,7 @@ export class RoutingSelector implements ModelSelector {
         : undefined;
     const effort = best.candidate.effort;
     const effortNote = effort ? ` · effort ${effort}` : "";
-    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + hardNote + effortNote + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend, effort };
+    return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated + hardNote + effortNote + seatSkipNote(skippedSeat, p.ctx.now), backend: winner.backend, effort, canonicalId: winner.canonicalId };
   }
 
   // Build the full ranked scorecard for the "/why" UI panel. Scores the entire

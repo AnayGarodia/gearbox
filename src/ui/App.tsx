@@ -420,8 +420,9 @@ export interface TabControl {
   create: (name?: string, opts?: { task?: string; fork?: ForkPayload }) => void;
   close: () => void;
   /** Close the tab whose worktree is `dir` (used to archive a merged tab without
-   *  it having to be the active one). No-op for the last/busy/unknown tab. */
-  closeDir: (dir: string) => void;
+   *  it having to be the active one). No-op (returns false) for the last/busy/
+   *  unknown tab; true when the tab was actually removed. */
+  closeDir: (dir: string) => boolean;
   switchTo: (n: number) => void; // 1-based
   cycle: (delta: number) => void;
   list: () => { title: string; dir: string; active: boolean; status: string }[];
@@ -3653,7 +3654,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (p.kind === "merge-confirm") {
         if (input === "q") { setPanel(null); return; }
         const bodyH = panelBodyHeight(viewportHeightRef.current);
-        if (key.return) { setPanel(null); handleCommand("/tab merge confirm"); return; } // land + archive
+        if (key.return) { setPanel(null); handleCommand(`/tab merge confirm ${p.head ?? ""}`.trimEnd()); return; } // land + archive
         else if (key.pageUp) setPanel(mergeConfirmScroll(p, -Math.max(1, bodyH - 1), bodyH));
         else if (key.pageDown) setPanel(mergeConfirmScroll(p, Math.max(1, bodyH - 1), bodyH));
         else if (key.upArrow) setPanel(mergeConfirmScroll(p, -1, bodyH));

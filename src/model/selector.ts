@@ -84,6 +84,10 @@ export interface ModelChoice {
   // model has no effort control or the selector is a hard pin. The runner uses it
   // unless the user explicitly pinned an effort with /effort.
   effort?: string;
+  // The CURATED model this pick mirrors, when the spec id is a seat/alias (e.g. a
+  // bedrock or vertex deployment of the same model). Lets callers compare picks
+  // canonically — e.g. the delegation same-model guard — instead of by raw id.
+  canonicalId?: string;
 }
 
 // One row in the "/why" scorecard: the full per-candidate breakdown that lets
