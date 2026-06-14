@@ -1,7 +1,14 @@
 // Secret store + account registry. Secrets are stored in an AES-256-GCM
 // encrypted file at ~/.gearbox/credentials.enc with a random key at
-// ~/.gearbox/.enckey (0600). When running under Bun the OS keychain is also
-// tried first (set GEARBOX_SECRET_STORE=file to skip it).
+// ~/.gearbox/.enckey (0600).
+//
+// The file store is the DEFAULT on every runtime. We deliberately do NOT touch
+// the OS keychain by default: under Bun `Bun.secrets` writes to the macOS
+// Keychain, and reading those items back under node (the published binary) shells
+// out to `security`, which makes macOS prompt for the login password on every
+// run. No user should ever face that prompt. Opt into the keychain explicitly
+// with GEARBOX_SECRET_STORE=keychain if you want OS-level protection and accept
+// the prompts.
 //
 // HONEST THREAT MODEL: the key sits next to the data, so file mode is
 // obfuscation against casual leakage (a stray `cat`, accidental commit),
@@ -27,39 +34,37 @@ const mode = (): StoreMode => {
 
 // ── secrets ──
 export async function setSecret(ref: string, value: string): Promise<void> {
-  // Under Bun try the OS keychain first (better security); fall back to file.
-  if (typeof Bun !== "undefined" && mode() !== "file") {
+  // Keychain ONLY when explicitly opted in. Default (auto/file) → file store, so
+  // nothing ever lands in the OS keychain and no later read can trigger a prompt.
+  if (typeof Bun !== "undefined" && mode() === "keychain") {
     try {
       await (Bun as any).secrets.set({ service: SERVICE, name: ref, value });
       return;
     } catch (e) {
-      if (mode() === "keychain") throw e;
+      throw e;
     }
   }
   fileSet(ref, value);
 }
 
 export async function getSecret(ref: string): Promise<string | null> {
-  if (typeof Bun !== "undefined" && mode() !== "file") {
+  if (typeof Bun !== "undefined" && mode() === "keychain") {
     try {
       const v = await (Bun as any).secrets.get({ service: SERVICE, name: ref });
       if (v != null) return v;
     } catch {
-      if (mode() === "keychain") return null;
+      return null;
     }
   }
   const f = fileGet(ref);
   if (f != null) return f;
-  // Cross-runtime recovery: keys added under Bun (dev) or an older standalone
-  // binary land in the OS keychain, but the PUBLISHED binary runs under node,
-  // where `Bun.secrets` is unavailable — so it would otherwise never see them.
-  // On macOS, read the keychain via the `security` CLI as a fallback.
-  if (typeof Bun === "undefined" && mode() !== "file") {
+  // Cross-runtime recovery via the `security` CLI runs ONLY in explicit keychain
+  // mode — it shells out to `security`, which makes macOS prompt for the login
+  // password. We never do that on the default path. (Migrate-on-read so the first
+  // keychain read is also the last: persist into the file store, then every later
+  // read hits the line above.)
+  if (typeof Bun === "undefined" && mode() === "keychain") {
     const v = keychainCliGet(ref);
-    // Migrate-on-read: persist into the file store so EVERY later read hits the
-    // line above and never touches the keychain again. Without this, node reads
-    // the keychain on every run and macOS re-prompts for the login password each
-    // time (the `security` CLI isn't in the item's ACL). One read, then silent.
     if (v != null) {
       try { fileSet(ref, v); } catch { /* best-effort; recovery still returns v */ }
     }
@@ -85,7 +90,7 @@ function keychainCliGet(ref: string): string | null {
 }
 
 export async function deleteSecret(ref: string): Promise<void> {
-  if (typeof Bun !== "undefined" && mode() !== "file") {
+  if (typeof Bun !== "undefined" && mode() === "keychain") {
     try {
       await (Bun as any).secrets.delete({ service: SERVICE, name: ref });
     } catch {
