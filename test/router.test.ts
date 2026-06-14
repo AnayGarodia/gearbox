@@ -57,11 +57,17 @@ test("classify falls back to chat for question-shaped prompts with no mutation v
 // With a verifier net a code miss is cheap to catch, so cheap-first wins (real
 // SWE-bench data: Haiku 0.733 IS capable of code — the old seeded 0.38 wrongly
 // excluded it). With NO net a silent miss is expensive, so quality dominates.
-test("Anthropic-only: code is cheap-first under a net, careful with none; summarize → haiku", () => {
+test("Anthropic-only: code is cheap-first under a net; a HARD unnetted task escalates; summarize → haiku", () => {
   only("ANTHROPIC_API_KEY");
   const r = new RoutingSelector();
+  // Under a test net a miss is cheap to catch → cheapest capable model.
   expect(r.select({ prompt: "implement a retry with backoff", kind: "code", verifierTier: "tests" }).model.id).toBe("claude-haiku-4-5");
-  expect(r.select({ prompt: "implement a retry with backoff", kind: "code", verifierTier: "none" }).model.id).toBe("claude-opus-4-8");
+  // No net + HARD (a big, many-file change): a silent miss is expensive and a
+  // hard task is likelier to hide one, so it climbs to the strongest model. (An
+  // EASY unnetted task stays cheap — difficulty, not the mere absence of a net,
+  // drives escalation now.)
+  const hard = r.select({ prompt: "rework the evaluator", kind: "code", verifierTier: "none", estTokens: 60_000, touchedFiles: ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"] });
+  expect(hard.model.id).toBe("claude-opus-4-8");
   expect(r.select({ prompt: "summarize this transcript" }).model.id).toBe("claude-haiku-4-5");
   expect(r.select({ prompt: "summarize this" }).reason).toContain("summarize");
 });

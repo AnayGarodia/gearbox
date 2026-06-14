@@ -57,7 +57,9 @@ const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`;
 console.log("\n" + bold("  Routing demo") + dim("  · synthetic accounts: anthropic · openai · deepseek · google\n"));
 
 for (const t of TASKS) {
-  const task = { prompt: t.prompt, estTokens: t.estTokens, touchedFiles: t.touchedFiles };
+  // Simulate a fresh project with no test net (the "I just started building"
+  // case) so escalation is visible: with tests, code is cheap-first instead.
+  const task = { prompt: t.prompt, estTokens: t.estTokens, touchedFiles: t.touchedFiles, verifierTier: "none" as const };
   const card = sel.explain ? sel.explain(task) : null;
   const choice = sel.select(task);
   const winner = card?.entries.find((e) => e.chosen);

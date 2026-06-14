@@ -41,13 +41,18 @@ export interface ObjectiveContext {
   verifierTier: "tests" | "types" | "none"; // sets cost_of_wrong (a caught miss is cheap; a shipped one is not)
   interactive: boolean; // true when the user is waiting → value_of_a_second is high
   repoFailRate?: number; // measured per-repo fail rate for this (kind, model) — the flywheel
+  // Does this task produce a result that SHIPS and can be silently wrong (code,
+  // plan)? A wrong chat / summary / search ships nothing, so it carries no
+  // ship-wrong damage — only the (tiny, proportional) recovery of re-asking.
+  // Absent → true (cautious default).
+  shipsArtifact?: boolean;
   weights?: ObjectiveWeights;
 }
 
 export interface ObjectiveWeights {
-  escalationUSD: number; // recovery cost of a CAUGHT miss (rerun/escalate to a capable model)
+  recoveryUSDPerMtok: number; // cost of a CAUGHT miss (rerun/escalate on a capable model) PER Mtok of the task — proportional, not flat
   recoverySeconds: number; // recovery wall-clock of a caught miss (charged at vTime when interactive)
-  shipWrongUSD: number; // damage of a SILENTLY-shipped wrong result (no verifier to catch it)
+  shipWrongPerMtok: number; // damage of a SILENTLY-shipped wrong result, PER Mtok (no verifier to catch it). Per-Mtok so cost-of-wrong is fully proportional → DIFFICULTY drives the pick, not task size.
   vTimeInteractiveUSDPerSec: number; // $ value of a second while the user waits
   vTimeBackgroundUSDPerSec: number; // $ value of a second for background/delegated work (~0)
   difficultyToFailure: number; // how much difficulty inflates P(wrong)
@@ -57,16 +62,24 @@ export interface ObjectiveWeights {
 // tunes. The cost of a wrong result is a RECOVERY cost, independent of which
 // model erred — so quality lowers it only through P(wrong), never by charging an
 // expensive model more for missing.
-//   escalationUSD: a caught miss costs ~$0.10 to rerun/escalate.
-//   shipWrongUSD: a silently-shipped wrong result with no test net is worth ~$2
-//     of extra model spend to avoid (deliberately high — a hidden bug costs far
-//     more than a few cents of tokens; this is what makes "no net → be cautious"
-//     emerge instead of being a magic +0.1).
+//   recoveryUSDPerMtok: a caught miss = a rerun/escalation on a capable model,
+//     whose cost scales with the task's size. Charging it PER Mtok (not as a flat
+//     fee) is what keeps routing from inverting by size — a flat fee made tiny
+//     tasks (cost≈0) route to the priciest model and huge tasks route cheap.
+//   shipWrongPerMtok: a silently-shipped wrong result with no test net costs far
+//     more than its tokens — set high. PER Mtok so it scales with the change
+//     size; applied only to kinds that ship an artifact, scaled by difficulty.
+//     Because BOTH recovery and ship are per-Mtok, cost-of-wrong is fully
+//     proportional, so the quality-vs-price tradeoff is scale-invariant: the
+//     pick is driven by the task's DIFFICULTY and the verifier net, NOT by how
+//     many tokens it happens to be. (That was the bug: a flat cost-of-wrong made
+//     tiny tasks over-route to a premium model and huge tasks under-route to a
+//     cheap one.)
 //   vTime interactive ~$0.02/s ≈ $72/hr of attention; background ~0.
 export const DEFAULT_OBJECTIVE_WEIGHTS: ObjectiveWeights = {
-  escalationUSD: 0.1,
+  recoveryUSDPerMtok: 4.0,
   recoverySeconds: 8,
-  shipWrongUSD: 2.0,
+  shipWrongPerMtok: 150.0,
   // Interactive value-of-a-second: calibrated so latency flips a SMALL cost gap
   // toward the faster model (a near-tie when you're waiting) but never pays a
   // large premium for speed — a clearly cheaper model still wins. Background is
@@ -148,8 +161,21 @@ export function latencyCostOf(c: ObjectiveCandidate, x: ObjectiveContext): numbe
 export function wrongCostOf(c: ObjectiveCandidate, x: ObjectiveContext): { wrongCost: number; pWrong: number } {
   const w = x.weights ?? DEFAULT_OBJECTIVE_WEIGHTS;
   const p = pWrong(c, x, w);
-  const shipWrong = x.verifierTier === "none" ? w.shipWrongUSD : x.verifierTier === "types" ? w.shipWrongUSD * 0.4 : 0;
-  const costOfWrong = w.escalationUSD + w.recoverySeconds * valueOfTime(x, w) + shipWrong;
+  // Recovery from a CAUGHT miss scales with the work (a rerun/escalation costs
+  // ~the task's tokens on a capable model), so it's per-Mtok, not a flat fee.
+  // This is the fix for the size-inversion: tiny tasks → tiny recovery → cheapest
+  // wins; big tasks → large recovery → quality matters.
+  const perMtok = x.estInputTokens / 1e6;
+  const recovery = perMtok * w.recoveryUSDPerMtok + w.recoverySeconds * valueOfTime(x, w);
+  // Ship damage: only for kinds that produce a shipped artifact, only when no
+  // verifier net will catch it, PER Mtok (so it scales with the change size) and
+  // scaled by difficulty (a harder shipped change is likelier to hide a bug). A
+  // wrong chat/summary/search ships nothing → no ship cost. Both terms per-Mtok
+  // ⇒ the pick is scale-invariant: difficulty + net decide it, not token count.
+  const ships = x.shipsArtifact ?? true;
+  const netFactor = x.verifierTier === "none" ? 1 : x.verifierTier === "types" ? 0.4 : 0;
+  const shipWrong = ships ? perMtok * w.shipWrongPerMtok * netFactor * (0.5 + x.difficulty) : 0;
+  const costOfWrong = recovery + shipWrong;
   return { wrongCost: p * costOfWrong, pWrong: p };
 }
 

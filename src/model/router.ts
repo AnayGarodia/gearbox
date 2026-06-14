@@ -78,6 +78,13 @@ const CAPABILITY_FLOOR: Record<Kind, number> = {
   code: 0.4,
 };
 
+// Which kinds produce a result that SHIPS and can be silently wrong (so a miss
+// with no verifier carries real downstream damage). A wrong chat / summary /
+// search ships nothing — it's just re-asked — so it pays no ship-wrong cost and
+// routes to the cheapest capable model. This (not the kind itself) is what kind
+// contributes to the objective: the cost of being wrong, not a difficulty guess.
+const SHIPPING_KINDS = new Set<Kind>(["code", "plan"]);
+
 // A verification MISS is hard evidence the chosen model failed THIS task here —
 // not mere difficulty. Under a test net the objective treats a miss as cheap
 // (caught + retried), so without a hard mechanism the router would re-pick the
@@ -534,7 +541,7 @@ export class RoutingSelector implements ModelSelector {
 
     // Score by expected cost-to-correct (cost + latency + quality), argmin. Each
     // candidate is scored AT its best effort (auto-effort routing).
-    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task), difficulty: p.effDifficulty, verifierTier: p.verifierTier };
+    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task), difficulty: p.effDifficulty, verifierTier: p.verifierTier, shipsArtifact: SHIPPING_KINDS.has(p.kind) };
     const effortCtx: EffortCtx = { estInputTokens: p.estInputTokens, difficulty: p.effDifficulty, verifierTier: p.verifierTier, interactive: !!task.interactive };
     const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, effortCtx)), ...flags });
     const winner = candidates.find((c) => scoreId(c) === best.candidate.id)!;
@@ -568,7 +575,7 @@ export class RoutingSelector implements ModelSelector {
 
     // Score the WHOLE pool (incl. floored-out) so the UI shows every candidate,
     // with the SAME expected-cost flags select() uses, so numbers + winner match.
-    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task), difficulty: p.effDifficulty, verifierTier: p.verifierTier };
+    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task), difficulty: p.effDifficulty, verifierTier: p.verifierTier, shipsArtifact: SHIPPING_KINDS.has(p.kind) };
     const effortCtx: EffortCtx = { estInputTokens: p.estInputTokens, difficulty: p.effDifficulty, verifierTier: p.verifierTier, interactive: !!task.interactive };
     const scored = new Map<string, ScoredCandidate>();
     for (const s of p.pool.map((c) => scoreCandidate(toScoreCandidate(c, p.kind, p.pol, effortCtx), { candidates: [], ...flags }))) scored.set(s.candidate.id, s);

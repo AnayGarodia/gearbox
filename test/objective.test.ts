@@ -24,10 +24,18 @@ test("WITH a test net, a cheaper slightly-lower-quality model beats an expensive
   expect(cheap).toBeLessThan(dear);
 });
 
-test("with NO net, the higher-quality model wins (a miss ships silently — expensive)", () => {
-  const cheap = E({ inUSDPerMtok: 1, outUSDPerMtok: 5, quality: 0.75 }, { verifierTier: "none" });
-  const dear = E({ inUSDPerMtok: 5, outUSDPerMtok: 25, quality: 0.88 }, { verifierTier: "none" });
+test("with NO net, a clearly-higher-quality model wins when the gap justifies the price (a miss ships silently)", () => {
+  // Same pair WITH a test net → cheap wins (a miss is caught); WITHOUT one → the
+  // higher-quality model wins, because the proportional ship-wrong cost makes its
+  // lower miss-rate worth the extra price. A wide quality gap at a moderate price
+  // premium is exactly where caution should flip the pick.
+  const cheap = E({ inUSDPerMtok: 1, outUSDPerMtok: 5, quality: 0.6 }, { verifierTier: "none", difficulty: 0.5 });
+  const dear = E({ inUSDPerMtok: 4, outUSDPerMtok: 20, quality: 0.92 }, { verifierTier: "none", difficulty: 0.5 });
   expect(dear).toBeLessThan(cheap);
+  // …and with a net the same cheap model wins (caution only emerges without one).
+  const cheapNet = E({ inUSDPerMtok: 1, outUSDPerMtok: 5, quality: 0.6 }, { verifierTier: "tests", difficulty: 0.5 });
+  const dearNet = E({ inUSDPerMtok: 4, outUSDPerMtok: 20, quality: 0.92 }, { verifierTier: "tests", difficulty: 0.5 });
+  expect(cheapNet).toBeLessThan(dearNet);
 });
 
 test("difficulty raises the cost of a low-quality model more than a high-quality one", () => {
@@ -36,6 +44,27 @@ test("difficulty raises the cost of a low-quality model more than a high-quality
   const hiQ_hard = E({ quality: 0.92 }, { difficulty: 1, verifierTier: "none" });
   expect(lowQ_hard).toBeGreaterThan(lowQ_easy); // harder → likelier wrong → costlier
   expect(hiQ_hard).toBeLessThan(lowQ_hard); // on a hard task, quality is worth more
+});
+
+test("the pick is SCALE-INVARIANT: difficulty + verifier net decide it, not token count", () => {
+  // The bug this guards against: a flat cost-of-wrong made tiny tasks over-route
+  // to a premium model and huge tasks under-route to a cheap one. With both
+  // recovery and ship-wrong per-Mtok, the winner must be the SAME across a 100×
+  // token range — only difficulty and the net move it.
+  const cheap = { inUSDPerMtok: 1, outUSDPerMtok: 5, quality: 0.6 };
+  const dear = { inUSDPerMtok: 4, outUSDPerMtok: 20, quality: 0.92 };
+  const winnerAt = (tokens: number, tier: "tests" | "none") =>
+    E(cheap, { estInputTokens: tokens, difficulty: 0.5, verifierTier: tier }) <
+    E(dear, { estInputTokens: tokens, difficulty: 0.5, verifierTier: tier })
+      ? "cheap"
+      : "dear";
+  // No net + a real quality gap → the strong model wins at EVERY size.
+  expect(winnerAt(4_000, "none")).toBe("dear");
+  expect(winnerAt(40_000, "none")).toBe("dear");
+  expect(winnerAt(400_000, "none")).toBe("dear");
+  // With a net → the cheap model wins at EVERY size (a miss is caught).
+  expect(winnerAt(4_000, "tests")).toBe("cheap");
+  expect(winnerAt(400_000, "tests")).toBe("cheap");
 });
 
 test("latency only matters when interactive: a faster model wins when waiting, is neutral in background", () => {

@@ -37,6 +37,7 @@ import { join, dirname, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { FixedSelector } from "../model/selector.ts";
+import { detectProofTier } from "../verify.ts";
 import { resolveCreds } from "../accounts/resolve.ts";
 import { recordSpend, resolveTurnCost } from "../accounts/ledger.ts";
 import type { ModelSpec } from "../providers.ts";
@@ -164,11 +165,17 @@ type Routed = {
  * itself, run one-shot in the sub-task's workspace root — so a subscription-only
  * setup can still delegate (S-B) instead of erroring out.
  */
-function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?: string): Routed | { error: string } {
+function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?: string, root?: string): Routed | { error: string } {
   const k = kind ?? classify(task);
+  // Route a sub-task with the SAME economics as a top-level turn: a sub-agent
+  // runs in the background (no user waiting → latency-neutral → cheapest among
+  // capable) and inherits the workspace's verifier net, so delegated CODE in an
+  // untested repo routes cautiously while a tested repo stays cheap-first.
+  const verifierTier = root ? detectProofTier(root) : undefined;
+  const base = { prompt: task, kind: k, interactive: false, verifierTier } as const;
   let choice;
   try {
-    choice = (pinnedModelId ? new FixedSelector(pinnedModelId) : new RoutingSelector()).select({ prompt: task, kind: k, requires: ["tools"] });
+    choice = (pinnedModelId ? new FixedSelector(pinnedModelId) : new RoutingSelector()).select({ ...base, requires: ["tools"] });
   } catch (e: any) {
     // Subscription-only setups land here: seats fail the in-loop `tools` filter
     // (the vendor binary owns its own tools), so the select throws before the
@@ -176,7 +183,7 @@ function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?:
     // select returns the seat on a subscription-only store, while any setup with
     // a tools-capable API model never reaches this catch.
     try {
-      const c2 = new RoutingSelector().select({ prompt: task, kind: k });
+      const c2 = new RoutingSelector().select(base);
       if (c2.backend?.kind === "cli") {
         return { model: c2.model, cli: { binary: c2.backend.binary, profile: c2.backend.profile, account: c2.backend.account } };
       }
@@ -431,7 +438,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       if (orchestratorPrompt && isWholeTask(task, orchestratorPrompt)) {
         return "Not delegating: that is essentially this whole task. Do it yourself, or split it into smaller, bounded sub-tasks (one file or area each) and delegate those — delegation is for offloading a CHUNK, not the entire turn.";
       }
-      const routed = routeSubTask(task, kind, opts.pinnedModelId);
+      const routed = routeSubTask(task, kind, opts.pinnedModelId, opts.root);
       if ("error" in routed) return `delegation skipped: ${routed.error}. Do it yourself.`;
       // GUARD 2 (same-model): a SEQUENTIAL delegate to your own model adds latency
       // and loses context for zero benefit (no cheaper/specialist model, no
@@ -505,7 +512,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       const skipped: string[] = [];
       const created: string[] = []; // track all created dirs for cleanup in finally
       for (const [idx, t] of tasks.entries()) {
-        const routed = routeSubTask(t.task, t.kind, opts.pinnedModelId);
+        const routed = routeSubTask(t.task, t.kind, opts.pinnedModelId, opts.root);
         if ("error" in routed) { skipped.push(`#${idx + 1}: ${routed.error}`); continue; }
         const dir = join(tmpdir(), `gearbox-fanout-${batch}-${idx}-${Date.now()}`);
         if (!addSeededWorktree(repoRoot, dir)) { skipped.push(`#${idx + 1}: couldn't create a worktree`); continue; }
@@ -632,7 +639,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       if (orchestratorPrompt && isWholeTask(task, orchestratorPrompt)) {
         return "Not spawning: that is essentially this whole task. Split it into smaller, independent sub-tasks and spawn those.";
       }
-      const routed = routeSubTask(task, kind, opts.pinnedModelId);
+      const routed = routeSubTask(task, kind, opts.pinnedModelId, opts.root);
       if ("error" in routed) return `spawn skipped: ${routed.error}. Do it yourself.`;
       const num = ++counter;
       const repoRoot = gitToplevel();

@@ -133,6 +133,9 @@ export interface ScoreInput {
   // un-contextualized calls behave as cheapest-wins.
   difficulty?: number;
   verifierTier?: "tests" | "types" | "none";
+  // Whether this turn produces a shipped artifact (code/plan) vs a chat/summary
+  // that ships nothing. Drives the ship-wrong damage. Absent → true (cautious).
+  shipsArtifact?: boolean;
 }
 
 // Per-term breakdown returned alongside the total score. Kept separate from the
@@ -258,6 +261,7 @@ export function scoreCandidate(c: ScoreCandidate, input: ScoreInput): ScoredCand
     verifierTier: input.verifierTier ?? "tests", // unknown net → neutral (no extra quality pressure)
     interactive: input.interactive ?? false,
     repoFailRate: c.failRate, // the measured per-repo flywheel signal, when known
+    shipsArtifact: input.shipsArtifact, // code/plan ship; chat/summary/search don't
   };
   // Latency only bites when interactive (value-of-time ~0 in background), so a
   // background/delegated turn stays cheapest-wins. wrongCost rises with P(wrong)
