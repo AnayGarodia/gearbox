@@ -101,13 +101,9 @@ function codeRow(line: string, lang: string): { sign: string; code: string; bg: 
 
 function codeBlockLines(code: string, lang: string, width: number): Line[] {
   const lines = code.replace(/\n$/, "").split("\n");
-  const lineNoWidth = Math.max(2, String(lines.length).length);
   const blockWidth = Math.max(
     24,
-    Math.min(
-      width,
-      Math.max(40, ...lines.map((l) => lineNoWidth + 3 + displayWidth(l)), lang ? lang.length + 2 : 0),
-    ),
+    Math.min(width, Math.max(40, ...lines.map((l) => 2 + displayWidth(l)), lang ? lang.length + 2 : 0)),
   );
   const out: Line[] = [];
   if (lang) {
@@ -117,11 +113,12 @@ function codeBlockLines(code: string, lang: string, width: number): Line[] {
   }
   for (let i = 0; i < lines.length; i++) {
     const row = codeRow(lines[i]!, lang);
-    const gutter = `${row.sign || " "} ${String(i + 1).padStart(lineNoWidth)} `;
+    // No per-line number gutter — it read as noise (a 2-line snippet got a
+    // "1 │ … 2 │ …" frame). The block tint + optional lang label carry the
+    // "this is code" cue; diff lines keep a colored +/- marker, plain code a pad.
+    const lead = row.sign ? `${row.sign} ` : "  ";
     const spans: Span[] = [
-      { text: gutter, color: row.sign ? row.fg : color.faint, bold: Boolean(row.sign), bg: row.bg },
-      // The │ separator is structure, not accent — always faint.
-      { text: "│ ", color: color.faint, bg: row.bg },
+      { text: lead, color: row.sign ? row.fg : color.faint, bold: Boolean(row.sign), bg: row.bg },
       ...(highlightLine(row.code, row.lang) as Span[]).map((s) => ({ ...s, bg: row.bg })),
     ];
     out.push(padBg(clipSpans(spans, blockWidth), blockWidth, row.bg));
@@ -778,10 +775,10 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
             { text: expand ? ` · ${it.previewLines ?? lines.length} lines` : ` · ${shown.length} of ${it.previewLines ?? "?"} shown`, color: color.faint, bg: color.codeBg },
           ], codeWidth, color.codeBg)], 3));
           for (let i = 0; i < shown.length; i++) {
+            // Clean tinted rows — no "│ NN │" double-bar gutter (it read as a
+            // cluttered dump). The framed header above carries the line count.
             out.push(padBg(clipSpans([
-              { text: "   │ ", color: color.accentDim, bg: color.codeBg },
-              { text: String(i + 1).padStart(2) + " ", color: color.faint, bg: color.codeBg },
-              { text: "│ ", color: color.accentDim, bg: color.codeBg },
+              { text: "   ", bg: color.codeBg },
               ...previewHighlight(shown[i]!, it.previewLang, docState).map((s) => ({ ...s, bg: color.codeBg })),
             ], codeWidth), codeWidth, color.codeBg));
           }

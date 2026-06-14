@@ -51,8 +51,9 @@ test("fullscreen line buffer formats unfenced source as code", () => {
   const lines = itemsToLines([{ kind: "assistant", id: 1, text: source, done: true }], 80);
   const text = lines.map((l) => l.map((s) => s.text).join("")).join("\n");
 
-  expect(text).toContain("python");
-  expect(text).toContain("1 │ from dataclasses import dataclass");
+  expect(text).toContain("python"); // lang label kept
+  expect(text).toContain("from dataclasses import dataclass"); // code rendered (no "N │" gutter now)
+  expect(text).not.toContain("1 │ from dataclasses"); // the line-number gutter was removed (cleaner snippets)
   expect(text).toContain("class Task:");
   for (const l of lines) expect(lineLen(l)).toBeLessThanOrEqual(80);
 });
