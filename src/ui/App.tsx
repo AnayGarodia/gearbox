@@ -111,6 +111,7 @@ import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 import { handleCommand as dispatchCommand, KEYS_HELP, clipForPrompt, splitSubject, type CommandCtx } from "./command-handler.ts";
 import { matchIntent } from "./intent.ts";
+import { easeScrollStep, scrollSettled } from "./scroll.ts";
 
 export type Runner = (opts: {
   prompt: string;
@@ -1124,39 +1125,44 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const stopScrollAnim = useCallback(() => {
     if (scrollAnimRef.current) { clearInterval(scrollAnimRef.current); scrollAnimRef.current = null; }
   }, []);
-  // DIRECT scroll: one setScrollTop per wheel/key event, no easing glide. The
-  // glide fired a 16ms setInterval that re-rendered the whole transcript several
-  // times per scroll — on a tall buffer that's the "scroll is laggy". Terminals
-  // are line-quantized, so a direct jump is both crisper and far cheaper.
-  const scrollBy = useCallback((delta: number) => {
-    stopScrollAnim();
-    const max = maxScrollRef.current;
-    const cur = atBottomRef.current ? max : scrollTopRef.current;
-    const target = Math.max(0, Math.min(max, cur + delta));
-    atBottomRef.current = target >= max;
-    setScrollTop(target);
+  // SMOOTH scroll: a wheel notch / key sets a TARGET line; an easing loop glides
+  // scrollTop toward it, moving a fraction of the remaining distance each frame
+  // (line-quantized — see scroll.ts), so motion decelerates instead of snapping.
+  // This is cheap now: `lines` is memoized (scrollTop is NOT a dep) and LineRow
+  // is React.memo, so each glide frame only re-slices the viewport and re-renders
+  // the rows that actually changed — not the whole transcript (the reason the old
+  // glide was reverted). GEARBOX_NO_MOTION jumps directly with no animation.
+  const FRAME_MS = 16; // ~60fps
+  const tickGlide = useCallback(() => {
+    const target = scrollTargetRef.current;
+    if (target == null) { stopScrollAnim(); return; }
+    const cur = scrollTopRef.current;
+    const next = easeScrollStep(cur, target);
+    atBottomRef.current = next >= maxScrollRef.current;
+    if (next !== cur) setScrollTop(next);
+    if (scrollSettled(next, target)) { scrollTargetRef.current = null; stopScrollAnim(); }
   }, [stopScrollAnim]);
-  // Frame-throttle wheel scrolling. A trackpad / momentum scroll fires FAR more than
-  // 60 events/sec, and each one re-renders + re-diffs the whole fullscreen frame —
-  // the residual "mouse scroll feels laggy". Accumulate the delta and apply it at
-  // most once per ~16ms: leading edge so the first notch is instant, trailing edge
-  // so the rest stays smooth. Caps scroll renders at ~60fps regardless of event rate.
-  const scrollAccumRef = useRef(0);
-  const scrollFlushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flushScroll = useCallback(() => {
-    scrollFlushRef.current = null;
-    const d = scrollAccumRef.current;
-    scrollAccumRef.current = 0;
-    if (d) scrollBy(d);
-  }, [scrollBy]);
-  const queueScroll = useCallback((delta: number) => {
-    scrollAccumRef.current += delta;
-    if (scrollFlushRef.current) return; // a trailing flush is scheduled; it picks up the accumulated delta
-    flushScroll(); // leading edge: instant first response
-    scrollFlushRef.current = setTimeout(flushScroll, 16);
-  }, [flushScroll]);
+  const scrollBy = useCallback((delta: number) => {
+    const max = maxScrollRef.current;
+    // Build on the pending target (so a burst of wheel notches accumulates into
+    // one glide) — or the current position when starting fresh.
+    const base = scrollTargetRef.current ?? (atBottomRef.current ? max : scrollTopRef.current);
+    const target = Math.max(0, Math.min(max, base + delta));
+    if (noMotion) {
+      stopScrollAnim();
+      scrollTargetRef.current = null;
+      atBottomRef.current = target >= max;
+      setScrollTop(target);
+      return;
+    }
+    scrollTargetRef.current = target;
+    atBottomRef.current = target >= max; // detach from the live tail on upward intent
+    if (!scrollAnimRef.current) scrollAnimRef.current = setInterval(tickGlide, FRAME_MS);
+  }, [noMotion, stopScrollAnim, tickGlide]);
+  // Wheel events update the target directly (cheap); the glide loop is the render
+  // throttle, so no separate event-rate throttle is needed.
+  const queueScroll = useCallback((delta: number) => scrollBy(delta), [scrollBy]);
   useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear any glide timer on unmount
-  useEffect(() => () => { if (scrollFlushRef.current) clearTimeout(scrollFlushRef.current); }, []); // clear the scroll-throttle timer on unmount
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
   useEffect(() => () => { if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current); }, []); // clear the paste coalescer timer on unmount
 
