@@ -289,36 +289,6 @@ function isWriteLikeTool(name: string): boolean {
   return n === "write_file" || n === "edit_file" || n === "write" || n === "edit" || n === "file_change";
 }
 
-// What the turn is doing RIGHT NOW, as two short strings for the Working
-// block's side column (beside Boo): the current action (+ its ticking elapsed)
-// and a short trail of recent steps/checks. Pure over the item list.
-export function turnActivity(items: Item[], width: number): { action: string | null; trail: string | null } {
-  const lastUser = items.map((it, i) => ({ it, i })).reverse().find((x) => x.it.kind === "user")?.i ?? -1;
-  const turn = items.slice(lastUser + 1);
-  const tools = turn.filter((i): i is Extract<Item, { kind: "tool" }> => i.kind === "tool");
-  const phase = [...turn].reverse().find((i) => i.kind === "phase" && i.state === "running") as Extract<Item, { kind: "phase" }> | undefined;
-  const running = [...tools].reverse().find((t) => t.status === "running");
-  const cur = running ?? tools[tools.length - 1];
-  const checks = turn.filter((i): i is Extract<Item, { kind: "verification" }> => i.kind === "verification").slice(-2);
-  if (!cur && !phase && !checks.length) return { action: null, trail: null };
-
-  const isShell = !!cur && (cur.name === "run_shell" || cur.name === "command_execution" || cur.name === "Bash");
-  const target = cur?.arg ? (isShell ? cur.arg : relPath(cur.arg)).replace(/\n/g, " ").slice(0, Math.max(width - 26, 12)) : "";
-  // A long-running delegate/sub-agent carries a LIVE step in `activity`
-  // ("searching … · 12 tools") that updates as it works — surface THAT here so
-  // the always-visible line shows what's happening right now and visibly changes,
-  // instead of the static task text (which made a 9-minute research run look dead).
-  const live = running?.activity?.replace(/\n/g, " ").trim();
-  const head = (live || (cur ? `${friendlyTool(cur.name)}${target ? " " + target : ""}` : phase ? phase.label : "working")).slice(0, Math.max(width - 14, 16));
-  const timer = running?.startedAt ? fmtElapsed(Math.floor((Date.now() - running.startedAt) / 1000)) : "";
-  const trail = tools.slice(-3).map((t) => `${t.status === "running" ? glyph.running : t.status === "err" ? glyph.cross : glyph.check} ${friendlyTool(t.name)}`).join("  ");
-  const checkText = checks.map((c) => `${c.ok ? glyph.check : glyph.cross} ${c.command}`).join("  ");
-  return {
-    action: `${head}${timer ? "  · " + timer : ""}`,
-    trail: [trail || null, checkText || null].filter(Boolean).join("   ") || null,
-  };
-}
-
 function retrievalUseMeta(
   retrieved: { file: string; pointer: boolean }[],
   produced: ModelMessage[],
@@ -4870,7 +4840,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const footerJsx = (
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
-        {busy || linger ? (() => { const a = turnActivity(items, pageW); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} action={a.action} trail={a.trail} waiting={!!perm || !!ask} />; })() : null}
+        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} waiting={!!perm || !!ask} /> : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (
@@ -4917,7 +4887,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? (() => { const a = turnActivity(items, width); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} action={a.action} trail={a.trail} waiting={!!perm || !!ask} />; })() : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} waiting={!!perm || !!ask} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (
