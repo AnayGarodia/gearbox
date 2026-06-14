@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Gearbox installer — downloads the prebuilt binary from GitHub Releases.
+# Gearbox installer.
+# Prefers the ~11MB JS bundle (cli.mjs) run via your existing Node/Bun — fast to
+# download AND keeps credentials in the file store (no macOS Keychain password
+# prompts). Falls back to the ~100MB self-contained binary only when no JS
+# runtime is present. Both come from GitHub Releases (no npm CDN propagation lag).
 # Usage: curl -fsSL https://raw.githubusercontent.com/AnayGarodia/gearbox/main/install.sh | bash
 set -euo pipefail
 
@@ -44,9 +48,6 @@ else
   TAG="$VERSION"
 fi
 
-BINARY_NAME="gearbox-${OS}-${ARCH}"
-DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${BINARY_NAME}"
-
 # ── Pick install directory ───────────────────────────────────────────────────
 default_bin_dir() {
   if [[ -n "${GEARBOX_BIN_DIR:-}" ]]; then echo "$GEARBOX_BIN_DIR"; return; fi
@@ -76,21 +77,51 @@ default_bin_dir() {
 BIN_DIR="$(default_bin_dir)"
 mkdir -p "$BIN_DIR"
 
-# ── Download ─────────────────────────────────────────────────────────────────
-printf "${D}  → downloading gearbox ${TAG} (${OS}/${ARCH})${R}\n"
+# ── Choose runtime ───────────────────────────────────────────────────────────
+# Prefer Node, then Bun. The JS bundle runs on either and uses the file-based
+# secret store (no Keychain). Only with no runtime do we pull the big binary.
+RUNTIME=""
+if have node; then RUNTIME="node"; elif have bun; then RUNTIME="bun"; fi
+
 TMP="$(mktemp)"
-cleanup() { rm -f "$TMP"; }
-trap cleanup EXIT
+trap 'rm -f "$TMP"' EXIT
 
-if ! curl -fL --retry 3 --retry-delay 3 --progress-bar "$DOWNLOAD_URL" -o "$TMP"; then
-  fail "download failed: ${DOWNLOAD_URL}" \
-    "check your connection or visit https://github.com/${REPO}/releases"
+if [[ -n "$RUNTIME" ]]; then
+  # ── JS bundle path (fast · no Keychain prompts) ──────────────────────────────
+  APP_DIR="${GEARBOX_HOME:-$HOME/.gearbox}/runtime"
+  mkdir -p "$APP_DIR"
+  CLI="${APP_DIR}/cli.mjs"
+  DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/cli.mjs"
+
+  printf "${D}  → downloading gearbox ${TAG} (cli.mjs · runs via ${RUNTIME})${R}\n"
+  if ! curl -fL --retry 3 --retry-delay 3 --progress-bar "$DOWNLOAD_URL" -o "$TMP"; then
+    fail "download failed: ${DOWNLOAD_URL}" \
+      "check your connection or visit https://github.com/${REPO}/releases"
+  fi
+  mv "$TMP" "$CLI"
+
+  # Shim that execs the bundle through the user's runtime (PATH-resolved, so it
+  # survives node/bun version switches via nvm etc.).
+  rm -f "${BIN_DIR}/gearbox"
+  cat > "${BIN_DIR}/gearbox" <<EOF
+#!/bin/sh
+exec ${RUNTIME} "${CLI}" "\$@"
+EOF
+  chmod 0755 "${BIN_DIR}/gearbox"
+else
+  # ── Standalone binary fallback (no Node/Bun on this machine) ──────────────────
+  BINARY_NAME="gearbox-${OS}-${ARCH}"
+  DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${BINARY_NAME}"
+
+  printf "${D}  → downloading gearbox ${TAG} (${OS}/${ARCH} · standalone, ~100MB)${R}\n"
+  if ! curl -fL --retry 3 --retry-delay 3 --progress-bar "$DOWNLOAD_URL" -o "$TMP"; then
+    fail "download failed: ${DOWNLOAD_URL}" \
+      "check your connection or visit https://github.com/${REPO}/releases"
+  fi
+  rm -f "${BIN_DIR}/gearbox"
+  mv "$TMP" "${BIN_DIR}/gearbox"
+  chmod 0755 "${BIN_DIR}/gearbox"
 fi
-
-# ── Install ──────────────────────────────────────────────────────────────────
-rm -f "${BIN_DIR}/gearbox"
-mv "$TMP" "${BIN_DIR}/gearbox"
-chmod 0755 "${BIN_DIR}/gearbox"
 
 printf "\n${G}  ✓${R} ${B}gearbox ${TAG}${R} installed\n"
 printf "${D}    ${BIN_DIR}/gearbox${R}\n\n"
