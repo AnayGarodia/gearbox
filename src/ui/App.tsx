@@ -772,7 +772,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
 
   useEffect(() => {
     if (!busy && !linger) return;
-    const id = setInterval(() => bumpMotion(), 120);
+    // 80ms ≈ 12.5fps so the braille spinner reads as fluid motion. Only the
+    // working strip animates on this; the transcript memo doesn't depend on
+    // `motion`, so it's not re-flattened per tick.
+    const id = setInterval(() => bumpMotion(), 80);
     return () => clearInterval(id);
   }, [busy, linger]);
   const [vim, setVimState] = useState<"off" | "insert" | "normal">(loadPrefs().vim ? "insert" : "off");

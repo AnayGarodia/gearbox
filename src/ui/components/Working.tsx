@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { fmtElapsed } from "../lines.ts";
 import { color } from "../theme.ts";
-import { breathGlyph, shimmerFrame } from "../shimmer.ts";
+import { spinnerGlyph, spinnerFrame } from "../shimmer.ts";
 import type { MascotState } from "./Mascot.tsx";
 
 // The working beat (Broadsheet): a compact two-line now block. Line 1 is the
@@ -51,12 +51,12 @@ export function Working({
     );
   }
   const label = linger ? (state === "error" ? "something broke" : "done") : verb;
-  // A single dot BREATHES in size (· • ● •) beside the verb as the quiet sign
-  // of life, in a steady color (a color-flickering glyph read as a glitch). The
-  // verb itself never changes color. No tok/s: a live char-rate guess is dragged
-  // down by tool-call gaps, so the elapsed clock is the only honest figure.
+  // A smooth braille spinner beside the verb (the ora/npm look) in a steady
+  // accent color — the verb itself never changes color. No tok/s: a live
+  // char-rate guess is dragged down by tool-call gaps, so the elapsed clock is
+  // the only honest figure.
   const live = !linger;
-  const dot = live ? breathGlyph(shimmerFrame()) : "●";
+  const dot = live ? spinnerGlyph(spinnerFrame()) : "●";
   const dotColor = live ? color.accent : state === "error" ? color.err : color.ok;
   const labelJsx = (
     <Text>

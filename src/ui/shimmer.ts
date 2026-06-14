@@ -32,14 +32,15 @@ export function shimmer(text: string, frame: number): { ch: string; color: strin
 // color that eases dim → bright → dim, instead of a per-character gradient
 // (which reads as garbled multicolor text at terminal refresh rates). One
 // quiet pulse of life, no rainbow. Returns a single color for `frame`.
-// The working "spinner": a dot that BREATHES in size (· → • → ● → •) in a
-// steady accent color, instead of a single glyph whose color flickers (that
-// read as a glitch). A calm heartbeat, never a spinning glyph. All frames are
-// single display-width so Ink's width math stays exact.
-const BREATH = ["·", "•", "●", "•"] as const;
-export function breathGlyph(frame: number): string {
-  const i = ((frame % BREATH.length) + BREATH.length) % BREATH.length;
-  return BREATH[i]!;
+// The working spinner: the classic smooth braille-dot cycle (the look ora/npm
+// use), in a steady accent color. Every frame is a single display-width glyph
+// so Ink's width math stays exact. Advances on its own ~80ms clock so it reads
+// as fluid motion, not a flicker.
+const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+export const spinnerFrame = (): number => Math.floor(Date.now() / 80);
+export function spinnerGlyph(frame: number): string {
+  const i = ((frame % SPINNER.length) + SPINNER.length) % SPINNER.length;
+  return SPINNER[i]!;
 }
 
 // A blooming flower beside the verb: an asterisk that opens its petals from a tiny
