@@ -46,12 +46,19 @@ const PY_PROJECT_MARKERS = ["pyproject.toml", "setup.py", "setup.cfg", "pytest.i
 function isPyProjectRoot(cwd: string): boolean {
   return PY_PROJECT_MARKERS.some((m) => existsSync(join(cwd, m)));
 }
+// Paths come from the model's file writes (steerable by untrusted repo content),
+// and the scoped command runs through a shell — so a path with shell-meta chars
+// would be a command-injection vector. Only include dirs that are plain path
+// characters (no quotes, $, backticks, ;, |, &, etc.); anything else is dropped
+// (falling back to a bare run is safe, never code execution). The caller also
+// double-quotes each entry and adds a `--` separator as defence in depth.
+const SAFE_PATH = /^[\w.\-\/ ]+$/;
 function changedPyDirs(changedFiles: string[]): string[] {
   const dirs = new Set<string>();
   for (const f of changedFiles) {
     if (!/\.py$/.test(f)) continue;
     const d = dirname(f);
-    if (d && d !== ".") dirs.add(d); // "." == cwd == a bare run; no scoping benefit
+    if (d && d !== "." && SAFE_PATH.test(d)) dirs.add(d); // "." == cwd == a bare run; no scoping benefit
   }
   return [...dirs];
 }
@@ -63,7 +70,9 @@ export function detectVerificationCommands(cwd = process.cwd(), changedFiles: st
   const hasGo = changedFiles.some((f) => /\.go$/.test(f)) || existsSync(join(cwd, "go.mod"));
   if (hasPython && !cmds.some((c) => /\bpytest\b/.test(c.command))) {
     const scope = !isPyProjectRoot(cwd) ? changedPyDirs(changedFiles) : [];
-    const command = scope.length ? `pytest ${scope.map((d) => `"${d}"`).join(" ")}` : "pytest";
+    // `--` so a dir like "-x" can't be read as a flag; quotes for paths with spaces
+    // (changedPyDirs has already rejected anything with shell-meta characters).
+    const command = scope.length ? `pytest -- ${scope.map((d) => `"${d}"`).join(" ")}` : "pytest";
     cmds.push({ command, reason: "python project" });
   }
   if (hasRust && !cmds.some((c) => /\bcargo\s+test\b/.test(c.command))) cmds.push({ command: "cargo test", reason: "rust project" });
