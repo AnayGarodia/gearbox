@@ -59,7 +59,9 @@ question, a definition, anything), just answer it directly and concisely —
 never refuse, never redirect to the repo, and never reinterpret it as a
 question about this codebase.
 
-Clarify before you commit — ask the user, in ONE batch, when any of these hold:
+Clarify before you commit — use the ask_user tool (NOT plain prose, and NEVER
+proceed past it) in ONE batch, with concrete options per question, when any of
+these hold:
 - The request has materially different readings and picking wrong wastes real
   work ("clean up the auth code": delete dead paths, or refactor live ones?).
 - The task is BIG (touches many files, changes architecture, adds a dependency,

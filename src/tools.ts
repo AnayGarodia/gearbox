@@ -57,6 +57,7 @@ import { looksLikeSandboxDenial } from "./sandbox/index.ts";
 import { appendFact } from "./context/memory.ts";
 import { emitHook } from "./plugins.ts";
 import { requestPermission } from "./permission.ts";
+import { requestUserAnswer } from "./ask.ts";
 import { which, Glob, spawnSyncProc } from "./proc.ts";
 import type { OnEvent } from "./agent/events.ts";
 import { fetchUrlText } from "./fetch.ts";
@@ -697,6 +698,35 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd(), ext
       return ok ? "remembered" : "couldn't write the memory file";
     },
   }),
+
+  ask_user: tool({
+    description:
+      "Ask the user clarifying questions and WAIT for their answer, instead of guessing or asking in plain prose. Use BEFORE acting when the request is ambiguous, big/architectural, or missing a fact that would change your approach. The turn pauses until they answer — do not call other tools in the same step. Ask everything you need in ONE call (up to 4 questions); give each 2-4 concrete options to pick from (set multiSelect to let them choose several). Returns their choices; act on them without re-confirming.",
+    inputSchema: z.object({
+      questions: z
+        .array(
+          z.object({
+            question: z.string().describe("The question — clear and specific."),
+            options: z
+              .array(z.object({ label: z.string(), description: z.string().optional().describe("Optional one-line note on this choice.") }))
+              .min(2)
+              .max(4)
+              .describe("The choices the user picks from. Lead with your recommendation."),
+            multiSelect: z.boolean().optional().describe("Allow choosing more than one option."),
+          }),
+        )
+        .min(1)
+        .max(4),
+    }),
+    execute: async ({ questions }) => {
+      // NOT permission-gated — asking is always safe. Awaiting here is what makes
+      // the turn pause on this tool call instead of barreling into gated work.
+      const answers = await requestUserAnswer({ questions, root });
+      if (answers === null)
+        return "No interactive UI to ask (headless, or the user dismissed). Proceed using your best judgment and state the assumptions you made.";
+      return answers.map((a) => `${a.question}\n→ ${a.answers.join(", ")}`).join("\n\n");
+    },
+  }),
   };
 }
 
@@ -722,6 +752,7 @@ function readOnlySubset(all: ReturnType<typeof createTools>) {
     web_search: all.web_search,
     code_definition: all.code_definition,
     code_references: all.code_references,
+    ask_user: all.ask_user, // asking is read-only — available in plan mode too
   };
 }
 

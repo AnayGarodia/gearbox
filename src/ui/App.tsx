@@ -22,6 +22,9 @@ import { Masthead, MASTHEAD_ROW, TABBAR_LEFT, mastheadAccountZone } from "./comp
 import { tabBarSegments, tabBarHit, type TabRow } from "./tabbar.ts";
 import { premiumRate, estimateSavings, formatPolicyString, savingsLine, turnsLeftForecast } from "./cost-tab.ts";
 import { setPermissionHandler, registerPermissionHandler, registerPreMutationHook, setYolo, isYolo, type PermRequest, type PermDecision } from "../permission.ts";
+import { setAskHandler, registerAskHandler, type AskRequest, type AskAnswer } from "../ask.ts";
+import { initAskPicker, askPickerReduce, type AskPickerState, type AskPickerKey } from "./ask-picker.ts";
+import { AskPrompt, askPromptRows } from "./components/AskPrompt.tsx";
 import { newSessionId, saveSession, loadSession, listSessions, deleteSession, updateSessionMeta, loadHistory, appendHistory, type Session, type TurnMeta, type CompactionArchive, type RetrievalUseMeta } from "../session.ts";
 import { nextVerb, toolVerbFromName } from "./character.ts";
 import { color, glyph, setTheme, activeTheme, THEMES, providerColor } from "./theme.ts";
@@ -661,6 +664,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [, bumpMotion] = useReducer((x: number) => x + 1, 0);
   const [yolo, setYoloState] = useState(isYolo());
   const [perm, setPermState] = useState<PermRequest | null>(null);
+  const [ask, setAskState] = useState<{ req: AskRequest; resolve: (a: AskAnswer[] | null) => void; picker: AskPickerState } | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [expandAll, setExpandAll] = useState(false); // ⌃O: show full diffs/tool output
   const [search, setSearchState] = useState<{ q: string; idx: number } | null>(null); // ⌃R reverse-i-search
@@ -808,8 +812,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // worktree) all share one dir, so the dir name labeled every tab identically
   // ("Desktop"). The conductor falls back to the tab's own name instead.
   useEffect(() => {
-    onStatus?.({ busy, needsInput: perm != null, title: sessionRef.current.title });
-  }, [busy, perm, onStatus]);
+    onStatus?.({ busy, needsInput: perm != null || ask != null, title: sessionRef.current.title });
+  }, [busy, perm, ask, onStatus]);
 
   // Sticky bash mode: `!` on an empty composer enters it (the ! is consumed), each
   // Enter runs the line as a shell command, esc exits back to normal input. (iii)
@@ -870,6 +874,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     : loadPrefs().ghost && isGhostLook(loadPrefs().ghost!) ? loadPrefs().ghost! : "base",
   );
   const permRef = useRef<PermRequest | null>(null);
+  const askRef = useRef<{ req: AskRequest; resolve: (a: AskAnswer[] | null) => void; picker: AskPickerState } | null>(null);
+  const askQueue = useRef<{ req: AskRequest; resolve: (a: AskAnswer[] | null) => void }[]>([]);
   const permQueue = useRef<{ req: PermRequest; resolve: (d: PermDecision) => void }[]>([]);
   const scrollTopRef = useRef(0);
   const viewportHeightRef = useRef(1);
@@ -898,6 +904,32 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (d === "all") setYoloState(true); // keep the status badge in sync
     item?.resolve(d);
     setTimeout(pumpPerm, 0);
+  };
+
+  // The ask_user prompt: same one-at-a-time queue shape as permissions. The
+  // agent turn is paused inside the tool's execute() until resolveAsk runs.
+  const setAsk = (a: typeof askRef.current) => {
+    askRef.current = a;
+    setAskState(a);
+  };
+  const pumpAsk = () => {
+    if (askRef.current) return;
+    const next = askQueue.current[0];
+    setAsk(next ? { req: next.req, resolve: next.resolve, picker: initAskPicker() } : null);
+  };
+  const resolveAsk = (answers: AskAnswer[] | null) => {
+    const item = askQueue.current.shift();
+    setAsk(null);
+    item?.resolve(answers);
+    setTimeout(pumpAsk, 0);
+  };
+  // Drive the picker from a key; resolve when it finishes.
+  const askKey = (k: AskPickerKey) => {
+    const a = askRef.current;
+    if (!a) return;
+    const picker = askPickerReduce(a.picker, k, a.req.questions);
+    if (picker.done) resolveAsk(picker.cancelled ? null : picker.answers);
+    else setAsk({ ...a, picker });
   };
 
   // Restore the active subscription account from a prior session (persisted in
@@ -1004,6 +1036,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // background session's prompt lands on its own tab (the strip shows
     // "needs input"), not whichever tab registered last.
     registerPermissionHandler(root, handler);
+    // ask_user routes to THIS tab too (a background tab's question lands on its
+    // own tab). Asking is always safe → no yolo/grant logic, just queue + show.
+    registerAskHandler(root, (req) => new Promise<AskAnswer[] | null>((resolve) => { askQueue.current.push({ req, resolve }); pumpAsk(); }));
     // Before a turn's FIRST mutating tool (under any approval path — yolo,
     // rules, and grants included), snapshot the whole tree. Synchronous, so the
     // tool can't mutate before the checkpoint exists. Checkpoints THIS root —
@@ -1021,7 +1056,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
     };
     registerPreMutationHook(root, preMutation);
-    return () => { registerPermissionHandler(root, null); registerPreMutationHook(root, null); };
+    return () => { registerPermissionHandler(root, null); registerPreMutationHook(root, null); registerAskHandler(root, null); };
   }, []);
 
   // The ACTIVE tab also owns the global fallback slots, so rootless requests
@@ -1035,7 +1070,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         pumpPerm();
       }),
     );
-    return () => setPermissionHandler(null);
+    setAskHandler((req) => new Promise<AskAnswer[] | null>((resolve) => { askQueue.current.push({ req, resolve }); pumpAsk(); }));
+    return () => { setPermissionHandler(null); setAskHandler(null); };
   }, [active]);
 
   // Plugins (.gearbox/plugins/*.ts + ~/.gearbox/plugins/*.ts): loaded once at
@@ -3563,6 +3599,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       return;
     }
     // A pending permission request captures input until it's answered.
+    if (askRef.current && !(key.ctrl && input === "c")) {
+      // ⌃C falls through to the interrupt handler below (which clears the ask).
+      if (key.upArrow) askKey("up");
+      else if (key.downArrow) askKey("down");
+      else if (input === " ") askKey("toggle");
+      else if (key.return) askKey("confirm");
+      else if (key.escape) askKey("cancel");
+      return;
+    }
     if (permRef.current) {
       if (input === "1") resolvePerm("once");
       else if (input === "2") resolvePerm("always");
@@ -3594,6 +3639,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (key.ctrl && input === "c") {
       if (busyRef.current) {
         interruptedRef.current = true;
+        if (askRef.current) resolveAsk(null); // a pending question's promise would orphan otherwise
         abortRef.current?.abort();
         return;
       }
@@ -4435,6 +4481,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
   if (perm) footer += 8; // consent block: marginTop + title + command + 4 option rows + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
+  if (ask) footer += askPromptRows(ask.req, ask.picker); // ask block height (AskPrompt.tsx row contract)
   else if (!panel && !homeScreen) footer += 4 + composerVisibleRows(edit.value, pageW); // composer (marginTop + pad + CAPPED input rows + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
   // The now block (marginTop + verb row + activity row while busy; 2 on the
@@ -4634,7 +4681,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Inline keeps full width; fullscreen renders these inside the page column
   // (fsComposerJsx below) so the consent line / composer share the transcript's
   // centered column.
-  const composerJsx = perm ? (
+  const composerJsx = ask ? (
+    <AskPrompt req={ask.req} picker={ask.picker} width={width} />
+  ) : perm ? (
     <PermissionPrompt req={perm} width={width} />
   ) : panel || homeScreen ? null : (
     composerAt(width, false)
@@ -4643,7 +4692,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // the flexible hero/transcript region — never the input box or the consent
   // line (mirrors Composer.tsx's own flexShrink=0, which a wrapper Box would
   // otherwise defeat).
-  const fsComposerJsx = perm ? (
+  const fsComposerJsx = ask ? (
+    <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
+      <AskPrompt req={ask.req} picker={ask.picker} width={pageW} />
+    </Box>
+  ) : perm ? (
     <Box marginLeft={pageLeft} width={pageW} flexShrink={0}>
       <PermissionPrompt req={perm} width={pageW} />
     </Box>
