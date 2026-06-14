@@ -378,7 +378,7 @@ async function readStdin(): Promise<string> {
   return input;
 }
 
-if (args[0] === "upgrade" || args[0] === "update") {
+if (["upgrade", "update", "--upgrade", "--update"].includes(args[0] ?? "")) {
   // Resolve this module's dir cross-runtime: import.meta.dir is Bun-only and is
   // undefined under Node (the installed binary runs on node), which used to crash
   // path.resolve. fileURLToPath(import.meta.url) works on both.
