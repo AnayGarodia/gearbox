@@ -251,11 +251,12 @@ async function runCliOnboarding(): Promise<boolean> {
     const termWidth = Math.min(process.stdout.columns || 80, 100);
     onboardingBanner(termWidth);
 
-    while (!anyProviderAvailable()) {
+    let added = 0;
+    while (true) {
+      let didAdd = false;
+      if (pipedAnswers && pipedAnswers.length === 0) break; // piped input exhausted → stop (no infinite loop)
       const env = importableEnvCreds();
       const cloud = importableCloudCreds();
-      const existing = listAccounts();
-      if (existing.length) break;
 
       // Numbers are assigned SEQUENTIALLY over the options actually shown (the
       // import row appears only when creds are detected; the subscription rows
@@ -277,13 +278,16 @@ async function runCliOnboarding(): Promise<boolean> {
       if (which("claude")) opt("claude", "Claude subscription", "uses the official claude CLI; no token extraction");
       if (which("codex")) opt("codex", "ChatGPT subscription", "uses the official codex CLI; no token extraction");
       options.push(optionLine("p", "Show provider catalog", "all API-key providers Gearbox knows how to add"));
-      options.push(optionLine("q", "Quit setup", "Gearbox will not open the coding app yet"));
-      box("Choose how Gearbox should connect", options);
+      if (added > 0) options.push(optionLine("d", "Done", `start Gearbox with the ${added} account${added === 1 ? "" : "s"} you added`));
+      options.push(optionLine("q", added > 0 ? "Quit" : "Quit setup", added > 0 ? "finish setup now" : "Gearbox will not open the coding app yet"));
+      box(added > 0 ? `Add another account?  (${added} added · the more you add, the better Gearbox routes)` : "Choose how Gearbox should connect", options);
       console.log("");
       const choice = (await ask("Selection: ")).toLowerCase();
       const action = acts[Number(choice) - 1] ?? "";
 
+      if (choice === "d" || choice === "done") break;
       if (choice === "q" || choice === "quit" || choice === "skip") {
+        if (added > 0 || anyProviderAvailable()) break; // finish with what we have
         console.log("");
         console.log(warn("Setup skipped. Run `gearbox onboard` when you are ready."));
         return false;
@@ -300,7 +304,7 @@ async function runCliOnboarding(): Promise<boolean> {
         for (const c of env) await importEnvCred(c);
         for (const c of cloud) await importCloudCred(c);
         console.log(ok(`Imported ${env.length + cloud.length} credential${env.length + cloud.length === 1 ? "" : "s"}.`));
-        break;
+        didAdd = true;
       }
       if (action === "paste") {
         console.log(dim("Paste is visible in most terminals. Use the provider + key option if you want to be explicit."));
@@ -315,9 +319,8 @@ async function runCliOnboarding(): Promise<boolean> {
         console.log(res.ok ? ok(res.message) : errColor(res.message));
         if (res.ok && res.account) {
           await testAndReport(res.account);
-          break;
-        }
-        continue;
+          didAdd = true;
+        } else continue;
       }
       if (action === "provider") {
         console.log("");
@@ -331,9 +334,8 @@ async function runCliOnboarding(): Promise<boolean> {
         console.log(res.ok ? ok(res.message) : errColor(res.message));
         if (res.ok && res.account) {
           await testAndReport(res.account);
-          break;
-        }
-        continue;
+          didAdd = true;
+        } else continue;
       }
       if (action === "azure") {
         console.log(dim("Use a resource name like my-openai-resource, or a full Foundry endpoint URL."));
@@ -346,23 +348,29 @@ async function runCliOnboarding(): Promise<boolean> {
         console.log(res.ok ? ok(res.message) : errColor(res.message));
         if (res.ok && res.account) {
           await testAndReport(res.account);
-          break;
-        }
-        continue;
+          didAdd = true;
+        } else continue;
       }
       if (action === "claude") {
-        if (await addSubscription("claude-cli")) break;
-        continue;
+        if (await addSubscription("claude-cli")) didAdd = true; else continue;
       }
       if (action === "codex") {
-        if (await addSubscription("codex-cli")) break;
-        continue;
+        if (await addSubscription("codex-cli")) didAdd = true; else continue;
+      }
+      if (didAdd) {
+        added++;
+        if (pipedAnswers && pipedAnswers.length === 0) break; // no piped answer left for "add another"
+        const more = (await ask("\n  Add another account?  more accounts = better routing  [y/N]: ")).toLowerCase();
+        if (more === "y" || more === "yes") continue;
+        break;
       }
       console.log(warn("Choose one of the listed options."));
     }
 
+    const n = listAccounts().length;
     console.log("");
-    console.log(centerStr(ok("✓  you're all set"), termWidth));
+    console.log(centerStr(ok(`✓  you're all set${n ? ` — ${n} account${n === 1 ? "" : "s"} connected` : ""}`), termWidth));
+    if (n > 1) console.log(centerStr(dim("Gearbox routes between them per task · /why shows each pick"), termWidth));
     console.log("");
     console.log(centerStr(dim(`cd ~/your-project  →  ${accent("gearbox")}`), termWidth));
     console.log("");
