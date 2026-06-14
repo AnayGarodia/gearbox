@@ -32,15 +32,14 @@ export function shimmer(text: string, frame: number): { ch: string; color: strin
 // color that eases dim → bright → dim, instead of a per-character gradient
 // (which reads as garbled multicolor text at terminal refresh rates). One
 // quiet pulse of life, no rainbow. Returns a single color for `frame`.
-export function pulseColor(frame: number): string {
-  // A narrower ramp than the sweep glow: dim → bright → dim, never dropping to
-  // `faint` (that low dipped so dark the dot read as blinking OFF). Always
-  // clearly alive, just breathing.
-  const ramp = [color.dim, color.accentDim, color.accent];
-  const span = ramp.length * 2 - 2; // up then down: 0,1,2,1
-  const p = ((frame % span) + span) % span;
-  const i = p < ramp.length ? p : span - p;
-  return ramp[i]!;
+// The working "spinner": a dot that BREATHES in size (· → • → ● → •) in a
+// steady accent color, instead of a single glyph whose color flickers (that
+// read as a glitch). A calm heartbeat, never a spinning glyph. All frames are
+// single display-width so Ink's width math stays exact.
+const BREATH = ["·", "•", "●", "•"] as const;
+export function breathGlyph(frame: number): string {
+  const i = ((frame % BREATH.length) + BREATH.length) % BREATH.length;
+  return BREATH[i]!;
 }
 
 // A blooming flower beside the verb: an asterisk that opens its petals from a tiny

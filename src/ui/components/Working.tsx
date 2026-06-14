@@ -2,7 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { fmtElapsed } from "../lines.ts";
 import { color } from "../theme.ts";
-import { pulseColor, shimmerFrame } from "../shimmer.ts";
+import { breathGlyph, shimmerFrame } from "../shimmer.ts";
 import type { MascotState } from "./Mascot.tsx";
 
 // The working beat (Broadsheet): a compact two-line now block. Line 1 is the
@@ -25,6 +25,7 @@ export function Working({
   width,
   action,
   trail,
+  waiting,
 }: {
   state: MascotState;
   verb: string;
@@ -33,18 +34,33 @@ export function Working({
   width: number;
   action?: string | null; // current step (tool + target + ticking elapsed)
   trail?: string | null; // recent steps/checks
+  waiting?: boolean; // a permission/question prompt is blocking the turn — it's on YOU, not the model
 }) {
+  // While a prompt blocks the turn, the model isn't working — say so in amber
+  // and point down to the prompt, instead of a "Thinking · 30s" spinner that
+  // reads as if it's still busy (the reported "the time and spinner keeps going").
+  if (waiting) {
+    return (
+      <Box width={width} paddingX={1} marginTop={1} flexDirection="column">
+        <Text wrap="truncate-end" color={color.warn} bold>
+          {"⚠ waiting for you"}
+          <Text color={color.faint}>{"  · respond below ↓"}</Text>
+        </Text>
+        <Text> </Text>
+      </Box>
+    );
+  }
   const label = linger ? (state === "error" ? "something broke" : "done") : verb;
-  // The verb sits in ONE steady color; a single dot beside it breathes dim →
-  // bright → dim (pulseColor) as the quiet sign of life. The word never changes
-  // color (a per-character gradient read as garbled multicolor text). No tok/s:
-  // a live char-rate guess is dragged down by tool-call gaps, so the elapsed
-  // clock is the only honest "still alive" figure.
+  // A single dot BREATHES in size (· • ● •) beside the verb as the quiet sign
+  // of life, in a steady color (a color-flickering glyph read as a glitch). The
+  // verb itself never changes color. No tok/s: a live char-rate guess is dragged
+  // down by tool-call gaps, so the elapsed clock is the only honest figure.
   const live = !linger;
-  const dotColor = live ? pulseColor(shimmerFrame()) : state === "error" ? color.err : color.ok;
+  const dot = live ? breathGlyph(shimmerFrame()) : "●";
+  const dotColor = live ? color.accent : state === "error" ? color.err : color.ok;
   const labelJsx = (
     <Text>
-      <Text color={dotColor}>{"● "}</Text>
+      <Text color={dotColor}>{dot + " "}</Text>
       <Text color={live ? color.text : state === "error" ? color.err : color.ok}>{label}</Text>
     </Text>
   );

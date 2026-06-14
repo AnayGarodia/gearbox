@@ -904,6 +904,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const pageWRef = useRef(80); // the page column width (meter/composer) for mouse hit math
 
   const setPerm = (p: PermRequest | null) => {
+    // A prompt appearing at the bottom is easy to miss while looking away — and
+    // the turn is BLOCKED on it. Always ring the bell + (pref-gated) desktop
+    // notify the moment one shows, so you know to come back.
+    if (p && !permRef.current) {
+      bell();
+      if (notifyRef.current) notify("gearbox", `needs you · ${p.title}`);
+    }
     permRef.current = p;
     setPermState(p);
   };
@@ -924,6 +931,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // The ask_user prompt: same one-at-a-time queue shape as permissions. The
   // agent turn is paused inside the tool's execute() until resolveAsk runs.
   const setAsk = (a: typeof askRef.current) => {
+    if (a && !askRef.current) {
+      bell();
+      if (notifyRef.current) notify("gearbox", "needs you · a question is waiting");
+    }
     askRef.current = a;
     setAskState(a);
   };
@@ -4856,7 +4867,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const footerJsx = (
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
-        {busy || linger ? (() => { const a = turnActivity(items, pageW); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} action={a.action} trail={a.trail} />; })() : null}
+        {busy || linger ? (() => { const a = turnActivity(items, pageW); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} action={a.action} trail={a.trail} waiting={!!perm || !!ask} />; })() : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (
@@ -4903,7 +4914,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? (() => { const a = turnActivity(items, width); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} action={a.action} trail={a.trail} />; })() : null}
+      {busy || linger ? (() => { const a = turnActivity(items, width); return <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} action={a.action} trail={a.trail} waiting={!!perm || !!ask} />; })() : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (

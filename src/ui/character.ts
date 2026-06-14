@@ -4,28 +4,32 @@
 // concrete activity ("reading simulate.py") lives on the line below; this word
 // is just a quiet, human sign of life.
 
-// Single-word present participles. Tasteful, a touch of warmth, never cutesy.
+// Single-word present participles. Mostly plain cognition words, with a few
+// delightful ones sprinkled in — warm and a little charming, never cutesy or
+// punny. One word that reads as "the agent is thinking," nothing more.
 export const WORKING_VERBS = [
   "Thinking",
-  "Working",
-  "Reasoning",
   "Pondering",
+  "Reasoning",
   "Cooking",
   "Brewing",
-  "Tinkering",
-  "Crunching",
-  "Composing",
-  "Sketching",
-  "Mulling",
-  "Untangling",
-  "Assembling",
-  "Whirring",
-  "Churning",
   "Percolating",
-  "Synthesizing",
+  "Ruminating",
+  "Mulling",
   "Noodling",
+  "Untangling",
+  "Synthesizing",
+  "Composing",
+  "Conjuring",
+  "Tinkering",
+  "Wrangling",
+  "Spelunking",
+  "Puzzling",
+  "Simmering",
+  "Distilling",
+  "Sketching",
   "Plotting",
-  "Humming",
+  "Crunching",
 ];
 
 let last = -1;

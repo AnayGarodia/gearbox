@@ -36,6 +36,27 @@ test("claude stream maps to text/tool events + usage + cost + session", () => {
   expect(r.rates?.[0]).toMatchObject({ utilization: 0.81, type: "seven_day" }); // quota snapshot captured
 });
 
+test("partial stream_event deltas stream text once (no double with the trailing complete message)", () => {
+  const ev: AgentEvent[] = [];
+  const lines = [
+    `{"type":"system","subtype":"init","session_id":"s1","model":"claude-opus-4-8"}`,
+    `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}}`,
+    `{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}}`,
+    // the trailing complete assistant message repeats the full text — must NOT re-emit
+    `{"type":"assistant","message":{"content":[{"type":"text","text":"Hello"}],"usage":{"input_tokens":3,"output_tokens":1}}}`,
+    `{"type":"result","subtype":"success","is_error":false,"result":"Hello","usage":{"input_tokens":3,"output_tokens":1}}`,
+  ];
+  const r = parseCliLines("claude", lines, (e) => ev.push(e));
+  const text = ev.filter((e) => e.type === "text").map((e: any) => e.text).join("");
+  expect(text).toBe("Hello"); // streamed once, not "HelloHello"
+  expect(ev.filter((e) => e.type === "text").length).toBe(2); // two deltas, no trailing duplicate
+  expect(r.usage).toEqual({ inputTokens: 3, outputTokens: 1 });
+});
+
+test("buildCliArgs streams claude token-by-token (--include-partial-messages)", () => {
+  expect(buildCliArgs("claude", "do it", {})).toContain("--include-partial-messages");
+});
+
 test("status-only rate_limit_event (no utilization number) is still captured", () => {
   // The real claude CLI usually emits status + resetsAt but NO utilization.
   const lines = [
@@ -227,7 +248,9 @@ test("formatAskUserQuestion renders the question and labeled options", () => {
   expect(out).toContain("Which provider?");
   expect(out).toContain("1. **Anthropic** — Claude");
   expect(out).toContain("2. **OpenAI**");
-  expect(out).toContain("Reply with your choice");
+  expect(out).toContain("Over to you");
+  expect(out).toContain("Reply with");
+  expect(out).toContain("your choice");
 });
 
 test("formatAskUserQuestion returns empty string when there are no questions", () => {

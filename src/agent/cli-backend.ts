@@ -72,10 +72,13 @@ interface CliState {
   // other (claude emits them as separate rate_limit_events).
   rates: Map<string, CliRate>;
   toolNames: Map<string, string>;
+  // True once we've emitted text from partial `stream_event` deltas, so the
+  // trailing complete `assistant` message doesn't re-emit the same text twice.
+  streamedText: boolean;
 }
 
 function newState(): CliState {
-  return { text: "", usage: { inputTokens: 0, outputTokens: 0 }, rates: new Map(), toolNames: new Map() };
+  return { text: "", usage: { inputTokens: 0, outputTokens: 0 }, rates: new Map(), toolNames: new Map(), streamedText: false };
 }
 
 // Map ONE parsed NDJSON object to AgentEvents + fold into state. Pure (no IO) so
@@ -137,6 +140,19 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
       }
       break;
     }
+    case "stream_event": {
+      // Token-level deltas (from --include-partial-messages). Emit text as it
+      // arrives so the reply streams + colors progressively. Tool-input deltas
+      // (input_json_delta) are partial JSON — ignored here; the complete
+      // tool_use lands in the trailing `assistant` message.
+      const ev = obj.event ?? {};
+      if (ev.type === "content_block_delta" && ev.delta?.type === "text_delta" && ev.delta.text) {
+        state.text += ev.delta.text;
+        state.streamedText = true;
+        onEvent({ type: "text", text: ev.delta.text });
+      }
+      break;
+    }
     case "assistant": {
       if (obj.message?.model) state.model = obj.message.model; // the model that produced this message
       // Per-message usage accumulates as the stream runs so a subprocess that
@@ -150,8 +166,13 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
       }
       for (const part of obj.message?.content ?? []) {
         if (part.type === "text" && part.text) {
-          state.text += part.text;
-          onEvent({ type: "text", text: part.text });
+          // If we already streamed this message's text via partial deltas, the
+          // complete copy here is a duplicate — skip it (state.text already has
+          // it). Only emit when nothing streamed (older CLI / no partials).
+          if (!state.streamedText) {
+            state.text += part.text;
+            onEvent({ type: "text", text: part.text });
+          }
         } else if (part.type === "tool_use" && part.name === "AskUserQuestion") {
           // The subscription CLI's interactive question tool. Gearbox drives the
           // CLI in print mode, so it can't render the CLI's own picker or feed an
@@ -223,7 +244,9 @@ export function formatAskUserQuestion(input: any): string {
     );
     return [`**${head}**`, ...lines].join("\n");
   });
-  return blocks.join("\n\n") + "\n\n_Reply with your choice to continue._";
+  // A clear heading + a closing instruction so this reads as an unmistakable
+  // question waiting on the user, not a paragraph buried in the reply.
+  return `### ❓ Over to you\n\n` + blocks.join("\n\n") + "\n\n_Reply with the number or your choice to continue._";
 }
 
 // CRITICAL: the vendor CLIs prefer an API key in the environment over their
@@ -372,6 +395,13 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
   // non-bridge path passes the prompt as the positional arg as before.
   if (!opts.bridge) args.push(prompt);
   args.push("--output-format", "stream-json", "--verbose");
+  // Stream the reply token-by-token. WITHOUT this, claude emits the whole
+  // assistant message as one block near the end of the turn, so the screen
+  // shows only a spinner during generation and the full reply pops in at once
+  // ("nothing is seen until it's done"). Partial deltas make it stream + color
+  // progressively like the in-loop API path. (mapCliEvent dedupes the trailing
+  // complete `assistant` text against what already streamed.)
+  args.push("--include-partial-messages");
   if (opts.bridge) args.push("--input-format", "stream-json", "--permission-prompt-tool", "stdio");
   if (model) args.push("--model", model);
   args.push("--permission-mode", opts.readOnly ? "plan" : opts.autoApprove ? "bypassPermissions" : "acceptEdits");
@@ -526,6 +556,14 @@ export async function runCliTask(opts: {
   // Answer one can_use_tool request via gearbox's permission broker. Awaited in
   // the read loop, which is fine: the CLI blocks for the response anyway.
   const answerPermission = async (requestId: string, req: any) => {
+    // AskUserQuestion has no side effects — it's the model asking YOU a
+    // question. Never put a permission prompt ("Use AskUserQuestion · allow
+    // shell commands?") in front of it; allow it straight through so the
+    // question renders (as text, since print mode can't drive the CLI picker).
+    if (String(req?.tool_name) === "AskUserQuestion") {
+      send({ type: "control_response", response: { subtype: "success", request_id: requestId, response: { behavior: "allow", updatedInput: req?.input ?? {} } } });
+      return;
+    }
     const { kind, title, detail } = cliToolPermission(req?.tool_name, req?.input, req?.description);
     let ok = false;
     try { ok = await requestPermission({ kind, title, detail, root: opts.cwd ?? process.cwd() }); } catch { ok = false; }
