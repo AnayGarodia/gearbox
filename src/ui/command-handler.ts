@@ -703,7 +703,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           // click, and the echoed command would pollute BOTH transcripts (the
           // snapshot copies it into the forked history too).
           // `merge confirm` is re-dispatched by the panel's ⏎ — not user text.
-          if (sub !== "fork" && !(sub === "merge" && rest === "confirm")) echo(text);
+          if (sub !== "fork" && !(sub === "merge" && rest.startsWith("confirm"))) echo(text);
           if (!sub || sub === "list") {
             const rows = tabs.list().map((t, i) => `${t.active ? "●" : " "} ${i + 1}  ${t.title}${t.status !== "idle" ? `  · ${t.status}` : ""}\n     ${t.dir}`);
             notice(`tabs (⌃T next · click the bar · /tab new|run|fork|merge|close)\n${rows.join("\n")}`);
@@ -762,18 +762,39 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
                 notice(`merge of ${branch} into the base tab hit conflicts — aborted cleanly.\n  resolve manually: cd ${base.dir} && git merge ${branch}`);
                 return;
               }
-              tabs.closeDir(self.dir); // unmount this tab + chdir back to the base
+              const closed = tabs.closeDir(self.dir); // unmount this tab + chdir back to the base
               const rm = gitOps.worktreeRemove(self.dir, base.dir);
-              notice(rm.ok
-                ? `✓ merged ${branch} into the base tab · worktree archived (branch ${branch} kept)`
-                : `✓ merged ${branch} into the base tab · couldn't remove the worktree (${rm.err || rm.out})\n  /worktree rm to clean up`);
+              const archived = rm.ok
+                ? `worktree archived (branch ${branch} kept)`
+                : `couldn't remove the worktree (${rm.err || rm.out})\n  /worktree rm to clean up`;
+              // Don't claim the tab is gone if closeDir couldn't find/remove it
+              // (a concurrent close shifted state) — say the merge landed but the
+              // tab is still open so the UI and the message don't disagree.
+              notice(closed === false
+                ? `✓ merged ${branch} into the base tab · ${archived}\n  (this tab is still open — switch away and /tab close it)`
+                : `✓ merged ${branch} into the base tab · ${archived}`);
             };
 
-            if (rest === "confirm") { land(); return; } // re-dispatched by the panel's ⏎
+            // Re-dispatched by the panel's ⏎ as `confirm [head-sha]`: if the
+            // branch advanced while the review panel sat open (a background turn
+            // or setup committed), refuse to merge a diff the user never saw.
+            if (rest === "confirm" || rest.startsWith("confirm ")) {
+              const expected = rest.slice("confirm".length).trim();
+              if (expected) {
+                const now = gitOps.git(["rev-parse", "HEAD"], self.dir).out.trim();
+                if (now && now !== expected) {
+                  notice(`this tab's branch advanced since you opened the review — re-run /tab merge to review the full diff before landing`);
+                  return;
+                }
+              }
+              land();
+              return;
+            }
             if (fullscreen && !panelRef.current) {
               const baseBranch = gitOps.currentBranch(base.dir) ?? "HEAD";
               const diff = gitOps.git(["diff", baseBranch], self.dir).out; // what will land
-              setPanel(mergeConfirmOpen(diff, branch));
+              const head = gitOps.git(["rev-parse", "HEAD"], self.dir).out.trim();
+              setPanel(mergeConfirmOpen(diff, branch, head));
               return;
             }
             land(); // inline: no panel to review in

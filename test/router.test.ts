@@ -54,42 +54,49 @@ test("classify falls back to chat for question-shaped prompts with no mutation v
 });
 
 // ── routing with only the Anthropic key: the demonstrable behavior ──
-test("Anthropic-only: code → sonnet, summarize → haiku", () => {
+// With a verifier net a code miss is cheap to catch, so cheap-first wins (real
+// SWE-bench data: Haiku 0.733 IS capable of code — the old seeded 0.38 wrongly
+// excluded it). With NO net a silent miss is expensive, so quality dominates.
+test("Anthropic-only: code is cheap-first under a net, careful with none; summarize → haiku", () => {
   only("ANTHROPIC_API_KEY");
   const r = new RoutingSelector();
-  expect(r.select({ prompt: "implement a retry with backoff" }).model.id).toBe("claude-sonnet-4-6");
+  expect(r.select({ prompt: "implement a retry with backoff", kind: "code", verifierTier: "tests" }).model.id).toBe("claude-haiku-4-5");
+  expect(r.select({ prompt: "implement a retry with backoff", kind: "code", verifierTier: "none" }).model.id).toBe("claude-opus-4-8");
   expect(r.select({ prompt: "summarize this transcript" }).model.id).toBe("claude-haiku-4-5");
-  // the reason is the live USP surface — kind + rationale + price
   expect(r.select({ prompt: "summarize this" }).reason).toContain("summarize");
 });
 
-// ── multi-provider: cheapest-that-clears-the-bar picks deepseek for code ──
-test("with a DeepSeek key, coding routes to the cheapest model that clears the bar", () => {
+// ── multi-provider: cheapest expected-cost pick clears the capability floor ──
+test("with a DeepSeek key, coding routes to the cheapest capable model", () => {
   only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
   const r = new RoutingSelector();
-  // deepseek-chat: SWE 0.806 (clears 0.7 bar) and far cheaper than sonnet
-  expect(r.select({ prompt: "refactor the parser" }).model.id).toBe("deepseek-v4-pro");
+  // deepseek-v4-flash: real SWE 0.737 clears the 0.4 capability floor and is the
+  // cheapest candidate, so under a net it wins cheap-first.
+  expect(r.select({ prompt: "refactor the parser", kind: "code", verifierTier: "tests" }).model.id).toBe("deepseek-v4-flash");
 });
 
-// ── confidence-gated escalation: climb off the cheap pick after failed checks ──
-test("escalation raises the bar gradually, then climbs to a stronger model", () => {
+// ── escalation: a miss raises the capability floor, climbing off the failed tier ──
+test("escalation climbs to a stronger model after misses (floor rises by failure kind)", () => {
   only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
   const r = new RoutingSelector();
-  // baseline: cheapest model that clears the 0.7 code bar
-  expect(r.select({ prompt: "refactor the parser" }).model.id).toBe("deepseek-v4-pro");
-  // one miss → bar 0.78; deepseek (0.806) still clears → gradual, unchanged
-  expect(r.select({ prompt: "refactor the parser", escalate: 1 }).model.id).toBe("deepseek-v4-pro");
-  // several misses → bar climbs past deepseek's quality → router moves UP, not to cheapest
-  const hard = r.select({ prompt: "refactor the parser", escalate: 3 });
-  expect(hard.model.id).not.toBe("deepseek-v4-pro");
+  const base = { prompt: "refactor the parser", kind: "code" as const, verifierTier: "tests" as const };
+  // baseline: cheapest capable model
+  expect(r.select(base).model.id).toBe("deepseek-v4-flash");
+  // a test failure is a reasoning miss → floor climbs hard → off the cheap tier
+  expect(r.select({ ...base, escalate: 1, failureKind: "test" }).model.id).toBe("claude-sonnet-4-6");
+  // several misses → climbs to the strongest tier
+  const hard = r.select({ ...base, escalate: 3 });
+  expect(hard.model.id).toBe("claude-opus-4-8");
   expect(hard.reason).toContain("escalated");
 });
 
 test("image turns require a vision-capable model even when a cheaper code model is available", () => {
   only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
   const r = new RoutingSelector();
-  expect(r.select({ prompt: "fix this UI from the screenshot", requires: ["tools", "images"] }).model.id).toBe("claude-sonnet-4-6");
-  expect(r.select({ prompt: "fix this UI from the screenshot", requires: ["tools", "images"] }).reason).toContain("tools+images required");
+  // deepseek has no vision → filtered out; the cheapest vision-capable model wins.
+  const choice = r.select({ prompt: "fix this UI from the screenshot", requires: ["tools", "images"] });
+  expect(choice.model.provider).toBe("anthropic"); // a vision-capable model, not deepseek
+  expect(choice.reason).toContain("tools+images required");
 });
 
 // ── explicit task kind overrides the classifier (the sub-task delegation path) ──

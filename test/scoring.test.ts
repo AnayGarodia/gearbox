@@ -22,7 +22,11 @@ test("a fresh subscription seat beats the same model on a metered key", () => {
   const key = cand({ id: "sonnet", account: keyAcct });
   const best = pickBest(input([key, seat]));
   expect(best.candidate.id).toBe("cli:max:sonnet");
-  expect(best.score).toBeCloseTo(0, 5); // plan bonus cancels the cost
+  // The plan bonus cancels the seat's DOLLARS (its costEst term), so the seat
+  // beats the identical metered key. The quality + latency expected-costs are
+  // identical for both (same model), so the seat wins purely on the free dollars.
+  expect(best.terms.planBonus).toBeCloseTo(best.terms.costEst, 5);
+  expect(best.score).toBeLessThan(scoreCandidate(key, input([key])).score);
 });
 
 // ── seat exhaustion → failover before a hard 429 ──
@@ -120,11 +124,16 @@ const acct = (id: string, sub = false) => ({ accountId: id, provider: "p", exec:
 const base = { id: "m", inUSDPerMtok: 1, outUSDPerMtok: 4, quality: 0.8, tps: 100, account: acct("a") };
 const flags = { candidates: [], now: 1_000_000, estInputTokens: 100_000 };
 
-test("failure-adjusted cost: a measured fail rate raises expected cost", () => {
-  const clean = scoreCandidate({ ...base }, flags);
-  const flaky = scoreCandidate({ ...base, failRate: 0.3 }, flags);
-  expect(flaky.terms.retryPenalty).toBeGreaterThan(0);
-  expect(flaky.costEst).toBeCloseTo(clean.costEst * (1 + 1.5 * 0.3), 6);
+test("failure-adjusted cost: a measured repo fail rate raises the wrong-cost term (the flywheel feeds the objective)", () => {
+  // No verifier net so a miss is costly enough to be visible in the score.
+  const ctx = { ...flags, verifierTier: "none" as const };
+  const clean = scoreCandidate({ ...base }, ctx);
+  const flaky = scoreCandidate({ ...base, failRate: 0.5 }, ctx);
+  expect(flaky.terms.wrongCost).toBeGreaterThan(clean.terms.wrongCost);
+  expect(flaky.terms.pWrong).toBeGreaterThan(clean.terms.pWrong);
+  expect(flaky.score).toBeGreaterThan(clean.score);
+  // dollar cost is unchanged — failure cost is no longer folded into costEst.
+  expect(flaky.costEst).toBeCloseTo(clean.costEst, 6);
 });
 
 test("cache-aware cost: the warm model on a caching provider gets the read discount; cold pays sticker", () => {
@@ -149,20 +158,24 @@ test("output realism: a reasoning model's outputFactor raises its cost", () => {
   expect(thinky.terms.stickerCost).toBeCloseTo((100_000 / 1e6) * 1 + (100_000 / 1e6) * 4, 6);
 });
 
-test("quality SURPLUS above the bar wins a near-tie only when the kind values it", () => {
-  const weak = { ...base, id: "weak", quality: 0.71, qualityBar: 0.7 };
-  const strong = { ...base, id: "strong", quality: 0.85, qualityBar: 0.7, inUSDPerMtok: 1.02 }; // 2% pricier
-  // cheap kind (no quality weight): cheapest wins
-  expect(pickBest({ ...flags, candidates: [weak, strong] }).candidate.id).toBe("weak");
-  // code/plan (quality weighted): the stronger model takes the near-tie
-  const w = (c: typeof weak) => ({ ...c, qualityWeight: 0.3 });
-  expect(pickBest({ ...flags, candidates: [w(weak), w(strong)] }).candidate.id).toBe("strong");
-  // but a CLEARLY cheaper model still wins on cost
-  const cheap = { ...weak, inUSDPerMtok: 0.2, qualityWeight: 0.3 };
-  expect(pickBest({ ...flags, candidates: [cheap, w(strong)] }).candidate.id).toBe("weak");
-  // the bonus pays for SURPLUS only: at-bar quality earns nothing extra
-  const atBar = scoreCandidate({ ...weak, quality: 0.7, qualityWeight: 0.3 }, flags);
-  expect(atBar.terms.qualityBonus).toBe(0);
+test("the verifier net flips the quality/cost tradeoff: a net makes cost dominate, no net makes quality dominate", () => {
+  // Comparable quality, strong 20% pricier — a genuine near-tie.
+  const weak = { ...base, id: "weak", quality: 0.80, inUSDPerMtok: 1, outUSDPerMtok: 4 };
+  const strong = { ...base, id: "strong", quality: 0.82, inUSDPerMtok: 1.2, outUSDPerMtok: 4.8 };
+  // WITH a net, a miss is cheap to catch → cost dominates → the cheaper model wins.
+  const netted = { ...flags, verifierTier: "tests" as const };
+  expect(pickBest({ ...netted, candidates: [weak, strong] }).candidate.id).toBe("weak");
+  // NO net, a miss ships silently → quality dominates → the stronger model wins.
+  const exposed = { ...flags, verifierTier: "none" as const };
+  expect(pickBest({ ...exposed, candidates: [weak, strong] }).candidate.id).toBe("strong");
+  // Under a net, even a CLEARLY cheaper (4×) model wins — cheap-first is safe.
+  const cheap = { ...weak, id: "cheap", inUSDPerMtok: 0.25, outUSDPerMtok: 1 };
+  expect(pickBest({ ...netted, candidates: [cheap, strong] }).candidate.id).toBe("cheap");
+  // higher quality → strictly lower P(wrong) and wrong-cost.
+  const wq = scoreCandidate(weak, exposed).terms;
+  const sq = scoreCandidate(strong, exposed).terms;
+  expect(sq.pWrong).toBeLessThan(wq.pWrong);
+  expect(sq.wrongCost).toBeLessThan(wq.wrongCost);
 });
 
 test("preferBias resolves near-ties toward the preferred account, never beats real cost gaps", () => {

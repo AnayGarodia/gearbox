@@ -28,15 +28,18 @@ test("explain() ranks candidates, marks exactly one chosen, and it matches selec
   expect(chosen.length).toBe(1);
   expect(chosen[0]!.label).toBe(r.select(task).model.label); // scorecard agrees with the real pick
   expect(card.kind).toBe("code");
-  expect(card.bar).toBeCloseTo(0.7, 5);
+  expect(card.bar).toBeCloseTo(0.4, 5); // the capability floor for code (no arbitrary quality bar)
 });
 
-test("below-bar candidates are shown but never chosen, with provenance tags", () => {
+test("every candidate is shown with a provenance tag; real data makes Haiku capable of code", () => {
   const card = new RoutingSelector().explain({ prompt: "refactor the parser" });
   const haiku = card.entries.find((e) => e.label.includes("haiku"));
-  expect(haiku?.verdict).toBe("below bar"); // haiku quality < 0.7
-  expect(haiku?.chosen).toBe(false);
-  // every entry carries a provenance abbreviation
+  // Haiku's real SWE-bench (0.733) clears the 0.4 capability floor — the seeded
+  // 0.38 guess used to mark it "below bar". It is shown and NOT floored out.
+  expect(haiku).toBeTruthy();
+  expect(haiku?.verdict).not.toBe("below capability floor");
+  // exactly one chosen; every entry carries a provenance abbreviation
+  expect(card.entries.filter((e) => e.chosen).length).toBe(1);
   for (const e of card.entries) expect(["measured", "researched", "seeded"]).toContain(e.qualitySrc);
 });
 
@@ -64,7 +67,8 @@ test("the selector's own last pick acts as the default warm for the next turn", 
   const task = { prompt: "refactor the parser" };
   const cold = new RoutingSelector().explain(task); // no pick yet → no warm → no switch penalty
   const warmed = new RoutingSelector();
-  expect(warmed.select(task).model.id).toBe("deepseek-v4-pro"); // establishes warm
+  const warmId = warmed.select(task).model.id; // establishes warm (cheapest capable)
+  expect(warmId).toBe("deepseek-v4-flash");
   const after = warmed.explain(task);
   const score = (card: ReturnType<RoutingSelector["explain"]>, label: string) =>
     card.entries.find((e) => e.label === label)!.score;
@@ -72,10 +76,10 @@ test("the selector's own last pick acts as the default warm for the next turn", 
   // model gets the cache-read discount (its score drops), while a cold sibling
   // on a caching provider pays sticker (score unchanged — no double-charged
   // flat penalty). The warm/cold GAP is what matters, and it must appear.
-  const gapCold = score(cold, "sonnet-4.6") - score(cold, "deepseek-v4-pro");
-  const gapAfter = score(after, "sonnet-4.6") - score(after, "deepseek-v4-pro");
+  const gapCold = score(cold, "sonnet-4.6") - score(cold, "deepseek-v4-flash");
+  const gapAfter = score(after, "sonnet-4.6") - score(after, "deepseek-v4-flash");
   expect(gapAfter).toBeGreaterThan(gapCold); // switching away got relatively pricier
-  expect(score(after, "deepseek-v4-pro")).toBeLessThan(score(cold, "deepseek-v4-pro")); // warm = discounted
+  expect(score(after, "deepseek-v4-flash")).toBeLessThan(score(cold, "deepseek-v4-flash")); // warm = discounted
 });
 
 test("scorecardRows renders a title, a column header, and one row per candidate", () => {
@@ -93,10 +97,10 @@ test("scorecardRows shows the kind's provenance and flags a fallback verdict", (
   expect(scorecardRows({ ...card, kindSource: "fallback" })[0]!.text).toContain("(fallback — classifier unavailable)");
 });
 
-test("explain() classifies a bare question as chat (0.3 bar), not code", () => {
+test("explain() classifies a bare question as chat (no capability floor), not code", () => {
   const card = new RoutingSelector().explain({ prompt: "What is capital of India" });
   expect(card.kind).toBe("chat");
-  expect(card.bar).toBeCloseTo(0.3, 5);
+  expect(card.bar).toBeCloseTo(0, 5); // chat has no capability floor — cheapest wins
 });
 
 // A hand-built card with the shapes that confused real users: the same model on

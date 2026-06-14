@@ -481,23 +481,49 @@ const pIdx = args.findIndex((a) => a === "-p" || a === "--print");
 if (pIdx >= 0) {
   const jsonOut = args.includes("--json");
   const yolo = args.includes("--yolo");
-  const prompt = args.slice(pIdx + 1).filter((a) => a !== "--json" && a !== "--yolo").join(" ").trim();
+  // Parse --model / --effort (each takes a value) and strip them — and their
+  // values — from the prompt. Previously they leaked into the prompt text and
+  // --model was ignored entirely (the one-shot always auto-routed).
+  let pinnedModel: string | undefined;
+  let effort: string | undefined;
+  const rest = args.slice(pIdx + 1);
+  const promptParts: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i]!;
+    if (a === "--json" || a === "--yolo") continue;
+    if (a === "--model") { pinnedModel = rest[++i]; continue; }
+    if (a === "--effort") { effort = rest[++i]; continue; }
+    promptParts.push(a);
+  }
+  const prompt = promptParts.join(" ").trim();
   if (!prompt) {
-    console.error('usage: gearbox -p "prompt" [--json] [--yolo]');
+    console.error('usage: gearbox -p "prompt" [--model <id|auto>] [--effort <level>] [--json] [--yolo]');
     process.exit(2);
   }
   const { runTask } = await import("./agent/run.ts");
-  const { RoutingSelector } = await import("./model/router.ts");
+  const { RoutingSelector, SubscriptionPinSelector } = await import("./model/router.ts");
+  const { FixedSelector } = await import("./model/selector.ts");
+  const { subscriptionSeats } = await import("./providers.ts");
   const { buildContext } = await import("./context/builder.ts");
   const { resolveCreds } = await import("./accounts/resolve.ts");
   const { defaultAccount } = await import("./accounts/store.ts");
   const { recordSpend, resolveTurnCost } = await import("./accounts/ledger.ts");
   try {
     let choice;
-    try {
-      choice = new RoutingSelector().select({ prompt, requires: ["tools"] });
-    } catch {
-      choice = new RoutingSelector().select({ prompt }); // subscription-only setups
+    const wantPin = pinnedModel && pinnedModel.toLowerCase() !== "auto";
+    if (wantPin) {
+      // A pinned model can be a subscription SEAT (run via the vendor binary) or
+      // an in-loop model — resolve to the right selector so the pin is honored.
+      const seat = subscriptionSeats().find((s) => [s.spec.id, s.spec.sdkId, s.canonicalId].includes(pinnedModel!));
+      choice = seat
+        ? new SubscriptionPinSelector(seat.account.id, seat.spec.sdkId ?? seat.spec.id).select({ prompt })
+        : new FixedSelector(pinnedModel).select({ prompt });
+    } else {
+      try {
+        choice = new RoutingSelector().select({ prompt, requires: ["tools"], interactive: true });
+      } catch {
+        choice = new RoutingSelector().select({ prompt }); // subscription-only setups
+      }
     }
     // A CLI seat hosts the one-shot via the vendor binary.
     if (choice.backend?.kind === "cli") {
@@ -505,6 +531,7 @@ if (pIdx >= 0) {
       let out = "";
       const r = await runCliTask({
         binary: choice.backend.binary, profile: choice.backend.profile, prompt, messages: [],
+        modelId: choice.model.sdkId ?? choice.model.id, effort: effort ?? choice.effort,
         onEvent: (e) => { if (e.type === "text") out += e.text; }, deferTerminal: true, autoApprove: yolo,
         // The in-loop path enforces read-only via the toolset (plan: !yolo); a
         // vendor CLI owns its own tools, so the equivalent must ride its flags
@@ -521,6 +548,7 @@ if (pIdx >= 0) {
     let out = "";
     const r = await runTask({
       model: choice.model, messages, system, creds, cacheBreak, plan: !yolo,
+      effort: effort ?? choice.effort,
       onEvent: (e) => { if (e.type === "text") out += e.text; else if (e.type === "error") console.error(e.message); },
       maxRetries: 2, deferTerminal: true,
     });

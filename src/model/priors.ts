@@ -30,6 +30,10 @@ export interface OutcomeCounts {
 interface PriorsFile {
   version: 1;
   repos: Record<string, Record<string, Record<string, OutcomeCounts>>>; // repo → kind → modelId
+  // Per-EFFORT outcomes (repo → kind → modelId → effort), so the flywheel can
+  // learn "high effort was worth it HERE" and self-correct the modeled effort
+  // curve (effort.ts). Separate tree so the per-model priors above are unaffected.
+  effortOutcomes?: Record<string, Record<string, Record<string, Record<string, OutcomeCounts>>>>;
 }
 
 export type Outcome = keyof OutcomeCounts;
@@ -88,21 +92,44 @@ function cached(): PriorsFile {
   return cache.f;
 }
 
-export function recordTurnOutcome(opts: { kind: string; modelId: string; outcome: Outcome; repo?: string }): void {
-  const f = cached();
-  const repo = opts.repo ?? repoSlug();
-  const byKind = (f.repos[repo] ??= {});
-  const byModel = (byKind[opts.kind] ??= {});
-  const c = (byModel[opts.modelId] ??= { passed: 0, failed: 0, undone: 0, unverified: 0 });
-  c[opts.outcome] += 1;
+const decay = (c: OutcomeCounts): void => {
   if (c.passed + c.failed + c.undone > DECAY_CAP) {
     c.passed = Math.round(c.passed / 2);
     c.failed = Math.round(c.failed / 2);
     c.undone = Math.round(c.undone / 2);
     c.unverified = Math.round(c.unverified / 2);
   }
+};
+
+export function recordTurnOutcome(opts: { kind: string; modelId: string; outcome: Outcome; repo?: string; effort?: string }): void {
+  const f = cached();
+  const repo = opts.repo ?? repoSlug();
+  const byModel = ((f.repos[repo] ??= {})[opts.kind] ??= {});
+  const c = (byModel[opts.modelId] ??= { passed: 0, failed: 0, undone: 0, unverified: 0 });
+  c[opts.outcome] += 1;
+  decay(c);
+  // Per-effort tree (when the turn ran at a known effort): same counts, keyed by
+  // effort, so effortPassRate can compare levels and self-correct the curve.
+  if (opts.effort) {
+    const byEffort = ((((f.effortOutcomes ??= {})[repo] ??= {})[opts.kind] ??= {})[opts.modelId] ??= {});
+    const ec = (byEffort[opts.effort] ??= { passed: 0, failed: 0, undone: 0, unverified: 0 });
+    ec[opts.outcome] += 1;
+    decay(ec);
+  }
   save(f);
   cache = { f, at: Date.now() };
+}
+
+/** Measured pass rate for (kind, model, effort) in this repo, or null below
+ *  MIN_N verified outcomes. Lets effort.ts self-correct its modeled quality
+ *  curve from real per-effort results once enough have accumulated. */
+export function effortPassRate(kind: string, modelId: string, effort: string, repo?: string): { rate: number; n: number } | null {
+  const c = cached().effortOutcomes?.[repo ?? repoSlug()]?.[kind]?.[modelId]?.[effort];
+  if (!c) return null;
+  const fails = c.failed + UNDO_WEIGHT * c.undone;
+  const n = c.passed + c.failed + c.undone;
+  if (n < MIN_N) return null;
+  return { rate: (c.passed + 1) / (c.passed + fails + 2), n };
 }
 
 export interface Prior {
@@ -141,6 +168,21 @@ export function failRateFor(kind: string, modelId: string, cwd?: string): { rate
   const fails = c.failed + UNDO_WEIGHT * c.undone;
   const rate = fails / (c.passed + fails);
   return { rate, n };
+}
+
+/** Repo-wide (model-agnostic) failure rate for a kind: aggregates every model's
+ *  outcomes for (repo, kind). Feeds the difficulty estimator — a repo where code
+ *  tasks fail a lot is HARD, so the router should start stronger regardless of
+ *  which model. Same gating + undo weighting as failRateFor. Null below MIN_N. */
+export function repoFailRate(kind: string, cwd?: string): { rate: number; n: number } | null {
+  const byModel = cached().repos[repoSlug(cwd)]?.[kind];
+  if (!byModel) return null;
+  let passed = 0, failed = 0, undone = 0;
+  for (const c of Object.values(byModel)) { passed += c.passed; failed += c.failed; undone += c.undone; }
+  const n = passed + failed + undone;
+  if (n < MIN_N) return null;
+  const fails = failed + UNDO_WEIGHT * undone;
+  return { rate: fails / (passed + fails), n };
 }
 
 /** Human line for /why: "measured here: 7/9 ✓ (−0.04)". Null when no prior. */

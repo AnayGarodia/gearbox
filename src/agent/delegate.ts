@@ -77,6 +77,24 @@ const SUBAGENT_SYSTEM = [
 // within this process lifetime. Not cryptographically unique, just stable.
 let counter = 0;
 
+// ── delegation guards (fix the "orchestrator delegates its WHOLE task to a
+// SECOND copy of itself" pathology the user hit) ─────────────────────────────
+
+const wordSet = (s: string): Set<string> => new Set(s.toLowerCase().match(/[a-z0-9]+/g) ?? []);
+
+/** True when a delegated `task` is essentially the orchestrator's ENTIRE prompt
+ *  (it covers most of the prompt's significant words). Offloading the whole turn
+ *  to one sub-agent is pure overhead + context loss — the orchestrator should do
+ *  it itself or split it into bounded pieces. */
+export function isWholeTask(task: string, orchestratorPrompt: string): boolean {
+  const p = wordSet(orchestratorPrompt);
+  if (p.size < 5) return false; // too short to judge
+  const t = wordSet(task);
+  let common = 0;
+  for (const w of p) if (t.has(w)) common++;
+  return common / p.size >= 0.7;
+}
+
 // The sub-agent's first meaningful output line, used as the tool-end summary.
 // This is far more useful than repeating the model label (already shown in the
 // tool head), and it fits in the one-line summary slot the UI reserves.
@@ -126,6 +144,9 @@ const clipTask = (s: string, max: number): string => {
 type Routed = {
   model: ModelSpec;
   account?: Account;
+  // The CURATED model this pick mirrors when model.id is a seat/alias — used to
+  // compare against the orchestrator's model canonically (the same-model guard).
+  canonicalId?: string;
   // Set when the sub-task is hosted by a vendor subscription seat (S-B): the
   // sub-agent then runs through the vendor binary (its own loop + tools) in the
   // sub-task's workspace root, instead of the in-loop API.
@@ -166,7 +187,7 @@ function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?:
     return { model: choice.model, cli: { binary: choice.backend.binary, profile: choice.backend.profile, account: choice.backend.account } };
   }
   const account = choice.backend?.kind === "in-loop" ? choice.backend.account : undefined;
-  return { model: choice.model, account };
+  return { model: choice.model, account, canonicalId: choice.canonicalId };
 }
 
 // ── activity reporting ────────────────────────────────────────────────────────
@@ -391,8 +412,8 @@ function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean 
 
 // ── exported tool factory ─────────────────────────────────────────────────────
 
-export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; root?: string; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void }): Record<string, Tool<any, any>> {
-  const { onEvent, signal, run, runCli, onBackground } = opts;
+export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; root?: string; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; orchestratorModelId?: string; orchestratorPrompt?: string; spawnCleanup?: { current?: () => void } }): Record<string, Tool<any, any>> {
+  const { onEvent, signal, run, runCli, onBackground, orchestratorModelId, orchestratorPrompt } = opts;
 
   // ── delegate (sequential, single task) ──────────────────────────────────────
   const delegate = tool({
@@ -404,8 +425,27 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       background: z.boolean().optional().describe("true = don't wait: keep working while the sub-agent runs; its report arrives in the conversation when it finishes. Use for research/long tasks whose result you don't need THIS turn."),
     }),
     execute: async ({ task, kind, background }) => {
+      // GUARD 1 (whole-task): refuse to offload essentially the entire turn to a
+      // single sub-agent — that's pure overhead + context loss, and it's how a
+      // "Sonnet delegates the whole task to Sonnet" pathology happens.
+      if (orchestratorPrompt && isWholeTask(task, orchestratorPrompt)) {
+        return "Not delegating: that is essentially this whole task. Do it yourself, or split it into smaller, bounded sub-tasks (one file or area each) and delegate those — delegation is for offloading a CHUNK, not the entire turn.";
+      }
       const routed = routeSubTask(task, kind, opts.pinnedModelId);
       if ("error" in routed) return `delegation skipped: ${routed.error}. Do it yourself.`;
+      // GUARD 2 (same-model): a SEQUENTIAL delegate to your own model adds latency
+      // and loses context for zero benefit (no cheaper/specialist model, no
+      // concurrency). Refuse and tell the orchestrator to do it inline. Background
+      // and delegate_parallel are exempt — there the benefit is concurrency, so
+      // running the same model in parallel is legitimate.
+      // Compare CANONICALLY: a sub-task can route to the same model via a
+      // seat/alias (e.g. a bedrock or vertex deployment) whose spec id differs
+      // from the orchestrator's id. The orchestrator runs in-loop, so its id is
+      // already a canonical registry id; fall back to the raw id when the pick
+      // has no canonical mapping (it is itself canonical).
+      if (!background && orchestratorModelId && !routed.cli && (routed.canonicalId ?? routed.model.id) === orchestratorModelId) {
+        return `Not delegating: that routes to ${routed.model.label} — the same model you're already running, so a sequential delegate just adds latency and loses context. Do it inline. (Delegate when a cheaper/faster/specialist model fits the sub-task, or use delegate_parallel / background:true for concurrency.)`;
+      }
       // Background mode: fire-and-continue. The live activity line still
       // streams (the rail shows it running); the report is delivered to the
       // conversation by the host when it settles.
@@ -543,5 +583,124 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
     },
   });
 
-  return { delegate, delegate_parallel };
+  // ── spawn_subagent / collect_subagents (async fan-out: fire many, keep
+  // working, collect when you need them) ───────────────────────────────────────
+  // Unlike delegate_parallel (which BLOCKS until all finish), spawn returns
+  // immediately so the orchestrator can fire many sub-agents AND keep doing its
+  // own work; collect gathers the finished ones (optionally waiting). Each spawn
+  // runs in its own git worktree (when in a repo) so concurrent writes are
+  // isolated and merged back on collect; in a non-repo, sub-agents run in the
+  // main workspace (fine for read/research fan-out).
+  type SpawnJob = {
+    num: number;
+    task: string;
+    label: string;
+    dir?: string; // worktree (git repo) or undefined (main workspace)
+    settled?: { ok: boolean; text: string; changed: { path: string; deleted: boolean }[] };
+    promise: Promise<{ ok: boolean; text: string; changed: { path: string; deleted: boolean }[] }>;
+  };
+  const spawned: SpawnJob[] = [];
+  const collectedNums = new Set<number>();
+  // Turn-end teardown (review #8): spawn_subagent creates a worktree per job, but
+  // cleanup otherwise lives only in collect_subagents — so a turn that spawns and
+  // ends without collecting (model forgets, errors, or the user aborts) would
+  // orphan the temp dirs + git worktree registrations. run.ts calls this in a
+  // finally to sweep any uncollected ones.
+  if (opts.spawnCleanup) opts.spawnCleanup.current = () => {
+    const root = gitToplevel();
+    for (const j of spawned) if (!collectedNums.has(j.num) && j.dir && root) { collectedNums.add(j.num); removeWorktree(root, j.dir); }
+  };
+  // Concurrency cap so 20-30 spawns don't open 20-30 model streams at once.
+  const SPAWN_CAP = 8;
+  let runningSpawns = 0;
+  const slotQueue: (() => void)[] = [];
+  const withSlot = async <T,>(fn: () => Promise<T>): Promise<T> => {
+    if (runningSpawns >= SPAWN_CAP) await new Promise<void>((r) => slotQueue.push(r));
+    runningSpawns++;
+    try { return await fn(); }
+    finally { runningSpawns--; slotQueue.shift()?.(); }
+  };
+
+  const spawn_subagent = tool({
+    description:
+      "Fire a sub-task to a fresh, best-routed sub-agent and KEEP WORKING — it runs in the background (in its own isolated git worktree when in a repo) and returns a job id immediately. Call it many times to fan out (research several files at once, generate several modules, etc.), then `collect_subagents` to gather the results when you need them. Use this instead of `delegate` when you have independent work to do WHILE the sub-agents run; use `delegate_parallel` when you just want to block until a small fixed batch finishes. Make each `task` completely self-contained (the sub-agent does not see this conversation).",
+    inputSchema: z.object({
+      task: z.string().describe("The complete, self-contained sub-task: what to do, which files, constraints, definition of done."),
+      kind: KIND.optional().describe("Optional task-kind hint to steer model routing (inferred if omitted)."),
+    }),
+    execute: async ({ task, kind }) => {
+      if (orchestratorPrompt && isWholeTask(task, orchestratorPrompt)) {
+        return "Not spawning: that is essentially this whole task. Split it into smaller, independent sub-tasks and spawn those.";
+      }
+      const routed = routeSubTask(task, kind, opts.pinnedModelId);
+      if ("error" in routed) return `spawn skipped: ${routed.error}. Do it yourself.`;
+      const num = ++counter;
+      const repoRoot = gitToplevel();
+      let dir: string | undefined;
+      if (repoRoot) {
+        const d = join(tmpdir(), `gearbox-spawn-${num}-${Date.now()}`);
+        if (addSeededWorktree(repoRoot, d)) dir = d;
+      }
+      const jid = `spawn-${num}`;
+      onEvent({ type: "tool-start", id: jid, name: "spawn_subagent", arg: `#${num} → ${routed.model.label}${routed.cli ? " (subscription)" : ""} · ${clipTask(task, 60)}` });
+      // The job promise NEVER rejects — every failure (the sub-agent, OR the git
+      // staging in changesIn, which runs outside runOne's try) degrades to a
+      // per-job error so one bad spawn can't blow up collect_subagents (review #9).
+      const promise = withSlot(async () => {
+        let res: { ok: boolean; text: string };
+        try { res = await runOne(run, routed, task, { signal, root: dir, runCli, onActivity: (line) => onEvent({ type: "tool-stream", id: jid, activity: line }) }); }
+        catch (e: any) { res = { ok: false, text: `crashed: ${e?.message ?? e}` }; }
+        let changed: { path: string; deleted: boolean }[] = [];
+        try { if (res.ok && dir) changed = changesIn(dir, true); } catch { /* git staging error → no merge, keep the report */ }
+        onEvent({ type: "tool-end", id: jid, ok: res.ok, summary: reportLine(res.text) || routed.model.label });
+        return { ...res, changed };
+      });
+      const job: SpawnJob = { num, task, label: routed.model.label, dir, promise };
+      job.promise.then((s) => { job.settled = s; }).catch(() => {});
+      spawned.push(job);
+      return `Spawned sub-task #${num} on ${routed.model.label} (running in the background). Keep working; call collect_subagents when you need its result. ${spawned.filter((j) => !collectedNums.has(j.num)).length} sub-task(s) outstanding.`;
+    },
+  });
+
+  const collect_subagents = tool({
+    description:
+      "Gather results from sub-agents started with spawn_subagent. By default it WAITS for all still-running spawned sub-tasks and returns their reports (merging each one's file changes back into your workspace). Set wait:false to grab only the ones that have already finished without blocking. Call this once you've run out of other work to do, or whenever you need a spawned result to continue.",
+    inputSchema: z.object({
+      wait: z.boolean().optional().describe("true (default) = wait for all outstanding spawned sub-tasks; false = return only the ones already finished."),
+    }),
+    execute: async ({ wait = true }) => {
+      const outstanding = spawned.filter((j) => !collectedNums.has(j.num));
+      if (!outstanding.length) return "No spawned sub-tasks to collect.";
+      const ready = wait ? outstanding : outstanding.filter((j) => j.settled);
+      if (!ready.length) return `Nothing finished yet (${outstanding.length} still running). Keep working, or call collect_subagents with wait:true.`;
+      const results = await Promise.all(ready.map(async (j) => ({ j, s: j.settled ?? (await j.promise) })));
+      const repoRoot = gitToplevel();
+      // Merge each finished worktree back (reuse the same per-file apply/3-way
+      // logic as delegate_parallel), then clean the worktree up.
+      const writers = new Map<string, { dir: string; deleted: boolean }[]>();
+      if (repoRoot) for (const { j, s } of results) if (j.dir) for (const c of s.changed) writers.set(c.path, [...(writers.get(c.path) ?? []), { dir: j.dir, deleted: c.deleted }]);
+      let applied = 0, autoMerged = 0;
+      const conflicted: string[] = [];
+      if (repoRoot) for (const [path, who] of writers) {
+        const dst = join(repoRoot, path);
+        const existed = existsSync(dst);
+        const before = existed ? (() => { try { return readFileSync(dst, "utf8"); } catch { return ""; } })() : "";
+        if (who.length === 1) {
+          const w = who[0]!;
+          try { if (w.deleted) { if (existed) rmSync(dst, { force: true }); } else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(join(w.dir, path), dst); } applied++; } catch { continue; }
+        } else {
+          if (mergeFileBack(repoRoot, path, who.filter((w) => !w.deleted).map((w) => w.dir))) conflicted.push(path);
+          autoMerged++;
+        }
+        onEvent({ type: "file-change", path: relative(process.cwd(), dst), before, existed });
+      }
+      for (const { j } of results) { collectedNums.add(j.num); if (repoRoot && j.dir) removeWorktree(repoRoot, j.dir); }
+      const remaining = spawned.filter((x) => !collectedNums.has(x.num)).length;
+      const lines = results.map(({ j, s }) => `#${j.num} (${j.label}): ${subAgentDigest(s.text, s.changed)}`);
+      const head = `Collected ${results.length} sub-task(s)${applied || autoMerged ? ` · applied ${applied}${autoMerged ? `, 3-way-merged ${autoMerged}` : ""} file change(s)` : ""}${conflicted.length ? ` · conflict markers in ${conflicted.join(", ")}` : ""}${remaining ? ` · ${remaining} still outstanding` : ""}.`;
+      return [head, "", ...lines].join("\n");
+    },
+  });
+
+  return { delegate, delegate_parallel, spawn_subagent, collect_subagents };
 }

@@ -44,6 +44,19 @@ export interface Task {
   // re-running the same too-weak one. 0 (the default) is the normal path;
   // FixedSelector ignores this field entirely.
   escalate?: number;
+  // What KIND of check produced this escalation (set alongside escalate > 0).
+  // Failure-kind-aware escalation (validated by the routing bench): a test
+  // failure is a reasoning miss → climb hard toward the top tier; a mechanical
+  // failure (typecheck/lint/build — the compiler pinpointed the exact error) is
+  // an EASY fix → barely raise the bar, so a cheap model handles it. Absent →
+  // the kind-blind escalation step (back-compat). Mirrors verify.ts checkIntent.
+  failureKind?: "typecheck" | "lint" | "build" | "test" | "other";
+  // How strong this workspace's safety net is, detected BEFORE routing (a pure
+  // filesystem check — verify.ts detectProofTier). "none" means a cheap pick's
+  // miss is INVISIBLE (no gate catches it), so the router raises the bar; with a
+  // verifier present, cheap-first is safe because the gate catches a miss.
+  // Omitted = unknown (treated as "tests present" — neutral, no extra caution).
+  verifierTier?: "tests" | "types" | "none";
   // The caller cannot dispatch vendor-CLI subscription seats (e.g. the ACP
   // server, which has no seat machinery): restrict candidates to in-loop
   // (model, account) pairs so a ~free seat never wins a turn the caller
@@ -66,6 +79,15 @@ export interface ModelChoice {
   model: ModelSpec;
   reason: string; // shown in the UI; becomes the routing scorecard later
   backend?: Backend; // how to run it (absent means in-loop). Set by RoutingSelector.
+  // Auto-routed reasoning effort for this turn (low … xhigh/max), chosen by the
+  // expected-cost objective across the model's effort vocabulary. Absent when the
+  // model has no effort control or the selector is a hard pin. The runner uses it
+  // unless the user explicitly pinned an effort with /effort.
+  effort?: string;
+  // The CURATED model this pick mirrors, when the spec id is a seat/alias (e.g. a
+  // bedrock or vertex deployment of the same model). Lets callers compare picks
+  // canonically — e.g. the delegation same-model guard — instead of by raw id.
+  canonicalId?: string;
 }
 
 // One row in the "/why" scorecard: the full per-candidate breakdown that lets

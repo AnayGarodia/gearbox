@@ -16,6 +16,11 @@ test("mergeConfirmOpen shows a placeholder when there is no diff", () => {
   expect(mergeConfirmOpen("", "tab/x").lines).toEqual(["(no changes to merge)"]);
 });
 
+test("mergeConfirmOpen carries the branch HEAD so confirm can detect a moved branch", () => {
+  expect(mergeConfirmOpen("@@", "tab/x", "abc123").head).toBe("abc123");
+  expect(mergeConfirmOpen("@@", "tab/x").head).toBeUndefined();
+});
+
 test("mergeConfirmScroll clamps to [0, lines - view]", () => {
   const p = mergeConfirmOpen(Array.from({ length: 10 }, (_, i) => `l${i}`).join("\n"), "b");
   expect(mergeConfirmScroll(p, -5, 4).scroll).toBe(0); // can't go negative

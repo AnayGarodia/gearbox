@@ -35,10 +35,11 @@ export interface ModelProfile {
   tokenizer: { family: TokenizerFamily; calibration: number; calibrationSrc: Provenance };
   cost: { inUSDPerMtok: number; outUSDPerMtok: number; src: Provenance };
   latency?: { ttftMs: number; tps: number; src: Provenance };
-  // Quality benchmarks. sweBenchVerified (0..1) is the primary routing signal
-  // because it measures real-world coding ability. intelligenceIndex (0..100) is
-  // the Artificial Analysis composite; the router normalises it to 0..1 as a
-  // fallback when sweBenchVerified is absent.
+  // Quality benchmarks (LEGACY for routing). The router NO LONGER reads these —
+  // its quality source of truth is the researched per-kind corpus in benchmarks.ts
+  // (see qualityOf in router.ts). These scalars survive only as a coarse heuristic
+  // for classify.ts / policy-nl.ts and the /model list sort; editing them here will
+  // NOT change routing decisions. Put real routing-quality numbers in benchmarks.ts.
   quality: { sweBenchVerified?: number; intelligenceIndex?: number; src: Provenance };
   // Expected output tokens as a FRACTION of input tokens for a typical agent
   // turn. Cost estimates that price only the input systematically flatter
