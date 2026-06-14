@@ -597,6 +597,18 @@ export const relPath = (p: string) => (CWD && p.startsWith(CWD + "/") ? p.slice(
 // ms → "237ms" / "6.4s" / "6m 7s" — minutes for long runs so a delegate batch
 // reads "18m 50s total", not "1130.0s".
 const fmtMs = (ms?: number) => ms == null ? "" : ms < 1000 ? `${ms}ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`;
+
+// A settled tool call with NOTHING to show beyond its head (no diff, preview,
+// output, activity, children, or error). A long run of these — repeated reads, an
+// MCP fetch/search storm — is pure noise, so consecutive same-name runs coalesce
+// into one "name ×N" line (⌃O expands). Anything with a real result is excluded.
+const COALESCE_MIN = 4;
+function isPlainSettledTool(it: any): boolean {
+  return (
+    it && it.kind === "tool" && it.status === "ok" && !it.collapsed &&
+    !(it.diff?.length) && !it.preview && !it.outputTail && !it.stream && !it.activity && !(it.children?.length)
+  );
+}
 // Coarse elapsed for a still-running step, ticking every second: "8s" or "1m 24s".
 export const fmtElapsed = (secs: number) =>
   secs >= 3600 ? `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
@@ -675,6 +687,33 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
   for (let idx = 0; idx < items.length; idx++) {
     const it = items[idx]!;
     const dimmed = recede && idx < tailStart;
+    // Coalesce a run of >=4 consecutive plain settled tool calls of the same name
+    // into ONE line (⌃O expands). A wall of identical no-output tool lines (an MCP
+    // fetch/search storm, repeated reads) is noise — the count + total time is the
+    // signal. Tools with output/diff/preview/errors are never coalesced.
+    if (!expand && isPlainSettledTool(it)) {
+      let j = idx;
+      while (j < items.length && isPlainSettledTool(items[j]) && (items[j] as any).name === (it as any).name) j++;
+      const run = j - idx;
+      if (run >= COALESCE_MIN) {
+        if (prevKind !== "tool") out.push(BLANK);
+        prevKind = "tool";
+        const totalMs = items.slice(idx, j).reduce((s, x) => s + ((x as any).durationMs ?? 0), 0);
+        out.push(marginLine(
+          [
+            { text: "  " },
+            { text: glyph.corner, color: color.faint },
+            { text: "  " + friendlyTool((it as any).name), color: color.dim, bold: true },
+            { text: ` ×${run}`, color: color.faint },
+            { text: "  ⌃O expands", color: color.faint },
+          ],
+          totalMs ? [{ text: fmtMs(totalMs), color: color.faint }] : [],
+          width,
+        ));
+        idx = j - 1; // the for-loop ++ steps past the whole run
+        continue;
+      }
+    }
     // Blank line between items, except between consecutive tool calls so a run of
     // reads/edits renders as a tight block rather than a sparse ladder.
     if (!(prevKind === "tool" && it.kind === "tool")) out.push(BLANK);

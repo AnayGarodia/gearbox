@@ -216,3 +216,18 @@ test("the routed-model line carries a clickable ⑂ fork (gearbox:fork link)", (
   expect(linkAt(modelLine, pos + 2)).toBe("gearbox:fork");
   expect(linkAt(modelLine, 0)).toBeUndefined();
 });
+
+test("a run of >=4 plain settled tools coalesces into one line; ⌃O expands; output tools and short runs are untouched", () => {
+  const tool = (id: number, name: string, arg: string) => ({ kind: "tool" as const, id, name, arg, status: "ok" as const, summary: "", endedAt: 1, durationMs: 500 });
+  const items: any[] = [
+    ...Array.from({ length: 5 }, (_, i) => tool(i + 1, "mcp_x_fetch", `u${i}`)), // coalesces (5 >= 4)
+    ...Array.from({ length: 3 }, (_, i) => tool(20 + i, "mcp_x_search", `q${i}`)), // stays (3 < 4)
+  ];
+  const collapsed = itemsToLines(items as any, 80).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(collapsed).toContain("mcp_x_fetch ×5");
+  expect(collapsed).not.toContain("u3"); // individual fetch args hidden when coalesced
+  expect(collapsed).toContain("q0"); // the short run is shown individually
+  const expanded = itemsToLines(items as any, 80, true).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(expanded).toContain("u3"); // ⌃O brings them back
+  expect(expanded).not.toContain("×5");
+});
