@@ -392,10 +392,13 @@ if (["upgrade", "update", "--upgrade", "--update"].includes(args[0] ?? "")) {
     const script = join(tmpdir(), "gearbox-install.sh");
     const manual = `  curl -fsSL ${url} | bash`;
     try {
-      console.log("→ updating Gearbox to the latest version…");
+      // The installer owns the whole presentation (branded header, animated
+      // steps, success line) — GEARBOX_UPDATE tunes its copy for an update.
       execFileSync("curl", ["-fsSL", url, "-o", script], { stdio: ["ignore", "ignore", "inherit"] });
-      execFileSync("bash", [script], { stdio: "inherit", env: { ...process.env, GEARBOX_SKIP_ONBOARD: "1" } });
-      console.log("✓ updated · run `gearbox` to use the new version");
+      execFileSync("bash", [script], {
+        stdio: "inherit",
+        env: { ...process.env, GEARBOX_SKIP_ONBOARD: "1", GEARBOX_UPDATE: "1" },
+      });
     } catch (e: any) {
       console.log(`Update failed: ${e?.shortMessage ?? e?.message ?? e}`);
       console.log("Run it manually:");

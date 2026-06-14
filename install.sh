@@ -27,6 +27,42 @@ fail() {
   exit 1
 }
 
+# Restore the cursor + clear temp files however we exit (incl. Ctrl-C mid-spin).
+TMP=""
+cleanup() {
+  [[ -n "${TMP:-}" ]] && rm -f "$TMP"
+  [[ -t 1 ]] && printf '\033[?25h' 2>/dev/null || true   # restore cursor (TTY only)
+}
+trap cleanup EXIT INT
+
+# spin "label" cmd… — braille spinner while cmd runs in the background, then a
+# ✓ (or ✗) line. Plain single line when there's no TTY (NO_COLOR / piped).
+spin() {
+  local label="$1"; shift
+  if [[ -z "$C" ]]; then
+    printf "  %s\n" "$label"
+    "$@"
+    return $?
+  fi
+  "$@" &
+  local pid=$! rc=0
+  local frames=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0
+  printf '\033[?25l'
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r  ${C}%s${R} %s" "${frames[i]}" "$label"
+    i=$(( (i + 1) % ${#frames[@]} ))
+    sleep 0.08
+  done
+  wait "$pid" && rc=0 || rc=$?
+  printf '\033[?25h'
+  if [[ $rc -eq 0 ]]; then
+    printf "\r  ${G}✓${R} %s\033[K\n" "$label"
+  else
+    printf "\r  ${Y}✗${R} %s\033[K\n" "$label"
+  fi
+  return $rc
+}
+
 have curl || fail "the installer needs curl" \
   "macOS ships it; Debian/Ubuntu: sudo apt install curl"
 
@@ -37,13 +73,20 @@ case "$(uname -m)" in arm64|aarch64) ARCH="arm64" ;; x86_64|amd64) ARCH="x64" ;;
 [[ -n "$OS" ]]   || fail "unsupported OS: $(uname -s)"   "open an issue at https://github.com/${REPO}"
 [[ -n "$ARCH" ]] || fail "unsupported arch: $(uname -m)" "open an issue at https://github.com/${REPO}"
 
+# ── Header ───────────────────────────────────────────────────────────────────
+ACTION="installing"; [[ -n "${GEARBOX_UPDATE:-}" ]] && ACTION="updating"
+printf "\n  ${B}◆ Gearbox${R} ${D}· %s${R}\n\n" "$ACTION"
+
 # ── Resolve download URL ─────────────────────────────────────────────────────
 if [[ "$VERSION" == "latest" ]]; then
-  printf "${D}  → resolving latest release${R}\n"
-  RELEASE_JSON="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")"
-  TAG="$(printf '%s' "$RELEASE_JSON" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+  REL="$(mktemp)"
+  spin "Resolving latest release" \
+    curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" -o "$REL" \
+    || fail "couldn't reach GitHub" "check your connection or set GEARBOX_VERSION=v0.13.4"
+  TAG="$(grep '"tag_name"' "$REL" | head -1 | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')"
+  rm -f "$REL"
   [[ -n "$TAG" ]] || fail "couldn't determine latest release version" \
-    "check https://github.com/${REPO}/releases or set GEARBOX_VERSION=v0.12.2"
+    "check https://github.com/${REPO}/releases or set GEARBOX_VERSION=v0.13.4"
 else
   TAG="$VERSION"
 fi
@@ -84,7 +127,6 @@ RUNTIME=""
 if have node; then RUNTIME="node"; elif have bun; then RUNTIME="bun"; fi
 
 TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
 
 if [[ -n "$RUNTIME" ]]; then
   # ── JS bundle path (fast · no Keychain prompts) ──────────────────────────────
@@ -93,13 +135,12 @@ if [[ -n "$RUNTIME" ]]; then
   CLI="${APP_DIR}/cli.mjs"
   DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/cli.mjs"
 
-  printf "${D}  → downloading gearbox ${TAG} (cli.mjs · runs via ${RUNTIME})${R}\n"
-  if ! curl -fL --retry 3 --retry-delay 3 --progress-bar "$DOWNLOAD_URL" -o "$TMP"; then
-    fail "download failed: ${DOWNLOAD_URL}" \
-      "check your connection or visit https://github.com/${REPO}/releases"
-  fi
-  mv "$TMP" "$CLI"
+  spin "Downloading ${TAG} ${D}(cli.mjs · ~12 MB · via ${RUNTIME})${R}" \
+    curl -fsSL --retry 3 --retry-delay 3 "$DOWNLOAD_URL" -o "$TMP" \
+    || fail "download failed: ${DOWNLOAD_URL}" \
+         "check your connection or visit https://github.com/${REPO}/releases"
 
+  mv "$TMP" "$CLI"
   # Shim that execs the bundle through the user's runtime (PATH-resolved, so it
   # survives node/bun version switches via nvm etc.).
   rm -f "${BIN_DIR}/gearbox"
@@ -113,18 +154,25 @@ else
   BINARY_NAME="gearbox-${OS}-${ARCH}"
   DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${BINARY_NAME}"
 
-  printf "${D}  → downloading gearbox ${TAG} (${OS}/${ARCH} · standalone, ~100MB)${R}\n"
-  if ! curl -fL --retry 3 --retry-delay 3 --progress-bar "$DOWNLOAD_URL" -o "$TMP"; then
-    fail "download failed: ${DOWNLOAD_URL}" \
-      "check your connection or visit https://github.com/${REPO}/releases"
-  fi
+  spin "Downloading ${TAG} ${D}(${OS}/${ARCH} · standalone · ~100 MB)${R}" \
+    curl -fsSL --retry 3 --retry-delay 3 "$DOWNLOAD_URL" -o "$TMP" \
+    || fail "download failed: ${DOWNLOAD_URL}" \
+         "check your connection or visit https://github.com/${REPO}/releases"
+
   rm -f "${BIN_DIR}/gearbox"
   mv "$TMP" "${BIN_DIR}/gearbox"
   chmod 0755 "${BIN_DIR}/gearbox"
 fi
 
-printf "\n${G}  ✓${R} ${B}gearbox ${TAG}${R} installed\n"
-printf "${D}    ${BIN_DIR}/gearbox${R}\n\n"
+# ── Done ─────────────────────────────────────────────────────────────────────
+if [[ -n "${GEARBOX_UPDATE:-}" ]]; then
+  printf "\n  ${G}✓${R} ${B}updated to gearbox ${TAG}${R}\n"
+  printf "  ${D}restart any running session to pick it up${R}\n\n"
+  exit 0
+fi
+
+printf "\n  ${G}✓${R} ${B}gearbox ${TAG} installed${R}\n"
+printf "  ${D}${BIN_DIR}/gearbox${R}\n\n"
 
 # ── PATH hint ────────────────────────────────────────────────────────────────
 case ":${PATH}:" in
