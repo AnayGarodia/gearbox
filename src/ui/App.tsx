@@ -631,6 +631,10 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const toastIdRef = useRef(0);
   const toastTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const outCharsRef = useRef(0); // streamed output chars this turn, for a live tok/s estimate
+  // When the current turn started (0 if idle) — lets the perm/ask alert fire a
+  // bell/desktop-notify ONLY when a turn has run long enough that you've likely
+  // stepped away, not on every routine prompt while you're sitting right there.
+  const turnStartRef = useRef(0);
   // Measured from the first output token, not turn start, so thinking time doesn't drag the rate to ~1/s.
   const firstOutputAtRef = useRef(0);
   // True once THIS turn produced anything (streamed text or a tool call) —
@@ -876,14 +880,20 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const pageLeftRef = useRef(0);
   const pageWRef = useRef(80); // the page column width (meter/composer) for mouse hit math
 
+  // Threshold past which a blocking prompt is worth a bell + desktop notify (you
+  // likely walked off during a long turn). Matches the long-turn-finished nudge.
+  const AWAY_MS = 8000;
+  const maybeAlertAway = (body: string) => {
+    if (!turnStartRef.current || Date.now() - turnStartRef.current < AWAY_MS) return;
+    bell();
+    if (notifyRef.current) notify("gearbox", body);
+  };
   const setPerm = (p: PermRequest | null) => {
-    // A prompt appearing at the bottom is easy to miss while looking away — and
-    // the turn is BLOCKED on it. Always ring the bell + (pref-gated) desktop
-    // notify the moment one shows, so you know to come back.
-    if (p && !permRef.current) {
-      bell();
-      if (notifyRef.current) notify("gearbox", `needs you · ${p.title}`);
-    }
+    // Alert ONLY when you've likely stepped away — i.e. the turn has already run
+    // a while before this prompt. On a fresh turn (you're sitting right there
+    // watching), a bell + desktop notification on every routine write/shell
+    // prompt is pure spam. The in-TUI prompt is enough when you're present.
+    if (p && !permRef.current) maybeAlertAway(`needs you · ${p.title}`);
     permRef.current = p;
     setPermState(p);
   };
@@ -904,10 +914,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // The ask_user prompt: same one-at-a-time queue shape as permissions. The
   // agent turn is paused inside the tool's execute() until resolveAsk runs.
   const setAsk = (a: typeof askRef.current) => {
-    if (a && !askRef.current) {
-      bell();
-      if (notifyRef.current) notify("gearbox", "needs you · a question is waiting");
-    }
+    if (a && !askRef.current) maybeAlertAway("needs you · a question is waiting");
     askRef.current = a;
     setAskState(a);
   };
@@ -2797,6 +2804,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       setBusy(true);
       setSuggestion(null);
       const turnStart = Date.now();
+      turnStartRef.current = turnStart;
       // Captured from the terminal `done` event so the post-turn timing line can
       // also surface the prompt-cache hit (proof caching is working).
       let turnUsage: Usage = { inputTokens: 0, outputTokens: 0 };
@@ -3216,6 +3224,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         drainNow(); // commit any buffered text + stop the drip (interrupt/error: no graceful drain)
         flushToolStreams();
         abortRef.current = null;
+        turnStartRef.current = 0;
         setBusy(false);
         persist();
         // Snapshot this turn's file changes onto the undo stack (/undo, /diff).
