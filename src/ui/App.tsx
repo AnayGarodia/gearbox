@@ -304,7 +304,12 @@ export function turnActivity(items: Item[], width: number): { action: string | n
 
   const isShell = !!cur && (cur.name === "run_shell" || cur.name === "command_execution" || cur.name === "Bash");
   const target = cur?.arg ? (isShell ? cur.arg : relPath(cur.arg)).replace(/\n/g, " ").slice(0, Math.max(width - 26, 12)) : "";
-  const head = cur ? `${friendlyTool(cur.name)}${target ? " " + target : ""}` : phase ? phase.label : "working";
+  // A long-running delegate/sub-agent carries a LIVE step in `activity`
+  // ("searching … · 12 tools") that updates as it works — surface THAT here so
+  // the always-visible line shows what's happening right now and visibly changes,
+  // instead of the static task text (which made a 9-minute research run look dead).
+  const live = running?.activity?.replace(/\n/g, " ").trim();
+  const head = (live || (cur ? `${friendlyTool(cur.name)}${target ? " " + target : ""}` : phase ? phase.label : "working")).slice(0, Math.max(width - 14, 16));
   const timer = running?.startedAt ? fmtElapsed(Math.floor((Date.now() - running.startedAt) / 1000)) : "";
   const trail = tools.slice(-3).map((t) => `${t.status === "running" ? glyph.running : t.status === "err" ? glyph.cross : glyph.check} ${friendlyTool(t.name)}`).join("  ");
   const checkText = checks.map((c) => `${c.ok ? glyph.check : glyph.cross} ${c.command}`).join("  ");
