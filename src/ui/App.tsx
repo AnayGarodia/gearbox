@@ -2814,25 +2814,33 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const toolMap = new Map<string, number>();
       const pendingToolStreams = new Map<number, { arg?: string; activity?: string; delta: string; lines: number }>();
       let toolFlushTimer: ReturnType<typeof setTimeout> | null = null;
-      // Assistant text is coalesced like tool streams: buffer deltas and flush on a
-      // ~45ms timer instead of setItems-per-token. Per-token re-renders re-flatten
-      // and repaint the whole screen, which is what makes streaming scroll jitter.
+      // DRIP renderer: assistant text is revealed at a STEADY rate, decoupled
+      // from how it arrives. The API path streams smooth token deltas, but the
+      // subscription CLIs are chunky — claude (--include-partial-messages) sends
+      // bursts and codex (`exec --json`) hands over the WHOLE reply in one block
+      // with no deltas at all. A fixed-rate drip turns both into smooth
+      // streaming. `pendingText` is the undisplayed buffer; a ~28ms timer moves
+      // a bounded slice into the rendered item each tick, draining any backlog
+      // over ~DRAIN_FRAMES ticks so it never lags more than ~1s behind arrival
+      // (fast streams keep pace; a big block types out, never crawls).
+      const DRIP_MS = 28;
+      // Each tick reveals buffer/DRAIN_FRAMES chars (min MIN_STEP), so a fast
+      // stream stays ~DRAIN_FRAMES ticks (~340ms) behind the model — barely
+      // perceptible — while a big ONE-SHOT block (codex hands the whole reply
+      // over at once) types out with a natural fast→slow decay over ~1–1.5s,
+      // reading as streaming rather than a sudden dump.
+      const DRAIN_FRAMES = 12;
+      const MIN_STEP = 3;
+      // Display-only affordance — needs a real terminal + animation timer. Under
+      // ink-testing-library / headless there's no TTY, so reveal instantly (keeps
+      // the turn-lifecycle tests deterministic and `-p` snappy).
+      const DRIP_ENABLED = process.stdout.isTTY === true;
       let pendingText = "";
-      let textFlushTimer: ReturnType<typeof setTimeout> | null = null;
-      const changedFiles = new Set<string>();
-      let turnChanges: FileChange[] = []; // pre-turn file snapshots, for /undo + /diff
-      turnCheckpointRef.current = null; // each turn takes its own (lazily, on first mutation)
-      const checks: string[] = [];
-      const failures: string[] = [];
-      let hadError = false;
-      const flushText = () => {
-        if (textFlushTimer) {
-          clearTimeout(textFlushTimer);
-          textFlushTimer = null;
-        }
-        if (!pendingText) return;
-        const chunk = pendingText;
-        pendingText = "";
+      let dripTimer: ReturnType<typeof setInterval> | null = null;
+      let inputDone = false; // no more text will arrive (done/error/interrupt)
+      let drainResolve: (() => void) | null = null;
+      const revealChunk = (chunk: string) => {
+        if (!chunk) return;
         if (curAsstRef.current === null) {
           const id = idRef.current++;
           curAsstRef.current = id;
@@ -2842,8 +2850,36 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           setItems((prev) => prev.map((i) => (i.id === id && i.kind === "assistant" ? { ...i, text: i.text + chunk } : i)));
         }
       };
+      const stopDrip = () => { if (dripTimer) { clearInterval(dripTimer); dripTimer = null; } };
+      const tickDrip = () => {
+        if (pendingText) {
+          const step = Math.min(pendingText.length, Math.max(MIN_STEP, Math.ceil(pendingText.length / DRAIN_FRAMES)));
+          const chunk = pendingText.slice(0, step);
+          pendingText = pendingText.slice(step);
+          revealChunk(chunk);
+        }
+        if (!pendingText && inputDone) { stopDrip(); if (drainResolve) { drainResolve(); drainResolve = null; } }
+      };
+      const startDrip = () => { if (!DRIP_ENABLED) { drainNow(); return; } if (!dripTimer) dripTimer = setInterval(tickDrip, DRIP_MS); };
+      // Reveal everything buffered RIGHT NOW (preserves ordering when a tool line
+      // must follow the text, and on interrupt/error where waiting is wrong).
+      const drainNow = () => { stopDrip(); if (pendingText) { revealChunk(pendingText); pendingText = ""; } };
+      // Let the drip finish gracefully (used at a clean turn end so the final
+      // block types out); resolves immediately if nothing is buffered.
+      const drainDrip = (): Promise<void> => {
+        inputDone = true;
+        if (!pendingText) { stopDrip(); return Promise.resolve(); }
+        startDrip();
+        return new Promise<void>((res) => { drainResolve = res; });
+      };
+      const changedFiles = new Set<string>();
+      let turnChanges: FileChange[] = []; // pre-turn file snapshots, for /undo + /diff
+      turnCheckpointRef.current = null; // each turn takes its own (lazily, on first mutation)
+      const checks: string[] = [];
+      const failures: string[] = [];
+      let hadError = false;
       const finishAssistant = () => {
-        flushText(); // commit any buffered text before marking the item done
+        drainNow(); // commit any buffered text before marking the item done
         const id = curAsstRef.current;
         if (id == null) return;
         setItems((prev) => prev.map((i) => (i.id === id && i.kind === "assistant" ? { ...i, done: true } : i)));
@@ -2910,7 +2946,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (firstOutputAtRef.current === 0) firstOutputAtRef.current = Date.now();
           outCharsRef.current += e.text.length;
           pendingText += e.text;
-          if (!textFlushTimer) textFlushTimer = setTimeout(flushText, 45);
+          startDrip();
         } else if (e.type === "tool-start") {
           setMascotState("tool");
           turnProducedRef.current = true;
@@ -2978,7 +3014,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           finishAssistant();
           push({ kind: "error", id: idRef.current++, text: friendlyError(e.message) });
         } else if (e.type === "done") {
-          finishAssistant();
+          // Don't finish here — let the drip drain gracefully (awaited right
+          // after the runner returns) so the final block types out smoothly.
           turnUsage = e.usage;
           // The context % must reflect the WHOLE prompt sent, not just the uncached
           // slice — Anthropic reports cache read/write tokens separately, so using
@@ -2996,6 +3033,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // fails and forces an expensive retry anyway.
         retrievalUseRef.current = null;
         const r = await (runner ?? defaultRunner)({ prompt: modelPrompt, messages: msgRef.current, onEvent, selector: selectorRef.current, signal: ac.signal, escalate: attempt });
+        // Let the assistant text finish typing out (the drip) before the turn
+        // settles — unless the user interrupted, where we want to stop now.
+        if (interruptedRef.current) drainNow(); else await drainDrip();
+        finishAssistant();
         msgRef.current = r.messages;
         if (verifyRef.current !== "off" && !hadError && !ac.signal.aborted && !interruptedRef.current && changedFiles.size && checks.length === 0) {
           // FAST tier first: language-server diagnostics on the changed files
@@ -3172,7 +3213,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       } finally {
         activeImagesRef.current = [];
         fellOverFromRef.current = null; // per-turn failover signal consumed; reset for the next turn
-        flushText(); // commit any buffered text on interrupt (no done/error fired)
+        drainNow(); // commit any buffered text + stop the drip (interrupt/error: no graceful drain)
         flushToolStreams();
         abortRef.current = null;
         setBusy(false);
