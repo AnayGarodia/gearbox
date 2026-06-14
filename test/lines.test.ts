@@ -223,11 +223,13 @@ test("a run of >=4 plain settled tools coalesces into one line; ⌃O expands; ou
     ...Array.from({ length: 5 }, (_, i) => tool(i + 1, "mcp_x_fetch", `u${i}`)), // coalesces (5 >= 4)
     ...Array.from({ length: 3 }, (_, i) => tool(20 + i, "mcp_x_search", `q${i}`)), // stays (3 < 4)
   ];
-  const collapsed = itemsToLines(items as any, 80).map((l) => l.map((s) => s.text).join("")).join("\n");
-  expect(collapsed).toContain("mcp_x_fetch ×5");
-  expect(collapsed).not.toContain("u3"); // individual fetch args hidden when coalesced
-  expect(collapsed).toContain("q0"); // the short run is shown individually
-  const expanded = itemsToLines(items as any, 80, true).map((l) => l.map((s) => s.text).join("")).join("\n");
-  expect(expanded).toContain("u3"); // ⌃O brings them back
-  expect(expanded).not.toContain("×5");
+  const collapsed = itemsToLines(items as any, 90).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(collapsed).toContain("fetched 5 pages"); // plain-English phrase, not "mcp_x_fetch ×5"
+  expect(collapsed).toContain("u0"); // the first distinct args are shown (the substance)
+  expect(collapsed).toContain("+2"); // 5 distinct, 3 shown → "+2" summarized
+  expect(collapsed).not.toContain("u4"); // a beyond-the-first arg is hidden when coalesced
+  expect(collapsed).toContain("q0"); // the short run (<4) is shown individually
+  const expanded = itemsToLines(items as any, 90, true).map((l) => l.map((s) => s.text).join("")).join("\n");
+  expect(expanded).toContain("u4"); // ⌃O brings every call back
+  expect(expanded).not.toContain("fetched 5 pages");
 });

@@ -588,11 +588,45 @@ export const friendlyTool = (name: string) =>
   name === "glob" ? "glob" :
   name === "search" ? "search" :
   name === "remember" ? "noting" :
-  name;
+  // MCP tools arrive as mcp_<server>_<tool> — show the human tool name, e.g.
+  // "mcp_basic-memory_search_notes" → "search notes".
+  name.replace(/^mcp_[^_]+_/, "").replace(/_/g, " ");
 
 // Strip the CWD prefix so tool args show as relative paths in the transcript.
 const CWD = (() => { try { return process.cwd(); } catch { return ""; } })();
 export const relPath = (p: string) => (CWD && p.startsWith(CWD + "/") ? p.slice(CWD.length + 1) : p);
+
+// Make a tool ARG human: a URL → its last path word ("rankings"), a file path →
+// its basename ("price.ts"), anything else clipped. So a coalesced line reads
+// "fetched 5 pages · rankings, standings", not a wall of full URLs.
+export function humanArg(a: string): string {
+  let s = a;
+  try {
+    if (/^https?:\/\//.test(a)) {
+      const u = new URL(a);
+      s = u.pathname.split("/").filter(Boolean).pop() || u.host.replace(/^www\./, "");
+    }
+  } catch { /* not a URL */ }
+  if (s.includes("/")) s = s.split("/").filter(Boolean).pop() ?? s;
+  return s.length > 24 ? s.slice(0, 23) + "…" : s;
+}
+
+// A plain-English phrase for a coalesced run of identical tool calls, e.g.
+// "fetched 5 pages", "read 5 files", "searched 5 times" — and a falls-back
+// "ran <tool> 5×" for anything without a known verb. Reads like what happened,
+// not like tool mechanics.
+export function coalescedPhrase(name: string, count: number): string {
+  const f = friendlyTool(name);
+  const V: Record<string, [string, string]> = {
+    fetch: ["fetched", "pages"],
+    read: ["read", "files"],
+    list: ["listed", "folders"],
+    search: ["searched", count === 1 ? "time" : "times"],
+    glob: ["searched", count === 1 ? "time" : "times"],
+  };
+  const v = V[f];
+  return v ? `${v[0]} ${count} ${v[1]}` : `ran ${f} ${count}×`;
+}
 
 // ms → "237ms" / "6.4s" / "6m 7s" — minutes for long runs so a delegate batch
 // reads "18m 50s total", not "1130.0s".
@@ -698,18 +732,22 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
       if (run >= COALESCE_MIN) {
         if (prevKind !== "tool") out.push(BLANK);
         prevKind = "tool";
-        const totalMs = items.slice(idx, j).reduce((s, x) => s + ((x as any).durationMs ?? 0), 0);
-        out.push(marginLine(
-          [
-            { text: "  " },
-            { text: glyph.corner, color: color.faint },
-            { text: "  " + friendlyTool((it as any).name), color: color.dim, bold: true },
-            { text: ` ×${run}`, color: color.faint },
-            { text: "  ⌃O expands", color: color.faint },
-          ],
-          totalMs ? [{ text: fmtMs(totalMs), color: color.faint }] : [],
-          width,
-        ));
+        const grp = items.slice(idx, j) as any[];
+        const totalMs = grp.reduce((s, x) => s + (x.durationMs ?? 0), 0);
+        // Read like a sentence: "fetched 5 pages · rankings, standings +3" — a
+        // plain verb + WHAT it acted on (humanized), so the line says what the
+        // agent did, not which tool ran. The rest are summarized "+K".
+        const uniq = [...new Set(grp.map((x) => (x.arg ? humanArg(relPath(String(x.arg))) : "")).filter(Boolean))];
+        const MAX_ARGS = 3;
+        const shownArgs = uniq.slice(0, MAX_ARGS);
+        const moreN = uniq.length - shownArgs.length;
+        const left: Span[] = [
+          { text: "  " },
+          { text: glyph.corner, color: color.faint },
+          { text: "  " + coalescedPhrase((it as any).name, run), color: color.dim, bold: true },
+        ];
+        if (shownArgs.length) left.push({ text: "  ·  " + shownArgs.join(", ") + (moreN > 0 ? ` +${moreN}` : ""), color: color.faint });
+        out.push(marginLine(left, totalMs ? [{ text: fmtMs(totalMs), color: color.faint }] : [], width));
         idx = j - 1; // the for-loop ++ steps past the whole run
         continue;
       }
