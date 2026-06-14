@@ -33,10 +33,9 @@ const TYPE_CONTEXT = new Set(["class", "interface", "type", "struct", "enum", "t
 const FN_CONTEXT = new Set(["def", "function", "func", "fn"]);
 const BRACKETS = new Set(["(", ")", "[", "]", "{", "}"]);
 const OPERATORS = new Set(["=", "+", "-", "*", "/", "%", "!", "<", ">", "&", "|", "^", "~", "?", ":"]);
-const bracketColor = (ch: string, depth: number) => {
-  const typeOffset = ch === "[" || ch === "]" ? 1 : ch === "{" || ch === "}" ? 2 : 0;
-  return [color.codeBracket, color.codeOperator, color.accent, color.codeType][(Math.abs(depth) + typeOffset) % 4]!;
-};
+// Brackets are ONE muted color, not a rainbow. Depth-rotating bracket hues read
+// as chaos in a small transcript block (the "horrible code formatting" report);
+// structure comes from indentation, not color.
 
 const nextNonSpace = (line: string, i: number) => {
   let j = i;
@@ -53,7 +52,6 @@ const previousWord = (line: string, i: number) => {
 export function highlightLine(line: string, lang = ""): HSpan[] {
   const out: HSpan[] = [];
   const hash = HASH_COMMENT_LANGS.test(lang);
-  let bracketDepth = 0;
   const push = (text: string, c?: string, extra?: Partial<HSpan>) => {
     if (text) out.push({ text, color: c, ...extra });
   };
@@ -108,17 +106,15 @@ export function highlightLine(line: string, lang = ""): HSpan[] {
       else if (TYPE_CONTEXT.has(prevWord)) push(w, color.codeType, { bold: true });
       else if (BUILTINS.has(w)) push(w, color.codeType);
       else if (next === "(") push(w, color.codeFunction, prevSig === "." ? undefined : { bold: true });
-      else if (nextSig === "=" && prevSig !== "=" && line.slice(j).trimStart()[1] !== "=") push(w, color.path);
-      else if (prevSig === ".") push(w, color.codeType);
-      else if (/^[A-Z]/.test(w)) push(w, color.codeType);
+      // Member access (`.field`) and bare identifiers stay neutral text — coloring
+      // every `.py`/`.api` segment teal turned shell + dotted paths into noise.
+      else if (/^[A-Z]/.test(w) && prevSig !== ".") push(w, color.codeType);
       else push(w, color.text);
       i = j;
       continue;
     }
     if (BRACKETS.has(c)) {
-      if (c === ")" || c === "]" || c === "}") bracketDepth = Math.max(0, bracketDepth - 1);
-      push(c, bracketColor(c, bracketDepth), { bold: true });
-      if (c === "(" || c === "[" || c === "{") bracketDepth++;
+      push(c, color.codeBracket);
       i++;
       continue;
     }

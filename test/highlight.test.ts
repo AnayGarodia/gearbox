@@ -38,18 +38,20 @@ test("highlightLine gives editor-like colors to functions, types, operators, and
   expect(fn?.color).toBeTruthy();
   expect(fn?.bold).toBe(true);
   expect(open?.color).toBeTruthy();
-  expect(open?.bold).toBe(true);
   expect(eq?.color).toBeTruthy();
-  expect(arg?.color).toBeTruthy();
-  expect(new Set([fn?.color, open?.color, eq?.color, arg?.color]).size).toBe(4);
+  // Function, bracket, and operator each carry a distinct hue; structure-only
+  // tokens stay calm (brackets are NOT bold — see below).
+  expect(new Set([fn?.color, open?.color, eq?.color]).size).toBe(3);
 
   const cls = highlightLine("class TaskBoard:", "python").find((s) => s.text === "TaskBoard");
   expect(cls?.color).toBeTruthy();
   expect(cls?.bold).toBe(true);
 
+  // Brackets are ONE muted color (no depth-rotating rainbow) and never bold —
+  // structure reads from indentation, not from a chaos of bracket hues.
   const call = highlightLine("return sorted(open_items, key=lambda task: task.priority)[0]", "python");
-  const method = call.find((s) => s.text === "priority");
   const brackets = call.filter((s) => ["(", ")", "[", "]"].includes(s.text));
-  expect(method?.color).toBeTruthy();
-  expect(new Set(brackets.map((s) => s.color)).size).toBeGreaterThan(1);
+  expect(brackets.length).toBeGreaterThan(1);
+  expect(new Set(brackets.map((s) => s.color)).size).toBe(1);
+  expect(brackets.every((s) => !s.bold)).toBe(true);
 });

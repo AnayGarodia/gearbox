@@ -4540,7 +4540,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   if (busy || linger) footer += workingRows(busy);
   if (queued.length) footer += queued.length + 1;
   if (search) footer += 1;
-  footer += toasts.length;
+  footer += 1; // fixed toast lane — always reserved (even empty) so a copy/confirm toast never reflows the transcript
   if (quickPicker && quickRows.length) footer += quickPickerLimit + 2; // overlay: header + marginTop + rows
   // Pinned usage strip (/usage): header + context? + limit windows / note + api? + session + marginTop.
   // Memoized: currentUsageView() reads usage.json + accounts from disk, so calling it
@@ -4873,17 +4873,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             </Text>
           </Box>
         ) : null}
-        {toasts.length ? (
-          <Box flexDirection="column">
-            {toasts.map((t) => (
-              <Box key={t.id} paddingX={1} justifyContent="flex-end">
-                <Text wrap="truncate-end" color={t.kind === "ok" ? color.ok : t.kind === "err" ? color.err : color.dim}>
-                  {t.kind === "ok" ? glyph.check : t.kind === "err" ? glyph.err : glyph.notice} {t.text}
-                </Text>
-              </Box>
-            ))}
-          </Box>
-        ) : null}
+        {/* Fixed-height toast lane (always one row, blank when empty) — counted
+            once in the footer estimate so a confirmation never resizes the
+            transcript and shifts the page up a line. */}
+        <Box height={1} paddingX={1} justifyContent="flex-end">
+          {toasts.length ? (
+            <Text wrap="truncate-end" color={toasts[0]!.kind === "ok" ? color.ok : toasts[0]!.kind === "err" ? color.err : color.dim}>
+              {toasts[0]!.kind === "ok" ? glyph.check : toasts[0]!.kind === "err" ? glyph.err : glyph.notice} {toasts[0]!.text}
+            </Text>
+          ) : <Text> </Text>}
+        </Box>
         {quickPickerJsx}
         {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} apiHue={stripApi ? providerColor(getAccount(stripApi.id)?.provider) : undefined} active={stripActive} forecast={stripForecast!} width={pageW} epoch={themeEpochState} /> : null}
       </Box>

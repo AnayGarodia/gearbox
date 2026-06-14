@@ -1,30 +1,31 @@
-// Gearbox's character lives here: workshop-themed working verbs (shown beside
-// Boo while it works). Restrained but warm · the personality is in the words.
+// Gearbox's character lives here: the working verb shown beside the elapsed
+// clock while a turn runs. Calm and warm, never a pun or a gimmick — one plain
+// word that reads as "the agent is thinking," not a themed mascot line. The
+// concrete activity ("reading simulate.py") lives on the line below; this word
+// is just a quiet, human sign of life.
 
-// Present-participle, mechanical/gearbox-themed. Grin-worthy, never cutesy.
+// Single-word present participles. Tasteful, a touch of warmth, never cutesy.
 export const WORKING_VERBS = [
-  "Shifting gears",
-  "Torquing bolts",
-  "Routing power",
-  "Calibrating",
-  "Meshing the cogs",
-  "Revving up",
-  "Greasing the rails",
-  "Spinning up",
-  "Downshifting",
-  "Finding traction",
-  "Winding the mainspring",
-  "Tuning the timing",
-  "Building torque",
-  "Throwing sparks",
-  "Oiling the chain",
-  "Engaging the clutch",
-  "Checking tolerances",
-  "Warming the engine",
-  "Aligning the teeth",
-  "Priming the pump",
-  "Cranking",
-  "Adjusting the timing belt",
+  "Thinking",
+  "Working",
+  "Reasoning",
+  "Pondering",
+  "Cooking",
+  "Brewing",
+  "Tinkering",
+  "Crunching",
+  "Composing",
+  "Sketching",
+  "Mulling",
+  "Untangling",
+  "Assembling",
+  "Whirring",
+  "Churning",
+  "Percolating",
+  "Synthesizing",
+  "Noodling",
+  "Plotting",
+  "Humming",
 ];
 
 let last = -1;

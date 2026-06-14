@@ -13,7 +13,11 @@ export interface Toast {
 }
 
 export const TOAST_TTL_MS = 2400;
-export const MAX_TOASTS = 2;
+// One at a time. The toast lane is a FIXED single reserved row (App.tsx footer
+// estimate) so a confirmation appearing/expiring never resizes the transcript
+// — stacking a second toast would overflow that lane and shift the whole page
+// up a line (exactly the jump we're eliminating). Newest wins.
+export const MAX_TOASTS = 1;
 
 /** Append a toast, keeping at most MAX_TOASTS (oldest drops first). Pure. */
 export function addToast(toasts: Toast[], toast: Toast): Toast[] {
