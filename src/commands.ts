@@ -149,7 +149,7 @@ export const ACCOUNT_ADD_HELP =
 export function helpText(): string {
   const visible = COMMANDS.filter((c) => !HIDDEN.has(c.name));
   const pad = Math.max(...visible.map((c) => c.name.length)) + 2;
-  const out: string[] = ["commands · type / to filter, or just say what you want"];
+  const out: string[] = ["commands · / to filter · just talk · routing picks the model · /why shows it"];
   for (const g of GROUP_TITLES) {
     const items = visible.filter((c) => c.group === g.id);
     if (!items.length) continue;

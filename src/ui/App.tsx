@@ -4579,6 +4579,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           ) : null}
           {firstRunRef.current ? (
             <Box marginTop={1} flexDirection="column" alignItems="center">
+              <Text color={color.dim}>just type · Gearbox picks the best-value model for each task · <Text color={color.accent}>/why</Text> shows the choice</Text>
               <Text color={color.faint}>new here? press <Text color={color.accent}>?</Text> for shortcuts · <Text color={color.accent}>shift+tab</Text> cycles modes · <Text color={color.accent}>⌃Y</Text> copies the last reply</Text>
               <Text color={color.faint}>/config inline on for terminal scrollback</Text>
             </Box>
@@ -4646,6 +4647,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const homeRoom = transcriptHeight - 3 - PALETTE_ROWS; // minus the composer block + any open palette
   const homeSplashSize: "big" | "mini" | "none" = homeRoom >= 36 ? "big" : homeRoom >= 24 ? "mini" : "none";
   const showHomeCommands = PALETTE_ROWS === 0 && homeRoom >= (homeSplashSize === "big" ? 32 : homeSplashSize === "mini" ? 22 : 10);
+  // One plain line explaining routing on the idle home screen — only while
+  // auto-routing is actually on (hidden when a model/subscription is pinned, so
+  // it can't contradict the "… pinned" readiness line above it). Gated on enough
+  // room AND width so the single line (59 cols) never wraps — the height math
+  // below counts it as exactly 2 rows (a marginTop + the line).
+  const showRoutingHint = homeRoom >= 10 && homeW >= 62 && selectorKind === "routing";
   const HOME_COMMANDS: [string, string][] = [
     ["/model", "pick a model · auto-routes by default"],
     ["/account", "add a provider or subscription"],
@@ -4670,8 +4677,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const homeLineCount = composerVisibleRows(edit.value, homeW); // display rows (capped window)
     const splashH = homeRoom >= 4 ? (homeSplashSize === "none" ? 3 : 15) : 0;
     const readinessH = homeRoom >= 8 ? 2 : 0;
+    const routingHintH = showRoutingHint ? 2 : 0; // marginTop + 1 line
     const commandsH = showHomeCommands ? 1 + HOME_COMMANDS.length : 0;
-    const groupH = splashH + readinessH + commandsH + 4 + homeLineCount + PALETTE_ROWS; // composer block (lift=false) = 4 + N
+    const groupH = splashH + readinessH + routingHintH + commandsH + 4 + homeLineCount + PALETTE_ROWS; // composer block (lift=false) = 4 + N
     // The REAL centered region is one row taller than transcriptHeight (which
     // carries a deliberate -1 over-estimate so the frame never exceeds rows).
     // Math.round, not floor: Yoga rounds the centering offset to the nearest
@@ -4680,7 +4688,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const topPad = Math.max(0, Math.round((transcriptHeight + 1 - groupH) / 2));
     homeGeomRef.current = homeScreen
       ? {
-          firstInputRow: 6 + topPad + splashH + readinessH + commandsH, // header(3) + topPad + content + composer marginTop + pad + 1
+          firstInputRow: 6 + topPad + splashH + readinessH + routingHintH + commandsH, // header(3) + topPad + content + composer marginTop + pad + 1
           left: Math.floor((width - homeW) / 2),
           width: homeW,
         }
@@ -4692,6 +4700,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {homeRoom >= 8 ? (
         <Box marginTop={1}>
           <Text color={color.dim}>{readyAccounts} account{readyAccounts === 1 ? "" : "s"} ready · {homePin}</Text>
+        </Box>
+      ) : null}
+      {showRoutingHint ? (
+        <Box marginTop={1}>
+          <Text color={color.faint}>just type · Gearbox picks the model · <Text color={color.accent}>/why</Text> shows the choice</Text>
         </Box>
       ) : null}
       {showHomeCommands ? (
