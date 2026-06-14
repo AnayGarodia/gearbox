@@ -41,7 +41,7 @@ import { resolveCreds } from "../accounts/resolve.ts";
 import { recordSpend, resolveTurnCost } from "../accounts/ledger.ts";
 import type { ModelSpec } from "../providers.ts";
 import { spawnSyncProc } from "../proc.ts";
-import { runCliTask } from "./cli-backend.ts";
+import { runCliTask, cliScratchDir } from "./cli-backend.ts";
 import type { Account } from "../accounts/types.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import type { OnEvent, Usage } from "./events.ts";
@@ -264,7 +264,7 @@ async function runOne(
     const acct = routed.cli.account;
     const r = await (opts.runCli ?? runCliTask)({
       binary: routed.cli.binary,
-      prompt: `${SUBAGENT_SYSTEM}\n\nTask:\n${task}`,
+      prompt: `${SUBAGENT_SYSTEM}\n\nIf you need scratch space outside the workspace, prefer ${cliScratchDir()} (pre-approved, runs without interruption); other paths still work but will pause for the user's approval. Run git from the current directory — avoid \`git -C <path>\`, which bypasses the pre-approved git commands.\n\nTask:\n${task}`,
       messages: [],
       onEvent: subOnEvent,
       signal: opts.signal,
@@ -308,13 +308,16 @@ async function runOne(
 
 // ── git worktree isolation (parallel writes) ──────────────────────────────────
 
-function git(args: string[]): { ok: boolean; out: string } {
-  const r = spawnSyncProc(["git", ...args], { stdout: "pipe", stderr: "pipe" });
+function git(args: string[], cwd?: string): { ok: boolean; out: string } {
+  const r = spawnSyncProc(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   return { ok: (r.exitCode ?? 1) === 0, out: r.stdout.toString().trim() };
 }
 
-function gitToplevel(): string | null {
-  const r = git(["rev-parse", "--show-toplevel"]);
+// `cwd` should be the calling session's pinned root: conductor tabs and
+// /worktree use mutate the GLOBAL process.cwd(), so defaulting to it would
+// resolve the toplevel of whichever tab chdir'd last, not this session's.
+function gitToplevel(cwd?: string): string | null {
+  const r = git(["rev-parse", "--show-toplevel"], cwd);
   return r.ok && r.out ? r.out : null;
 }
 
@@ -406,7 +409,7 @@ function mergeFileBack(repoRoot: string, path: string, dirs: string[]): boolean 
 
 // ── exported tool factory ─────────────────────────────────────────────────────
 
-export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; orchestratorModelId?: string; orchestratorPrompt?: string; spawnCleanup?: { current?: () => void } }): Record<string, Tool<any, any>> {
+export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal; run: SubAgentRunner; pinnedModelId?: string; runCli?: typeof runCliTask; root?: string; onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; orchestratorModelId?: string; orchestratorPrompt?: string; spawnCleanup?: { current?: () => void } }): Record<string, Tool<any, any>> {
   const { onEvent, signal, run, runCli, onBackground, orchestratorModelId, orchestratorPrompt } = opts;
 
   // ── delegate (sequential, single task) ──────────────────────────────────────
@@ -480,7 +483,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       })).min(2).max(6).describe("2-6 independent sub-tasks to run concurrently."),
     }),
     execute: async ({ tasks }) => {
-      const repoRoot = gitToplevel();
+      const repoRoot = gitToplevel(opts.root);
       if (!repoRoot) return "parallel delegation needs a git repo (it isolates each sub-agent in a worktree). Use `delegate` one task at a time instead.";
       const batch = ++counter;
       const groupId = `delegate_parallel-${batch}`;
@@ -553,7 +556,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
           }
           // Emit a file-change event using a cwd-relative path to match the
           // convention used by the write_file and edit_file tools.
-          onEvent({ type: "file-change", path: relative(process.cwd(), dst), before, existed });
+          onEvent({ type: "file-change", path: relative(opts.root ?? process.cwd(), dst), before, existed });
         }
 
         // Phase 4: assemble the tool result returned to the orchestrator.

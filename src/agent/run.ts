@@ -31,6 +31,7 @@ import { sanitizeWithMap } from "../context/sanitize.ts";
 import { classifyProviderError, retryDelayMs, MAX_INLINE_RETRY_DELAY_MS } from "./errors.ts";
 import { makeDelegateTools, type SubAgentRunner } from "./delegate.ts";
 import { createToolset } from "../tools.ts";
+import { imagePathsInText, loadImageAttachment, imageContent } from "../image.ts";
 import { config } from "../config.ts";
 import { BASE_SYSTEM, PLAN_ADDENDUM } from "../context/builder.ts";
 import type { OnEvent, Usage } from "./events.ts";
@@ -319,7 +320,18 @@ export async function runTask(opts: {
   const subRunner: SubAgentRunner = async (p) => {
     let text = "";
     const wrapped: OnEvent = (e) => { if (e.type === "text") text += e.text; else p.onEvent(e); };
-    const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content: p.prompt }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries });
+    // Forward images referenced in the task (pasted screenshots live in temp
+    // dirs OUTSIDE the sub-agent's worktree root, so it can't open them with
+    // file tools). Best-effort: a missing file or a text-only model just gets
+    // the original prompt text.
+    let content: any = p.prompt;
+    if (p.model.capabilities?.images !== false) {
+      const imgs = imagePathsInText(p.prompt).flatMap((path) => {
+        try { return [loadImageAttachment(path)]; } catch { return []; } // unreadable/oversized: skip just this one
+      });
+      if (imgs.length) content = imageContent(p.prompt, imgs);
+    }
+    const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries });
     return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
   };
   // The orchestrator's own model + this turn's prompt feed the delegation guards
@@ -335,7 +347,7 @@ export async function runTask(opts: {
   })();
   // Sweep any worktrees from spawn_subagent jobs the model never collected (#8).
   const spawnCleanup: { current?: () => void } = {};
-  const delegateTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, onBackground: opts.onBackground, orchestratorModelId: model.id, orchestratorPrompt: lastUserPrompt, spawnCleanup }) : undefined;
+  const delegateTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, root: opts.root, onBackground: opts.onBackground, orchestratorModelId: model.id, orchestratorPrompt: lastUserPrompt, spawnCleanup }) : undefined;
   // Caller overrides merge LAST so they can replace built-ins by name.
   const extraTools = delegateTools || opts.extraTools ? { ...delegateTools, ...opts.extraTools } : undefined;
   // Loop guard: the 3rd/4th consecutive identical tool call is blocked with a

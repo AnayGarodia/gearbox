@@ -11,9 +11,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync, statSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { registerAttachmentDir } from "../tools.ts";
 
 function tempPng(): string {
   const dir = mkdtempSync(join(tmpdir(), "gearbox-paste-"));
+  // Whitelist this dir for READ-ONLY tools (it's outside the workspace root);
+  // scoped to this process so other sessions' pastes stay unreadable.
+  registerAttachmentDir(dir);
   return join(dir, "clipboard.png");
 }
 

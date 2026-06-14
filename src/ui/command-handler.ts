@@ -19,7 +19,7 @@ import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, typ
 import { parsePolicyFast, parsePolicyNL } from "../model/policy-nl.ts";
 import { effortLevels, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
-import { truncate, gitConfirmOpen, diffOpen, diffSetText, type PanelState, type PanelModelRow } from "./panel.ts";
+import { truncate, gitConfirmOpen, diffOpen, diffSetText, mergeConfirmOpen, type PanelState, type PanelModelRow } from "./panel.ts";
 import { listAccounts, setDefaultAccount, removeAccount, getAccount, putAccount , uniqueSlug } from "../accounts/store.ts";
 import type { Account } from "../accounts/types.ts";
 import { importableEnvCreds, importEnvCred, importableCloudCreds, importCloudCred } from "../accounts/detect.ts";
@@ -702,7 +702,8 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           // No echo for fork: it's also dispatched by the in-stream ⑂ fork
           // click, and the echoed command would pollute BOTH transcripts (the
           // snapshot copies it into the forked history too).
-          if (sub !== "fork") echo(text);
+          // `merge confirm` is re-dispatched by the panel's ⏎ — not user text.
+          if (sub !== "fork" && !(sub === "merge" && rest === "confirm")) echo(text);
           if (!sub || sub === "list") {
             const rows = tabs.list().map((t, i) => `${t.active ? "●" : " "} ${i + 1}  ${t.title}${t.status !== "idle" ? `  · ${t.status}` : ""}\n     ${t.dir}`);
             notice(`tabs (⌃T next · click the bar · /tab new|run|fork|merge|close)\n${rows.join("\n")}`);
@@ -735,8 +736,9 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             return;
           }
           if (sub === "merge") {
-            // Land this tab's work: commit anything pending on the tab branch,
-            // then merge the branch into the BASE tab's checked-out branch.
+            // Land this tab's work into the BASE tab (tab 1), then archive its
+            // worktree. Fullscreen reviews the diff in a confirm panel first
+            // (⏎ there re-dispatches `/tab merge confirm`); inline lands directly.
             const list = tabs.list();
             const self = list.find((t) => t.active);
             const base = list[0];
@@ -745,18 +747,36 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             if (base.status === "working") { notice("the base tab is mid-turn — let it finish before merging into its tree"); return; }
             const branch = gitOps.currentBranch(self.dir);
             if (!branch) { notice("couldn't resolve this tab's branch"); return; }
-            if (gitOps.status(self.dir).length) {
-              gitOps.stageAll(self.dir);
-              const c = gitOps.commit(`tab work: ${self.title}`, self.dir);
-              if (!c.ok) { notice(`couldn't commit this tab's changes: ${c.err || c.out}`); return; }
-            }
-            const m = gitOps.git(["merge", "--no-edit", branch], base.dir);
-            if (!m.ok) {
-              gitOps.git(["merge", "--abort"], base.dir);
-              notice(`merge of ${branch} into the base tab hit conflicts — aborted cleanly.\n  resolve manually: cd ${base.dir} && git merge ${branch}`);
+
+            // The actual land: commit pending → merge into base → archive (remove
+            // the worktree, keep the branch ref) → fall back to the base tab.
+            const land = () => {
+              if (gitOps.status(self.dir).length) {
+                gitOps.stageAll(self.dir);
+                const c = gitOps.commit(`tab work: ${self.title}`, self.dir);
+                if (!c.ok) { notice(`couldn't commit this tab's changes: ${c.err || c.out}`); return; }
+              }
+              const m = gitOps.git(["merge", "--no-edit", branch], base.dir);
+              if (!m.ok) {
+                gitOps.git(["merge", "--abort"], base.dir);
+                notice(`merge of ${branch} into the base tab hit conflicts — aborted cleanly.\n  resolve manually: cd ${base.dir} && git merge ${branch}`);
+                return;
+              }
+              tabs.closeDir(self.dir); // unmount this tab + chdir back to the base
+              const rm = gitOps.worktreeRemove(self.dir, base.dir);
+              notice(rm.ok
+                ? `✓ merged ${branch} into the base tab · worktree archived (branch ${branch} kept)`
+                : `✓ merged ${branch} into the base tab · couldn't remove the worktree (${rm.err || rm.out})\n  /worktree rm to clean up`);
+            };
+
+            if (rest === "confirm") { land(); return; } // re-dispatched by the panel's ⏎
+            if (fullscreen && !panelRef.current) {
+              const baseBranch = gitOps.currentBranch(base.dir) ?? "HEAD";
+              const diff = gitOps.git(["diff", baseBranch], self.dir).out; // what will land
+              setPanel(mergeConfirmOpen(diff, branch));
               return;
             }
-            notice(`✓ merged ${branch} into the base tab\n  /tab close closes this tab · /worktree rm removes its worktree when you're done`);
+            land(); // inline: no panel to review in
             return;
           }
           if (sub === "close") { tabs.close(); return; }
