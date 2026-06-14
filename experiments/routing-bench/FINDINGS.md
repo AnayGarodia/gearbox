@@ -92,14 +92,73 @@ trap-blocked, trap-two-owners.
 - **Harder tasks** to locate the quality frontier (where the cheap model fails and
   the frontier earns its price) — real SWE-bench-grade, multi-file instances.
 
+---
+
+# Real-benchmark arm: Aider polyglot (2026-06-14)
+
+HarnessBench is synthetic, single-file, net-free, and too easy (haiku 100%). The
+**Aider polyglot benchmark** is the 225 *hardest* Exercism exercises (C++/Go/Java/
+JS/Python/Rust) — real, multi-language, genuinely hard (GPT-4 couldn't one-shot
+them). Runner: `polyglot.ts` (clones into `vendor/`, gitignored). Per (exercise,
+model): copy the exercise WITHOUT `.meta/` (the reference solution lives there),
+run gearbox `-p` to fill the solution file, RESTORE every non-solution file from
+pristine (anti-cheat — a model can't pass by editing tests), run the language test
+command. Validity guards: skip exercises whose stub already passes; a failed model
+call (rate-limit/crash → no JSON) is recorded as ⚠ERR, never counted as a solve.
+
+**IMPORTANT — headless `-p` does NOT run the VERIFY gate.** It's a single
+`runTask`/`runCliTask` (the agent can self-test via shell under `--yolo`, but
+there's no forced iterate-to-green). So these numbers are ~raw agentic capability
+on hard problems, not net-carried.
+
+## Result so far (24 exercises: 12 Python + 12 Go, 1 trial)
+
+| model | solve% (valid) | notes |
+|-------|----------------|-------|
+| DeepSeek-V4-Pro (metered) | **96% (22/23)** | 1 genuine miss (go/beer-song), 1 timeout. $0.8875 Azure. |
+| haiku / sonnet / opus (seats) | — | **rate-limited mid-run; no usable data** (see below) |
+
+So a **cheap metered model solves 96% of the hardest Exercism set** in raw agentic
+one-shot. On this distribution the cheap model is strong; the cheap-vs-strong gap
+(if any) is still unmeasured because the strong models were unavailable.
+
+## Operational findings (these shape what's measurable)
+
+1. **Subscription seats can't sustain benchmark-scale load.** ~50–70 heavy seat
+   calls exhausted the Claude Max 5h window (`usage.json`: claude-cli utilization
+   1.0, resets ~3.5h). The seats run collapsed after the first exercise — every
+   later call returned in 2–4s with 0 tokens. This is also exactly why `auto`
+   treats the seat as free-until-walled, then fails over to metered. **Scale
+   benchmarking requires metered models; seats only allow small samples between
+   resets.**
+2. **Codex headless seat is broken in this env.** `codex exec --json …` (and even
+   `codex --version`) hangs on startup (node shim, exit 137, no output), with rare
+   intermittent successes. gearbox reports "codex finished without an assistant
+   message" (`cli-backend.ts:615`). A codex-install/env issue, not a routing bug —
+   but it means the codex seat can't currently serve as a strong-model column.
+3. **Harness validity matters.** `go/counter`'s stub already passes its own test,
+   so a failed (0-token) call falsely scored "solved" until the stub-fails
+   precondition + ERR guard were added. Always exclude no-work passes and
+   infra-errors from solve%.
+
+## Blocked on the cheap-vs-strong comparison
+
+To compare cheap vs strong on real problems I need a working strong model. All
+three are currently unavailable: opus seat (walled ~3.5h), codex gpt-5.5 (broken),
+and there is no strong *metered* model configured. Resolution options are a
+direction call (wait for reset / add Azure GPT sponsor / DeepSeek-only) — pending.
+
+---
+
 ## Spend (this bake-off, exact)
 
 Derived from token usage × list price; Claude seats are $0 marginal (subscription
 quota), DeepSeek is real Azure credit.
 
-- **Azure DeepSeek-V4-Pro**: ~$0.39 of credits (derived; exact figure on the Azure
-  portal). Breakdown: broken-judge runs before the fix ~$0.10, fixed-judge
-  validation $0.05, killed-run partial $0.01, the 10-task pilot **$0.2248**.
+- **Azure DeepSeek-V4-Pro**: **~$1.28** of credits total (derived; exact figure on
+  the Azure portal). HarnessBench arm ~$0.39 (broken-judge runs ~$0.10, validation
+  $0.05, killed-run partial $0.01, the 10-task pilot $0.2248). Polyglot arm
+  **$0.8875** (24 hard exercises).
 - **Claude (haiku/sonnet/opus seats + auto)**: **$0 marginal** (Max subscription
   quota). List-price equivalent consumed ≈ $0.98 across all runs.
 - **Codex / OpenAI**: not used.

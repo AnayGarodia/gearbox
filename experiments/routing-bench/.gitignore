@@ -1,1 +1,3 @@
 *.local.json
+vendor/
+*.out
