@@ -129,15 +129,18 @@ test("type-ahead: a prompt queued while busy drains after a SUCCESSFUL turn", as
   expect(lastFrame() ?? "").toContain("reply 2");
 });
 
-test("type-ahead: the queue PAUSES after an errored turn, it doesn't auto-fire (L-C)", async () => {
+test("steering: typing while busy redirects the turn — the steer runs as a continuation", async () => {
+  // (Replaces the old type-ahead queue: a busy-submit now STEERS instead of
+  // queuing. A steer is explicit user intent, so it runs once the turn unwinds —
+  // even if the redirected turn ended in an error.)
   const g = gatedRunner("error");
   const { lastFrame, stdin } = render(<App selector={new FixedSelector("claude-haiku-4-5")} fullscreen runner={g.runner} />);
   await flush();
   stdin.write("first"); await flush(); stdin.write("\r"); await flush(); // turn 1 starts, blocks
-  stdin.write("second"); await flush(); stdin.write("\r"); await flush(); // queued
-  g.release(); await flush(); await flush(); await flush(); // turn 1 ERRORS → drain must NOT fire turn 2
-  expect(lastFrame() ?? "").toContain("first turn boom");
-  expect(g.calls()).toBe(1); // the queued prompt did NOT auto-run into the broken state
+  stdin.write("second"); await flush(); stdin.write("\r"); await flush(); // STEER → soft-abort + redirect
+  g.release(); await flush(); await flush(); await flush(); // turn 1 unwinds; the steer continues
+  expect(g.calls()).toBe(2); // the steer ran (a redirect is user intent, not auto-fired type-ahead)
+  expect(lastFrame() ?? "").toContain("reply 2");
 });
 
 test("↑ recalls the previous prompt into the composer (iv)", async () => {

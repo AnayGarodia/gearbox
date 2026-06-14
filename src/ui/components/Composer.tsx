@@ -155,8 +155,8 @@ function ComposerImpl({
     : null;
   const hint = busy
     ? value !== ""
-      ? "⏎ queues · sends when the current turn finishes"
-      : "type to queue" // the now-row above already carries elapsed + esc — say it once
+      ? "⏎ steers · redirects the running turn"
+      : "type to steer" // the now-row above already carries elapsed + esc — say it once
     : shellMode
     ? "⏎ runs in your shell"
     : "⏎ send";

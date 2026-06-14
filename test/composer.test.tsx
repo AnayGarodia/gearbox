@@ -19,19 +19,19 @@ test("plain input shows neither bash badge nor shell hint", () => {
   expect(out).not.toContain("runs in your shell");
 });
 
-test("typing while busy shows the queue affordance instead of freezing", () => {
+test("typing while busy shows the steer affordance instead of freezing", () => {
   const out = render(
     <Composer value="next task" cursor={9} placeholder="ask anything" busy={true} width={80} />,
   ).lastFrame() ?? "";
   expect(out).toContain("next task");
-  expect(out).toContain("queues");
+  expect(out).toContain("steers");
 });
 
-test("empty composer while busy invites queueing", () => {
+test("empty composer while busy invites steering", () => {
   const out = render(
     <Composer value="" cursor={0} placeholder="ask anything" busy={true} width={80} />,
   ).lastFrame() ?? "";
-  expect(out).toContain("type to queue");
+  expect(out).toContain("type to steer");
 });
 
 test("the footer hint line shows the routing policy under the box (branch lives on the meter)", () => {
@@ -56,7 +56,7 @@ test("busy with an empty composer shows the working hint on the footer line", ()
   const out = render(
     <Composer value="" cursor={0} placeholder="ask anything" busy={true} width={80} />,
   ).lastFrame() ?? "";
-  expect(out).toContain("type to queue"); // esc/elapsed live in the now-row — said once
+  expect(out).toContain("type to steer"); // esc/elapsed live in the now-row — said once
 });
 
 test("a pinned policy shows the model as the policy, not a second model name", () => {

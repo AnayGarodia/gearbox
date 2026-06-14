@@ -869,6 +869,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const cliMetaRef = useRef<{ costUSD?: number; rates?: { utilization?: number; status?: string; resetsAt?: number; type?: string }[] } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const interruptedRef = useRef(false);
+  // Mid-turn STEER: text the user typed while a turn was running, to redirect it.
+  // steerRef holds the pending steer message; steeringRef marks the current turn
+  // as soft-aborted FOR a steer (vs a ⌃C quit) so its settle is skipped and the
+  // steer runs as a continuation with the partial work in context.
+  const steerRef = useRef<string | null>(null);
+  const steeringRef = useRef(false);
   const ghostSkinRef = useRef<GhostLook>(
     ghostLook && isGhostLook(ghostLook) ? ghostLook
     : loadPrefs().ghost && isGhostLook(loadPrefs().ghost!) ? loadPrefs().ghost! : "base",
@@ -3172,6 +3178,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           try { gitOps.pruneTurnCheckpoints(8); } catch { /* best-effort */ }
         }
         const interrupted = interruptedRef.current;
+        // A steer soft-aborts the turn to redirect it: skip the "done" settle
+        // (summary, mascot, verify, autofix) — the continuation effect runs the
+        // steer next, with this turn's partial work already in msgRef.
+        const steering = steeringRef.current;
+        steeringRef.current = false;
         if (interrupted) {
           // Nothing was produced yet (no streamed text, no tool ran): the user
           // esc'd to take their prompt back, not to discard it — put it back in
@@ -3189,11 +3200,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // auto-fire into a still-broken state; a successful turn re-enables it
         // (L-C). A user interrupt is different: esc is often pressed precisely
         // to get to the queued prompt sooner, so the queue keeps draining.
-        lastTurnFailedRef.current = hadError && !interrupted;
+        lastTurnFailedRef.current = hadError && !interrupted && !steering;
         // A brief post-turn beat: confetti on a clean finish, crying on an error.
         // The working line lingers ~1.5s (it unmounts the instant busy goes false
         // otherwise, so these states would never render). Skip on a user interrupt.
-        if (!interrupted) try {
+        if (!interrupted && !steering) try {
           setMascotState(hadError ? "error" : "celebrate");
           // Collapse this turn's live trace into durable facts, then summarize from
           // the FINAL state (a check that failed then passed on retry is not a
@@ -3459,10 +3470,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return;
       }
       if (busyRef.current) {
-        // Queue it · sent automatically when the current turn finishes.
-        queueRef.current.push(text);
-        setQueued([...queueRef.current]);
-        notice(`queued (${queueRef.current.length}) · sends when the current turn finishes`);
+        // STEER the running turn instead of queuing: soft-abort the in-flight
+        // model call (partial work is preserved in msgRef) and continue with this
+        // message in context the moment it unwinds. Quick successive steers
+        // concatenate so none is lost. (Permission/ask prompts capture keys
+        // before this, so answering a prompt never lands here.)
+        steerRef.current = steerRef.current ? `${steerRef.current}\n${text}` : text;
+        steeringRef.current = true;
+        notice("↳ steering · redirecting the current turn");
+        abortRef.current?.abort();
         return;
       }
       // Auto-detect a question ABOUT Gearbox and answer it from the docs, with a
@@ -3481,8 +3497,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // the whole queue. A user interrupt does NOT hold the queue (esc is often
   // pressed to get to the queued prompt sooner). The next successful turn clears
   // the error flag and resumes draining.
+  // Mid-turn steer: the soft-aborted turn has unwound (busy=false) with its
+  // partial work in msgRef — run the steer as a continuation now. Takes
+  // precedence over the type-ahead queue and auto-wake.
   useEffect(() => {
-    if (busy || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
+    if (busy || !steerRef.current) return;
+    const s = steerRef.current;
+    steerRef.current = null;
+    void runTurn(s);
+  }, [busy, runTurn]);
+
+  useEffect(() => {
+    if (busy || steerRef.current || queueRef.current.length === 0 || lastTurnFailedRef.current) return;
     const next = queueRef.current.shift();
     setQueued([...queueRef.current]);
     if (next) void runTurn(next);
@@ -3495,7 +3521,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // reports anyway). No loop risk: runTurn clears pendingBackgroundRef, so the
   // effect only fires again when a NEW report arrives (bgWakeTick).
   useEffect(() => {
-    if (busy || queueRef.current.length || pendingBackgroundRef.current.length === 0) return;
+    if (busy || steerRef.current || queueRef.current.length || pendingBackgroundRef.current.length === 0) return;
     if (autoWakeCountRef.current >= MAX_AUTO_WAKES) {
       notice(`${pendingBackgroundRef.current.length} sub-task result(s) ready — paused auto-resume after ${MAX_AUTO_WAKES} rounds. Send a message to continue.`);
       return;
