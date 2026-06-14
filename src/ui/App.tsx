@@ -107,6 +107,7 @@ import { armDeviceLogin, armAuthReady } from "../accounts/azure-arm.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 import { handleCommand as dispatchCommand, KEYS_HELP, clipForPrompt, splitSubject, type CommandCtx } from "./command-handler.ts";
+import { matchIntent } from "./intent.ts";
 
 export type Runner = (opts: {
   prompt: string;
@@ -3403,6 +3404,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           }
         }
       }
+      // Natural-language shortcut: plain phrasing like "add an account", "what
+      // have I spent", "use opus" runs the matching command, so the slash
+      // commands are optional. Conservative (short, command-shaped messages
+      // only) and non-destructive — a real task falls through to the model.
+      if (!busyRef.current) {
+        const intent = matchIntent(text);
+        if (intent) {
+          echo(text);
+          notice(`↳ ${intent.note} · type /help for all commands`);
+          handleCommand(intent.command);
+          return;
+        }
+      }
       if (setupRequired) {
         echo(text);
         notice("set up a provider before sending a task\n\n" + onboardingSummary(onboardingState));
@@ -4613,7 +4627,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // The permission prompt OUTRANKS an open panel: its key capture runs first
   // in useInput, so hiding the card while a panel is open would freeze the
   // panel and let esc (the panel-close key) silently DENY the unseen request.
-  const composerPlaceholder = setupRequired ? "add a provider with /account add <provider> <api-key>" : mode === "plan" ? "describe what to plan…" : "ask anything";
+  const composerPlaceholder = setupRequired ? "paste an API key to add an account · or /account add" : mode === "plan" ? "describe what to plan…" : "ask anything";
   const composerAt = (w: number, lift: boolean) => (
     <Composer value={edit.value} cursor={edit.cursor} selectionAnchor={edit.selectionAnchor} placeholder={composerPlaceholder} suggestion={suggestion} busy={busy} width={w} vim={vim} bashMode={bashMode} mode={mode} policy={composerPolicy} branch={branch} provider={composerProvider} model={composerModelName} lift={lift} />
   );
@@ -4647,12 +4661,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const homeRoom = transcriptHeight - 3 - PALETTE_ROWS; // minus the composer block + any open palette
   const homeSplashSize: "big" | "mini" | "none" = homeRoom >= 36 ? "big" : homeRoom >= 24 ? "mini" : "none";
   const showHomeCommands = PALETTE_ROWS === 0 && homeRoom >= (homeSplashSize === "big" ? 32 : homeSplashSize === "mini" ? 22 : 10);
-  // One plain line explaining routing on the idle home screen — only while
-  // auto-routing is actually on (hidden when a model/subscription is pinned, so
-  // it can't contradict the "… pinned" readiness line above it). Gated on enough
-  // room AND width so the single line (59 cols) never wraps — the height math
-  // below counts it as exactly 2 rows (a marginTop + the line).
-  const showRoutingHint = homeRoom >= 10 && homeW >= 62 && selectorKind === "routing";
   const HOME_COMMANDS: [string, string][] = [
     ["/model", "pick a model · auto-routes by default"],
     ["/account", "add a provider or subscription"],
@@ -4668,6 +4676,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     selectorKind === "subscription" ? (activeCli?.label ?? "subscription") :
     selectorKind === "fixed" ? (model?.label ? `${model.label} pinned` : "pinned") :
     "auto-routing";
+  // One adaptive hint line on the idle home screen. It nudges toward the next
+  // useful action: add a (first/another) account, or — once routing is live with
+  // ≥2 accounts — explains routing. Reuses a single fixed-height slot so the home
+  // geometry below stays correct; each variant is ≤ ~58 cols so it never wraps at
+  // the homeW ≥ 62 gate.
+  const homeHint =
+    readyAccounts <= 0 ? "paste an API key to add an account · or /account add" :
+    readyAccounts === 1 ? "add another account to route · paste a key or /account add" :
+    selectorKind === "routing" ? "just type · Gearbox picks the model · /why shows it" :
+    null;
+  const showRoutingHint = homeRoom >= 10 && homeW >= 62 && !!homeHint;
   // The home composer's mouse geometry: the centered group's row heights, added
   // up. Splash height is fixed by AnimatedGhost's constant-height contract
   // (always 1× now: marginTop + 11-row ghost block + wordmark/tagline = 15 ·
@@ -4702,9 +4721,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           <Text color={color.dim}>{readyAccounts} account{readyAccounts === 1 ? "" : "s"} ready · {homePin}</Text>
         </Box>
       ) : null}
-      {showRoutingHint ? (
+      {showRoutingHint && homeHint ? (
         <Box marginTop={1}>
-          <Text color={color.faint}>just type · Gearbox picks the model · <Text color={color.accent}>/why</Text> shows the choice</Text>
+          <Text color={color.faint}>{homeHint}</Text>
         </Box>
       ) : null}
       {showHomeCommands ? (
