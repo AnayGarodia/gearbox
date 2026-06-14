@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { runShellStream, type ShellResult } from "./shell.ts";
 import type { OnEvent } from "./agent/events.ts";
 
@@ -36,12 +36,36 @@ function packageCommands(cwd: string): VerificationCommand[] {
   return cmds;
 }
 
+// Is `cwd` itself a Python project root? If so, a bare `pytest` is correct (it
+// scopes to this project). If NOT (e.g. gearbox launched in a parent dir that
+// holds several unrelated repos), a bare `pytest` recurses the WHOLE tree and
+// sweeps up every sibling project's tests — an unrelated collection error there
+// then fails the gate and triggers a spurious auto-fix. In that case we scope
+// pytest to the directories that actually changed this turn.
+const PY_PROJECT_MARKERS = ["pyproject.toml", "setup.py", "setup.cfg", "pytest.ini", "tox.ini"];
+function isPyProjectRoot(cwd: string): boolean {
+  return PY_PROJECT_MARKERS.some((m) => existsSync(join(cwd, m)));
+}
+function changedPyDirs(changedFiles: string[]): string[] {
+  const dirs = new Set<string>();
+  for (const f of changedFiles) {
+    if (!/\.py$/.test(f)) continue;
+    const d = dirname(f);
+    if (d && d !== ".") dirs.add(d); // "." == cwd == a bare run; no scoping benefit
+  }
+  return [...dirs];
+}
+
 export function detectVerificationCommands(cwd = process.cwd(), changedFiles: string[] = []): VerificationCommand[] {
   const cmds = packageCommands(cwd);
   const hasPython = changedFiles.some((f) => /\.py$/.test(f)) || existsSync(join(cwd, "pyproject.toml")) || existsSync(join(cwd, "pytest.ini"));
   const hasRust = changedFiles.some((f) => /\.rs$/.test(f)) || existsSync(join(cwd, "Cargo.toml"));
   const hasGo = changedFiles.some((f) => /\.go$/.test(f)) || existsSync(join(cwd, "go.mod"));
-  if (hasPython && !cmds.some((c) => /\bpytest\b/.test(c.command))) cmds.push({ command: "pytest", reason: "python project" });
+  if (hasPython && !cmds.some((c) => /\bpytest\b/.test(c.command))) {
+    const scope = !isPyProjectRoot(cwd) ? changedPyDirs(changedFiles) : [];
+    const command = scope.length ? `pytest ${scope.map((d) => `"${d}"`).join(" ")}` : "pytest";
+    cmds.push({ command, reason: "python project" });
+  }
   if (hasRust && !cmds.some((c) => /\bcargo\s+test\b/.test(c.command))) cmds.push({ command: "cargo test", reason: "rust project" });
   if (hasGo && !cmds.some((c) => /\bgo\s+test\b/.test(c.command))) cmds.push({ command: "go test ./...", reason: "go project" });
   return cmds.slice(0, 3);
