@@ -972,6 +972,31 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         ], width));
         break;
       }
+      case "plan": {
+        // The live checklist (update_plan): a quiet header with progress, then
+        // one row per step. The CURRENT step is bright + bold (your eye lands on
+        // it), done steps are checked and dimmed, pending stay faint — so the plan
+        // reads as "here's where we are", not a log. Updated in place each call.
+        const steps = it.steps;
+        const done = steps.filter((s) => s.status === "done").length;
+        out.push(clipSpans([
+          { text: "  " },
+          { text: "plan", color: color.dim, bold: true },
+          { text: `  ${done}/${steps.length}`, color: color.faint },
+        ], width));
+        for (const s of steps) {
+          const m = s.status === "done" ? { g: glyph.check, c: color.ok }
+            : s.status === "in_progress" ? { g: "▸", c: color.accent }
+            : { g: "○", c: color.faint };
+          const cur = s.status === "in_progress";
+          out.push(clipSpans([
+            { text: "    " },
+            { text: m.g + " ", color: m.c, bold: cur },
+            { text: s.text, color: cur ? color.text : s.status === "done" ? color.dim : color.faint, bold: cur },
+          ], width));
+        }
+        break;
+      }
       case "summary": {
         // The RECEIPT line: the settled turn's outcome in one quiet row —
         // verdict (bold), the files it touched, and the proof tier. The routed

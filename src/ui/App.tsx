@@ -881,6 +881,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // steer runs as a continuation with the partial work in context.
   const steerRef = useRef<string | null>(null);
   const steeringRef = useRef(false);
+  // The live plan/checklist item for the current task (update_plan upserts it in
+  // place). Reset per fresh user turn so each task gets its own plan.
+  const planItemIdRef = useRef<number | null>(null);
   const ghostSkinRef = useRef<GhostLook>(
     ghostLook && isGhostLook(ghostLook) ? ghostLook
     : loadPrefs().ghost && isGhostLook(loadPrefs().ghost!) ? loadPrefs().ghost! : "base",
@@ -2736,7 +2739,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // @mentions + everything edited so far this session. A fresh user turn
       // (attempt 0) clears the last failure kind so escalation only applies it on
       // an actual auto-fix re-run.
-      if (attempt === 0) lastFailureKindRef.current = undefined;
+      if (attempt === 0) { lastFailureKindRef.current = undefined; planItemIdRef.current = null; }
       if (effectivePrompt.trim()) autoWakeCountRef.current = 0; // a real turn resets the auto-wake budget
       touchedFilesRef.current = uniq([...attached, ...sessionTouchedRef.current]);
       // Backgrounded / spawned sub-task reports arrive here. On an AUTO-WAKE (a
@@ -2973,6 +2976,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           push({ kind: "verification", id: idRef.current++, command: e.command, ok: e.ok, summary: e.summary, intent: e.intent, durationMs: e.durationMs, output: e.output });
         } else if (e.type === "preference-suggestion") {
           push({ kind: "preference", id: idRef.current++, text: e.text, acceptCommand: e.acceptCommand });
+        } else if (e.type === "plan") {
+          // Upsert the turn's single plan item so the checklist updates in place.
+          const steps = e.steps;
+          if (planItemIdRef.current != null) {
+            const pid = planItemIdRef.current;
+            setItems((prev) => prev.map((i) => (i.id === pid && i.kind === "plan" ? { ...i, steps } : i)));
+          } else {
+            const id = idRef.current++;
+            planItemIdRef.current = id;
+            push({ kind: "plan", id, steps });
+          }
         } else if (e.type === "error") {
           hadError = true;
           failures.push(e.message);

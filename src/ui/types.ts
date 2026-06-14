@@ -90,6 +90,7 @@ export type Item =
       output?: string; // last attempt's output, revealed by ⌃O
     }
   | { kind: "preference"; id: number; text: string; acceptCommand: string }
+  | { kind: "plan"; id: number; steps: { text: string; status: "pending" | "in_progress" | "done" }[] } // live checklist (update_plan); rendered in place
   | { kind: "summary"; id: number; changed: string[]; checks: string[]; failures: string[]; next?: string; tier?: "tests" | "types" | "none" }
   | { kind: "notice"; id: number; text: string }
   | { kind: "accounts"; id: number; view: AccountView }

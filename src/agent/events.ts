@@ -100,6 +100,11 @@ export type AgentEvent =
   /** The model suggested storing a user preference. `acceptCommand` is the slash command to accept it. */
   | { type: "preference-suggestion"; id: string; text: string; acceptCommand: string }
 
+  /** A live plan/checklist the model maintains for a multi-step task (update_plan
+   *  tool). Each call replaces the whole list; the UI renders it in place so the
+   *  user sees the plan + current step + progress, not a wall of tool logs. */
+  | { type: "plan"; steps: { text: string; status: "pending" | "in_progress" | "done" }[] }
+
   /**
    * The turn completed. Always emitted last, even after an error, so
    * consumers can finalize usage counters and close any open UI items.

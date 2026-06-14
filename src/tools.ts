@@ -699,6 +699,28 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd(), ext
     },
   }),
 
+  update_plan: tool({
+    description:
+      "Maintain a short checklist for a MULTI-STEP task so the user can see the plan and your progress — this is the PRIMARY way they follow along, far better than a wall of tool logs. Call it ONCE up front with 3-7 concise steps, then call it again to update statuses as you work: mark the step you're starting 'in_progress' and finished ones 'done'. Keep exactly one step in_progress at a time. Skip it for a trivial one-step task.",
+    inputSchema: z.object({
+      steps: z
+        .array(
+          z.object({
+            step: z.string().describe("A short imperative step, e.g. 'add the recursive-descent parser'."),
+            status: z.enum(["pending", "in_progress", "done"]).optional().describe("Defaults to pending."),
+          }),
+        )
+        .min(1)
+        .max(8),
+    }),
+    execute: async ({ steps }) => {
+      // Not gated, no side effects — it just paints the plan. The whole list is
+      // replaced each call; the UI renders it in place.
+      onEvent?.({ type: "plan", steps: steps.map((s) => ({ text: s.step, status: s.status ?? "pending" })) });
+      return "plan updated";
+    },
+  }),
+
   ask_user: tool({
     description:
       "Ask the user clarifying questions and WAIT for their answer, instead of guessing or asking in plain prose. Use BEFORE acting when the request is ambiguous, big/architectural, or missing a fact that would change your approach. The turn pauses until they answer — do not call other tools in the same step. Ask everything you need in ONE call (up to 4 questions); give each 2-4 concrete options to pick from (set multiSelect to let them choose several). Returns their choices; act on them without re-confirming.",
@@ -753,6 +775,7 @@ function readOnlySubset(all: ReturnType<typeof createTools>) {
     code_definition: all.code_definition,
     code_references: all.code_references,
     ask_user: all.ask_user, // asking is read-only — available in plan mode too
+    update_plan: all.update_plan, // the checklist is read-only — keep it in plan mode
   };
 }
 

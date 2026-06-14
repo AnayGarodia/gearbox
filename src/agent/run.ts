@@ -64,7 +64,7 @@ const HEAD_FIELD: Record<string, string> = { run_shell: "command" };
 // delegate/delegate_parallel emit their own structured events, so the generic
 // tool lifecycle would double-render them (with a useless "[object Object]" head
 // from the array input). Skip our UI and let the tool drive its own display.
-const SELF_RENDERING = new Set(["delegate", "delegate_parallel", "spawn_subagent", "collect_subagents", "ask_user"]);
+const SELF_RENDERING = new Set(["delegate", "delegate_parallel", "spawn_subagent", "collect_subagents", "ask_user", "update_plan"]);
 
 /**
  * Incrementally decodes ONE JSON string field out of a partial JSON buffer as
