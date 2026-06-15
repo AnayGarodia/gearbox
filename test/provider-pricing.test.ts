@@ -8,7 +8,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalPricingFor, binaryServesModel, subscriptionSeats, modelRegistry, hasPricing, estimateCost } from "../src/providers.ts";
+import { canonicalPricingFor, canonicalIdFor, binaryServesModel, subscriptionSeats, modelRegistry, hasPricing, estimateCost } from "../src/providers.ts";
 import { putAccount } from "../src/accounts/store.ts";
 
 const saved: Record<string, string | undefined> = {};
@@ -60,10 +60,21 @@ test("a discovered Foundry deployment gets family pricing in the registry", () =
   expect(ds?.cost).toEqual({ inUSDPerMtok: 0.4, outUSDPerMtok: 1.75 });
   expect(hasPricing("azure-foundry/DeepSeek-V4-Pro")).toBe(true);
   expect(estimateCost([{ model: "azure-foundry/DeepSeek-V4-Pro", inputTokens: 1_000_000, outputTokens: 0 }])).toBeCloseTo(0.4);
-  // the unmatched deployment keeps its honest unknown
+  // A matched deployment also carries the canonical id so the router resolves
+  // its quality/benchmark and it can be ROUTED for code (not floored out).
+  expect(ds?.canonicalId).toBe("deepseek-v4-pro");
+  // the unmatched deployment keeps its honest unknown — no pricing, no canonical
   const bespoke = reg.find((m) => m.id === "azure-foundry/my-bespoke-finetune");
   expect(bespoke?.cost).toBeUndefined();
+  expect(bespoke?.canonicalId).toBeUndefined();
   expect(hasPricing("azure-foundry/my-bespoke-finetune")).toBe(false);
+});
+
+test("canonicalIdFor maps deployment names to the curated family id", () => {
+  expect(canonicalIdFor("my-gpt-5.5-eastus2")).toBe("gpt-5.5");
+  expect(canonicalIdFor("DeepSeek-V4-Pro")).toBe("deepseek-v4-pro");
+  expect(canonicalIdFor("gpt-5.5-mini")).toBeUndefined(); // a different tier refuses the match
+  expect(canonicalIdFor("totally-custom-model")).toBeUndefined();
 });
 
 test("binaryServesModel: vendor namespaces", () => {

@@ -107,6 +107,12 @@ export interface ModelSpec {
     /** How this spec was sourced: official docs, live API, user config, or seeded guess. */
     source?: "official" | "api-discovered" | "user-configured" | "seeded";
   };
+  /** For a discovered deployment whose name maps to a known model family
+   *  (e.g. an Azure deployment "my-gpt-5.5" → "gpt-5.5"): the canonical curated
+   *  id, so cost/quality/benchmark resolve against it. Lets discovered Azure /
+   *  Foundry / gateway models be ROUTED (otherwise they have no benchmark
+   *  quality and are floored out of code/plan tasks). */
+  canonicalId?: string;
 }
 
 /**
@@ -218,6 +224,7 @@ function accountModelSpecs(): ModelSpec[] {
       // rate when the deployment name unambiguously matches one (DeepSeek-V4-Pro,
       // my-gpt-5.5, …) so cost estimates and routing aren't blind. No match →
       // cost stays undefined and the UI keeps the honest "$ unknown".
+      const canonical = canonicalIdFor(sdkId);
       const cost = canonicalPricingFor(sdkId);
       out.push({
         id,
@@ -226,6 +233,10 @@ function accountModelSpecs(): ModelSpec[] {
         label: sdkId,
         contextWindow: 128_000,
         ...(cost ? { cost } : {}),
+        // When the deployment name resolves to a known family, carry the
+        // canonical id so the router resolves its quality/benchmark — without
+        // this an Azure/Foundry/gateway deployment is floored out of code tasks.
+        ...(canonical ? { canonicalId: canonical } : {}),
         capabilities: { source: "api-discovered", tools: "unknown", images: "unknown", jsonSchema: "unknown", usage: "partial" },
       });
     }
@@ -557,18 +568,34 @@ function normalizeModelName(s: string): string {
  *  beats "gpt-5.5". Returns undefined when nothing matches — callers keep the
  *  honest "$ unknown". Pure; fixture-tested. */
 export function canonicalPricingFor(sdkId: string): { inUSDPerMtok: number; outUSDPerMtok: number } | undefined {
+  return canonicalSpecFor(sdkId)?.cost;
+}
+
+/** The canonical curated id a discovered deployment name maps to ("my-gpt-5.5"
+ *  → "gpt-5.5"), or undefined. Routing sets this on discovered specs so quality,
+ *  benchmark, and the capability floor resolve against the real model family —
+ *  the difference between an Azure/Foundry/gateway deployment being routable for
+ *  code and being silently excluded. Pure. */
+export function canonicalIdFor(sdkId: string): string | undefined {
+  return canonicalSpecFor(sdkId)?.id;
+}
+
+/** Match a deployment/sdk id to a curated model family: exact (normalized) match
+ *  first; then a boundary-anchored containment match, longest family first, with
+ *  the surrounding remainder forbidden from naming a different price tier. The
+ *  shared core behind canonicalPricingFor + canonicalIdFor. Pure; fixture-tested. */
+function canonicalSpecFor(sdkId: string): (typeof CURATED)[number] | undefined {
   const name = normalizeModelName(sdkId);
   if (!name) return undefined;
   const families = CURATED.filter((m) => NATIVE.has(m.provider) && m.cost)
     .sort((a, b) => b.id.length - a.id.length || a.id.localeCompare(b.id));
   for (const f of families) {
     const key = normalizeModelName(f.id);
-    if (name === key) return f.cost;
+    if (name === key) return f;
     const esc = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (new RegExp(`(?:^|[-/.:])${esc}(?:$|[-/.:])`).test(name)) {
-      // The remainder around the family must not be a different price tier.
       const rest = name.replace(new RegExp(esc), "");
-      if (!TIER_MODIFIER.test(rest)) return f.cost;
+      if (!TIER_MODIFIER.test(rest)) return f;
     }
   }
   return undefined;

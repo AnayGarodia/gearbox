@@ -376,11 +376,14 @@ export class RoutingSelector implements ModelSelector {
     // routing candidate — auto-routing only gambles on vetted models.
     for (const m of modelRegistry().filter((mm) => providerAvailable(mm.provider) && mm.routable !== false)) {
       const accts = accountsForProvider(m.provider).filter((a) => a.enabled && a.exec !== "cli");
+      // A discovered deployment carries canonicalId (e.g. azure/my-gpt-5.5 →
+      // gpt-5.5) so cost/quality/benchmark resolve against the real family.
+      const canon = m.canonicalId ?? m.id;
       if (accts.length === 0) {
         // No stored account for this provider: use the env-key default state.
-        out.push({ spec: m, canonicalId: m.id, backend: { kind: "in-loop" }, state: neutral(`env:${m.provider}`, m.provider) });
+        out.push({ spec: m, canonicalId: canon, backend: { kind: "in-loop" }, state: neutral(`env:${m.provider}`, m.provider) });
       } else {
-        for (const a of accts) out.push({ spec: m, canonicalId: m.id, backend: { kind: "in-loop", account: a }, state: neutral(a.id, m.provider) });
+        for (const a of accts) out.push({ spec: m, canonicalId: canon, backend: { kind: "in-loop", account: a }, state: neutral(a.id, m.provider) });
       }
     }
     for (const seat of subscriptionSeats()) {

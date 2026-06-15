@@ -56,7 +56,7 @@ import { runShellStream, sandboxPolicyFor } from "./shell.ts";
 import { looksLikeSandboxDenial } from "./sandbox/index.ts";
 import { appendFact } from "./context/memory.ts";
 import { emitHook } from "./plugins.ts";
-import { requestPermission } from "./permission.ts";
+import { requestPermission, isYolo } from "./permission.ts";
 import { requestUserAnswer } from "./ask.ts";
 import { which, Glob, spawnSyncProc } from "./proc.ts";
 import type { OnEvent } from "./agent/events.ts";
@@ -617,13 +617,20 @@ export function createTools(onEvent?: OnEvent, root: string = process.cwd(), ext
         // nothing. Skip escalation entirely in that case.
         if (denial.denied && !(denial.kind === "network" && policy.network)) {
           const netOnly = denial.kind === "network";
-          const approved = await requestPermission({
-            kind: "shell",
-            title: netOnly ? "Command needs network — allow network for one retry?" : "The sandbox may have blocked this — retry unsandboxed? (reruns the whole command)",
-            detail: command,
-            root,
-            forceAsk: true,
-          });
+          // Yolo means "stop asking me". Auto-allow the LESSER escape (a
+          // network-only retry) silently under yolo — that's exactly the
+          // friction the user opted out of. The full UNSANDBOXED retry (writes
+          // outside the workspace) is the dangerous hammer, so it still earns one
+          // beat even under yolo (the sandbox is the last guardrail there).
+          const approved = (netOnly && isYolo())
+            ? true
+            : await requestPermission({
+              kind: "shell",
+              title: netOnly ? "Command needs network — allow network for one retry?" : "The sandbox may have blocked this — retry unsandboxed? (reruns the whole command)",
+              detail: command,
+              root,
+              forceAsk: true,
+            });
           if (approved) {
             r = await runShellStream(command, netOnly ? { cwd: root, sandboxNetwork: true, onChunk } : { cwd: root, sandbox: false, onChunk });
             sandboxNote = `[sandbox] retried ${netOnly ? "with network allowed" : "unsandboxed"} after a sandbox denial, with the user's permission.\n`;
