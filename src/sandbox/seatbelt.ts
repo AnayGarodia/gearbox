@@ -10,13 +10,35 @@
 // allows it. Children of the sandboxed shell inherit the policy, so pipelines
 // and subprocesses are covered.
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import type { SandboxPolicy } from "./policy.ts";
 import { baseWritePaths } from "./policy.ts";
 
 export const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 
+let smokeCache: boolean | null = null;
+
+function sandboxSmoke(): boolean {
+  if (smokeCache != null) return smokeCache;
+  try {
+    const r = spawnSync(SANDBOX_EXEC, ["-p", "(version 1)\n(allow default)", "/usr/bin/true"], {
+      stdio: "ignore",
+      timeout: 2_000,
+    });
+    smokeCache = r.status === 0;
+  } catch {
+    smokeCache = false;
+  }
+  return smokeCache;
+}
+
 export function sandboxAvailable(platform: NodeJS.Platform = process.platform, exists: (p: string) => boolean = existsSync): boolean {
-  return platform === "darwin" && exists(SANDBOX_EXEC);
+  if (platform !== "darwin" || !exists(SANDBOX_EXEC)) return false;
+  // Tests inject a fake `exists` predicate to exercise pure dispatch without
+  // spawning the host binary. Real runtime checks also verify that this process
+  // may actually apply a profile; some managed macOS contexts ship
+  // sandbox-exec but return "sandbox_apply: Operation not permitted".
+  return exists === existsSync ? sandboxSmoke() : true;
 }
 
 /** Escape a path for inclusion in a Seatbelt double-quoted string literal. */

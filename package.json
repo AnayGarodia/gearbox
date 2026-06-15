@@ -1,6 +1,6 @@
 {
   "name": "gearbox-code",
-  "version": "0.17.10",
+  "version": "0.17.11",
   "description": "A beautiful multi-provider coding harness for the terminal. (Intelligent model routing lands on top of this soon.)",
   "type": "module",
   "license": "MIT",
@@ -17,9 +17,10 @@
     "gearbox": "bun run src/cli.tsx",
     "link": "bun link",
     "build": "node scripts/gen-docs.mjs && bun build --target=node src/cli.tsx --outfile dist/cli.mjs && node scripts/add-shebang.mjs",
+    "release": "bash scripts/release.sh",
     "prepublishOnly": "bun run build",
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test test"
   },
   "devDependencies": {
     "@ai-sdk/amazon-bedrock": "3",

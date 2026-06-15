@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runTaskMock } from "../src/agent/mock.ts";
 import type { AgentEvent } from "../src/agent/events.ts";
-import { findModel } from "../src/providers.ts";
+import { findModel, refreshModelsDevOverlay } from "../src/providers.ts";
 import { FixedSelector } from "../src/model/selector.ts";
 
 // Isolate the account store so "needs a key" depends only on env, not real accounts.
@@ -36,13 +36,16 @@ test("model registry resolves by label, and the seam needs a key", () => {
     delete process.env[k];
   }
   try {
+    refreshModelsDevOverlay();
     expect(() => new FixedSelector().select({ prompt: "x" })).toThrow();
     process.env.ANTHROPIC_API_KEY = "test-key";
+    refreshModelsDevOverlay();
     expect(new FixedSelector().select({ prompt: "x" }).model.provider).toBe("anthropic");
   } finally {
     for (const k of KEYS) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
+    refreshModelsDevOverlay();
   }
 });

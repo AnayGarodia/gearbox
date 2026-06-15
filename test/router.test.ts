@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoutingSelector, classify, confidentKeywordKind } from "../src/model/router.ts";
 import { confirmRoutingPreference } from "../src/model/preferences.ts";
+import { refreshModelsDevOverlay } from "../src/providers.ts";
 
 // Isolate the account store to an empty dir so provider availability depends
 // ONLY on env keys (not the developer's real ~/.gearbox accounts).
@@ -12,17 +13,20 @@ process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-router-"));
 const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "DEEPSEEK_API_KEY"];
 const saved: Record<string, string | undefined> = {};
 function only(...present: string[]) {
+  refreshModelsDevOverlay();
   for (const k of KEYS) {
     saved[k] = process.env[k];
     delete process.env[k];
   }
   for (const k of present) process.env[k] = "test-key";
+  refreshModelsDevOverlay();
 }
 afterEach(() => {
   for (const k of KEYS) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k];
   }
+  refreshModelsDevOverlay();
 });
 
 // ── classifier: the safety property (never downgrade real work) ──
