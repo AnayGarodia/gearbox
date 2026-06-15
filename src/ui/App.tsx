@@ -4273,7 +4273,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const activeCount = pickerRows.length || fileMatches.length || cmdMatches.length;
       const exactPickerValue = pickerRows.length === 1 && pickerRows[0]!.value.trim() === draft.trim();
       const paletteShouldOwnArrows = activeCount > 1 || (activeCount === 1 && !exactPickerValue && !isExactSlashCommand(draft));
-      if (key.return && isExactSlashCommand(draft)) {
+      // An exact command with NO argument picker (/usage, /help, …) submits to
+      // open its panel. But when an argument picker IS showing (/model, /account,
+      // /effort), Enter accepts the highlighted row below — selecting the
+      // highlighted `auto` should route, not dump you into the full model list.
+      if (key.return && isExactSlashCommand(draft) && !pickerRows.length) {
         setPaletteIndex(0);
         submit(draft.trim());
         return;
