@@ -838,13 +838,13 @@ export function routingCardLines(card: Scorecard, width: number, savingsNote?: s
     const passes = Math.round(chosen.priorRate * chosen.priorN);
     const delta = chosen.priorDelta != null ? `  ·  ${chosen.priorDelta >= 0 ? "+" : "−"}${Math.abs(chosen.priorDelta).toFixed(2)} quality` : "";
     out.push(BLANK);
-    out.push([
+    out.push(clipSpans([
       { text: "  flywheel  ", color: color.accentDim, bold: true },
       { text: b.fill, color: color.ok },
       { text: b.empty, color: color.faint },
       { text: `  ${passes}/${chosen.priorN} ✓ verified here`, color: color.text },
       { text: delta, color: color.faint },
-    ]);
+    ], width));
   }
   // Session saved vs always-premium — the headline number for the whole pitch.
   if (savingsNote) out.push([{ text: "  saved  ", color: color.accentDim, bold: true }, { text: savingsNote, color: color.ok }]);
@@ -1195,7 +1195,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
       }
       case "accounts": {
         const v = it.view;
-        out.push([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: "accounts", color: color.text }, { text: " · current ", color: color.faint }, { text: v.current, color: color.text, bold: true }]);
+        out.push(clipSpans([{ text: "  " + glyph.notice + " ", color: color.accentDim }, { text: "accounts", color: color.text }, { text: " · current ", color: color.faint }, { text: v.current, color: color.text, bold: true }], width));
         const commandWidth = Math.max(18, ...v.rows.map((r) => `/account ${r.alias}`.length));
         const emitGroup = (title: string, rows: typeof v.rows) => {
           if (!rows.length) return;
