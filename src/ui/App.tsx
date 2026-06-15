@@ -1874,7 +1874,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   }, [setupRequired]);
   const model = lastPick?.model ?? choice?.model ?? null;
   // On a subscription, the status reflects the CLI account, not the in-loop model/routing.
-  const modelLabel = setupRequired ? "setup required" : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}` : (model?.label ?? "none");
+  // CRITICAL for trust: a routed pick and a PINNED model used to render
+  // identically ("● DeepSeek-V4-Pro"), so you couldn't tell if routing was on.
+  // Now auto-routing leads with "auto ·" (the model is just the latest pick) and
+  // a hard pin trails with "· pinned".
+  const isPinned = !activeCli && selector instanceof FixedSelector;
+  const modelLabel = setupRequired ? "setup required"
+    : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}`
+    : isPinned ? `${model?.label ?? "none"} · pinned`
+    : model?.label ? `auto · ${model.label}` : "auto-route";
   const subscription = activeCli ? activeCli.label : null;
   // Routing POLICY for the input box (intent, not a model name). Derived from the
   // live selector: a subscription pins the seat, a FixedSelector is an explicit
