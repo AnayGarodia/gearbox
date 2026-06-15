@@ -70,9 +70,13 @@ const LineRow = React.memo(function LineRow({ line, range: rangeProp, lineWidth 
   let pos = 0;
   const lineLen = line.reduce((n, s) => n + displayWidth(s.text), 0);
   const trailing = Math.max(0, lineWidth - lineLen);
-  // Extend a colored band (code/user/diff) to full width via the last span's bg;
-  // a plain text line's last span has no bg, so the trailing stays transparent.
-  const tailBg = line[line.length - 1]?.bg;
+  // The trailing pad to the viewport edge stays TRANSPARENT. A band (header /
+  // route card / user prompt / code / diff) is already built to fill the centered
+  // reading column (itemsToLines fills it to `lineWidth`); painting this trailing
+  // with the band's bg used to stretch the tint all the way to the terminal's
+  // right edge — so bands ran far wider than the composer, which sits in the
+  // reading column. Leaving it transparent keeps every band the SAME width as the
+  // input, aligned on both edges.
   return (
     <Text>
       {line.flatMap((s, j) => {
@@ -105,7 +109,7 @@ const LineRow = React.memo(function LineRow({ line, range: rangeProp, lineWidth 
           s.text.slice(b) ? <Text key={`${j}-c`} color={s.color} bold={s.bold} italic={s.italic} dimColor={s.dim} backgroundColor={s.bg}>{s.text.slice(b)}</Text> : null,
         ].filter(Boolean);
       })}
-      {trailing > 0 ? <Text backgroundColor={tailBg}>{" ".repeat(trailing)}</Text> : null}
+      {trailing > 0 ? <Text>{" ".repeat(trailing)}</Text> : null}
     </Text>
   );
 }, (a, b) =>
