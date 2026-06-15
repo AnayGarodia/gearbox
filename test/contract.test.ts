@@ -70,10 +70,10 @@ describe("contractFor — system role", () => {
 
 describe("contractFor — per-provider defaults (the OpenAI-compat crowd)", () => {
   test("unknown model on a compat provider gets the safe chat/system/max_tokens baseline", () => {
-    const c = contractFor("deepseek", "deepseek-v4-pro");
+    const c = contractFor("deepseek", "deepseek-chat-base");
     expect(c.surface).toBe("chat");
     expect(c.systemRole).toBe("system");
-    expect(c.src).toBe("default"); // deepseek-v4-pro matches no family rule → provider default
+    expect(c.src).toBe("default"); // matches no family rule → provider default
   });
 
   test("temperature clamps: moonshot/zai 0-1, mistral 0-0.7", () => {

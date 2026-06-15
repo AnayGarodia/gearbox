@@ -34,6 +34,8 @@ export type ReasoningShape =
   | "openai-effort" // reasoning_effort string (chat) / reasoning.effort (responses)
   | "anthropic-thinking" // top-level thinking + output_config.effort
   | "google-thinking" // generationConfig.thinkingConfig (budget|level)
+  | "thinking-toggle" // provider-native thinking:{type:enabled|disabled|adaptive} object (deepseek-v4, kimi-k2.6, glm, minimax-m3)
+  | "think-tag" // reasoning emitted inline as <think>…</think>, no enable param (hyperbolic, sambanova R1, perplexity sonar-reasoning, local)
   | "variant-id" // reasoning selected by the model id itself (grok-4-fast-reasoning)
   | "always-on" // folded in; no param (Fable 5, kimi-k2.7-code)
   | "none";
@@ -290,28 +292,197 @@ const RULES: Rule[] = [
       reasoning: { shape: "openai-effort", vocab: ["none", "low", "medium", "high"], outputField: "reasoning_content" },
     },
   },
+  {
+    // grok-code-fast clamps temperature to [0,1] (docs.x.ai).
+    providers: ["xai"],
+    test: /grok-code-fast/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_completion_tokens",
+      dropParams: [],
+      systemRole: "system",
+      reasoning: { shape: "always-on", vocab: [], outputField: "reasoning_content" },
+      tempClamp: [0, 1],
+    },
+  },
+  // ---- DeepSeek V4 (thinking-toggle, distinct from the R1 always-on rule) -
+  {
+    providers: ["deepseek"],
+    test: /deepseek-v4/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_tokens",
+      dropParams: [],
+      systemRole: "system",
+      // V4: extra_body.thinking.type enabled|disabled + reasoning_effort high|max.
+      reasoning: { shape: "thinking-toggle", vocab: ["high", "max"], outputField: "reasoning_content" },
+      tempClamp: [0, 2],
+    },
+  },
+  // ---- Moonshot Kimi (thinking-toggle; k2.7-code always-on; temp 0-1) ------
+  {
+    providers: ["moonshot"],
+    test: /kimi-k2\.7-code/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_tokens",
+      dropParams: ["temperature"], // k2.7-code: thinking always-on, omit temperature (platform.kimi.ai)
+      systemRole: "system",
+      reasoning: { shape: "always-on", vocab: [], outputField: "reasoning_content" },
+      tempClamp: [0, 1],
+    },
+  },
+  {
+    providers: ["moonshot"],
+    test: /kimi-k2\.[56]/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_tokens",
+      dropParams: [],
+      systemRole: "system",
+      reasoning: { shape: "thinking-toggle", vocab: [], outputField: "reasoning_content" },
+      tempClamp: [0, 1],
+    },
+  },
+  // ---- Z.ai GLM (nested thinking:{type,clear_thinking}; temp 0-1) ----------
+  {
+    providers: ["zai"],
+    test: /glm-/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_tokens",
+      dropParams: [],
+      systemRole: "system",
+      reasoning: { shape: "thinking-toggle", vocab: [], outputField: "reasoning_content" },
+      tempClamp: [0, 1],
+    },
+  },
+  // ---- MiniMax (thinking:{type:adaptive|disabled}; base_resp-in-200) -------
+  {
+    providers: ["minimax"],
+    test: /minimax/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_completion_tokens",
+      dropParams: [],
+      systemRole: "system",
+      reasoning: { shape: "thinking-toggle", vocab: [], outputField: "reasoning_content" },
+      tempClamp: [0, 2],
+    },
+  },
+  // ---- Mistral Magistral (reasoning by id, [THINK] tokens; strict params) --
+  {
+    providers: ["mistral"],
+    test: /magistral/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_tokens",
+      // Mistral 422s on unknown params; penalties commonly rejected.
+      dropParams: ["presence_penalty", "frequency_penalty", "n"],
+      systemRole: "system",
+      reasoning: { shape: "variant-id", vocab: ["none", "high"], outputField: "think-tag" },
+      tempClamp: [0, 0.7],
+    },
+  },
+  // ---- Groq: reasoning_effort families; strips logprobs/penalty/n ----------
+  {
+    providers: ["groq"],
+    test: /gpt-oss|qwen.?3/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_completion_tokens",
+      dropParams: ["logprobs", "top_logprobs", "logit_bias", "n"],
+      systemRole: "system",
+      reasoning: { shape: "openai-effort", vocab: ["low", "medium", "high"], outputField: "reasoning_content" },
+    },
+  },
+  // ---- Perplexity Sonar reasoning (inline <think>; tools unsupported) ------
+  {
+    providers: ["perplexity"],
+    test: /sonar-reasoning|r1-1776/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_tokens",
+      dropParams: ["tools", "tool_choice", "logit_bias", "n", "seed"],
+      systemRole: "system",
+      reasoning: { shape: "think-tag", vocab: [], outputField: "think-tag" },
+      tempClamp: [0, 2],
+    },
+  },
+  // ---- Generic R1/Qwen reasoners on inference hosts emit inline <think> ----
+  {
+    providers: ["hyperbolic", "sambanova", "together", "baseten", "novita", "deepinfra", "nebius", "fireworks", "ollama", "lmstudio", "llamacpp", "vllm"],
+    test: /r1|qwen.?3|deepseek-r|qwq/,
+    contract: {
+      surface: "chat",
+      tokenParam: "max_tokens",
+      dropParams: [],
+      systemRole: "system",
+      reasoning: { shape: "think-tag", vocab: [], outputField: "think-tag" },
+    },
+  },
 ];
 
-// Per-provider DEFAULT contract for any model that matches no family rule. Every
-// non-OpenAI/Anthropic provider in the catalog speaks the OpenAI wire on
-// /chat/completions with `system` and `max_tokens`; this is the safe baseline.
+// Per-provider DEFAULT contract for any model that matches no family rule, keyed
+// to each provider's DOCUMENTED baseline (token param, temperature range, system
+// role). Every non-native provider speaks the OpenAI wire on /chat/completions;
+// the differences below are what the docs actually specify and what trips a
+// first call. Sourced from the June-2026 per-provider research (see the design
+// doc). A provider absent here gets the universal safe baseline.
+type ProviderDefault = {
+  tokenParam: RequestContract["tokenParam"];
+  systemRole?: SystemRole; // default "system"
+  tempClamp?: [number, number];
+};
+
+const PROVIDER_DEFAULTS: Partial<Record<ProviderId, ProviderDefault>> = {
+  // OpenAI-surface (reasoning families handled by rules above; this is the
+  // non-reasoning baseline).
+  openai: { tokenParam: "max_tokens" },
+  azure: { tokenParam: "max_tokens" },
+  "azure-foundry": { tokenParam: "max_tokens" },
+  // Native Chinese-lab APIs (OpenAI-compatible) — documented temp ranges differ.
+  deepseek: { tokenParam: "max_tokens", tempClamp: [0, 2] }, // api-docs.deepseek.com
+  moonshot: { tokenParam: "max_tokens", tempClamp: [0, 1] }, // platform.kimi.ai (/v1 range 0-1)
+  zai: { tokenParam: "max_tokens", tempClamp: [0, 1] }, // docs.z.ai (>1 → error 1214)
+  minimax: { tokenParam: "max_completion_tokens", tempClamp: [0, 2] }, // platform.minimax.io
+  // Frontier API providers.
+  xai: { tokenParam: "max_completion_tokens", tempClamp: [0, 2] }, // docs.x.ai
+  mistral: { tokenParam: "max_tokens", tempClamp: [0, 0.7] }, // docs.mistral.ai (clamp ≤0.7; strict 422 on unknown params)
+  groq: { tokenParam: "max_completion_tokens", tempClamp: [0, 2] }, // console.groq.com
+  cerebras: { tokenParam: "max_completion_tokens", tempClamp: [0, 2] }, // inference-docs.cerebras.ai (also accepts developer)
+  perplexity: { tokenParam: "max_tokens", tempClamp: [0, 2] }, // docs.perplexity.ai
+  // Aggregators / gateways (OpenAI-shaped passthrough; they normalize per-model).
+  openrouter: { tokenParam: "max_tokens" },
+  "vercel-gateway": { tokenParam: "max_tokens" },
+  portkey: { tokenParam: "max_tokens" },
+  requesty: { tokenParam: "max_tokens" },
+  litellm: { tokenParam: "max_tokens" },
+  // Open-weight inference hosts (OpenAI-compatible; HF-style ids).
+  fireworks: { tokenParam: "max_tokens", tempClamp: [0, 2] }, // docs.fireworks.ai
+  together: { tokenParam: "max_tokens", tempClamp: [0, 1] }, // docs.together.ai (narrower 0-1)
+  deepinfra: { tokenParam: "max_tokens", tempClamp: [0, 2] }, // docs.deepinfra.com (16384 output cap)
+  baseten: { tokenParam: "max_tokens", tempClamp: [0, 2] }, // docs.baseten.co (bare-string error envelope)
+  hyperbolic: { tokenParam: "max_tokens", tempClamp: [0, 2] }, // hyperbolic.ai/docs
+  nebius: { tokenParam: "max_completion_tokens", tempClamp: [0, 2] }, // api.tokenfactory.nebius.com (FastAPI detail envelope)
+  novita: { tokenParam: "max_tokens", tempClamp: [0, 2] }, // api.novita.ai (lowercase vendor/model ids)
+  sambanova: { tokenParam: "max_tokens", tempClamp: [0, 2] }, // docs.sambanova.ai (also accepts developer; penalties ignored)
+  // Local / self-hosted runtimes — cost $0; ids discovered, not cataloged.
+  ollama: { tokenParam: "max_tokens" }, // /v1 maps to num_predict; default ctx 4096
+  lmstudio: { tokenParam: "max_tokens" },
+  llamacpp: { tokenParam: "max_tokens" }, // n_predict
+  vllm: { tokenParam: "max_completion_tokens" }, // docs.vllm.ai (max_tokens alias)
+};
+
 function defaultFor(provider: ProviderId): Omit<RequestContract, "src"> {
-  // Providers whose default token param is max_completion_tokens.
-  const maxCompletion = new Set<ProviderId>(["xai", "groq", "cerebras", "nebius"]);
-  // Providers that clamp temperature to [0,1] (reject >1).
-  const tempClamp: Partial<Record<ProviderId, [number, number]>> = {
-    moonshot: [0, 1],
-    zai: [0, 1],
-    mistral: [0, 0.7],
-    together: [0, 1],
-  };
+  const d = PROVIDER_DEFAULTS[provider];
   return {
     surface: "chat",
-    tokenParam: maxCompletion.has(provider) ? "max_completion_tokens" : "max_tokens",
+    tokenParam: d?.tokenParam ?? "max_tokens",
     dropParams: [],
-    systemRole: "system",
+    systemRole: d?.systemRole ?? "system",
     reasoning: { shape: "none", vocab: [] },
-    ...(tempClamp[provider] ? { tempClamp: tempClamp[provider] } : {}),
+    ...(d?.tempClamp ? { tempClamp: d.tempClamp } : {}),
   };
 }
 
