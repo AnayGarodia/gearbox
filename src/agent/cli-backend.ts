@@ -75,10 +75,14 @@ interface CliState {
   // True once we've emitted text from partial `stream_event` deltas, so the
   // trailing complete `assistant` message doesn't re-emit the same text twice.
   streamedText: boolean;
+  // True once the model emitted AskUserQuestion: the formatted question has been
+  // rendered and the turn must END now (executing the tool would hang in print
+  // mode). The read loop sees this and stops the subprocess.
+  askedQuestion: boolean;
 }
 
 function newState(): CliState {
-  return { text: "", usage: { inputTokens: 0, outputTokens: 0 }, rates: new Map(), toolNames: new Map(), streamedText: false };
+  return { text: "", usage: { inputTokens: 0, outputTokens: 0 }, rates: new Map(), toolNames: new Map(), streamedText: false, askedQuestion: false };
 }
 
 // Map ONE parsed NDJSON object to AgentEvents + fold into state. Pure (no IO) so
@@ -178,9 +182,11 @@ function mapCliEvent(binary: string, obj: any, state: CliState, onEvent: OnEvent
           // CLI in print mode, so it can't render the CLI's own picker or feed an
           // answer back into this turn. Surface the question + options as readable
           // text instead of a truncated, empty-looking tool call, so the user can
-          // see what's being asked and answer in their next message.
+          // see what's being asked and answer in their next message. Mark the
+          // turn to END here — print mode can't execute the tool (it would hang).
           const q = formatAskUserQuestion(part.input);
-          if (q) onEvent({ type: "text", text: q });
+          if (q) { state.text += q; onEvent({ type: "text", text: q }); }
+          state.askedQuestion = true;
         } else if (part.type === "tool_use") {
           state.toolNames.set(part.id, part.name);
           onEvent({ type: "tool-start", id: part.id, name: part.name ?? "tool", arg: shortArg(part.input) });
@@ -405,12 +411,6 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
   if (opts.bridge) args.push("--input-format", "stream-json", "--permission-prompt-tool", "stdio");
   if (model) args.push("--model", model);
   args.push("--permission-mode", opts.readOnly ? "plan" : opts.autoApprove ? "bypassPermissions" : "acceptEdits");
-  // Disallow the CLI's interactive AskUserQuestion: in print mode it can't show
-  // its picker and there's no way to feed an answer back, so ALLOWING it makes
-  // the subprocess hang forever waiting on input (the turn's timer just spins).
-  // Disallowed, the model simply asks its question in plain prose and ENDS the
-  // turn — which is the only thing that works in a one-shot headless run.
-  args.push("--disallowedTools", "AskUserQuestion");
   // Headless `claude -p` can't show its own approval UI. Two complementary
   // mechanisms keep a turn working without /yolo:
   //  - The interactive BRIDGE (opts.bridge, see runCliTask): any tool the CLI
@@ -596,6 +596,7 @@ export async function runCliTask(opts: {
   let buf = "";
   let stderr = "";
   let sawEvent = false;
+  let askEnded = false; // we killed the subprocess on purpose after a question — a clean end, not a crash
   try {
     // Handle one parsed stdout message. Control-protocol frames (bridge mode)
     // are consumed here and never forwarded to mapCliEvent — they're transport,
@@ -613,6 +614,14 @@ export async function runCliTask(opts: {
       }
       mapCliEvent(binary, m, state, onEvent);
       sawEvent = true;
+      // The model asked a question: the formatted block is rendered, so STOP the
+      // subprocess now (executing AskUserQuestion would block forever in print
+      // mode). This is an intentional end, NOT a failure — see the exit check.
+      if (state.askedQuestion && !askEnded) {
+        askEnded = true;
+        try { proc.stdin?.end(); } catch { /* already closed */ }
+        proc.kill();
+      }
       if (bridge && m?.type === "result") { try { proc.stdin?.end(); } catch { /* already closed */ } }
     };
     const readStdout = async () => {
@@ -649,7 +658,7 @@ export async function runCliTask(opts: {
     if (initFallback) clearTimeout(initFallback);
     signal?.removeEventListener("abort", onAbort);
   }
-  if (!signal?.aborted) {
+  if (!signal?.aborted && !askEnded) {
     const err = cleanCliStderr(stderr);
     if ((proc.exitCode ?? 0) !== 0) {
       fail(cliFailureMessage(binary, stderr, { accountLabel: opts.accountLabel, reloginCommand: opts.reloginCommand }));

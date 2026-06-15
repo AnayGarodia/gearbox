@@ -57,6 +57,19 @@ test("buildCliArgs streams claude token-by-token (--include-partial-messages)", 
   expect(buildCliArgs("claude", "do it", {})).toContain("--include-partial-messages");
 });
 
+test("an AskUserQuestion tool_use renders the formatted question (the turn then ends)", () => {
+  const ev: AgentEvent[] = [];
+  const lines = [
+    `{"type":"assistant","message":{"content":[{"type":"text","text":"Quick check before I start."},{"type":"tool_use","id":"q1","name":"AskUserQuestion","input":{"questions":[{"question":"Which fix?","options":[{"label":"Rename","description":"safe"},{"label":"Delete"}]}]}}],"usage":{"input_tokens":5,"output_tokens":2}}}`,
+  ];
+  const r = parseCliLines("claude", lines, (e) => ev.push(e));
+  const text = ev.filter((e) => e.type === "text").map((e: any) => e.text).join("\n");
+  expect(text).toContain("Quick check before I start."); // the lead-in prose
+  expect(text).toContain("Over to you"); // the formatted question heading
+  expect(text).toContain("Which fix?");
+  expect(text).toContain("1. **Rename** — safe");
+});
+
 test("status-only rate_limit_event (no utilization number) is still captured", () => {
   // The real claude CLI usually emits status + resetsAt but NO utilization.
   const lines = [
@@ -89,10 +102,10 @@ test("buildCliArgs uses each binary's stream-json flags", () => {
   expect(c).toContain("--output-format");
   expect(c).toContain("stream-json");
   expect(c.includes("-p")).toBe(true);
-  // AskUserQuestion is disallowed so a print-mode turn can't hang on the CLI's
-  // interactive picker (the model asks in prose and ends the turn instead).
-  expect(c).toContain("--disallowedTools");
-  expect(c).toContain("AskUserQuestion");
+  // AskUserQuestion is NOT disallowed — we WANT the model to call it so the
+  // question renders formatted; the read loop then ends the turn (it never
+  // executes, which would hang). So the flag must be absent here.
+  expect(c).not.toContain("--disallowedTools");
 
   const x = buildCliArgs("codex", "do it", {});
   expect(x[0]).toBe("exec");
