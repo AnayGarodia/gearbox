@@ -200,3 +200,15 @@ test("pinAccount scopes routing to that account (switching to an API account use
     updatePolicy({ pinAccount: null }); // never leak the pin to sibling tests (shared GEARBOX_HOME)
   }
 });
+
+test("a polite codebase-audit request routes to code, not chat (the 'can you…' downgrade bug)", () => {
+  // "can you …" made QUESTIONISH fire → chat → bar 0.00 → the cheapest/weakest
+  // model for a HARD audit. Engineering work on the codebase must stay code.
+  expect(classify("can you audit the codebase for errors and think about how to make it a better predictor")).toBe("code");
+  expect(classify("could you review the code and suggest improvements")).toBe("code");
+  expect(classify("can you optimize the predictor pipeline")).toBe("code");
+  // a genuine concept question phrased politely is still chat
+  expect(classify("can you explain how recursion works")).toBe("chat");
+  // and a non-code "review" (no code context) doesn't get caught
+  expect(confidentKeywordKind("review my essay")).toBeNull();
+});

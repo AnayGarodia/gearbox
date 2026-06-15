@@ -126,7 +126,7 @@ const MUTATION = /\b(fix|implement|refactor|edit|modif|debug|rewrite|replace|add
 const ACK_WORDS = new Set([
   "hi", "hiya", "hello", "hey", "yo", "sup", "howdy", "thanks", "thank", "you", "ty", "thx",
   "ok", "okay", "k", "cool", "nice", "great", "perfect", "awesome", "sweet", "gotcha", "lol",
-  "yep", "yeah", "yup", "sure", "good", "morning", "afternoon", "evening", "got", "it", "sounds",
+  "yep", "yeah", "yup", "sure", "good", "morning", "afternoon", "evening", "got", "it", "sounds", "there", "again",
 ]);
 
 // Concrete code-defect signals → real DEBUGGING, which needs cross-file tracing,
@@ -145,6 +145,15 @@ const DEBUG = /\b(throw(s|n|ing)?|crash(es|ed|ing)?|fail(s|ed|ing|ure)?|broken|s
 // strong tier, so a false positive here is the SAFE (merely wasteful) direction.
 const PLAN = /\b(architect(ure|ing)?|trade-?offs?)\b|\bbest (way|approach)\b|\bgood approach\b|\b(should|shall) (i|we|you)\b|\bhow (should|would|do) (i|we|you) (design|structure|architect|organi[sz]e|approach|split|break|model|scale)\b|\bplan (out|for)\b|\bdesign (a|an|the|our|your)\b|\bapproach (to|for)\b|\bhigh.level\b/i;
 
+// Engineering work ON the code (audit / review / improve / optimize …) directed
+// at the workspace (codebase / repo / module / this project / the predictor …).
+// This is real, heavy work that needs a strong model — but it's often phrased as
+// a polite request ("can you audit the codebase…"), which the bare QUESTIONISH
+// fallback used to misread as chat and route to the cheapest model. Requires BOTH
+// a work verb AND a code-context noun, so it never fires on "review my essay".
+const CODEWORK = /\b(audit|review|analy[sz]e|optimi[sz]e|improve|harden|refactor|assess|inspect|evaluate|profile|clean ?up|reason about|think about)\b/i;
+const CODECTX = /\b(code ?base|repo(sitor(y|ies))?|\bcode\b|modules?|files?|implementation|functions?|classes|class\b|project|app(lication)?|system|architecture|predictor|pipeline|services?|components?|logic|design)\b/i;
+
 // Returns a task kind ONLY when a rule fires with confidence; null for genuinely
 // ambiguous prompts so the LLM ladder (subscription seat, else cheapest API with
 // consent) can judge them. The agent uses a non-null result to SKIP that hop.
@@ -161,6 +170,8 @@ export function confidentKeywordKind(prompt: string): Kind | null {
   // Debugging and design route to a strong model regardless of question shape.
   if (DEBUG.test(p)) return "code";
   if (PLAN.test(p)) return "plan";
+  // Real engineering work on the codebase (even when asked politely as a question).
+  if (CODEWORK.test(p) && CODECTX.test(p)) return "code";
   // "summarize" is a confident pure-summarize signal only when the prompt isn't
   // ALSO asking for tool work over the workspace: "read the files and summarize"
   // needs a model that drives tools across many files, but the summarize bar is
