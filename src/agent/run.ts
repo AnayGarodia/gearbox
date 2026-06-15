@@ -159,12 +159,45 @@ export function readField(buf: string, field: string): string | null {
   return out;
 }
 
+// Pull the provider's actual reason out of an error's response body. The AI
+// SDK's APICallError.message is frequently just the bare HTTP status text
+// ("Unprocessable Entity", "Bad Request") while the real explanation — the
+// unsupported parameter, the rejected field — lives in responseBody as JSON
+// ({"error":{"message":"…"}}) or a raw string. Returns a single clean line, or
+// "" when there's nothing more informative than the status.
+function bodyReason(err: any): string {
+  const body = err?.responseBody ?? err?.data ?? err?.cause?.responseBody;
+  if (!body) return "";
+  let reason = "";
+  if (typeof body === "object") {
+    reason = body?.error?.message ?? body?.message ?? "";
+  } else if (typeof body === "string") {
+    try {
+      const j = JSON.parse(body);
+      reason = j?.error?.message ?? j?.message ?? body;
+    } catch {
+      reason = body;
+    }
+  }
+  return String(reason || "").split("\n")[0]!.trim();
+}
+
 // Extract a short, human-readable line from any error shape the AI SDK or the
 // underlying fetch layer might throw: APICallError, plain Error, string, or a
-// raw object. Never returns the full stack or the full response body.
-function cleanError(err: any): string {
-  const raw = err?.message ?? err?.error?.message ?? err?.responseBody ?? (typeof err === "string" ? err : "");
-  const msg = String(raw || "request failed").split("\n")[0]!.trim();
+// raw object. Never returns the full stack or the full response body. When the
+// top-line message is a bare HTTP status, the response body's reason is folded
+// in so the user sees WHY (e.g. "Unprocessable Entity — model 'grok-4.3' does
+// not support tool use"), not just the status.
+export function cleanError(err: any): string {
+  const top = String(err?.message ?? err?.error?.message ?? (typeof err === "string" ? err : "") ?? "")
+    .split("\n")[0]!
+    .trim();
+  const reason = bodyReason(err);
+  let raw = top || reason || "request failed";
+  if (reason && reason !== top && !top.includes(reason) && !reason.includes(top)) {
+    raw = top ? `${top} — ${reason}` : reason;
+  }
+  const msg = raw.trim();
   return msg.length > 240 ? msg.slice(0, 240) + "…" : msg;
 }
 
@@ -233,7 +266,7 @@ export function guardToolLoops<T extends Record<string, any>>(tools: T, onStop: 
       ...(t as object),
       execute: async (input: any, callOpts: any) => {
         let key = name;
-        try { key = name + " " + JSON.stringify(input ?? null); } catch { /* unserializable input: key by name only */ }
+        try { key = name + "\0" + JSON.stringify(input ?? null); } catch { /* unserializable input: key by name only */ }
         count = key === lastKey ? count + 1 : 1;
         lastKey = key;
         if (count >= 5) { onStop(); return LOOP_STOP_MESSAGE; }

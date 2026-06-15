@@ -34,3 +34,33 @@ test("producedOutput is true when text streamed before the error", async () => {
   expect(res.failure).toBeTruthy();
   expect(res.failure!.producedOutput).toBe(true);
 });
+
+import { cleanError } from "../src/agent/run.ts";
+
+test("cleanError surfaces the response-body reason behind a bare HTTP status", () => {
+  // The AI SDK's APICallError on a 422: message is just the status phrase, the
+  // real reason lives in responseBody (the case from the azure-foundry grok-4.3
+  // 'Unprocessable Entity' report).
+  const err: any = {
+    statusCode: 422,
+    message: "Unprocessable Entity",
+    responseBody: JSON.stringify({ error: { message: "model 'grok-4.3' does not support tool use", code: "unsupported" } }),
+  };
+  const out = cleanError(err);
+  expect(out).toContain("Unprocessable Entity");
+  expect(out).toContain("does not support tool use");
+
+  // Object responseBody works too.
+  expect(cleanError({ message: "Bad Request", responseBody: { error: { message: "temperature must be <= 1" } } }))
+    .toBe("Bad Request — temperature must be <= 1");
+
+  // No duplication when the body reason already equals/contains the top line.
+  expect(cleanError({ message: "boom", responseBody: "boom" })).toBe("boom");
+
+  // Plain message with no body is unchanged; empty error degrades gracefully.
+  expect(cleanError({ message: "invalid x-api-key" })).toBe("invalid x-api-key");
+  expect(cleanError({})).toBe("request failed");
+
+  // Multi-line bodies collapse to the first line and overall length is capped.
+  expect(cleanError({ message: "Bad Request", responseBody: "first line\nsecond line" })).toBe("Bad Request — first line");
+});
