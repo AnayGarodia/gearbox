@@ -23,7 +23,9 @@ export interface Price {
   /** Cached-input read rate where the provider publishes one (informational; the
    *  engine applies cacheReadDiscount per provider). */
   cachedIn?: number;
-  /** Per-request surcharge (Perplexity Sonar search fee), USD per request. */
+  /** Per-request surcharge (Perplexity Sonar search fee), USD per request.
+   *  Reference data only — estimateCost does NOT yet apply it (it has no per-turn
+   *  request count threaded in). Captured so the wiring has the number when added. */
   perRequestUSD?: number;
   src: "live" | "researched" | "seeded";
 }
@@ -32,10 +34,13 @@ const R = "researched" as const;
 
 // Generic / list (native-API) prices keyed by NORMALIZED family id (lowercase,
 // dashed, date-stamp stripped — see normalizeId below).
+// NOTE: GENERIC must NOT duplicate a curated model id (those carry spec.cost,
+// which wins in costFor — a duplicate here would be dead, conflicting data). The
+// long tail only; the collision guard in pricing.test.ts enforces this. Models
+// already curated (gpt-5.5, gpt-5.5-pro, deepseek-v4-pro/flash, gemini-3.1-pro,
+// gemini-3.5-flash) are intentionally absent. (N7)
 const GENERIC: Record<string, Price> = {
   // ── OpenAI (platform.openai.com/pricing; Azure mirrors list per MS docs) ──
-  "gpt-5.5": { in: 5, out: 30, cachedIn: 0.5, src: R },
-  "gpt-5.5-pro": { in: 30, out: 180, src: R },
   "gpt-5.4": { in: 2.5, out: 15, cachedIn: 0.25, src: R },
   "gpt-5.4-mini": { in: 0.75, out: 4.5, cachedIn: 0.075, src: R },
   "gpt-5.4-nano": { in: 0.2, out: 1.25, cachedIn: 0.02, src: R },
@@ -77,9 +82,7 @@ const GENERIC: Record<string, Price> = {
   "grok-3": { in: 3, out: 15, cachedIn: 0.75, src: R },
   "grok-3-mini": { in: 0.3, out: 0.5, src: R },
 
-  // ── DeepSeek native (api-docs.deepseek.com) ──
-  "deepseek-v4-pro": { in: 0.435, out: 0.87, cachedIn: 0.0036, src: R },
-  "deepseek-v4-flash": { in: 0.14, out: 0.28, cachedIn: 0.0028, src: R },
+  // ── DeepSeek native (api-docs.deepseek.com) — v4-pro/v4-flash are curated ──
   "deepseek-v3.2": { in: 0.28, out: 0.42, cachedIn: 0.028, src: R },
   "deepseek-v3.1": { in: 0.28, out: 0.42, src: R },
   "deepseek-r1": { in: 0.55, out: 2.19, src: R },
@@ -121,10 +124,8 @@ const GENERIC: Record<string, Price> = {
   "pixtral-large": { in: 2, out: 6, src: R },
   "devstral": { in: 0.4, out: 2, src: R },
 
-  // ── Google Gemini (cloud.google.com pricing) ──
-  "gemini-3.1-pro-preview": { in: 2, out: 18, src: R },
+  // ── Google Gemini (cloud.google.com pricing) — 3.1-pro/3.5-flash are curated ──
   "gemini-3-flash": { in: 0.5, out: 3, src: R },
-  "gemini-3.5-flash": { in: 1.5, out: 9, src: R },
   "gemini-2.5-pro": { in: 1.25, out: 10, src: R },
   "gemini-2.5-flash": { in: 0.3, out: 2.5, src: R },
 
@@ -198,6 +199,12 @@ export function priceFor(provider: ProviderId | undefined, modelId: string): Pri
     }
   }
   return undefined;
+}
+
+/** The GENERIC table's keys — exported for the collision guard that asserts none
+ *  duplicates a curated model id (would be dead, conflicting data). */
+export function genericPriceIds(): string[] {
+  return Object.keys(GENERIC);
 }
 
 /** The shape estimateCost consumes. */

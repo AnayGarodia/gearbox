@@ -61,7 +61,11 @@ export interface RequestContract {
   reasoning: ReasoningContract;
   /** Clamp temperature into [min,max]; some providers reject values outside their range. */
   tempClamp?: [number, number];
-  /** Streaming unsupported — must use a non-streaming call (o1, gpt-5-codex, o3-pro). */
+  /** Streaming unsupported — must use a non-streaming call (o1, gpt-5-codex,
+   *  o3-pro). NOTE: encoded but NOT yet enforced — run.ts still calls streamText
+   *  unconditionally. None of these ids are currently catalogued/curated (the
+   *  headline gpt-5.3-codex DOES stream), so it is latent; enforce in run.ts
+   *  before any base-codex/o3-pro is added to routing. (N2) */
   noStream?: boolean;
   /** Provenance: was this from a matched family rule or a provider default? */
   src: "rule" | "default";
@@ -271,7 +275,10 @@ const RULES: Rule[] = [
   },
   // ---- DeepSeek-style reasoners served over the OpenAI wire --------------
   {
-    test: /(deepseek)?[-/]?r1|deepseek-reasoner|reasoner/,
+    // Anchored + specific so it can't swallow junk substrings ("blur1ry") or
+    // unrelated ids (cohere command-r, qwen-reasoner). Matches the real R1
+    // family across every host that serves it. (N9)
+    test: /(^|[/-])(deepseek-?r1|mai-ds-r1|deepseek-reasoner)([/-]|$)/,
     contract: {
       surface: "chat",
       tokenParam: "max_tokens",
@@ -424,7 +431,9 @@ const RULES: Rule[] = [
   // ---- Generic R1/Qwen reasoners on inference hosts emit inline <think> ----
   {
     providers: ["hyperbolic", "sambanova", "together", "baseten", "novita", "deepinfra", "nebius", "fireworks", "ollama", "lmstudio", "llamacpp", "vllm"],
-    test: /r1|qwen.?3|deepseek-r|qwq/,
+    // Anchored: qwen3/qwq at a boundary, or any `-r1` distill at a boundary —
+    // never a bare "r1" inside a word. (N9)
+    test: /(^|[-/])(qwen-?3|qwq)([-/]|$)|[-/]r1([-/]|$)/,
     contract: {
       surface: "chat",
       tokenParam: "max_tokens",

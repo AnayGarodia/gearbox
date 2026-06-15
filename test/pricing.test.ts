@@ -1,12 +1,21 @@
 import { test, expect, describe } from "bun:test";
-import { priceFor, listPriceFor } from "../src/model/pricing.ts";
+import { priceFor, listPriceFor, genericPriceIds } from "../src/model/pricing.ts";
+import { MODELS } from "../src/providers.ts";
 
 describe("priceFor — exact + provider scope", () => {
-  test("native DeepSeek vs Foundry-hosted DeepSeek price differently (the whole point)", () => {
-    expect(priceFor("deepseek", "deepseek-v4-pro")!.out).toBe(0.87);
+  test("Foundry-hosted DeepSeek has its own host rate; native is priced by the curated spec", () => {
+    // native deepseek-v4-pro is CURATED (spec.cost), so the table intentionally
+    // does NOT carry it — the table is the long-tail/host-scoped fallback.
+    expect(priceFor("deepseek", "deepseek-v4-pro")).toBeUndefined();
     const foundry = priceFor("azure-foundry", "DeepSeek-V4-Pro")!;
     expect(foundry.out).toBe(3.828);
     expect(foundry.src).toBe("live");
+  });
+
+  test("GENERIC never duplicates a curated model id (no dead/conflicting price data)", () => {
+    const curated = new Set(MODELS.filter((m) => m.cost).map((m) => m.id));
+    const collisions = genericPriceIds().filter((id) => curated.has(id));
+    expect(collisions).toEqual([]);
   });
 
   test("Kimi on Foundry uses the live Foundry rate", () => {
@@ -38,9 +47,11 @@ describe("priceFor — containment match for deployment/gateway ids", () => {
     expect(priceFor("xai", "grok-3-turbo")).toBeUndefined();
   });
 
-  test("gpt-5.5-pro beats gpt-5.5 (longest match wins)", () => {
-    expect(priceFor("openai", "gpt-5.5-pro")!.out).toBe(180);
-    expect(priceFor("openai", "gpt-5.5")!.out).toBe(30);
+  test("longest match wins (a containment id resolves to the most specific family)", () => {
+    // both gpt-5.4 and gpt-5.4-mini are in GENERIC; a deployment named for the
+    // mini must resolve to the mini's rate, not the base.
+    expect(priceFor("openai", "team-gpt-5.4-mini-eastus2")!.out).toBe(4.5);
+    expect(priceFor("openai", "gpt-5.4")!.out).toBe(15);
   });
 });
 

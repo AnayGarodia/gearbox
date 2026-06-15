@@ -1,5 +1,12 @@
 // ENVELOPE-AWARE ERROR CLASSIFICATION.
 //
+// ⚠ NOT WIRED ON THE LIVE PATH (yet). The App hop-loop classifies failures via
+// src/model/cooldown.ts classifyFailure (string-only) + agent/errors.ts; THOSE
+// are authoritative on the live path. This module is the envelope-aware successor
+// — unit-tested, ready to adopt once the hop-loop is changed to pass the raw
+// error object. Until then it is read only by its tests. (Mirrors the labelled-
+// dead pattern of agent/failover.ts.)
+//
 // The hardest-won lesson from the June-2026 provider research: you CANNOT
 // classify a model failure by HTTP status alone. Bedrock returns 400 for
 // throttling; Vertex and MiniMax return 200 with the failure in the body;
@@ -11,12 +18,14 @@
 // It produces the same { kind, scope } the cooldown/failover loop already
 // consumes (src/model/cooldown.ts), plus a finer `class` for honest UX. Pure.
 //
-// Envelope shapes detected:
+// Envelope shapes: 5 with structural branches, the rest via the substring tail.
+//   STRUCTURAL:
 //   OpenAI-wire    {error:{message,type,code}}        (openai, azure, deepseek, groq, …)
 //   Anthropic      {type:"error",error:{type,message}} (anthropic, bedrock-mantle)
 //   AWS exception  {__type|name:"ThrottlingException"} (bedrock InvokeModel/Converse)
 //   Google RPC     {error:{code,status:"RESOURCE_EXHAUSTED"}} (vertex, gemini)
 //   MiniMax        {base_resp:{status_code,status_msg}} (in a 200!)
+//   SUBSTRING-ONLY (no dedicated structural branch — caught by the message tail):
 //   FastAPI        {detail:...}                         (nebius, deepinfra-native)
 //   Baseten        {error:"<bare string>"}              (baseten)
 
@@ -43,7 +52,11 @@ const KIND: Record<ErrorClass, FailureKind> = {
   "rate-limit": "exhausted",
   quota: "exhausted",
   auth: "auth",
-  server: "exhausted",
+  // A bare 5xx means "retry the SAME account", not "hop to a sibling" — this
+  // matches the deliberate policy in agent/errors.ts / cooldown.ts (5xx is not a
+  // failover trigger). Rate/overload (429/529) is the hop class, and it is
+  // classified as rate-limit above, not server. (N4)
+  server: "other",
   "content-filter": "other",
   "context-length": "other",
   "model-gone": "other",
@@ -128,10 +141,27 @@ export function classifyError(err: unknown): Classified {
     if (gStatus === "UNAVAILABLE" || gStatus === "INTERNAL") return classify("server");
   }
 
+  // --- Anthropic envelope: {type:"error", error:{type, message}} ----------
+  const anthropicType: string | undefined = body?.type === "error" ? body?.error?.type : undefined;
+  if (anthropicType) {
+    if (anthropicType === "rate_limit_error" || anthropicType === "overloaded_error") return classify("rate-limit");
+    if (anthropicType === "authentication_error" || anthropicType === "permission_error") return classify("auth");
+    if (anthropicType === "billing_error") return classify("quota");
+    if (anthropicType === "not_found_error") return classify("model-gone");
+    if (anthropicType === "request_too_large") return classify("context-length");
+    if (anthropicType === "api_error") return classify("server");
+    if (anthropicType === "invalid_request_error") {
+      return classify(/credit|quota|balance/.test(m) ? "quota" : "bad-request");
+    }
+  }
+
   // --- Content filter (Azure/OpenAI/Anthropic/Gemini) — never failover ----
+  // The negative guard targets RATE/quota wording specifically so a filter
+  // message that merely contains the word "limit" ("please limit prohibited
+  // content") is not mis-suppressed. (N5)
   if (
-    /content[_ ]?filter|responsibleai|content management policy|safety|jailbreak|content_policy|prohibited_content|blocklist/.test(m) &&
-    !/rate|quota|limit/.test(m)
+    /content[_ ]?filter|responsibleai|content management policy|jailbreak|content_policy|prohibited_content|blocklist/.test(m) &&
+    !/rate.?limit|quota|too many requests/.test(m)
   ) return classify("content-filter");
 
   // --- OpenAI-wire `code`/`type` (openai, azure, deepseek, groq, mistral) -

@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { effortLevels, reasoningOptions } from "../src/model/reasoning.ts";
-import type { ModelSpec } from "../src/providers.ts";
+import { findModel, type ModelSpec } from "../src/providers.ts";
 
 // A discovered/generated reasoning model carries no curated `efforts`; the
 // contract now supplies the documented vocab so /effort clamps correctly.
@@ -35,5 +35,17 @@ describe("reasoningOptions honors a forced effort", () => {
   });
   test("o3-pro forced high too", () => {
     expect(reasoningOptions(spec({ provider: "azure", sdkId: "o3-pro" }), "low")).toEqual({ openai: { reasoningEffort: "high" } });
+  });
+
+  // S1: the curated gpt-5.5-pro spec ships efforts:[none..xhigh], but its contract
+  // forces high. Displayed effort must equal sent effort — no silent divergence.
+  test("curated gpt-5.5-pro: displayed level == sent level (force wins over spec.efforts)", () => {
+    const pro = findModel("gpt-5.5-pro");
+    if (!pro) return; // skip if not in the build's curated list
+    // The picker can only show/clamp to the forced level...
+    expect(effortLevels(pro)).toEqual(["high"]);
+    // ...and the wire gets exactly that, even when the user asks for more.
+    expect(reasoningOptions(pro, "xhigh")).toEqual({ openai: { reasoningEffort: "high" } });
+    expect(reasoningOptions(pro, "none")).toEqual({ openai: { reasoningEffort: "high" } });
   });
 });

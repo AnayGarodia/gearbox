@@ -57,9 +57,12 @@ test("a discovered Foundry deployment gets family pricing in the registry", () =
   });
   const reg = modelRegistry();
   const ds = reg.find((m) => m.id === "azure-foundry/DeepSeek-V4-Pro");
-  expect(ds?.cost).toEqual({ inUSDPerMtok: 0.4, outUSDPerMtok: 1.75 });
+  // Provider-scoped: a Foundry-hosted DeepSeek bills at the Foundry rate
+  // (live-pulled), NOT the native DeepSeek API rate (0.4/1.75) — same model,
+  // different host, different price.
+  expect(ds?.cost).toEqual({ inUSDPerMtok: 1.925, outUSDPerMtok: 3.828 });
   expect(hasPricing("azure-foundry/DeepSeek-V4-Pro")).toBe(true);
-  expect(estimateCost([{ model: "azure-foundry/DeepSeek-V4-Pro", inputTokens: 1_000_000, outputTokens: 0 }])).toBeCloseTo(0.4);
+  expect(estimateCost([{ model: "azure-foundry/DeepSeek-V4-Pro", inputTokens: 1_000_000, outputTokens: 0 }])).toBeCloseTo(1.925);
   // A matched deployment also carries the canonical id so the router resolves
   // its quality/benchmark and it can be ROUTED for code (not floored out).
   expect(ds?.canonicalId).toBe("deepseek-v4-pro");

@@ -227,8 +227,12 @@ function accountModelSpecs(): ModelSpec[] {
       // rate when the deployment name unambiguously matches one (DeepSeek-V4-Pro,
       // my-gpt-5.5, …) so cost estimates and routing aren't blind. No match →
       // cost stays undefined and the UI keeps the honest "$ unknown".
+      // PROVIDER-SCOPED first: the same model bills differently per host (a
+      // Foundry-hosted DeepSeek is ~4x its native rate), and this baked spec.cost
+      // is read before the listPriceFor fallback in costFor — so the host rate has
+      // to land HERE or it's shadowed by the native canonical rate.
       const canonical = canonicalIdFor(sdkId);
-      const cost = canonicalPricingFor(sdkId);
+      const cost = listPriceFor(account.provider, sdkId) ?? canonicalPricingFor(sdkId);
       out.push({
         id,
         provider: account.provider,

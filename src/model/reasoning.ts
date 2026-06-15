@@ -34,16 +34,24 @@ export function clampEffort(current: string, allowed: string[]): { level: string
 }
 
 export function effortLevels(spec: ModelSpec): string[] {
+  const contract = contractFor(spec.provider, spec.canonicalId ?? spec.sdkId);
+  // A family whose contract FORCES one effort (gpt-5-pro/o3-pro are always high)
+  // exposes only that level — so the picker, the clamp notice, the cost/latency
+  // estimate, and reasoningOptions() all agree on what actually gets sent. This
+  // must run BEFORE spec.efforts, or a curated `efforts` list (gpt-5.5-pro ships
+  // one) would display levels the wire silently rewrites to `high`. (S1)
+  if (contract.reasoning.force) return [contract.reasoning.force];
   if (spec.efforts) return spec.efforts;
-  // A spec the registry marks non-reasoning gets no effort knob, period (Haiku
-  // 4.5, gpt-4o, …) — gate before consulting the contract.
-  if (!spec.reasoning) return [];
-  // The per-model request contract carries the DOCUMENTED effort vocabulary per
-  // family (e.g. o3 = low/med/high only, gpt-5-pro forces high, base gpt-5 adds
-  // minimal). Prefer it over the coarse provider-wide default below — this is
-  // what makes a discovered/generated reasoning model (no curated `efforts`)
-  // clamp to the levels its docs actually accept, not the whole provider superset.
-  const vocab = contractFor(spec.provider, spec.canonicalId ?? spec.sdkId).reasoning.vocab;
+  // Reasoning-capable? Honor an EXPLICIT spec.reasoning (true/false); when it is
+  // unset — every discovered/generated/models.dev spec — fall to the contract's
+  // shape, so an Azure/Foundry reasoning deployment still clamps to its vocab
+  // instead of getting no effort knob at all. (N10)
+  const reasons = spec.reasoning ?? contract.reasoning.shape !== "none";
+  if (!reasons) return [];
+  // The per-model contract carries the DOCUMENTED effort vocabulary per family
+  // (o3 = low/med/high only, base gpt-5 adds minimal) — prefer it over the coarse
+  // provider-wide default below.
+  const vocab = contract.reasoning.vocab;
   if (vocab.length) return vocab;
   if (spec.provider === "openai") return OPENAI_EFFORTS;
   // Azure OpenAI mirrors the OpenAI reasoning API (reasoningEffort param, same level names).
