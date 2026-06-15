@@ -639,6 +639,12 @@ export class RoutingSelector implements ModelSelector {
         score: s.score,
         chosen,
         verdict: chosen ? (preferred ? "preferred" : "chosen") : !capable ? "below capability floor" : verdictFor(c, s),
+        // Estimated wall-clock: ttft + (outputFactor × input) / tps. Unknown tps/
+        // ttft fall back to the scorer's mid-speed defaults so a discovered model
+        // isn't punished for missing data, but a chatty reasoner (high outputFactor)
+        // on slow hosting still shows the time that drove its score down.
+        etaSeconds: ((s.candidate.ttftMs ?? 0) > 0 ? s.candidate.ttftMs! : 1500) / 1000
+          + ((s.candidate.outputFactor ?? 0.2) * p.estInputTokens) / (s.candidate.tps > 0 ? s.candidate.tps : 80),
       });
     }
     // Sort: chosen first, then capable candidates by score (ascending), then the

@@ -113,6 +113,9 @@ export interface ScorecardEntry {
   score: number;
   chosen: boolean;
   verdict: string;
+  /** Estimated wall-clock for this turn (ttft + output/tps). The hidden reason a
+   *  cheap-but-chatty/slow model loses a foreground race — surfaced in /why. */
+  etaSeconds?: number;
 }
 
 // The full ranked "why" behind a routing decision. kind and bar give the

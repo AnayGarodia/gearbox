@@ -286,6 +286,10 @@ const verdictWord = (v: string, bar: number): string =>
             : v === "ok" ? "eligible"
               : v;
 
+// Compact wall-clock estimate for the /why time column: "17s", "1m46s", "3m".
+const fmtSecs = (s: number): string =>
+  s < 60 ? `${Math.round(s)}s` : s < 600 ? `${Math.floor(s / 60)}m${Math.round(s % 60)}s` : `${Math.round(s / 60)}m`;
+
 const wrapWords = (text: string, width: number): string[] => {
   const lines: string[] = [];
   let cur = "";
@@ -309,15 +313,27 @@ export function scorecardRows(card: Scorecard, width = 80): ScorecardLine[] {
     return out;
   }
 
-  // The plain-English answer to "why?", before any numbers.
+  // The plain-English answer to "why?", before any numbers. When a model with a
+  // LOWER sticker price didn't win, say WHY — otherwise "cheapest that clears the
+  // bar" reads as a lie next to a cheaper rival (it usually lost on SPEED: a
+  // chatty reasoner emits far more tokens and runs slower, and on a foreground
+  // turn your waiting time is part of the cost).
   const pick = card.entries.find((e) => e.chosen);
   if (pick) {
+    const eligible = card.entries.filter((e) => e.verdict !== "below bar" && e.verdict !== "below capability floor");
+    const cheaper = eligible.filter((e) => !e.chosen && e.backend !== "seat" && e.estCostPerMtok < pick.estCostPerMtok - 1e-9)
+      .sort((a, b) => a.estCostPerMtok - b.estCostPerMtok)[0];
+    const speedEdge = cheaper && pick.etaSeconds != null && cheaper.etaSeconds != null && cheaper.etaSeconds > pick.etaSeconds * 1.5;
     const summary =
       pick.verdict === "preferred"
         ? `picked ${pick.label} — your saved /prefer choice for ${card.kind} tasks`
         : pick.backend === "seat"
           ? `picked ${pick.label} on your ${pick.accountLabel ?? "subscription"} plan — flat rate ($0 extra) and its quality ${pick.quality.toFixed(2)} clears the ${card.bar.toFixed(2)} bar`
-          : `picked ${pick.label} — cheapest model that clears the ${card.bar.toFixed(2)} quality bar for ${card.kind} tasks`;
+          : speedEdge
+            ? `picked ${pick.label} — fastest among models that clear the ${card.bar.toFixed(2)} bar (~${fmtSecs(pick.etaSeconds!)}). ${cheaper!.label} is cheaper per token but ~${Math.round(cheaper!.etaSeconds! / pick.etaSeconds!)}× slower here (it emits more tokens), and on a turn you're waiting on, time counts.`
+            : cheaper
+              ? `picked ${pick.label} — best value clearing the ${card.bar.toFixed(2)} bar for ${card.kind} (${cheaper.label} is cheaper per token but loses on quality/fit once the full turn is costed).`
+              : `picked ${pick.label} — cheapest model that clears the ${card.bar.toFixed(2)} quality bar for ${card.kind} tasks`;
     out.push({ text: "", tone: "note" });
     for (const l of wrapWords(summary, width)) out.push({ text: l, tone: "summary" });
   }
@@ -338,16 +354,19 @@ export function scorecardRows(card: Scorecard, width = 80): ScorecardLine[] {
   // Shrink the name columns first on narrow terminals; the renderers' hard clip
   // (rightmost columns) is the last resort.
   const vw = Math.max(7, ...entries.map((e) => verdictWord(e.verdict, card.bar).length + (e.chosen ? 2 : 0)));
-  const need = () => labelW + viaW + 7 + 7 + lw + 5 + vw + 12;
+  // ~time column: the deciding factor a price-only view hides (a chatty/slow
+  // model loses a foreground race even at a lower per-token price).
+  const timeStr = (e: typeof entries[number]) => (e.etaSeconds != null ? "~" + fmtSecs(e.etaSeconds) : "—");
+  const need = () => labelW + viaW + 7 + 7 + 6 + lw + 5 + vw + 14;
   while (need() > width && viaW > 7) viaW--;
   while (need() > width && labelW > 8) labelW--;
-  const row = (label: string, viaC: string, q: string, costC: string, left: string, score: string, verdict: string) =>
-    `${label.padEnd(labelW).slice(0, labelW)}  ${viaC.padEnd(viaW).slice(0, viaW)}  ${q.padEnd(7)}  ${costC.padStart(7)}  ${left.padEnd(lw)}  ${score.padStart(5)}  ${verdict}`;
-  out.push({ text: row("model", "via", "quality", "$/Mtok", "left", "score", "verdict"), tone: "colhead" });
+  const row = (label: string, viaC: string, q: string, costC: string, time: string, left: string, score: string, verdict: string) =>
+    `${label.padEnd(labelW).slice(0, labelW)}  ${viaC.padEnd(viaW).slice(0, viaW)}  ${q.padEnd(7)}  ${costC.padStart(7)}  ${time.padStart(6)}  ${left.padEnd(lw)}  ${score.padStart(5)}  ${verdict}`;
+  out.push({ text: row("model", "via", "quality", "$/Mtok", "time", "left", "score", "verdict"), tone: "colhead" });
   for (const e of entries) {
     const score = e.verdict === "below bar" ? "—" : e.score.toFixed(2);
     out.push({
-      text: row(e.label, via(e), qual(e), cost(e), leftcol(e), score, verdictWord(e.verdict, card.bar) + (e.chosen ? " ◀" : "")),
+      text: row(e.label, via(e), qual(e), cost(e), timeStr(e), leftcol(e), score, verdictWord(e.verdict, card.bar) + (e.chosen ? " ◀" : "")),
       tone: e.chosen ? "chosen" : e.verdict === "below bar" ? "dim" : "row",
     });
     // The flywheel's measured prior is a flagship signal — its own sub-line, not
