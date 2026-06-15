@@ -91,9 +91,11 @@ test("routingLineText: routine prints a dim single line; surprising appends the 
 import { servedMatchesRequested } from "../src/ui/routing-line.ts";
 
 test("wire-truth: the routing line verifies the provider's reported model", () => {
-  // Match (decorated ids count): quiet ✓wire tag.
+  // Match: shows NOTHING extra — a confirmation tick is noise, the absence of a
+  // warning already means it matched.
   const ok = buildRoutingLine({ model: "DeepSeek-V4-Pro", provider: "azure-foundry", costUSD: 0.01, kind: "metered", servedAs: "deepseek-v4-pro", requestedSdkId: "DeepSeek-V4-Pro" });
-  expect(ok.model).toContain("✓wire");
+  expect(ok.model).toBe("DeepSeek-V4-Pro");
+  expect(ok.model).not.toContain("wire");
   expect(ok.surprising).toBe(false);
   // MISMATCH: the loudest thing on the line.
   const bad = buildRoutingLine({ model: "DeepSeek-V4-Pro", provider: "azure-foundry", costUSD: 0.01, kind: "metered", servedAs: "claude-sonnet-4-6", requestedSdkId: "DeepSeek-V4-Pro" });
@@ -103,13 +105,14 @@ test("wire-truth: the routing line verifies the provider's reported model", () =
 
 test("wire-truth without a requested model is informational, never a mismatch", () => {
   // A subscription CLI ran its own default (no --model sent): the wire id is
-  // reported quietly against the seat's display label — not flagged amber.
+  // reported quietly against the seat's display label ONLY when it differs.
   const quiet = buildRoutingLine({ model: "claude-work", provider: "claude", costUSD: 0, kind: "subscription", servedAs: "claude-sonnet-4-6" });
   expect(quiet.model).toBe('claude-work · served as claude-sonnet-4-6');
   expect(quiet.surprising).toBe(false);
-  // When the label itself matches the wire id, it upgrades to ✓wire.
+  // When the label itself matches the wire id, nothing extra is shown.
   const match = buildRoutingLine({ model: "sonnet-4.6", provider: "claude", costUSD: 0, kind: "subscription", servedAs: "claude-sonnet-4-6" });
-  expect(match.model).toContain("✓wire");
+  expect(match.model).toBe("sonnet-4.6");
+  expect(match.model).not.toContain("wire");
   expect(match.surprising).toBe(false);
 });
 

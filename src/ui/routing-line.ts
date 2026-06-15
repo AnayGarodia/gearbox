@@ -96,19 +96,21 @@ export function buildRoutingLine(input: RoutingLineInput): RoutingLine {
   let { surprising, reason } = classifySurprise(input);
   let model = input.model;
   // Wire-truth cross-check: when the provider reports which model served the
-  // request, verify it against what we asked for. A match shows quietly
-  // ("served as <wire id>"); a MISMATCH is the loudest thing on the line —
-  // the user must never discover it by interrogating the model.
+  // request, verify it against what we asked for. A match is the expected case
+  // and shows NOTHING (a "✓wire" tick is just noise — the absence of a warning
+  // already means it matched); only a MISMATCH speaks up — it's the loudest
+  // thing on the line, the user must never discover it by interrogating the model.
   if (input.servedAs) {
     if (!input.requestedSdkId) {
       // No model was explicitly requested (e.g. a subscription CLI running its
       // own default) — the wire id is information, not a verdict. Report it
-      // quietly; comparing against a display label would invent false mismatches.
+      // quietly ONLY when it differs from the label; comparing against a display
+      // label would otherwise invent false mismatches.
       model = servedMatchesRequested(input.servedAs, input.model)
-        ? `${input.model} ✓wire`
+        ? input.model
         : `${input.model} · served as ${input.servedAs}`;
     } else if (servedMatchesRequested(input.servedAs, input.requestedSdkId)) {
-      model = `${input.model} ✓wire`;
+      model = input.model;
     } else {
       model = `${input.model} ⚠ provider served "${input.servedAs}"`;
       surprising = true;
