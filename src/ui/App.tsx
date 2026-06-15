@@ -1891,16 +1891,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Now auto-routing leads with "auto ·" (the model is just the latest pick) and
   // a hard pin trails with "· pinned".
   const isPinned = !activeCli && selector instanceof FixedSelector;
-  // When auto-routing is confined to ONE account (you ran /account <name>),
-  // "auto · <model>" looks like free routing but it isn't — say "auto · <account>"
-  // so it's obvious WHY only that account's models ever appear (/model auto or
-  // /account off lifts it). The per-turn route card still shows the exact model.
-  const routeScope = !activeCli && !isPinned && !setupRequired ? policy().pinAccount : undefined;
+  // The three routing states the chrome reads at a glance. The rule (so the UI
+  // never implies a selection you didn't make):
+  //   • full auto — nothing pinned or scoped → routing across ALL accounts. Show
+  //                 just "auto"; NO concrete model or account (it varies per task;
+  //                 the per-turn route card shows what each turn actually used).
+  //   • scoped    — /account <name> set policy.pinAccount → routing WITHIN that
+  //                 account. Show the account, no model.
+  //   • pinned    — /model <name> (FixedSelector) → show the model AND its account.
+  const scopeSlug = !activeCli && !isPinned && !setupRequired ? (policy().pinAccount ?? null) : null;
+  const scopedAccount = scopeSlug ? (listAccounts().find((a) => accountSlug(a) === scopeSlug) ?? null) : null;
+  const fullAuto = !activeCli && !isPinned && !scopeSlug && !setupRequired;
   const modelLabel = setupRequired ? "setup required"
     : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}`
     : isPinned ? `${model?.label ?? "none"} · pinned`
-    : routeScope ? `auto · ${routeScope} only`
-    : model?.label ? `auto · ${model.label}` : "auto-route";
+    : scopedAccount ? `auto · ${accountName(scopedAccount)}`
+    : "auto"; // full routing — no concrete model until you pin one
   const subscription = activeCli ? activeCli.label : null;
   // Routing POLICY for the input box (intent, not a model name). Derived from the
   // live selector: a subscription pins the seat, a FixedSelector is an explicit
@@ -1931,6 +1937,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const email = idy.match(/[^\s·]+@[^\s·]+/)?.[0];
       return [name, tier, email].filter(Boolean).join(" · ") + " · subscription";
     }
+    // Full auto across every account → there's no single "whose dime"; show
+    // nothing (the status bar's "auto" already says routing is on).
+    if (fullAuto) return null;
+    // Account-scoped routing → name the account; routing happens within it.
+    if (scopedAccount) return `${accountName(scopedAccount)} · auto`;
+    // Model pinned → the account whose key serves the pinned model.
     if (!model) return null;
     const a = usedAccountRef.current ? getAccount(usedAccountRef.current) : null;
     const name = a && a.provider === model.provider ? accountName(a) : model.provider;
@@ -1939,7 +1951,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   bannerAccountRef.current = bannerAccount;
   // The live backend's provider — drives the identity hue across the chrome
   // (status-bar ●, masthead account, usage-strip api row) and the switch flash.
-  const activeProvider = setupRequired ? null : activeCli ? (activeCliRef.current?.binary?.includes("codex") ? "codex-cli" : "claude-cli") : model?.provider ?? null;
+  const activeProvider = setupRequired || fullAuto ? null : activeCli ? (activeCliRef.current?.binary?.includes("codex") ? "codex-cli" : "claude-cli") : model?.provider ?? null;
   const provHue = providerColor(activeProvider);
   // Flash the status-bar label in the brand hue for a beat after a provider
   // switch, so changing gemini → anthropic → openai is visible without hunting.
