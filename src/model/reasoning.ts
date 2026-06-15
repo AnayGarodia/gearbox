@@ -4,6 +4,7 @@
 // on ModelSpec and only emit a provider option when the chosen model advertises
 // the exact effort.
 import type { ModelSpec } from "../providers.ts";
+import { contractFor } from "./contract.ts";
 
 export type Effort = string;
 
@@ -34,7 +35,16 @@ export function clampEffort(current: string, allowed: string[]): { level: string
 
 export function effortLevels(spec: ModelSpec): string[] {
   if (spec.efforts) return spec.efforts;
+  // A spec the registry marks non-reasoning gets no effort knob, period (Haiku
+  // 4.5, gpt-4o, …) — gate before consulting the contract.
   if (!spec.reasoning) return [];
+  // The per-model request contract carries the DOCUMENTED effort vocabulary per
+  // family (e.g. o3 = low/med/high only, gpt-5-pro forces high, base gpt-5 adds
+  // minimal). Prefer it over the coarse provider-wide default below — this is
+  // what makes a discovered/generated reasoning model (no curated `efforts`)
+  // clamp to the levels its docs actually accept, not the whole provider superset.
+  const vocab = contractFor(spec.provider, spec.canonicalId ?? spec.sdkId).reasoning.vocab;
+  if (vocab.length) return vocab;
   if (spec.provider === "openai") return OPENAI_EFFORTS;
   // Azure OpenAI mirrors the OpenAI reasoning API (reasoningEffort param, same level names).
   if (spec.provider === "azure" || spec.provider === "azure-foundry") return OPENAI_EFFORTS;
@@ -58,7 +68,10 @@ export function normalizeEffort(input: string, allowed: string[]): string | null
 }
 
 export function reasoningOptions(spec: ModelSpec, effort: Effort): Record<string, unknown> {
-  const level = normalizeEffort(effort, effortLevels(spec));
+  // A family whose contract FORCES an effort (gpt-5-pro / o3-pro are always
+  // `high`, even if the user picked something else) overrides the request.
+  const forced = contractFor(spec.provider, spec.canonicalId ?? spec.sdkId).reasoning.force;
+  const level = forced ?? normalizeEffort(effort, effortLevels(spec));
   if (!level) return {};
   const p = spec.provider;
   if (p === "openai" || p === "azure" || p === "azure-foundry") {

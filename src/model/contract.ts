@@ -233,6 +233,18 @@ const RULES: Rule[] = [
   },
   // ---- Anthropic (messages API, all routes) -----------------------------
   {
+    // Haiku 4.5 has no extended-thinking / effort knob (platform.claude.com).
+    providers: ["anthropic", "bedrock", "vertex"],
+    test: /claude-haiku/,
+    contract: {
+      surface: "messages",
+      tokenParam: "max_tokens",
+      dropParams: ["top_k"],
+      systemRole: "system",
+      reasoning: { shape: "none", vocab: [] },
+    },
+  },
+  {
     providers: ["anthropic", "bedrock", "vertex"],
     test: /claude|anthropic/,
     contract: {
