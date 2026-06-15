@@ -41,7 +41,15 @@ export function effortLevels(spec: ModelSpec): string[] {
   // must run BEFORE spec.efforts, or a curated `efforts` list (gpt-5.5-pro ships
   // one) would display levels the wire silently rewrites to `high`. (S1)
   if (contract.reasoning.force) return [contract.reasoning.force];
-  if (spec.efforts) return spec.efforts;
+  const vocab = contract.reasoning.vocab;
+  if (spec.efforts) {
+    // The contract vocab is AUTHORITATIVE: a curated `efforts` list can be stale
+    // or over-broad (gpt-5.5 ships minimal/xhigh, but the docs only accept
+    // none/low/medium/high), and an unsupported effort is a hard 400 on the
+    // wire. Intersect so the picker/router never offer a level the wire rejects.
+    // (#9/#10) Empty vocab = no contract opinion → trust the curated list.
+    return vocab.length ? spec.efforts.filter((e) => vocab.includes(e)) : spec.efforts;
+  }
   // Reasoning-capable? Honor an EXPLICIT spec.reasoning (true/false); when it is
   // unset — every discovered/generated/models.dev spec — fall to the contract's
   // shape, so an Azure/Foundry reasoning deployment still clamps to its vocab
@@ -51,7 +59,6 @@ export function effortLevels(spec: ModelSpec): string[] {
   // The per-model contract carries the DOCUMENTED effort vocabulary per family
   // (o3 = low/med/high only, base gpt-5 adds minimal) — prefer it over the coarse
   // provider-wide default below.
-  const vocab = contract.reasoning.vocab;
   if (vocab.length) return vocab;
   if (spec.provider === "openai") return OPENAI_EFFORTS;
   // Azure OpenAI mirrors the OpenAI reasoning API (reasoningEffort param, same level names).
@@ -76,21 +83,29 @@ export function normalizeEffort(input: string, allowed: string[]): string | null
 }
 
 export function reasoningOptions(spec: ModelSpec, effort: Effort): Record<string, unknown> {
-  // A family whose contract FORCES an effort (gpt-5-pro / o3-pro are always
-  // `high`, even if the user picked something else) overrides the request.
-  const forced = contractFor(spec.provider, spec.canonicalId ?? spec.sdkId).reasoning.force;
-  const level = forced ?? normalizeEffort(effort, effortLevels(spec));
+  // Dispatch on the contract's reasoning SHAPE, not spec.provider — the two
+  // disagreed before (a provider allowlist meant Bedrock Claude emitted nothing
+  // and Vertex Claude would get the Gemini param), so the router/flywheel
+  // believed an effort ran that the wire never sent. The shape is the single
+  // source of truth for HOW reasoning is enabled. (Root A: #1/#2/#3)
+  const r = contractFor(spec.provider, spec.canonicalId ?? spec.sdkId).reasoning;
+  // FORCED families (gpt-5-pro/o3-pro = always high) override the request; else
+  // normalize to a vocab-valid level (effortLevels already intersected to vocab).
+  const level = r.force ?? normalizeEffort(effort, effortLevels(spec));
   if (!level) return {};
-  const p = spec.provider;
-  if (p === "openai" || p === "azure" || p === "azure-foundry") {
-    return { openai: { reasoningEffort: level } };
+  switch (r.shape) {
+    case "openai-effort":
+      // reasoning_effort — native OpenAI/Azure, and the openai-effort carriers
+      // (xai grok-4.3/3-mini, groq gpt-oss/qwen3).
+      return { openai: { reasoningEffort: level } };
+    case "anthropic-thinking":
+      return { anthropic: { effort: level } };
+    case "google-thinking":
+      return { google: { thinkingConfig: { thinkingLevel: level } } };
+    default:
+      // thinking-toggle / think-tag / variant-id / always-on / none: reasoning is
+      // provider-native (a non-standard body field) or has no param — injecting
+      // one would 400. The AI SDK doesn't carry these yet, so emit nothing.
+      return {};
   }
-  if (p === "google" || p === "vertex") {
-    return { google: { thinkingConfig: { thinkingLevel: level } } };
-  }
-  if (p === "anthropic") {
-    return { anthropic: { effort: level } };
-  }
-  // Other providers reason by their own defaults; injecting an unknown param would cause an API error.
-  return {};
 }

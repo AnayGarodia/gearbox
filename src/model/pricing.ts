@@ -168,7 +168,16 @@ function normalizeId(s: string): string {
     .replace(/-(\d{8}|\d{4}-\d{2}-\d{2})$/, "");
 }
 
-const TIER = /(^|-)(mini|nano|micro|lite|small|tiny|air|turbo|flash|max|pro|chat)($|-)/;
+const TIER = /(^|-)(mini|nano|micro|lite|small|tiny|air|turbo|flash|max|pro|chat)(?=$|-)/;
+// Variant/modality words that mean "a different model, not the base" — a
+// containment match whose remainder carries one of these is refused outright,
+// even when the matched key itself contains a tier word (the bug in #12: a key
+// like "…-flash" disabled the old guard, so "…-flash-lite" inherited it). (#12/#21)
+const DENY = /(^|-)(lite|distill|audio|realtime|transcribe|tts|vision|image|embed|rerank|deep-research|codex)(?=$|-)/;
+/** The tier token a key/remainder carries, if any (for "same tier" comparison). */
+function tierTok(s: string): string | undefined {
+  return s.match(TIER)?.[2];
+}
 
 /** Look up a model's list price, provider-scoped first. Exact normalized match,
  *  then a boundary-anchored containment match (longest key wins so "gpt-5.5-pro"
@@ -191,10 +200,14 @@ export function priceFor(provider: ProviderId | undefined, modelId: string): Pri
       // boundary-anchored: "team-gpt-5.4-nano-eastus2" contains "gpt-5.4-nano"
       const re = new RegExp(`(^|[-/])${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}([-/]|$)`);
       if (!re.test(id)) continue;
-      // don't let a tiered variant inherit the base price: if the REMAINDER
-      // after stripping the key carries a tier modifier the key lacks, skip.
+      // Don't let a variant inherit the base price. Refuse if the REMAINDER after
+      // stripping the key (a) carries a deny-listed modality/variant (lite,
+      // distill, audio, codex…), or (b) carries a tier token DIFFERENT from the
+      // key's. This holds even when the key itself contains a tier word. (#12/#21)
       const remainder = id.replace(key, "");
-      if (TIER.test(remainder) && !TIER.test(key)) continue;
+      if (DENY.test(remainder)) continue;
+      const rt = tierTok(remainder);
+      if (rt && rt !== tierTok(key)) continue;
       return table[key];
     }
   }

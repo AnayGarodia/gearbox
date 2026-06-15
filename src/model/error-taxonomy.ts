@@ -90,7 +90,16 @@ function extract(err: unknown): { http?: number; body: any; text: string } {
   const http = e.statusCode ?? e.status ?? e.response?.status ?? e?.data?.error?.code;
   // The parsed JSON body the provider returned, wherever the SDK stashed it.
   const body = e.responseBody ?? e.data ?? e.body ?? e.error ?? e;
-  const text = [e.message, e.responseBody, typeof body === "string" ? body : JSON.stringify(body ?? {})]
+  // Real APICallErrors carry a cyclic `cause`, so JSON.stringify can throw — a
+  // classifier that crashes on its primary input is worse than useless. Degrade
+  // to the structured signals + message. (#14)
+  let bodyStr = "";
+  try {
+    bodyStr = typeof body === "string" ? body : JSON.stringify(body ?? {});
+  } catch {
+    bodyStr = "";
+  }
+  const text = [e.message, typeof e.responseBody === "string" ? e.responseBody : "", bodyStr]
     .filter(Boolean)
     .join(" ");
   return { http: typeof http === "number" ? http : undefined, body, text };
@@ -142,7 +151,11 @@ export function classifyError(err: unknown): Classified {
   }
 
   // --- Anthropic envelope: {type:"error", error:{type, message}} ----------
-  const anthropicType: string | undefined = body?.type === "error" ? body?.error?.type : undefined;
+  // Detect on the RAW error — extract() collapses `body` to the inner `error`
+  // object, so the outer type:"error" marker only survives on `err` itself.
+  const rawObj = typeof err === "object" && err ? (err as any) : {};
+  const anthropicType: string | undefined =
+    rawObj.type === "error" ? rawObj.error?.type : body?.type === "error" ? body?.error?.type : undefined;
   if (anthropicType) {
     if (anthropicType === "rate_limit_error" || anthropicType === "overloaded_error") return classify("rate-limit");
     if (anthropicType === "authentication_error" || anthropicType === "permission_error") return classify("auth");
@@ -151,7 +164,11 @@ export function classifyError(err: unknown): Classified {
     if (anthropicType === "request_too_large") return classify("context-length");
     if (anthropicType === "api_error") return classify("server");
     if (anthropicType === "invalid_request_error") {
-      return classify(/credit|quota|balance/.test(m) ? "quota" : "bad-request");
+      // Anchor to actual billing phrases — a bare /credit|quota|balance/ over the
+      // whole haystack matched "load balancer", "rebalance", "imbalance" and would
+      // wrongly park the account on a malformed-request 400. Genuine credit also
+      // arrives as billing_error (handled above). (#13)
+      return classify(/credit balance|insufficient (?:credit|balance|quota)|out of credit/.test(m) ? "quota" : "bad-request");
     }
   }
 
@@ -181,6 +198,9 @@ export function classifyError(err: unknown): Classified {
   if (/insufficient[_ ](?:quota|balance|credits?)|out of credit|credit balance|payment required|\b402\b|exceeded your current quota|balance.?not.?enough|run out of balance/.test(m)) return classify("quota");
   if (/\b429\b|\b529\b|rate.?limit|too many requests|over(?:loaded|capacity)|throttl|resource.?exhausted|usage.?limit|engine_overloaded/.test(m)) return classify("rate-limit");
   if (/\b401\b|\b403\b|invalid[ _-]?(?:api[ _-]?key|key|credential|token)|invalid subscription key|unauthorized|authentication[ _-]?(?:error|failed)|token (?:has )?expired|expired (?:key|token|credentials?)|not logged in|permission denied/.test(m)) return classify("auth");
+  // Network/transport failures — retryable on the same account (no hop), mirrors
+  // agent/errors.ts's NETWORK_RE. (#20)
+  if (/econnreset|etimedout|econnrefused|enotfound|epipe|fetch failed|socket hang ?up|network error|getaddrinfo|dns/.test(m)) return classify("server");
   if (/\b5\d\d\b|server error|internal error|service unavailable|try again/.test(m)) return classify("server");
   if (/invalid request|extra inputs are not permitted|unsupported|bad request|\b400\b|\b422\b/.test(m)) return classify("bad-request");
 

@@ -88,7 +88,11 @@ type Rule = {
   providers?: ProviderId[];
   /** Match against the resolved model id (lowercased). */
   test: RegExp;
-  contract: Omit<RequestContract, "src">;
+  /** PARTIAL: any field omitted is inherited from the provider's default (so an
+   *  unscoped rule can contribute only reasoning and keep the host's token-param
+   *  / drops). Existing rules specify the full contract, so the merge is a no-op
+   *  for them. */
+  contract: Partial<Omit<RequestContract, "src">>;
 };
 
 // OpenAI-surface providers share OpenAI's reasoning contract verbatim (Azure
@@ -118,9 +122,11 @@ const RULES: Rule[] = [
   },
   {
     // base codex (gpt-5-codex, gpt-5.0-codex, bare "codex"). Responses-only and
-    // CANNOT stream.
+    // CANNOT stream. ANCHORED so it doesn't force Responses onto an arbitrary
+    // deployment that merely contains the token "codex" (codex-next,
+    // my-codex-deploy) — those would 400 with no failover hop. (#5)
     providers: OPENAI_SURFACE,
-    test: /(^|[/-])(gpt-5(\.0)?-codex|codex)([/-]|$)/,
+    test: /(^|[/-])gpt-5(\.0)?-codex([/-]|$)|^codex$/,
     contract: {
       surface: "responses",
       tokenParam: "max_output_tokens",
@@ -131,10 +137,11 @@ const RULES: Rule[] = [
     },
   },
   {
-    // *-pro (gpt-5-pro, gpt-5.4-pro, o3-pro): Responses-only, effort forced high.
-    // o3-pro cannot stream; gpt-5-pro/5.4-pro can.
+    // *-pro (gpt-5-pro, gpt-5.4-pro, o1-pro, o3-pro): Responses-only, effort
+    // forced high. o1-pro/o3-pro cannot stream; gpt-5-pro/5.4-pro can. o1-pro
+    // was previously caught by the broad o1 rule → routed chat → 400. (#7)
     providers: OPENAI_SURFACE,
-    test: /(^|[/-])o3-pro([/-]|$)/,
+    test: /(^|[/-])(o1-pro|o3-pro)([/-]|$)/,
     contract: {
       surface: "responses",
       tokenParam: "max_output_tokens",
@@ -278,13 +285,13 @@ const RULES: Rule[] = [
     // Anchored + specific so it can't swallow junk substrings ("blur1ry") or
     // unrelated ids (cohere command-r, qwen-reasoner). Matches the real R1
     // family across every host that serves it. (N9)
+    // PARTIAL: contributes only reasoning + the R1 logprobs drop; surface /
+    // token-param / system-role are inherited from the HOST's default, so a
+    // Groq-served deepseek-r1-distill keeps Groq's max_completion_tokens rather
+    // than being clobbered with max_tokens. (#18)
     test: /(^|[/-])(deepseek-?r1|mai-ds-r1|deepseek-reasoner)([/-]|$)/,
     contract: {
-      surface: "chat",
-      tokenParam: "max_tokens",
-      // R1-class models reject logprobs when thinking; sampling is ignored.
-      dropParams: ["logprobs", "top_logprobs"],
-      systemRole: "system",
+      dropParams: ["logprobs", "top_logprobs"], // R1 rejects logprobs when thinking
       reasoning: { shape: "always-on", vocab: [], outputField: "reasoning_content" },
     },
   },
@@ -352,8 +359,10 @@ const RULES: Rule[] = [
     },
   },
   {
+    // k2.5 through k2.9 (and the bare k2.7/k2.8 non-code lines) are thinking-
+    // toggle; the k2.7-code always-on rule above already claimed -code. (#17)
     providers: ["moonshot"],
-    test: /kimi-k2\.[56]/,
+    test: /kimi-k2\.[5-9]/,
     contract: {
       surface: "chat",
       tokenParam: "max_tokens",
@@ -405,8 +414,10 @@ const RULES: Rule[] = [
   },
   // ---- Groq: reasoning_effort families; strips logprobs/penalty/n ----------
   {
+    // Anchored (no bare-substring matches) + qwq added (the shipped catalog id
+    // is `qwen-qwq-32b`, which has no `3` after qwen). (#8/#16)
     providers: ["groq"],
-    test: /gpt-oss|qwen.?3/,
+    test: /(^|[-/])(gpt-oss|qwen-?3|qwq)([-/]|$)/,
     contract: {
       surface: "chat",
       tokenParam: "max_completion_tokens",
@@ -518,7 +529,10 @@ export function contractFor(provider: ProviderId, modelId: string): RequestContr
   const id = (modelId || "").toLowerCase();
   for (const rule of RULES) {
     if (rule.providers && !rule.providers.includes(provider)) continue;
-    if (rule.test.test(id)) return { ...rule.contract, src: "rule" };
+    // Merge the rule OVER the provider default: a rule that omits a field
+    // inherits the host's baseline (token-param, system-role, temp clamp) rather
+    // than forcing a hardcoded one. (#18)
+    if (rule.test.test(id)) return { ...defaultFor(provider), ...rule.contract, src: "rule" };
   }
   return { ...defaultFor(provider), src: "default" };
 }

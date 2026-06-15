@@ -562,7 +562,10 @@ function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | 
 // Tier/size modifiers that change a family's price (a "-mini"/"-lite" variant is
 // NOT the base model): when the unmatched remainder carries one, refuse the match
 // rather than bill-estimate the wrong tier.
-const TIER_MODIFIER = /(^|-)(mini|nano|micro|lite|small|tiny|air|turbo|ultra|flash)($|-)/;
+// `codex` and `chat` are SURFACE/variant modifiers, not size tiers, but they
+// equally mean "not the base model": gpt-5.5-codex (Responses, own price) must
+// NOT canonical-match gpt-5.5 (chat), nor gpt-5-chat → gpt-5. (#19)
+const TIER_MODIFIER = /(^|-)(mini|nano|micro|lite|small|tiny|air|turbo|ultra|flash|codex|chat)($|-)/;
 
 /** Lowercase, dash-normalize, and strip a trailing date stamp ("-20251001",
  *  "-2025-10-01") so deployment names compare against canonical ids. Pure. */
@@ -680,9 +683,13 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
   // load-bearing case: OpenAI/Azure codex & *-pro deployments are Responses-API
   // ONLY — a chat-completions request to them returns "The requested operation
   // is unsupported." We pick `.responses()` here so the FIRST call is correct.
-  // Family is resolved from the canonical id (Azure deployment names are
-  // arbitrary, so canonicalId carries the real family).
-  const wantsResponses = contractFor(spec.provider, spec.canonicalId ?? spec.sdkId).surface === "responses";
+  // Resolve the surface from the RAW sdkId first (a real model id like
+  // "gpt-5.5-codex" must win), then the canonical family — otherwise a discovered
+  // "gpt-5.5-codex" whose canonicalId normalizes to the chat family "gpt-5.5"
+  // would route chat and 400. Responses if EITHER says so. (#6)
+  const wantsResponses =
+    contractFor(spec.provider, spec.sdkId).surface === "responses" ||
+    (spec.canonicalId ? contractFor(spec.provider, spec.canonicalId).surface === "responses" : false);
 
   // Cloud providers (data-driven by catalog authKind): build the cloud client
   // from account creds, else the SDK's own credential chain (AWS profile/role,
@@ -747,7 +754,10 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
       return apiKey ? createAnthropic({ apiKey })(spec.sdkId) : anthropic(spec.sdkId);
     case "openai": {
       const oai = apiKey ? createOpenAI({ apiKey }) : openai;
-      return wantsResponses ? oai.responses(spec.sdkId) : oai(spec.sdkId);
+      // oai(id) (provider-as-function) routes to the RESPONSES API in
+      // @ai-sdk/openai v2 — so a `chat` contract must call .chat() explicitly to
+      // actually POST /chat/completions. (#15)
+      return wantsResponses ? oai.responses(spec.sdkId) : oai.chat(spec.sdkId);
     }
     case "google":
       return apiKey ? createGoogleGenerativeAI({ apiKey })(spec.sdkId) : google(spec.sdkId);
