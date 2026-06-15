@@ -48,6 +48,7 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { EmbeddingModel, LanguageModel } from "ai";
 import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { profileFor } from "./model/profiles.ts";
+import { contractFor } from "./model/contract.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
 import type { Account, ResolvedCreds } from "./accounts/types.ts";
 import { loadCachedCatalog } from "./model/modelsdev.ts";
@@ -665,6 +666,14 @@ export function estimateCost(
 export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageModel {
   const apiKey = creds?.apiKey ?? (envVarFor(spec.provider) ? process.env[envVarFor(spec.provider)!] : undefined);
 
+  // The request CONTRACT decides which wire surface this model answers on. The
+  // load-bearing case: OpenAI/Azure codex & *-pro deployments are Responses-API
+  // ONLY — a chat-completions request to them returns "The requested operation
+  // is unsupported." We pick `.responses()` here so the FIRST call is correct.
+  // Family is resolved from the canonical id (Azure deployment names are
+  // arbitrary, so canonicalId carries the real family).
+  const wantsResponses = contractFor(spec.provider, spec.canonicalId ?? spec.sdkId).surface === "responses";
+
   // Cloud providers (data-driven by catalog authKind): build the cloud client
   // from account creds, else the SDK's own credential chain (AWS profile/role,
   // ADC, etc.). Each carries config beyond a single key.
@@ -686,7 +695,8 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
   }
   if (creds?.azure || authKind === "azure") {
     const az = creds?.azure ?? azureFromEnv();
-    return createAzure(azureClientConfig({ ...az, apiKey: az?.apiKey ?? apiKey }))(spec.sdkId);
+    const azp = createAzure(azureClientConfig({ ...az, apiKey: az?.apiKey ?? apiKey }));
+    return wantsResponses ? azp.responses(spec.sdkId) : azp(spec.sdkId);
   }
   if (creds?.vertex || authKind === "vertex") {
     const vx = creds?.vertex ?? vertexFromEnv();
@@ -713,13 +723,22 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
   //     that calling @ai-sdk/openai as a function used to 404/405 on).
   const baseURL = creds?.baseURL ?? (NATIVE.has(spec.provider) ? undefined : catalogProvider(spec.provider)?.baseUrl);
   if (baseURL) {
+    // Responses-only families (codex/*-pro on Azure AI Foundry's /openai/v1
+    // surface) can't ride @ai-sdk/openai-compatible — it only POSTs to
+    // /chat/completions. Route them through @ai-sdk/openai's `.responses()`
+    // against the same baseURL (the /openai/v1 surface serves /responses).
+    if (wantsResponses) {
+      return createOpenAI({ baseURL, apiKey, headers: creds?.headers }).responses(spec.sdkId);
+    }
     return createOpenAICompatible({ name: spec.provider, baseURL, apiKey, headers: creds?.headers, includeUsage: true })(spec.sdkId);
   }
   switch (spec.provider) {
     case "anthropic":
       return apiKey ? createAnthropic({ apiKey })(spec.sdkId) : anthropic(spec.sdkId);
-    case "openai":
-      return apiKey ? createOpenAI({ apiKey })(spec.sdkId) : openai(spec.sdkId);
+    case "openai": {
+      const oai = apiKey ? createOpenAI({ apiKey }) : openai;
+      return wantsResponses ? oai.responses(spec.sdkId) : oai(spec.sdkId);
+    }
     case "google":
       return apiKey ? createGoogleGenerativeAI({ apiKey })(spec.sdkId) : google(spec.sdkId);
     case "deepseek":
