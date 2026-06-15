@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { tabBarSegments, type TabRow } from "../tabbar.ts";
+import pkg from "../../../package.json";
 
 // The masthead (Broadsheet): ONE full-width chrome row — the `gearbox` wordmark
 // left, the active account right — with a hairline rule under. With the
@@ -12,9 +13,13 @@ import { tabBarSegments, type TabRow } from "../tabbar.ts";
 // Layout comes from the pure tabBarSegments so App's mouse hit-test (the same
 // function) can never disagree with the rendered pixels.
 const WORDMARK = "gearbox";
-/** 0-based column where the tab cells start: paddingX(1) + wordmark + 2 gap.
- *  App's click handler MUST hit-test with the same constant (exported). */
-export const TABBAR_LEFT = 1 + WORDMARK.length + 2;
+/** Always-visible running version next to the wordmark, so "which build am I on"
+ *  is answerable at a glance (it used to show only on the home splash). */
+const VERSION_TAG = `v${pkg.version}`;
+/** 0-based column where the tab cells start: paddingX(1) + wordmark + 1 + version
+ *  + 2 gap. App's click handler MUST hit-test with the same constant (exported);
+ *  it shifts with the version-string length, but render + hit-test share it. */
+export const TABBAR_LEFT = 1 + WORDMARK.length + 1 + VERSION_TAG.length + 2;
 /** 1-based terminal row the masthead text sits on (marginTop pushes it to 2). */
 export const MASTHEAD_ROW = 2;
 
@@ -80,6 +85,8 @@ function MastheadImpl({ account, accountColor, frameHue, width, tabRows }: { acc
         {topEdge}
         <Box width={width} paddingX={1}>
           <Text color={color.accent} bold>{WORDMARK}</Text>
+          <Text> </Text>
+          <Text color={color.faint}>{VERSION_TAG}</Text>
           <Text>{"  "}</Text>
           {spans}
           <Box flexGrow={1} justifyContent="flex-end">
@@ -97,7 +104,11 @@ function MastheadImpl({ account, accountColor, frameHue, width, tabRows }: { acc
     <Box flexDirection="column">
       {topEdge}
       <Box width={width} paddingX={1} justifyContent="space-between">
-        <Text color={color.accent} bold>{WORDMARK}</Text>
+        <Box>
+          <Text color={color.accent} bold>{WORDMARK}</Text>
+          <Text> </Text>
+          <Text color={color.faint}>{VERSION_TAG}</Text>
+        </Box>
         {account ? <Text color={accountColor ?? color.faint} wrap="truncate-end">{account.slice(0, acctRoom)}</Text> : null}
       </Box>
       <Box paddingX={1}>

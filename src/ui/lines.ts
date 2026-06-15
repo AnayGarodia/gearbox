@@ -1083,10 +1083,14 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         ];
         if (it.reason) left.push({ text: "  · " + it.reason, color: reasonInk, bg });
         const right: Span[] = it.costText ? [{ text: it.costText + " ", color: it.surprising ? color.warn : color.faint, bg }] : [];
-        const leftW = left.reduce((n, s) => n + displayWidth(s.text), 0);
         const rightW = right.reduce((n, s) => n + displayWidth(s.text), 0);
+        // Clip the left (model · provider · reason) so the row NEVER exceeds the
+        // reading column — an unclipped gap=1 used to push a long model+cost line
+        // past `width`, extending the band off to the right of every other row.
+        const leftClipped = clipSpans(left, Math.max(0, width - rightW - 1));
+        const leftW = leftClipped.reduce((n, s) => n + displayWidth(s.text), 0);
         const gap = Math.max(1, width - leftW - rightW);
-        out.push([...left, { text: " ".repeat(gap), bg }, ...right]);
+        out.push(clipSpans([...leftClipped, { text: " ".repeat(gap), bg }, ...right], width));
         break;
       }
       case "verification": {

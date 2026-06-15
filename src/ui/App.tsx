@@ -4578,8 +4578,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // (The earlier max(92, …) floor let ~90–110-col terminals run edge-to-edge,
   // leaving no right gutter; 82% always reserves one on both sides.)
   const usableW = width - 3;
-  const MAX_READING = 110;
-  const lineWidth = Math.min(usableW, Math.max(20, Math.min(Math.floor(usableW * 0.82), MAX_READING)));
+  const MAX_READING = 100;
+  // ~74% of the usable width, capped at a comfortable measure, so the reading
+  // column always keeps a clear gutter on BOTH sides (never runs to the right
+  // edge). Floor keeps it usable on tiny terminals.
+  const lineWidth = Math.min(usableW, Math.max(20, Math.min(Math.floor(usableW * 0.74), MAX_READING)));
   const marginCols = Math.max(0, Math.floor((usableW - lineWidth) / 2));
   // The shared PAGE column (Broadsheet "one page"): every footer surface sits in
   // the same centered column as the transcript's VISIBLE band. The transcript
