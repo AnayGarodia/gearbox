@@ -21,6 +21,15 @@ test("classifyFailure flags quota/rate/credit errors as exhausted, real errors a
     "context length exceeded",
     "400 invalid request: bad schema",
   ]) expect(classifyFailure(m)).toBe("other");
+
+  // A stalled/unresponsive deployment (the TTFT watchdog, or a read timeout) is
+  // failover-eligible — park it and hop, don't freeze or dead-end.
+  for (const m of [
+    "DeepSeek-V4-Flash sent no response in 30s (timed out)",
+    "request timeout",
+    "upstream read timeout",
+    "the model was unresponsive",
+  ]) expect(classifyFailure(m)).toBe("exhausted");
 });
 
 test("markExhausted parks a key until it expires", () => {

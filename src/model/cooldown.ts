@@ -16,7 +16,11 @@ export function classifyFailure(message: string): FailureKind {
   const m = (message || "").toLowerCase();
   const exhausted =
     /\b429\b|\b529\b|\b402\b/.test(m) ||
-    /rate.?limit|too many requests|insufficient_quota|insufficient (?:balance|credits?)|quota|over(loaded|capacity)|throttl|resource.?exhausted|usage.?limit|billing|payment required|out of credit|credit balance/.test(m);
+    /rate.?limit|too many requests|insufficient_quota|insufficient (?:balance|credits?)|quota|over(loaded|capacity)|throttl|resource.?exhausted|usage.?limit|billing|payment required|out of credit|credit balance/.test(m) ||
+    // A stalled/unresponsive deployment (our TTFT watchdog, or a provider read
+    // timeout) is treated like an exhausted endpoint: park it briefly and fail
+    // over to another model rather than freezing or surfacing a dead end.
+    /timed out|no response|unresponsive|read timeout|request timeout/.test(m);
   if (exhausted) return "exhausted";
   const auth =
     /\b401\b/.test(m) ||

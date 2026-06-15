@@ -318,6 +318,27 @@ export async function runTask(opts: {
   let failureMessage: string | undefined;
   const providerOptions = opts.effort ? reasoningOptions(model, opts.effort) : {};
 
+  // ── Time-to-first-token watchdog ──────────────────────────────────────────
+  // A model that sends NOTHING — not a token, not a reasoning delta, not a tool
+  // call — for this long is hung or a cold/slow deployment. We surface a "slow"
+  // hint early so the turn never looks frozen, then abort at the hard cap so the
+  // App hop-loop can fail over to another model (a TTFT timeout is classified as
+  // a recoverable failure). Streaming starts within a few seconds normally, so
+  // these thresholds only ever fire on a genuinely stalled response.
+  const TTFT_SLOW_MS = Number(process.env.GEARBOX_TTFT_SLOW_MS) || 8_000;
+  const TTFT_HARD_MS = Number(process.env.GEARBOX_TTFT_HARD_MS) || 30_000;
+  // Our own abort controller so the watchdog can cancel the request WITHOUT
+  // being mistaken for a user Ctrl-C: the user's signal is forwarded into it,
+  // but a watchdog abort sets `ttftTimedOut` so the catch reports a failover-
+  // eligible failure instead of staying silent.
+  const streamAbort = new AbortController();
+  if (signal) {
+    if (signal.aborted) streamAbort.abort();
+    else signal.addEventListener("abort", () => streamAbort.abort(), { once: true });
+  }
+  let ttftTimedOut = false;
+  let clearWatchdog: (() => void) | null = null; // set per attempt; called on the first stream part
+
   // The AI SDK surfaces errors through three paths: an `error` stream part, a
   // thrown iterator error, and an unhandled rejected promise (Bun dumps that
   // raw). `onError` in the streamText call catches the third path. `emitErr`
@@ -423,7 +444,7 @@ export async function runTask(opts: {
           allowSystemInMessages: true,
           tools: activeTools,
           stopWhen: [stepCountIs(config.maxSteps), () => loopStop],
-          abortSignal: signal,
+          abortSignal: streamAbort.signal,
           maxRetries: opts.maxRetries,
           onError: ({ error }) => emitErr(error),
           ...(Object.keys(providerOptions).length ? { providerOptions: providerOptions as any } : {}),
@@ -479,6 +500,9 @@ export async function runTask(opts: {
   };
   const consume = async (parts: AsyncIterable<any>) => {
     for await (const part of parts) {
+      // ANY part (text, reasoning, tool-call, …) means the model is responding —
+      // disarm the time-to-first-token watchdog.
+      if (clearWatchdog) { clearWatchdog(); clearWatchdog = null; }
       switch (part.type) {
         case "text-delta": {
           const t = part.text ?? part.textDelta ?? "";
@@ -599,14 +623,31 @@ export async function runTask(opts: {
   const MAX_STREAM_RETRIES = 2;
   for (let attempt = 0; ; attempt++) {
     result = startStream();
+    // Arm the time-to-first-token watchdog for this attempt (skip the test seam,
+    // which feeds a synthetic stream with no real latency).
+    let slowTimer: ReturnType<typeof setTimeout> | null = null;
+    let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    if (!opts._stream) {
+      slowTimer = setTimeout(() => onEvent({ type: "phase", label: "waiting on the model", detail: `${model.label} is slow to respond · esc to interrupt`, state: "running" }), TTFT_SLOW_MS);
+      hardTimer = setTimeout(() => { ttftTimedOut = true; streamAbort.abort(); }, TTFT_HARD_MS);
+    }
+    clearWatchdog = () => { if (slowTimer) clearTimeout(slowTimer); if (hardTimer) clearTimeout(hardTimer); slowTimer = hardTimer = null; };
     try {
       await consume(opts._stream ?? (result!.fullStream as AsyncIterable<any>));
     } catch (e: any) {
-      // On a user interrupt the App shows its own "interrupted" notice, so stay
-      // quiet. Any other thrown error is a real failure and should be reported.
-      if (!signal?.aborted) emitErr(e);
+      // User Ctrl-C: stay quiet (the App shows its own "interrupted" notice).
+      // Watchdog abort (no first token in time): a recoverable failure the
+      // hop-loop fails over on. Anything else is a real error.
+      if (signal?.aborted) { /* user interrupt — silent */ }
+      else if (ttftTimedOut) {
+        errored = true;
+        failureMessage = `${model.label} sent no response in ${Math.round(TTFT_HARD_MS / 1000)}s (timed out)`;
+        failureRaw = { name: "TTFTTimeout", message: failureMessage };
+      } else emitErr(e);
+    } finally {
+      if (clearWatchdog) { clearWatchdog(); clearWatchdog = null; }
     }
-    if (!errored || producedOutput || opts._stream || signal?.aborted || attempt >= MAX_STREAM_RETRIES) break;
+    if (!errored || producedOutput || opts._stream || signal?.aborted || ttftTimedOut || attempt >= MAX_STREAM_RETRIES) break;
     const cls = classifyProviderError(failureRaw);
     if (!cls.retryable) break;
     // A long Retry-After is better spent hopping to another account.
