@@ -49,7 +49,7 @@ import type { EmbeddingModel, LanguageModel } from "ai";
 import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { profileFor } from "./model/profiles.ts";
 import { contractFor } from "./model/contract.ts";
-import { listPriceFor } from "./model/pricing.ts";
+import { listPriceFor, priceFor, type Price } from "./model/pricing.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
 import type { Account, ResolvedCreds } from "./accounts/types.ts";
 import { loadCachedCatalog } from "./model/modelsdev.ts";
@@ -552,6 +552,15 @@ function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | 
   );
 }
 
+/** The full price record (incl. cached-input rate + per-request fee) for a model
+ *  id, provider-scoped — used by estimateCost for the cache-read and Sonar
+ *  per-request terms. Undefined for curated/profile-priced models (they fall back
+ *  to the flat cache approximation, which is what they did before). */
+function priceMetaFor(id: string): Price | undefined {
+  const spec = modelRegistry().find((m) => m.id === id);
+  return priceFor(spec?.provider, spec?.sdkId ?? id);
+}
+
 // ── pricing fallback for discovered deployments ──────────────────────────────
 // Azure/Foundry deployments and gateway ids carry NO price data from discovery,
 // so cost showed "$ unknown" even when the deployment obviously serves a known
@@ -646,8 +655,15 @@ export function estimateCost(
     if (!c) continue;
     const inPerTok = c.inUSDPerMtok / 1e6;
     usd += t.inputTokens * inPerTok + (t.outputTokens / 1e6) * c.outUSDPerMtok;
-    if (t.cachedInputTokens) usd += t.cachedInputTokens * inPerTok * 0.1;
+    // Cache-read rate: use the model's PUBLISHED cached-input rate when the price
+    // table carries one; else the flat 0.1x approximation. (N8)
+    const meta = priceMetaFor(t.model);
+    const cacheReadPerTok = meta?.cachedIn != null ? meta.cachedIn / 1e6 : inPerTok * 0.1;
+    if (t.cachedInputTokens) usd += t.cachedInputTokens * cacheReadPerTok;
     if (t.cacheCreationInputTokens) usd += t.cacheCreationInputTokens * inPerTok * 1.25;
+    // Per-request surcharge (Perplexity Sonar search fee): one request per turn
+    // (a turn maps to one logical model call for the fee-bearing Sonar models). (N8)
+    if (meta?.perRequestUSD) usd += meta.perRequestUSD;
   }
   return usd;
 }

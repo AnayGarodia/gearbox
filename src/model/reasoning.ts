@@ -12,6 +12,11 @@ const OPENAI_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const ANTHROPIC_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const GOOGLE_EFFORTS = ["minimal", "low", "medium", "high"];
 
+// The reasoning shapes reasoningOptions() can translate to a providerOption the
+// AI SDK actually sends. Effort is only OFFERED for these — so what the picker
+// shows and the flywheel records equals what the wire receives. (#11)
+const EMITTABLE_SHAPES = new Set(["openai-effort", "anthropic-thinking", "google-thinking"]);
+
 // Canonical ordering weakest to strongest, used to find the nearest valid level when clamping.
 export const EFFORT_ORDER = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -56,6 +61,13 @@ export function effortLevels(spec: ModelSpec): string[] {
   // instead of getting no effort knob at all. (N10)
   const reasons = spec.reasoning ?? contract.reasoning.shape !== "none";
   if (!reasons) return [];
+  // Only offer effort for shapes reasoningOptions() can actually EMIT
+  // (openai-effort / anthropic-thinking / google-thinking). For provider-native
+  // shapes (thinking-toggle, variant-id, think-tag, always-on) the AI SDK carries
+  // no param yet, so reasoningOptions returns {} — offering a level here would let
+  // the picker/router/flywheel record an effort the wire never sends (the #11
+  // divergence). Honest: no knob until the native param is wired. (#11)
+  if (!EMITTABLE_SHAPES.has(contract.reasoning.shape)) return [];
   // The per-model contract carries the DOCUMENTED effort vocabulary per family
   // (o3 = low/med/high only, base gpt-5 adds minimal) — prefer it over the coarse
   // provider-wide default below.

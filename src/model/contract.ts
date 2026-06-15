@@ -414,8 +414,12 @@ const RULES: Rule[] = [
   },
   // ---- Groq: reasoning_effort families; strips logprobs/penalty/n ----------
   {
-    // Anchored (no bare-substring matches) + qwq added (the shipped catalog id
-    // is `qwen-qwq-32b`, which has no `3` after qwen). (#8/#16)
+    // Token-boundary anchored (fixes the no-boundary bug: myqwen3model no longer
+    // matches). It still matches a hyphen-delimited token mid-id (my-gpt-oss-clone
+    // → gpt-oss): that is DELIBERATE — a hyphen-delimited gpt-oss/qwq token
+    // reliably means that family, and segment-anchoring to `(^|/)` would break the
+    // real catalog id `qwen-qwq-32b`, where qwq sits mid-segment after a hyphen.
+    // (#8/#16)
     providers: ["groq"],
     test: /(^|[-/])(gpt-oss|qwen-?3|qwq)([-/]|$)/,
     contract: {
@@ -439,12 +443,13 @@ const RULES: Rule[] = [
       tempClamp: [0, 2],
     },
   },
-  // ---- Generic R1/Qwen reasoners on inference hosts emit inline <think> ----
+  // ---- Generic Qwen3/QwQ reasoners on inference hosts emit inline <think> ---
   {
     providers: ["hyperbolic", "sambanova", "together", "baseten", "novita", "deepinfra", "nebius", "fireworks", "ollama", "lmstudio", "llamacpp", "vllm"],
-    // Anchored: qwen3/qwq at a boundary, or any `-r1` distill at a boundary —
-    // never a bare "r1" inside a word. (N9)
-    test: /(^|[-/])(qwen-?3|qwq)([-/]|$)|[-/]r1([-/]|$)/,
+    // qwen3/qwq at a boundary. The bare `-r1` branch was DROPPED — it matched
+    // Cohere `command-r1` (not an R1 reasoner), and the global anchored R1 rule
+    // above already catches deepseek-r1 + its distills across every provider. (N9)
+    test: /(^|[-/])(qwen-?3|qwq)([-/]|$)/,
     contract: {
       surface: "chat",
       tokenParam: "max_tokens",
