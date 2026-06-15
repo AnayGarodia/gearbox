@@ -16,7 +16,7 @@ import { resetShellSessions } from "../shell.ts";
 import type { AccountView, Item } from "./types.ts";
 import { FixedSelector, type ModelSelector } from "../model/selector.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
-import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, type PreferenceKind, updatePolicy, describePolicy } from "../model/preferences.ts";
+import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, policy, type PreferenceKind, updatePolicy, describePolicy } from "../model/preferences.ts";
 import { parsePolicyFast, parsePolicyNL } from "../model/policy-nl.ts";
 import { effortLevels, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, modelRegistry, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
@@ -1726,6 +1726,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
                   cliSessionRef.current = undefined;
                   setActiveCli({ id: a.id, label: accountName(a) });
                   updatePrefs({ activeAccount: a.id });
+                  updatePolicy({ pinAccount: null }); // the seat pin supersedes any API account pin
                   updatePhase(phaseId, "ok", `switched to ${accountLabel(a)}`, st.detail);
                 } catch (e: any) {
                   updatePhase(phaseId, "err", `${accountLabel(a)} sign-in`, e?.message ?? String(e));
@@ -1737,7 +1738,12 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
               setActiveCli(null);
               setDefaultAccount(a.provider, a.id);
               updatePrefs({ activeAccount: null });
-              notice(`switched to ${accountLabel(a)}`);
+              // SCOPE routing to this account — picking an account should run on
+              // it, not be ignored while routing keeps choosing the globally
+              // cheapest model on another provider. Routing still picks the best
+              // model WITHIN the account. /account off (or another switch) lifts it.
+              updatePolicy({ pinAccount: accountSlug(a) });
+              notice(`switched to ${accountLabel(a)} · routing now uses this account (/account off to auto-route across all)`);
             }
           };
 
@@ -1747,9 +1753,17 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           }
           if (subL === "off") {
             if (!activeCliRef.current) {
-              notice("not on a subscription · already auto-routing across your API keys (/model auto). /account <name> to use a subscription.");
+              // No subscription, but an API account may be pinned (from /account
+              // <name>): clear the pin and return to routing across all accounts.
+              if (policy().pinAccount) {
+                updatePolicy({ pinAccount: null });
+                notice("unpinned · auto-routing across all your accounts again (/account <name> to scope to one).");
+              } else {
+                notice("not on a subscription · already auto-routing across your API keys (/model auto). /account <name> to use a subscription.");
+              }
               return;
             }
+            updatePolicy({ pinAccount: null }); // leaving a subscription also clears any stale account pin
             const wasSub = activeCliRef.current.binary;
             activeCliRef.current = null;
             setActiveCliModelId(undefined);

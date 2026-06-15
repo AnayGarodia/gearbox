@@ -235,3 +235,14 @@ test('describePolicy renders every rule with its undo command', () => {
   expect(lines).toContain('draining first: deepseek (while declared budget lasts) · undo: /prefer use first clear');
   expect(lines).toContain('budget for deepseek: $20/month · undo: /budget deepseek clear');
 });
+
+test('pinAccount round-trips through updatePolicy and clears with null', () => {
+  expect(policy().pinAccount).toBeUndefined();
+  updatePolicy({ pinAccount: 'azure-foundry-aztea' });
+  expect(policy().pinAccount).toBe('azure-foundry-aztea');
+  // unrelated ops don't disturb the pin
+  updatePolicy({ prefer: 'api' });
+  expect(policy().pinAccount).toBe('azure-foundry-aztea');
+  updatePolicy({ pinAccount: null });
+  expect(policy().pinAccount).toBeUndefined();
+});

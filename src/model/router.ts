@@ -281,10 +281,20 @@ function preferBiasFor(c: Candidate, pol: Policy | undefined): number {
 // even when it would empty the pool — the caller surfaces a clear error naming
 // the rule instead of silently routing to an avoided model.
 function applyAvoid(pool: Candidate[], pol: Policy | undefined): Candidate[] {
-  if (!pol?.avoidProviders?.length && !pol?.avoidModels?.length) return pool;
+  let result = pool;
+  // Account pin (set by switching to an API account): scope routing to that
+  // account so "I picked Azure" actually runs on Azure. Routing still picks the
+  // best MODEL within it. Falls back to the full pool only if the pinned account
+  // can serve nothing for this task (so a turn is never blocked outright).
+  if (pol?.pinAccount) {
+    const pin = pol.pinAccount.toLowerCase();
+    const scoped = result.filter((c) => policyKeys(c).some((k) => k?.toLowerCase() === pin));
+    if (scoped.length) result = scoped;
+  }
+  if (!pol?.avoidProviders?.length && !pol?.avoidModels?.length) return result;
   const avoidP = new Set((pol.avoidProviders ?? []).map((x) => x.toLowerCase()));
   const avoidM = new Set((pol.avoidModels ?? []).map((x) => x.toLowerCase()));
-  return pool.filter((c) => {
+  return result.filter((c) => {
     if (policyKeys(c).some((k) => avoidP.has(k))) return false;
     const ids = [c.spec.id, c.canonicalId, c.spec.sdkId].filter(Boolean).map((x) => String(x).toLowerCase());
     return !ids.some((id) => avoidM.has(id));

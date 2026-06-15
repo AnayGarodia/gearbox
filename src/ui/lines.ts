@@ -936,7 +936,10 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: it.status === "err" ? color.err : isWrite ? color.text : color.dim, bold: true }];
         const headUsed = 2 + 1 + 2 + 6; // pad + dot + spaces + name
         if (it.arg) {
-          const shownArg = isShell ? it.arg : relPath(it.arg);
+          // Collapse embedded newlines to a ⏎ marker — a heredoc / multi-line
+          // shell command (e.g. `python << 'EOF' … EOF`) otherwise breaks the
+          // head across rows at column 0, shattering the indentation.
+          const shownArg = (isShell ? it.arg : relPath(it.arg)).replace(/\s*\n\s*/g, " ⏎ ");
           // File-tool heads are clickable: OSC 8 → the configured editor
           // (vscode:// by default; /config editor changes or disables it).
           const link = !isShell && pathish(shownArg) ? editorUrl(shownArg) : undefined;

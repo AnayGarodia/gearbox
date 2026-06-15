@@ -4894,7 +4894,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const footerJsx = (
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
-        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} waiting={!!perm || !!ask} /> : null}
+        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} waiting={!!perm || !!ask} tokens={Math.round(outCharsRef.current / 4)} /> : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (
@@ -4941,7 +4941,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} waiting={!!perm || !!ask} /> : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} waiting={!!perm || !!ask} tokens={Math.round(outCharsRef.current / 4)} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (

@@ -188,3 +188,15 @@ test("summarize keyword defers to the LLM classifier when workspace work is invo
   expect(confidentKeywordKind("summarize this paragraph for me")).toBe("summarize");
   expect(confidentKeywordKind("tl;dr of the above")).toBe("summarize");
 });
+
+test("pinAccount scopes routing to that account (switching to an API account uses it)", () => {
+  only("ANTHROPIC_API_KEY", "OPENAI_API_KEY");
+  try {
+    // Without a pin, a code task routes by economics (could be either provider).
+    updatePolicy({ pinAccount: "env:openai" });
+    const choice = new RoutingSelector().select({ prompt: "write a function to parse dates", kind: "code" });
+    expect(choice.model.provider).toBe("openai"); // the pin is honored
+  } finally {
+    updatePolicy({ pinAccount: null }); // never leak the pin to sibling tests (shared GEARBOX_HOME)
+  }
+});

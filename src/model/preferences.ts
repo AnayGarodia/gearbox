@@ -51,6 +51,7 @@ export interface Policy extends GlobalPreference {
   avoidModels?: string[]; // never route to these model ids
   accountOrder?: string[]; // account ids/slugs, earlier = preferred tiebreak
   useFirst?: string[]; // provider or accountId to drain first while its declared budget/balance lasts
+  pinAccount?: string; // account id/slug to SCOPE routing to (set by switching to an API account); routing still picks the best model WITHIN it. Falls back to all accounts only if the pinned one can serve nothing.
 }
 
 // Structured ops for updatePolicy: add/remove for the avoid lists, whole-list
@@ -61,6 +62,7 @@ export interface PolicyOps {
   avoidModels?: { add?: string[]; remove?: string[] };
   accountOrder?: { set?: string[] };
   useFirst?: { set?: string[] };
+  pinAccount?: string | null; // set to scope routing to one account; null clears it
   prefer?: "subscription" | "api" | null;
   budget?: { key: string; amountUSD: number | null; period?: "total" | "monthly" };
 }
@@ -151,6 +153,7 @@ export function updatePolicy(ops: PolicyOps): Policy {
   next.avoidModels = applyListOps(next.avoidModels, ops.avoidModels);
   if (ops.accountOrder?.set) next.accountOrder = ops.accountOrder.set.length ? ops.accountOrder.set : undefined;
   if (ops.useFirst?.set) next.useFirst = ops.useFirst.set.length ? ops.useFirst.set : undefined;
+  if (ops.pinAccount !== undefined) next.pinAccount = ops.pinAccount ?? undefined;
   if (ops.prefer !== undefined) next.prefer = ops.prefer ?? undefined;
   // Budget rides the existing single write path (setBudget saves the file
   // itself); do it FIRST so our save below carries the budget too — both
