@@ -407,6 +407,31 @@ export function compareModels(a: ModelSpec, b: ModelSpec): number {
   return a.label.localeCompare(b.label);
 }
 
+/**
+ * Account-aware display ordering for the user-facing model lists (the /model
+ * palette, the /model panel, the inline list). The raw registry orders curated
+ * static models first and discovered ones LAST (compareModels by rank), which
+ * buried the models a user actually routes to — a discovered azure-foundry
+ * deployment sat behind every curated openai/google seed and got sliced off the
+ * top of the palette. This floats the models you can really use to the front:
+ *   tier 0 — the provider routing is SCOPED to (policy.pinAccount's account)
+ *   tier 1 — any provider you've added a real account for
+ *   tier 2 — everything else (reachable only via an ambient env key, or a seed)
+ * Ties inside a tier fall back to compareModels, so ordering stays deterministic.
+ * Pass no opts and it degrades to a plain compareModels sort (back-compat).
+ */
+export function orderModelsForDisplay(
+  models: ModelSpec[],
+  opts: { accountProviders?: Set<string>; scopedProvider?: string | null } = {},
+): ModelSpec[] {
+  const tier = (m: ModelSpec): number => {
+    if (opts.scopedProvider && m.provider === opts.scopedProvider) return 0;
+    if (opts.accountProviders?.has(m.provider)) return 1;
+    return 2;
+  };
+  return [...models].sort((a, b) => tier(a) - tier(b) || compareModels(a, b));
+}
+
 /** Honest provenance marker per row — how this id reached the list. */
 export function modelMarker(m: ModelSpec): string {
   if (m.routable === false) return " · pin-only (unvetted)";

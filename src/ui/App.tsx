@@ -77,7 +77,7 @@ import { writeProjectGuide } from "../init.ts";
 import { detectVerificationCommands, runVerification, nextStepFor, shouldAutoFix, buildFixPrompt, buildAutofixCaveat, provenTier, shouldOfferCharTest, buildCharTestPrompt, failureFingerprint, worstFailureKind, MAX_AUTOFIX_ATTEMPTS, type VerifyMode } from "../verify.ts";
 import { runShellStream } from "../shell.ts";
 import { resolveSandboxPolicy, sandboxBackendAvailable } from "../sandbox/index.ts";
-import { helpText, formatModelList, compareModels, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
+import { helpText, formatModelList, compareModels, orderModelsForDisplay, resolveModelSwitch, modelDirectiveIn, matchCommands, commandNameMatches, buildContextView, formatAccounts, accountLabel, accountName, accountSlug, ACCOUNT_ADD_HELP, badgeFor, closestCommand } from "../commands.ts";
 import { checkHealth, recordHealth, isFresh, isNotDeployedError } from "../accounts/health.ts";
 import { addMcpServer, formatMcpConfigList, mcpConfigPaths, mcpToolSummary, reloadMcpConnections, removeMcpServer, shellSplit } from "../mcp.ts";
 import { applyKey, applyMouse, caretPos, extendUnitSelection, sanitizeInputText, selectionRange, wrapOffset, type Edit, type MouseClick } from "./input.ts";
@@ -721,8 +721,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   };
   // Usable (API) models for the /model panel — same grouping + rank order as
   // the inline `/model` list (commands.ts compareModels) so the two can't drift.
+  // Display ordering that reflects the user's ACTUAL accounts, not the static
+  // registry order: the scoped account's provider leads, then any added account,
+  // then env-only/seed providers. Without this the models you route to (e.g. a
+  // discovered azure-foundry deployment) sort last and get sliced off the picker.
+  const modelDisplayOpts = (): { accountProviders: Set<string>; scopedProvider: string | null } => {
+    const accts = listAccounts().filter((a) => a.enabled);
+    const scopedSlug = policy().pinAccount;
+    const scoped = scopedSlug ? accts.find((a) => accountSlug(a) === scopedSlug) : null;
+    return { accountProviders: new Set(accts.map((a) => a.provider)), scopedProvider: scoped?.provider ?? null };
+  };
   const buildPanelModelRows = (cur?: string | null): PanelModelRow[] => {
-    const usable = modelRegistry().filter((m) => providerAvailable(m.provider));
+    const usable = orderModelsForDisplay(modelRegistry().filter((m) => providerAvailable(m.provider)), modelDisplayOpts());
     const byProvider = new Map<string, typeof usable>();
     for (const m of usable) {
       if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
@@ -1750,7 +1760,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const take = (rows: PaletteRow[]) => rows.filter((r) => !q || `${r.label} ${r.detail ?? ""} ${r.value}`.toLowerCase().includes(q)).slice(0, 7);
     if (head === "/model") {
       const cli = activeCliRef.current;
-      const models = cli ? cliModelChoices(cli.binary) : modelRegistry();
+      // Order by the user's real accounts (scoped account first) so the slice(0,7)
+      // in take() keeps the models you route to instead of cutting them off the end.
+      const models = cli ? cliModelChoices(cli.binary) : orderModelsForDisplay(modelRegistry(), modelDisplayOpts());
       return take([
         { value: "/model auto", label: "auto", detail: cli ? "use subscription default" : "route per task" },
         ...models.map((m) => ({ value: `/model ${m.label}`, label: m.label, detail: cli ? `${cli.binary} subscription` : `${m.provider} · ${m.id}` })),
@@ -4310,10 +4322,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const exactPickerValue = pickerRows.length === 1 && pickerRows[0]!.value.trim() === draft.trim();
       const paletteShouldOwnArrows = activeCount > 1 || (activeCount === 1 && !exactPickerValue && !isExactSlashCommand(draft));
       // An exact command with NO argument picker (/usage, /help, …) submits to
-      // open its panel. But when an argument picker IS showing (/model, /account,
-      // /effort), Enter accepts the highlighted row below — selecting the
-      // highlighted `auto` should route, not dump you into the full model list.
-      if (key.return && isExactSlashCommand(draft) && !pickerRows.length) {
+      // open its panel. When an argument picker IS showing (/model, /effort),
+      // Enter accepts the highlighted row below — picking the highlighted `auto`
+      // should route, not dump you into the full model list. EXCEPTION: bare
+      // /account opens the interactive accounts panel (its picker's first row is
+      // "off", and Enter-ing into "off" silently dropped your subscription instead
+      // of letting you browse/switch). Only when you haven't navigated the palette
+      // (index 0) — arrow down then Enter still picks the highlighted account row.
+      const bareOpensPanel = (() => {
+        const q = draft.trim().toLowerCase();
+        return q === "/account" || q === "/accounts";
+      })();
+      if (key.return && isExactSlashCommand(draft) && (!pickerRows.length || (bareOpensPanel && paletteIndexRef.current === 0))) {
         setPaletteIndex(0);
         submit(draft.trim());
         return;
@@ -4546,11 +4566,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const lineWidth = Math.max(Math.min(width - 3, CONTENT_CAP), 20);
   const marginCols = Math.max(0, Math.floor((width - 3 - lineWidth) / 2));
   // The shared PAGE column (Broadsheet "one page"): every footer surface sits in
-  // the same centered column as the transcript. +1 mirrors the transcript Box's
-  // paddingX so the columns align exactly; pageW = lineWidth + the 2-col padding
-  // the footer components carry themselves (paddingX={1}).
-  const pageLeft = marginCols ? marginCols + 1 : 0;
-  const pageW = lineWidth + 2;
+  // the same centered column as the transcript's VISIBLE band. The transcript
+  // Viewport lives inside a paddingX={1} Box and reserves its rightmost column for
+  // the scrollbar, so a band fills exactly [marginCols+1, marginCols+1+lineWidth).
+  // The footer must match that box, NOT lineWidth+2 at marginCols — that older
+  // value overhung the bands by one column on each side (the composer/usage strip
+  // bled into the scrollbar column on the right). pageLeft mirrors the left
+  // paddingX (+1 even when marginCols is 0); pageW is the band's own width.
+  const pageLeft = marginCols + 1;
+  const pageW = lineWidth;
   pageWRef.current = pageW;
   pageLeftRef.current = fullscreen ? pageLeft : 0;
   // History recede: while a turn runs or a consent is pending, settled items

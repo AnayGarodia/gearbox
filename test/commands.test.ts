@@ -57,7 +57,7 @@ test("formatModelList marks current and lists available labels", () => {
   }
 });
 
-import { modelRank, compareModels, modelMarker, buildContextView } from "../src/commands.ts";
+import { modelRank, compareModels, modelMarker, buildContextView, orderModelsForDisplay } from "../src/commands.ts";
 
 test("buildContextView reports each section's share of the window", () => {
   const v = buildContextView([{ name: "system", tokens: 10_000 }, { name: "history", tokens: 240 }], 200_000, "/repo");
@@ -85,6 +85,31 @@ test("modelRank/compareModels: curated → discovered → seeds → pin-only, qu
   // Ties inside a rank break alphabetically — the list is fully deterministic.
   const t1: ModelSpec = { ...discovered, id: "z", label: "zz" };
   expect([t1, discovered].sort(compareModels).map((m) => m.id)).toEqual(["c", "z"]);
+});
+
+test("orderModelsForDisplay: scoped account first, then any added account, then env-only — never buried by static rank", () => {
+  // The reported bug: a discovered azure-foundry model (the account routing is
+  // scoped to) sat at the END of the static registry behind curated openai/google
+  // seeds, so the /model palette's slice(0,7) cut it off entirely.
+  const opus: ModelSpec = { id: "anthropic/opus", provider: "anthropic", sdkId: "opus", label: "opus", contextWindow: 1, quality: 0.95 };
+  const gpt: ModelSpec = { id: "openai/gpt", provider: "openai", sdkId: "gpt", label: "gpt", contextWindow: 1, quality: 0.9 };
+  const gemini: ModelSpec = { id: "google/gemini", provider: "google", sdkId: "gemini", label: "gemini", contextWindow: 1, quality: 0.88 };
+  const deepseek: ModelSpec = { id: "azure-foundry/DeepSeek-V4-Flash", provider: "azure-foundry", sdkId: "DeepSeek-V4-Flash", label: "DeepSeek-V4-Flash", contextWindow: 1, capabilities: { source: "api-discovered" } };
+  const registry = [opus, gpt, gemini, deepseek]; // static order: curated first, discovered last
+
+  // Routing scoped to the azure-foundry account → its models lead.
+  const scoped = orderModelsForDisplay(registry, { accountProviders: new Set(["anthropic", "azure-foundry"]), scopedProvider: "azure-foundry" });
+  expect(scoped[0]!.id).toBe("azure-foundry/DeepSeek-V4-Flash");
+  // anthropic (a saved account) outranks openai/google (env-only) even though they're curated.
+  expect(scoped.findIndex((m) => m.provider === "anthropic")).toBeLessThan(scoped.findIndex((m) => m.provider === "openai"));
+
+  // Unscoped: saved accounts (anthropic, azure-foundry) still beat env-only providers.
+  const unscoped = orderModelsForDisplay(registry, { accountProviders: new Set(["anthropic", "azure-foundry"]) });
+  const lastAccount = Math.max(unscoped.findIndex((m) => m.provider === "anthropic"), unscoped.findIndex((m) => m.provider === "azure-foundry"));
+  expect(lastAccount).toBeLessThan(unscoped.findIndex((m) => m.provider === "openai"));
+
+  // No opts → falls back to plain compareModels (back-compat).
+  expect(orderModelsForDisplay(registry, {}).map((m) => m.id)).toEqual([...registry].sort(compareModels).map((m) => m.id));
 });
 
 test("modelMarker tags provenance honestly", () => {
