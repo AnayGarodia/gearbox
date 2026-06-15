@@ -1341,11 +1341,18 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
               return;
             }
             const left = leaveSubscription();
+            // "auto" means route across EVERYTHING — also lift any account scope
+            // set by a prior /account <name> (otherwise "auto" silently routes
+            // within one account and looks stuck on its model, e.g. only DeepSeek
+            // on an azure-foundry scope).
+            const wasScoped = policy().pinAccount;
+            if (wasScoped) updatePolicy({ pinAccount: null });
             setSelector(new RoutingSelector());
             setLastPick(null);
             routedRef.current = null;
             updatePrefs({ pinnedModel: undefined }); // remember: routing, across sessions
-            notice("routing on · Gearbox now picks the model per task (the cheapest that can do the job)" + left);
+            const scopeNote = wasScoped ? ` · lifted the ${wasScoped} account scope — now routing across all your accounts` : "";
+            notice("routing on · Gearbox now picks the model per task (the cheapest that can do the job)" + scopeNote + left);
             return;
           }
           {

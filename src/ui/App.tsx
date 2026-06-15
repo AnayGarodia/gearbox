@@ -35,7 +35,7 @@ import { FixedSelector, type ModelSelector, type ModelChoice, type Backend, type
 import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS, AUTH_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
-import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, type PreferenceKind } from "../model/preferences.ts";
+import { confirmRoutingPreference, setBudget, loadBudgets, globalPreference, policy, type PreferenceKind } from "../model/preferences.ts";
 import { effortLevels, normalizeEffort, clampEffort, type Effort } from "../model/reasoning.ts";
 import { findModel, estimateCost, hasPricing, modelRegistry, providerAvailable, refreshModelsDevOverlay, type ModelSpec } from "../providers.ts";
 import { Panel } from "./components/Panel.tsx";
@@ -1879,9 +1879,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Now auto-routing leads with "auto ·" (the model is just the latest pick) and
   // a hard pin trails with "· pinned".
   const isPinned = !activeCli && selector instanceof FixedSelector;
+  // When auto-routing is confined to ONE account (you ran /account <name>),
+  // "auto · <model>" looks like free routing but it isn't — say "auto · <account>"
+  // so it's obvious WHY only that account's models ever appear (/model auto or
+  // /account off lifts it). The per-turn route card still shows the exact model.
+  const routeScope = !activeCli && !isPinned && !setupRequired ? policy().pinAccount : undefined;
   const modelLabel = setupRequired ? "setup required"
     : activeCli ? `${activeCli.label}${activeCliModel ? ` · ${activeCliModel}` : ""}`
     : isPinned ? `${model?.label ?? "none"} · pinned`
+    : routeScope ? `auto · ${routeScope} only`
     : model?.label ? `auto · ${model.label}` : "auto-route";
   const subscription = activeCli ? activeCli.label : null;
   // Routing POLICY for the input box (intent, not a model name). Derived from the
