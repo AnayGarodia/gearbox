@@ -49,6 +49,7 @@ import type { EmbeddingModel, LanguageModel } from "ai";
 import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { profileFor } from "./model/profiles.ts";
 import { contractFor } from "./model/contract.ts";
+import { listPriceFor } from "./model/pricing.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
 import type { Account, ResolvedCreds } from "./accounts/types.ts";
 import { loadCachedCatalog } from "./model/modelsdev.ts";
@@ -538,6 +539,11 @@ function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | 
     spec?.cost ??
     profileFor(id)?.cost ??
     (spec ? profileFor(spec.sdkId)?.cost : undefined) ??
+    // The comprehensive, PROVIDER-SCOPED list-price table (src/model/pricing.ts):
+    // fills the long tail and, crucially, prices a model at its HOST's rate — a
+    // Foundry-hosted DeepSeek costs ~4x its native API rate, so the provider
+    // scope matters for an honest estimate.
+    listPriceFor(spec?.provider, spec?.sdkId ?? id) ??
     canonicalPricingFor(spec?.sdkId ?? id)
   );
 }
