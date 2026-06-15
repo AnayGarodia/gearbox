@@ -25,6 +25,7 @@ export function Working({
   width,
   waiting,
   tokens = 0,
+  cost = 0,
 }: {
   state: MascotState;
   verb: string;
@@ -33,6 +34,7 @@ export function Working({
   width: number;
   waiting?: boolean; // a permission/question prompt is blocking the turn — it's on YOU, not the model
   tokens?: number; // live output-token burn this turn (Claude-Code style)
+  cost?: number; // live spend estimate for THIS turn (USD), ticks up as output streams
 }) {
   // While a prompt blocks the turn, the model isn't working — say so in amber
   // and point down to the prompt, instead of a "Thinking · 30s" spinner that
@@ -64,6 +66,7 @@ export function Working({
       {live ? (
         <Text>
           {tokens > 0 ? <Text color={color.faint}>{`↑ ${fmtTok(tokens)} tok  ·  `}</Text> : null}
+          {cost >= 0.005 ? <Text color={color.faint}>{`~$${cost.toFixed(2)}  ·  `}</Text> : null}
           <Text color={color.accentDim}>{fmtElapsed(elapsed)}</Text>
           <Text color={color.faint}> · esc interrupt</Text>
         </Text>

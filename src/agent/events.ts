@@ -49,7 +49,7 @@ export type AgentEvent =
    * The router chose a model. Emitted before the turn starts so the status
    * bar can show the active model without waiting for the first token.
    */
-  | { type: "model-pick"; model: string; provider: string; reason: string }
+  | { type: "model-pick"; model: string; provider: string; reason: string; id?: string }
 
   /**
    * Lifecycle label for a phase of the turn (contacting model, editing files,

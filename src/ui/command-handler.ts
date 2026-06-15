@@ -169,6 +169,7 @@ export interface CommandCtx {
   tabs?: import("./App.tsx").TabControl;
   /** the kind the last auto-routed turn ran with + how it was determined (/why provenance) */
   routedKindRef: MutableRefObject<{ kind: import("../agent/classify.ts").TaskKind; source: string } | null>;
+  lastScorecardRef: MutableRefObject<import("../model/selector.ts").Scorecard | null>;
   runTurnRef: MutableRefObject<(prompt: string, attempt?: number) => Promise<void>>;
   selectorRef: MutableRefObject<ModelSelector>;
   sessionRef: MutableRefObject<{ id: string; createdAt: number; title: string; turns: TurnMeta[]; compactions: CompactionArchive[] }>;
@@ -260,7 +261,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
     busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
     gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
     lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
-    routedKindRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
+    routedKindRef, lastScorecardRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
     setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
     setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
     setSandboxMode, setThemeEpochState, setTokens, setVerb, setVim, setYoloState,
@@ -1554,7 +1555,12 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             // questions differently than the LLM verdict that routed the turn, so
             // re-deriving here showed a scorecard that disagreed with reality.
             const last = modeRef.current === "plan" ? null : routedKindRef.current;
-            const card = sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : last?.kind });
+            // Prefer the EXACT card the last turn used (captured at pick time) so
+            // /why never contradicts what actually ran. Only re-derive when no
+            // turn has routed yet (the card is null) or in plan mode.
+            const card = (modeRef.current !== "plan" && lastScorecardRef.current)
+              ? lastScorecardRef.current
+              : sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : last?.kind });
             // The session saved-vs-always-premium headline, same math as /cost.
             const turns = sessionRef.current.turns;
             const saved = estimateSavings(turns, premiumRate(modelRegistry()), (t) => estimateCost([t]));

@@ -548,7 +548,11 @@ function diffLines(
     out.push(headerBar(title, right, width));
   }
 
-  if (width >= SIDE_BY_SIDE_MIN) {
+  // Two-pane only earns its width when there are BOTH sides to compare. A pure
+  // addition (a NEW file) or a pure deletion has nothing on one side, so
+  // side-by-side would paint a huge empty pane — use the single-column view.
+  const hasBoth = adds > 0 && dels > 0;
+  if (width >= SIDE_BY_SIDE_MIN && hasBoth) {
     // Two panes: old | new, a 1-col gap between. Each pane = a line-number
     // gutter on the darker tint + the code on the row tint.
     const paneW = Math.floor((width - 1) / 2);

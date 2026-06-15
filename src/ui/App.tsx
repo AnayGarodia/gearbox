@@ -31,7 +31,7 @@ import { color, glyph, setTheme, activeTheme, THEMES, providerColor } from "./th
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import type { AccountView, Item } from "./types.ts";
 import type { OnEvent, Usage } from "../agent/events.ts";
-import { FixedSelector, type ModelSelector, type ModelChoice, type Backend } from "../model/selector.ts";
+import { FixedSelector, type ModelSelector, type ModelChoice, type Backend, type Scorecard } from "../model/selector.ts";
 import { classifyFailure, cooldownScope, markExhausted, modelScopedKey, DEFAULT_COOLDOWN_MS, AUTH_COOLDOWN_MS } from "../model/cooldown.ts";
 import { RoutingSelector, classify } from "../model/router.ts";
 import { parseRateHeaders } from "../model/rate-headers.ts";
@@ -566,6 +566,11 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // determined, for /why provenance), and the last edited turn's (kind, model)
   // so /undo can debit it as a human revert.
   const routedKindRef = useRef<{ kind: TaskKind; source: string } | null>(null);
+  // The EXACT scorecard the last routed turn used, captured at pick time so /why
+  // replays the real decision instead of re-deriving it later (the candidate pool
+  // and classifier availability can drift between the turn and /why, which made
+  // /why show a different winner than the turn actually picked).
+  const lastScorecardRef = useRef<Scorecard | null>(null);
   // The backend that served the last auto-routed turn, so a silent hop between
   // a metered API account and a subscription seat gets a one-line notice.
   const lastBackendRef = useRef<{ kind: string; accountId?: string } | null>(null);
@@ -631,6 +636,9 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const toastIdRef = useRef(0);
   const toastTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const outCharsRef = useRef(0); // streamed output chars this turn, for a live tok/s estimate
+  // The model id the current turn routed to, for the live spend estimate on the
+  // working line. Set on model-pick, cleared at turn start.
+  const liveModelIdRef = useRef<string | null>(null);
   // When the current turn started (0 if idle) — lets the perm/ask alert fire a
   // bell/desktop-notify ONLY when a turn has run long enough that you've likely
   // stepped away, not on every routine prompt while you're sitting right there.
@@ -2270,7 +2278,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         routedRef.current = { model: choice.model, reason: choice.reason };
         setLastPick({ model: choice.model, reason: choice.reason }); // keep the status bar honest about what /ask ran (R-1)
-        onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+        onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason, id: choice.model.id });
         const acct = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
         const creds = acct ? await resolveCreds(acct) : undefined;
         usedAccountRef.current = acct?.id ?? null;
@@ -2331,7 +2339,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           routedRef.current = { model: choice.model, reason: choice.reason };
           setLastPick({ model: choice.model, reason: choice.reason });
           const showCli = routeChanged(`cli:${acct.id}:${choice.model.id}`);
-          if (showCli) onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+          if (showCli) onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason, id: choice.model.id });
           const out = await runCliBackend({
             binary: choice.backend.binary, profile: choice.backend.profile, modelId: choice.model.sdkId, accountId: acct.id,
             efforts: choice.model.efforts ?? [], label: choice.model.label, routedEffort: choice.effort,
@@ -2348,7 +2356,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         routedRef.current = { model: choice.model, reason: choice.reason };
         setLastPick({ model: choice.model, reason: choice.reason });
         if (routeChanged(`api:${choice.model.provider}:${choice.model.id}`)) {
-          onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason });
+          onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason, id: choice.model.id });
         }
         onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
@@ -2483,6 +2491,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         choice = sel.select({ prompt, kind: routedKind, requires, estTokens }); // directive model unavailable → fall back to routing
       }
       if (sel instanceof RoutingSelector && !directiveId) noteBackendSwitch(choice);
+      // Capture the ACTUAL scorecard now (same task the pick used), so /why later
+      // replays this exact decision rather than re-deriving it against drifted
+      // state. Cleared when not auto-routing (a pin/directive ran).
+      if (sel instanceof RoutingSelector && !directiveId && sel.explain) {
+        try {
+          const card = sel.explain({ prompt, kind: routedKind, requires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens });
+          lastScorecardRef.current = routedKind ? { ...card, kindSource: routedSource } : card;
+        } catch { lastScorecardRef.current = null; }
+      } else {
+        lastScorecardRef.current = null;
+      }
       // When the user explicitly chose the model (a directive or a /model pin),
       // delegated sub-tasks inherit it instead of re-routing to the cheapest.
       const explicitModelId = directiveId || (sel instanceof FixedSelector ? choice.model.id : undefined);
@@ -2813,6 +2832,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // also surface the prompt-cache hit (proof caching is working).
       let turnUsage: Usage = { inputTokens: 0, outputTokens: 0 };
       outCharsRef.current = 0;
+      liveModelIdRef.current = null;
       firstOutputAtRef.current = 0;
       turnProducedRef.current = false;
       if (lingerRef.current) clearTimeout(lingerRef.current);
@@ -2950,6 +2970,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // No transcript item here: the live model shows in the footer during the
           // turn, and the single canonical `routed → …` provenance line is printed
           // POST-turn (with the real cost) at the turn-completion seam below.
+          // Capture the routed id so the working line can show live spend.
+          if (e.id) liveModelIdRef.current = e.id;
         } else if (e.type === "phase") {
           push({ kind: "phase", id: idRef.current++, label: e.label, detail: e.detail, state: e.state ?? "running" });
         } else if (e.type === "text") {
@@ -3418,7 +3440,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
         gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
         lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
-        routedKindRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
+        routedKindRef, lastScorecardRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
         // state setters
         setActiveCli, setActiveCliModelId, setBusy, setEffort, setGhostSkin, setItems, setLastInput,
         setLastPick, setMascotState, setPanel, setSelector, setStatusPinned, setSuggestion,
@@ -4630,6 +4652,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     [stripView, tokens], // eslint-disable-line react-hooks/exhaustive-deps
   );
   if (statusPinned) footer += 2 + (ctxPct != null ? 1 : 0) + (stripSub ? Math.max(1, stripSub.limits?.length ?? 1) : 0) + (stripApi?.spend ? 1 : 0) + (stripApi?.limits?.length ?? 0) + 1;
+  // Live spend estimate for the IN-FLIGHT turn (working line): the routed model's
+  // rate × (this turn's input proxy + output streamed so far). Recomputed every
+  // motion tick while busy, so the figure visibly ticks up. A subscription seat
+  // estimates to $0 (estimateCost skips it), so it simply doesn't show. The
+  // session $ in the status bar stays the settled post-turn truth.
+  const liveTurnUSD = busy && liveModelIdRef.current
+    ? estimateCost([{ model: liveModelIdRef.current, inputTokens: lastInput, outputTokens: Math.round(outCharsRef.current / 4) }])
+    : 0;
   const HEADER = 3; // Masthead (marginTop + wordmark·account row + rule) — keep in lockstep with viewportTop 4
   // Keep the whole frame STRICTLY under `rows`. Ink redraws with a full
   // clearTerminal (\x1b[2J\x1b[3J\x1b[H — the 3J wipes SCROLLBACK) the moment the
@@ -4898,7 +4928,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const footerJsx = (
     <>
       <Box flexDirection="column" marginLeft={pageLeft} width={pageW}>
-        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} waiting={!!perm || !!ask} tokens={Math.round(outCharsRef.current / 4)} /> : null}
+        {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={pageW} waiting={!!perm || !!ask} tokens={Math.round(outCharsRef.current / 4)} cost={liveTurnUSD} /> : null}
         {queued.length ? (
           <Box paddingX={1} marginTop={1} flexDirection="column">
             {queued.map((q, i) => (
@@ -4945,7 +4975,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       {/* Inline mode has no Viewport/footer frame, so the working strip lives right
           above the composer — otherwise inline shows no "still alive" signal at all
           while a turn runs. Same glow+elapsed as fullscreen, no activity rail. */}
-      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} waiting={!!perm || !!ask} tokens={Math.round(outCharsRef.current / 4)} /> : null}
+      {busy || linger ? <Working state={mascotState} verb={verb} elapsed={elapsed} linger={linger && !busy} width={width} waiting={!!perm || !!ask} tokens={Math.round(outCharsRef.current / 4)} cost={liveTurnUSD} /> : null}
       {queued.length ? (
         <Box paddingX={1} marginTop={1} flexDirection="column">
           {queued.map((q, i) => (

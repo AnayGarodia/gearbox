@@ -232,3 +232,19 @@ test("a run of >=4 plain settled tools coalesces into one line; ⌃O expands; ou
   expect(expanded).toContain("u4"); // ⌃O brings every call back
   expect(expanded).not.toContain("fetched 5 pages");
 });
+
+import { computeDiff } from "../src/diff.ts";
+
+test("a new-file (all-additions) diff renders single-column even at wide width — no empty before-pane", () => {
+  const diff = computeDiff("", "alpha\nbeta\ngamma");
+  const items: Item[] = [{ kind: "tool", id: 1, name: "write_file", arg: "new.ts", status: "ok", summary: "wrote new.ts", diff } as any];
+  // 140 cols is past SIDE_BY_SIDE_MIN — a mixed diff would go two-pane, but an
+  // all-add diff must stay single-column so there's no big blank left pane.
+  const lines = itemsToLines(items, 140);
+  for (const l of lines) expect(l.reduce((n, s) => n + displayWidth(s.text), 0)).toBeLessThanOrEqual(140); // ≤ width invariant
+  const body = lines.filter((l) => l.some((s) => /alpha|beta|gamma/.test(s.text)));
+  // each changed line appears on ONE row (not split across two panes)
+  expect(body.length).toBe(3);
+  // and a row carries the added-line tint with the + marker, not a half-empty pane
+  expect(lines.some((l) => l.some((s) => s.text.includes("+ ") && s.bold))).toBe(true);
+});
