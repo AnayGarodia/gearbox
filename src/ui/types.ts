@@ -39,7 +39,7 @@ export interface AccountView {
 
 // One transcript item as the UI sees it. Built from the AgentEvent stream.
 export type Item =
-  | { kind: "user"; id: number; text: string; turnNo?: number } // turnNo: real turns get a numbered heading; command echoes stay small
+  | { kind: "user"; id: number; text: string; turnNo?: number; at?: number } // turnNo: real turns get a numbered heading; command echoes stay small. at: wall-clock for the optional timestamp.
   | { kind: "assistant"; id: number; text: string; done: boolean }
   | {
       kind: "tool";
@@ -49,7 +49,7 @@ export type Item =
       arg: string;
       status: "running" | "ok" | "err";
       summary: string;
-      diff?: { sign: "+" | "-"; text: string }[];
+      diff?: { sign: "+" | "-"; text: string; gap?: boolean }[];
       stream?: string;
       streamCount?: number;
       activity?: string; // a single REPLACING live status line (e.g. a delegate's "reading X · 12 tools")
@@ -96,5 +96,5 @@ export type Item =
   | { kind: "accounts"; id: number; view: AccountView }
   | { kind: "usage"; id: number; view: UsageView } // structured /usage card (colored bars)
   | { kind: "context"; id: number; view: ContextView } // structured /context card (colored bars)
-  | { kind: "scorecard"; id: number; card: Scorecard } // structured /why routing scorecard
+  | { kind: "scorecard"; id: number; card: Scorecard; savingsNote?: string } // structured /why routing scorecard (savingsNote: session saved-vs-premium summary)
   | { kind: "error"; id: number; text: string };

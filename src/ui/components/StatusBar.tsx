@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { barCells } from "../../accounts/usage.ts";
 import { limitColor } from "../severity.ts";
+import { Pill } from "./kit.tsx";
 
 const SEP = `  ${glyph.bullet}  `; // separator (5 cols)
 
@@ -170,7 +171,11 @@ function StatusBarImpl({
   // only "no sandbox" (risk) and "read-only" (explains why writes fail) show.
   if (sandbox === "off") chips.push({ text: "no sandbox", c: color.warn });
   if (sandbox === "read-only") chips.push({ text: "sbx ro", c: color.warn });
-  const chipLen = chips.reduce((n, c) => n + c.text.length, 0) + Math.max(0, chips.length - 1) * 2 + (chips.length ? 2 : 0);
+  // Pills are ` text ` (+2) with a 1-space gap and a leading 2-space lead-in;
+  // chipLen must match the render so the where-path truncates against it exactly.
+  const chipLen = chips.length
+    ? 2 + chips.reduce((n, c) => n + c.text.length + 2, 0) + (chips.length - 1)
+    : 0;
 
   // Left: cwd:branch + the attention chips (the wordmark lives in the masthead
   // now). The truncation comes from statusBarLayout — the SAME math the click
@@ -191,7 +196,10 @@ function StatusBarImpl({
         {whereShown ? <Text color={color.faint}>{whereShown}</Text> : null}
         {chips.length ? <Text>{"  "}</Text> : null}
         {chips.map((c, i) => (
-          <Text key={c.text} color={c.c} bold={c.bold}>{i > 0 ? "  " : ""}{c.text}</Text>
+          <React.Fragment key={c.text}>
+            {i > 0 ? <Text>{" "}</Text> : null}
+            <Pill label={c.text} ink={c.c} tick />
+          </React.Fragment>
         ))}
       </Text>
       <Text wrap="truncate-end">
@@ -200,22 +208,32 @@ function StatusBarImpl({
             provider change is visible without reading. The model string itself
             (incl. any "● " prefix) comes from App — statusBarLayout hit-tests
             the same string, so the zone can't drift. */}
+        {/* Each fact wears a chip PLATE (chipBg) so it reads as a badge; the
+            ·-separators stay on the bar between them. The plates add no columns,
+            so statusBarLayout's click zones still land exactly. */}
         {model.startsWith("● ") ? (
-          <>
+          <Text backgroundColor={color.chipBg}>
             <Text color={providerColor ?? color.accent} bold={providerFlash}>{"● "}</Text>
             <Text color={providerFlash ? (providerColor ?? color.accent) : color.text} bold={providerFlash}>{model.slice(2)}</Text>
-          </>
+          </Text>
         ) : (
-          <Text color={color.text}>{model}</Text>
+          <Text color={color.text} backgroundColor={color.chipBg}>{model}</Text>
         )}
         {gauge ? (
           <>
             <Text color={color.faint}>{SEP}</Text>
-            <Text color={limitColor(ctxPct!)}>{gauge.fill}</Text>
-            <Text color={color.faint}>{gauge.empty + " ctx"}</Text>
+            <Text backgroundColor={color.chipBg}>
+              <Text color={limitColor(ctxPct!)}>{gauge.fill}</Text>
+              <Text color={color.faint}>{gauge.empty + " ctx"}</Text>
+            </Text>
           </>
         ) : null}
-        {costText ? <Text color={color.faint}>{SEP + costText}</Text> : null}
+        {costText ? (
+          <>
+            <Text color={color.faint}>{SEP}</Text>
+            <Text color={color.faint} backgroundColor={color.chipBg}>{costText}</Text>
+          </>
+        ) : null}
       </Text>
       </Box>
     </Box>

@@ -6,7 +6,7 @@
 // break Ink's width math. Wrapping happens here, at a known width, so every Line
 // is exactly one terminal row.
 import { marked } from "marked";
-import { color, themeEpoch } from "./theme.ts";
+import { color, themeEpoch, providerColor } from "./theme.ts";
 import { glyph } from "./theme.ts";
 import { highlightLine } from "./highlight.ts";
 import type { Item } from "./types.ts";
@@ -14,9 +14,11 @@ import { barCells } from "../accounts/usage.ts";
 import { sparkline } from "./cost-tab.ts";
 import { retryPhrase } from "./collapse.ts";
 import { scorecardRows } from "../commands.ts";
+import type { Scorecard } from "../model/selector.ts";
 import { PROSE_RE, proseTokenStyle } from "./prose.ts";
 import { editorUrl, pathish } from "./links.ts";
 import { displayWidth, sliceWidth } from "./width.ts";
+import { pill, headerBar, bgRow } from "./cards.ts";
 
 import { limitColor } from "./severity.ts";
 // Limit window value: a utilization bar when a percentage is known, else a status word.
@@ -88,6 +90,25 @@ function guessCodeLang(text: string): string {
   return "";
 }
 
+// File extension → a short language label (for the code-block / diff-card chip
+// and the highlighter's comment-style hint). Empty for unknown extensions.
+const EXT_LANG: Record<string, string> = {
+  ts: "ts", tsx: "tsx", js: "js", jsx: "jsx", mjs: "js", cjs: "js",
+  py: "python", rb: "ruby", go: "go", rs: "rust", java: "java", kt: "kotlin",
+  c: "c", h: "c", cpp: "cpp", cc: "cpp", hpp: "cpp", cs: "csharp", swift: "swift",
+  php: "php", sh: "bash", bash: "bash", zsh: "bash", fish: "fish",
+  json: "json", yaml: "yaml", yml: "yaml", toml: "toml", ini: "ini",
+  md: "md", html: "html", css: "css", scss: "scss", sql: "sql", lua: "lua",
+  hs: "haskell", ex: "elixir", exs: "elixir", pl: "perl", r: "r", dockerfile: "dockerfile",
+};
+export function langForPath(path: string): string {
+  const base = path.split("/").pop() ?? path;
+  if (/^dockerfile$/i.test(base)) return "dockerfile";
+  if (/^makefile$/i.test(base)) return "makefile";
+  const ext = base.includes(".") ? base.split(".").pop()!.toLowerCase() : "";
+  return EXT_LANG[ext] ?? "";
+}
+
 function codeRow(line: string, lang: string): { sign: string; code: string; bg: string; fg: string; lang: string } {
   const isDiff = /^(diff|patch)$/i.test(lang);
   if ((isDiff || /^[+-]/.test(line)) && line.startsWith("+") && !line.startsWith("+++")) {
@@ -102,27 +123,27 @@ function codeRow(line: string, lang: string): { sign: string; code: string; bg: 
 function codeBlockLines(code: string, lang: string, width: number): Line[] {
   const lines = code.replace(/\n$/, "").split("\n");
   const blockWidth = Math.max(
-    24,
-    Math.min(width, Math.max(40, ...lines.map((l) => 2 + displayWidth(l)), lang ? lang.length + 2 : 0)),
+    28,
+    Math.min(width, Math.max(44, ...lines.map((l) => 4 + displayWidth(l)), lang ? lang.length + 6 : 0)),
   );
   const out: Line[] = [];
-  if (lang) {
-    // Single-paint: ONE span carries the whole label row (text pre-padded), so
-    // the row is one background pass instead of a label chip + a pad span.
-    out.push([{ text: ` ${lang} `.padEnd(blockWidth).slice(0, blockWidth), color: color.accentDim, bold: true, bg: color.codeBg }]);
-  }
+  // A contained card: a header bar (left accent spine + a language CHIP), a
+  // breath of top padding, the code on the surface tint, then bottom padding —
+  // so a snippet reads as one object, not loose tinted lines.
+  out.push(headerBar([...pill(lang || "code", color.accentDim)], [], blockWidth));
+  out.push(bgRow([], blockWidth, color.codeBg)); // top padding
   for (let i = 0; i < lines.length; i++) {
     const row = codeRow(lines[i]!, lang);
-    // No per-line number gutter — it read as noise (a 2-line snippet got a
-    // "1 │ … 2 │ …" frame). The block tint + optional lang label carry the
-    // "this is code" cue; diff lines keep a colored +/- marker, plain code a pad.
-    const lead = row.sign ? `${row.sign} ` : "  ";
+    // A 2-col left gutter of breathing room, then the code. Diff-style ```diff
+    // blocks keep their colored +/- marker; plain code gets the padding.
+    const lead = row.sign ? ` ${row.sign} ` : "   ";
     const spans: Span[] = [
       { text: lead, color: row.sign ? row.fg : color.faint, bold: Boolean(row.sign), bg: row.bg },
       ...(highlightLine(row.code, row.lang) as Span[]).map((s) => ({ ...s, bg: row.bg })),
     ];
     out.push(padBg(clipSpans(spans, blockWidth), blockWidth, row.bg));
   }
+  out.push(bgRow([], blockWidth, color.codeBg)); // bottom padding
   return out;
 }
 
@@ -360,12 +381,15 @@ function blockLines(tok: any, width: number): Line[] {
       return codeBlockLines(String(tok.text ?? ""), lang, width);
     }
     case "blockquote": {
+      // A real quote bar: a solid accent spine down the left, the quoted text
+      // set a step quieter (dim + italic) so it reads as an aside, not body.
       const inner: Line[] = (tok.tokens ?? []).flatMap((t: any) => blockLines(t, Math.max(width - 2, 1)));
-      const bar: Span = { text: glyph.quote + " ", color: color.accentDim };
-      return inner.map((l) => [bar, ...l]);
+      const bar: Span = { text: "▌ ", color: color.accent };
+      return inner.map((l) => [bar, ...l.map((s) => ({ ...s, color: s.color === color.text ? color.dim : s.color, italic: true }))]);
     }
     case "hr":
-      return [[{ text: glyph.rule.repeat(Math.min(width, 24)), color: color.faint }]];
+      // A full-width hairline rule, not a stubby 24-char dash.
+      return [BLANK, [{ text: glyph.rule.repeat(Math.max(8, width)), color: color.faint }], BLANK];
     case "list": {
       const out: Line[] = [];
       let n = Number(tok.start || 1);
@@ -410,8 +434,10 @@ function blockLines(tok: any, width: number): Line[] {
         cells.forEach((c, i) => { if (i > 0) line.push({ text: " ".repeat(GAP) }); line.push(...padCell(c, widths[i]!)); });
         return line;
       };
-      const out: Line[] = [joinRow(head)];
-      out.push([{ text: widths.map((w) => "─".repeat(w)).join("─".repeat(GAP)), color: color.faint }]);
+      // A tinted header bar replaces the dashed separator — the table reads as a
+      // contained grid, the header obviously a header.
+      const tableW = widths.reduce((a, b) => a + b, 0) + GAP * Math.max(0, ncols - 1);
+      const out: Line[] = [padBg(joinRow(head).map((s) => ({ ...s, bg: color.headerBg })), tableW, color.headerBg)];
       for (const r of body) out.push(joinRow(r));
       return out;
     }
@@ -455,7 +481,7 @@ function diffStatSpans(lines?: { sign: "+" | "-"; text: string }[]): Span[] {
 // Width threshold for the two-pane diff: below this, the unified gutter view.
 export const SIDE_BY_SIDE_MIN = 120;
 
-type NumberedDiff = { sign: "+" | "-"; text: string; n: number };
+type NumberedDiff = { sign: "+" | "-"; text: string; n: number; gap?: boolean };
 
 /** Standard hunk pairing for the two-pane view: a run of consecutive − lines
  *  sits beside the run of + lines that immediately follows it (row k of each);
@@ -477,27 +503,56 @@ export function pairDiffRows(diff: NumberedDiff[]): { left: NumberedDiff | null;
   return rows;
 }
 
-function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, expand = false): Line[] {
+type DiffNumbered = NumberedDiff & { gap?: boolean };
+
+// A hunk separator row: a tinted ⋯ divider spanning the diff card, drawn where
+// the diff jumps across stripped context to a new change block.
+function hunkSeparator(width: number): Line {
+  const bg = color.diffContextBg;
+  const mark = "  ⋯ ";
+  return padBg([{ text: mark, color: color.faint, bg }], width, bg);
+}
+
+function diffLines(
+  diff: { sign: "+" | "-"; text: string; gap?: boolean }[],
+  width: number,
+  expand = false,
+  file?: string,
+  lang?: string,
+): Line[] {
   // Big diffs collapse HARDER: past ~24 changed lines the body is mostly noise
   // in the transcript — show a taste, keep the colored ± header honest, and
   // let ⌃O bring the whole thing back.
   const MAX = expand ? Infinity : diff.length > 24 ? 8 : 16;
-  // The opencode diff look: a line-number gutter on its own (darker) tint, a
-  // bold +/− marker, then the code on a full-row add/remove tint. The diff
-  // strips context lines (src/diff.ts), so the numbers are per-side running
-  // counters over the CHANGED lines (old side → −, new side → +), numbered
-  // across the whole diff so the collapsed taste matches the expanded view.
+  // A line-number gutter on its own (darker) tint, a bold +/− marker, then the
+  // code on a full-row add/remove tint. The diff strips context (src/diff.ts),
+  // so the numbers are per-side running counters over the CHANGED lines (old → −,
+  // new → +), and `gap` marks where stripped context separated two hunks.
   let oldN = 0;
   let newN = 0;
-  const numbered: NumberedDiff[] = diff.map((d) => ({ ...d, n: d.sign === "+" ? ++newN : ++oldN }));
+  const numbered: DiffNumbered[] = diff.map((d) => ({ ...d, n: d.sign === "+" ? ++newN : ++oldN }));
   const numW = Math.max(2, String(Math.max(oldN, newN, 1)).length);
+  const adds = diff.filter((d) => d.sign === "+").length;
+  const dels = diff.filter((d) => d.sign === "-").length;
+
+  // The diff CARD header bar: filename + a language chip + the ± stat, on the
+  // header tint — turns a loose run of colored rows into one contained unit.
+  const out: Line[] = [];
+  if (file) {
+    const title: Span[] = [{ text: file, color: color.path, bold: true }];
+    const right: Span[] = [
+      ...(lang ? [...pill(lang, color.accentDim), { text: "  ", bg: color.headerBg } as Span] : []),
+      { text: `+${adds}`, color: color.ok, bold: true, bg: color.headerBg },
+      { text: ` −${dels} `, color: color.err, bold: true, bg: color.headerBg },
+    ];
+    out.push(headerBar(title, right, width));
+  }
 
   if (width >= SIDE_BY_SIDE_MIN) {
     // Two panes: old | new, a 1-col gap between. Each pane = a line-number
-    // gutter on the darker tint + the code on the row tint. Collapse behavior
-    // (MAX + ⌃O) counts pane ROWS, with the honest source-line remainder.
+    // gutter on the darker tint + the code on the row tint.
     const paneW = Math.floor((width - 1) / 2);
-    const pane = (d: NumberedDiff | null, add: boolean): Line => {
+    const pane = (d: DiffNumbered | null, add: boolean): Line => {
       if (!d) return [{ text: " ".repeat(paneW), bg: color.diffContextBg }];
       const bg = add ? color.diffAddBg : color.diffDelBg;
       const gutterBg = add ? color.diffAddGutterBg : color.diffDelGutterBg;
@@ -508,20 +563,24 @@ function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, exp
         { text: gutter, color: fg, dim: true, bg: gutterBg },
         ...padBg([
           { text: add ? "+ " : "− ", color: fg, bold: true, bg },
-          ...highlightLine(d.text).map((s) => ({ ...s, bg })),
+          ...highlightLine(d.text, add ? lang : undefined).map((s) => ({ ...s, bg })),
         ], contentWidth, bg),
       ], paneW);
     };
     const rows = pairDiffRows(numbered);
     const shownRows = rows.slice(0, MAX);
-    const out: Line[] = shownRows.map((r) => clipSpans([...pane(r.left, false), { text: " " }, ...pane(r.right, true)], width));
+    shownRows.forEach((r, i) => {
+      if (i > 0 && (r.left?.gap || r.right?.gap)) out.push(hunkSeparator(width));
+      out.push(clipSpans([...pane(r.left, false), { text: " " }, ...pane(r.right, true)], width));
+    });
     const shownSrc = shownRows.reduce((n, r) => n + (r.left ? 1 : 0) + (r.right ? 1 : 0), 0);
-    if (shownSrc < diff.length) out.push([{ text: `… +${diff.length - shownSrc} more lines · ⌃O to expand`, color: color.faint }]);
+    if (shownSrc < diff.length) out.push([{ text: `   … +${diff.length - shownSrc} more lines · ⌃O to expand`, color: color.faint }]);
     return out;
   }
 
   const shown = numbered.slice(0, MAX);
-  const out: Line[] = shown.map((d) => {
+  shown.forEach((d, i) => {
+    if (i > 0 && d.gap) out.push(hunkSeparator(width));
     const add = d.sign === "+";
     const bg = add ? color.diffAddBg : color.diffDelBg;
     const gutterBg = add ? color.diffAddGutterBg : color.diffDelGutterBg;
@@ -530,16 +589,16 @@ function diffLines(diff: { sign: "+" | "-"; text: string }[], width: number, exp
     const num = String(d.n).padStart(numW);
     const gutter = ` ${add ? pad : num} ${add ? num : pad} `;
     const contentWidth = Math.max(width - 3 - gutter.length, 1);
-    return clipSpans([
+    out.push(clipSpans([
       { text: "   ", bg: gutterBg },
       { text: gutter, color: fg, dim: true, bg: gutterBg },
       ...padBg([
         { text: add ? "+ " : "− ", color: fg, bold: true, bg },
-        ...highlightLine(d.text).map((s) => ({ ...s, bg })),
+        ...highlightLine(d.text, add ? lang : undefined).map((s) => ({ ...s, bg })),
       ], contentWidth, bg),
-    ], width);
+    ], width));
   });
-  if (diff.length > MAX) out.push([{ text: `… +${diff.length - MAX} more lines · ⌃O to expand`, color: color.faint }]);
+  if (diff.length > MAX) out.push([{ text: `   … +${diff.length - MAX} more lines · ⌃O to expand`, color: color.faint }]);
   return out;
 }
 
@@ -595,6 +654,21 @@ export const friendlyTool = (name: string) =>
 // Strip the CWD prefix so tool args show as relative paths in the transcript.
 const CWD = (() => { try { return process.cwd(); } catch { return ""; } })();
 export const relPath = (p: string) => (CWD && p.startsWith(CWD + "/") ? p.slice(CWD.length + 1) : p);
+
+// Transcript render options set once at startup from prefs (kept module-level so
+// the many itemsToLines call sites don't all have to thread a flag). Folded into
+// the static-line cache key via optsEpoch so a change can't serve stale lines.
+let transcriptOpts = { timestamps: false };
+export let optsEpoch = 0;
+export function setTranscriptOptions(o: Partial<typeof transcriptOpts>): void {
+  transcriptOpts = { ...transcriptOpts, ...o };
+  optsEpoch++;
+}
+// hh:mm wall-clock for a turn heading (24h, zero-padded). Pure given `at`.
+function clockOf(at: number): string {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 // Make a tool ARG human: a URL → its last path word ("rankings"), a file path →
 // its basename ("price.ts"), anything else clipped. So a coalesced line reads
@@ -680,26 +754,36 @@ export function recedeLine(line: Line): Line {
 // themeEpoch — without it, fullscreen history would stay in the old palette.
 // `receded` is part of the cache key like width/epoch: a busy render must never
 // serve receded lines to a normal render (or vice versa).
-const staticLineCache = new WeakMap<object, { width: number; epoch: number; receded: boolean; lines: Line[] }>();
+const staticLineCache = new WeakMap<object, { width: number; epoch: number; opts: number; receded: boolean; lines: Line[] }>();
 
 export function staticItemLines(it: Item, width: number, receded = false): Line[] {
   const hit = staticLineCache.get(it);
-  if (hit && hit.width === width && hit.epoch === themeEpoch && hit.receded === receded) return hit.lines;
+  if (hit && hit.width === width && hit.epoch === themeEpoch && hit.opts === optsEpoch && hit.receded === receded) return hit.lines;
   const lines: Line[] = [];
   if (it.kind === "user") {
     if (it.turnNo != null) {
-      // The ledger heading: turns are numbered SECTIONS, not bubbles. A faint
-      // hairline separates turns (skipped on the first), then the index in the
-      // brand ink and the prompt set bold — no box, no background slab.
-      if (it.turnNo > 1) {
-        lines.push([{ text: glyph.rule.repeat(width), color: color.faint, dim: true }]);
-        lines.push(BLANK);
-      }
-      const idx = String(it.turnNo).padStart(2, "0");
-      const wrapped = wrapSpans(proseSpans(it.text, { color: color.text, bold: true }), Math.max(width - 4, 1));
-      wrapped.forEach((l, i) =>
-        lines.push([{ text: i === 0 ? idx + "  " : "    ", color: color.user }, ...l]),
-      );
+      // The ledger heading: turns are numbered SECTIONS. A blank gap separates
+      // turns, then the prompt sits in a tinted BAND — a user-ink spine, the turn
+      // index, the prompt bold, and (optional) a wall-clock at the right edge —
+      // so a glance instantly reads "this is what I asked" vs the reply below.
+      if (it.turnNo > 1) lines.push(BLANK);
+      const idx = "#" + String(it.turnNo).padStart(2, "0");
+      const stamp = transcriptOpts.timestamps && it.at ? clockOf(it.at) : "";
+      const prefix = `▌ ${idx}  `;
+      const prefixW = displayWidth(prefix);
+      const stampW = stamp ? stamp.length + 2 : 0; // reserve so a gap always remains
+      const wrapped = wrapSpans(proseSpans(it.text, { color: color.text, bold: true }), Math.max(width - prefixW - stampW, 1));
+      wrapped.forEach((l, i) => {
+        const lead: Span = { text: i === 0 ? prefix : " ".repeat(prefixW), color: color.user, bold: true, bg: color.userBg };
+        const body = l.map((s) => ({ ...s, bg: color.userBg }));
+        if (i === 0 && stamp) {
+          const leftW = prefixW + body.reduce((n, s) => n + displayWidth(s.text), 0);
+          const gap = Math.max(1, width - leftW - (stamp.length + 1));
+          lines.push([lead, ...body, { text: " ".repeat(gap), bg: color.userBg }, { text: stamp + " ", color: color.faint, bg: color.userBg }]);
+        } else {
+          lines.push(bgRow([lead, ...body], width, color.userBg));
+        }
+      });
     } else {
       // A command echo, not a turn: one small quiet line.
       lines.push(clipSpans([{ text: "  " + glyph.prompt + " ", color: color.faint }, { text: it.text, color: color.dim }], width));
@@ -708,8 +792,59 @@ export function staticItemLines(it: Item, width: number, receded = false): Line[
     lines.push(...indent(markdownToLines(it.text, Math.max(width - 2, 1)), 2));
   }
   const final = receded ? lines.map(recedeLine) : lines;
-  staticLineCache.set(it, { width, epoch: themeEpoch, receded, lines: final });
+  staticLineCache.set(it, { width, epoch: themeEpoch, opts: optsEpoch, receded, lines: final });
   return final;
+}
+
+// The ROUTING CARD (/why): the scorecard re-cast in the card kit so the routing
+// decision is the thing you screenshot. A titled header bar with the chosen
+// model pill + cost, the plain-English reason, the scored candidates as a
+// tinted grid (the winner on a chip), then the FLYWHEEL meter (a per-repo
+// pass-rate bar for the chosen model) and the session saved-vs-premium line.
+export function routingCardLines(card: Scorecard, width: number, savingsNote?: string): Line[] {
+  const out: Line[] = [];
+  const inner = Math.max(40, width - 2);
+  const chosen = card.entries.find((e) => e.chosen);
+  for (const r of scorecardRows(card, inner)) {
+    if (r.tone === "title") {
+      const right: Span[] = chosen
+        ? [
+            ...pill(chosen.label, color.accent),
+            { text: " ", bg: color.headerBg },
+            { text: chosen.backend === "seat" ? "plan" : `$${chosen.estCostPerMtok.toFixed(2)}/M`, color: color.faint, bg: color.headerBg },
+          ]
+        : [];
+      out.push(headerBar([{ text: r.text, color: color.text, bold: true }], right, width));
+    } else if (r.text === "") {
+      out.push(BLANK);
+    } else if (r.tone === "colhead") {
+      out.push(bgRow([{ text: "  " + r.text, color: color.faint }], width, color.headerBg));
+    } else if (r.tone === "chosen") {
+      out.push(bgRow([{ text: "  " + r.text, color: color.accent, bold: true }], width, color.chipBg));
+    } else if (r.tone === "summary") {
+      out.push(clipSpans([{ text: "  " + r.text, color: color.text }], width));
+    } else {
+      out.push(clipSpans([{ text: "  " + r.text, color: r.tone === "row" ? color.dim : color.faint }], width));
+    }
+  }
+  // The flywheel meter for the chosen model — a measured per-repo pass-rate bar,
+  // the visible proof the router is learning HERE (only once ≥ the prior floor).
+  if (chosen?.priorN != null && chosen.priorRate != null) {
+    const b = barCells(chosen.priorRate, 12);
+    const passes = Math.round(chosen.priorRate * chosen.priorN);
+    const delta = chosen.priorDelta != null ? `  ·  ${chosen.priorDelta >= 0 ? "+" : "−"}${Math.abs(chosen.priorDelta).toFixed(2)} quality` : "";
+    out.push(BLANK);
+    out.push([
+      { text: "  flywheel  ", color: color.accentDim, bold: true },
+      { text: b.fill, color: color.ok },
+      { text: b.empty, color: color.faint },
+      { text: `  ${passes}/${chosen.priorN} ✓ verified here`, color: color.text },
+      { text: delta, color: color.faint },
+    ]);
+  }
+  // Session saved vs always-premium — the headline number for the whole pitch.
+  if (savingsNote) out.push([{ text: "  saved  ", color: color.accentDim, bold: true }, { text: savingsNote, color: color.ok }]);
+  return out;
 }
 
 export function itemsToLines(items: Item[], width: number, expand = false, recede = false): Line[] {
@@ -815,7 +950,9 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         }
         if (it.status !== "running" && it.durationMs != null) head.push({ text: "  " + fmtMs(it.durationMs), color: color.faint });
         if (it.exitCode != null) head.push({ text: "  exit " + it.exitCode, color: it.exitCode === 0 ? color.faint : color.err });
-        if (it.diff?.length) head.push(...diffStatSpans(it.diff));
+        // ±stat is shown on the diff CARD header below (when a diff renders), so
+        // don't repeat it on the step head; keep it only for the rare diff-less head.
+        if (it.diff?.length && it.status === "running") head.push(...diffStatSpans(it.diff));
         // For clean completed tools (no preview, no output, no diff) put the
         // summary inline on the head so consecutive reads render as a tight block.
         const redundantSummary = it.summary != null && (
@@ -890,11 +1027,15 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
           }
         }
         // Summary as a separate line only for tools that have extra output (shell,
-        // write/edit with diff, preview). Simple reads/searches already put it inline.
-        if (!inlineSummary && it.status !== "running" && it.summary && !redundantSummary && !(isShell && outTail)) {
+        // preview). A diff renders its own titled card below (filename + stat), so
+        // the summary line would just repeat it — skip it there.
+        if (!inlineSummary && it.status !== "running" && it.summary && !redundantSummary && !(isShell && outTail) && !it.diff?.length) {
           out.push([{ text: "   " + glyph.result + " ", color: color.faint }, { text: sliceWidth(it.summary, Math.max(width - 5, 1)).text, color: it.status === "err" ? color.err : color.dim }]);
         }
-        if (it.diff?.length) out.push(...diffLines(it.diff, width, expand));
+        if (it.diff?.length) {
+          const dpath = it.arg ? relPath(it.arg) : "";
+          out.push(...diffLines(it.diff, width, expand, dpath || undefined, dpath ? langForPath(dpath) : undefined));
+        }
         // LSP diagnostics for the file this tool touched (attached by the
         // verify fast tier): up to 4 `◆ line:col message` rows under the diff,
         // err/warn ink by severity, the remainder folded into a count.
@@ -919,20 +1060,26 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         break;
       }
       case "model": {
-        // Post-turn provenance line. Dim when routine; brightens to amber with a
-        // reason for the three "surprising" cases (escalation, fallback, cap hit).
-        const head = it.surprising ? color.warn : color.faint;
-        const body = it.surprising ? color.warn : color.dim;
-        const spans: Span[] = [
-          { text: "  ↳ ", color: head },
-          { text: it.provider + " · " + it.model, color: body },
+        // The per-turn ROUTE CARD: a contained tinted row branding what ran —
+        // a provider-hue ● dot, the model, and (when the route was surprising:
+        // escalation / fallback / cap) the reason in amber. The cost rides the
+        // right edge. One row, on the header tint, so the routing reads as a
+        // designed receipt rather than a faint afterthought.
+        const hue = providerColor(it.provider);
+        const bg = color.headerBg;
+        const reasonInk = it.surprising ? color.warn : color.faint;
+        const left: Span[] = [
+          { text: "▏ ", color: it.surprising ? color.warn : hue, bg },
+          { text: "● ", color: hue, bg },
+          { text: it.model, color: color.text, bold: true, bg },
+          { text: "  " + it.provider, color: color.faint, bg },
         ];
-        if (it.surprising && it.reason) spans.push({ text: " · " + it.reason, color: color.warn });
-        // A clickable fork affordance rides the provenance line: clicking it
-        // clones this conversation into a new tab (/tab fork). Carried as a
-        // gearbox: link so App's transcript click handler can hit-test it.
-        spans.push({ text: "   ⑂ fork", color: color.accentDim, link: "gearbox:fork" });
-        out.push(marginLine(spans, it.costText ? [{ text: it.costText, color: head }] : [], width));
+        if (it.reason) left.push({ text: "  · " + it.reason, color: reasonInk, bg });
+        const right: Span[] = it.costText ? [{ text: it.costText + " ", color: it.surprising ? color.warn : color.faint, bg }] : [];
+        const leftW = left.reduce((n, s) => n + displayWidth(s.text), 0);
+        const rightW = right.reduce((n, s) => n + displayWidth(s.text), 0);
+        const gap = Math.max(1, width - leftW - rightW);
+        out.push([...left, { text: " ".repeat(gap), bg }, ...right]);
         break;
       }
       case "verification": {
@@ -1182,13 +1329,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         break;
       }
       case "scorecard": {
-        const toneColor: Record<string, string> = { title: color.text, colhead: color.faint, chosen: color.accent, row: color.dim, dim: color.faint, note: color.faint, summary: color.text };
-        let first = true;
-        for (const r of scorecardRows(it.card, Math.max(40, width - 4))) {
-          const prefix = first ? "  " + glyph.notice + " " : "    ";
-          out.push(clipSpans([{ text: prefix, color: color.accentDim }, { text: r.text, color: toneColor[r.tone] ?? color.text }], width));
-          first = false;
-        }
+        out.push(...routingCardLines(it.card, width, it.savingsNote));
         break;
       }
       case "error": {

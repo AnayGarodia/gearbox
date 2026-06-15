@@ -96,6 +96,11 @@ export interface ModelChoice {
 export interface ScorecardEntry {
   /** Measured per-repo prior, when ≥8 verified outcomes exist ("measured here: 7/9 ✓ (−0.04)"). */
   priorNote?: string;
+  /** Structured flywheel signal for a visual bar (the /why learning meter):
+   *  pass rate 0–1, the verified-outcome count, and the quality delta it applied. */
+  priorRate?: number;
+  priorN?: number;
+  priorDelta?: number;
   label: string;
   backend: "api" | "seat";
   quality: number;

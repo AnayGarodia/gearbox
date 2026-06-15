@@ -90,7 +90,10 @@ test("markdown tables render as aligned columns, not a '·'-joined blob", () => 
   expect(text).toContain("File");
   expect(text).toContain("Tests");
   expect(text).toContain("103");
-  expect(text).toMatch(/─{3,}/); // a header underline rule
+  // The header row carries the header tint (a contained-grid look) instead of a
+  // dashed underline rule.
+  const headerRow = lines.find((l) => l.map((s) => s.text).join("").includes("File"))!;
+  expect(headerRow.some((s) => !!s.bg)).toBe(true);
   expect(text).not.toContain("·  "); // the old flattened cell separator is gone
   // header label and its column value line up (same start column)
   const fileCol = lines.find((l) => l.map((s) => s.text).join("").includes("File"))!;
@@ -200,21 +203,17 @@ test("a tool whose summary just repeats its name omits the redundant result line
   expect(t2).toContain("42 lines"); // a real summary IS kept
 });
 
-// ── the in-stream fork affordance ─────────────────────────────────────────────
-import { linkAt } from "../src/ui/lines.ts";
-
-test("the routed-model line carries a clickable ⑂ fork (gearbox:fork link)", () => {
+// ── the per-turn route card ───────────────────────────────────────────────────
+test("the routed-model line is a branded route card (provider dot + model + cost)", () => {
   const items: Item[] = [{ kind: "model", id: 9, model: "deepseek-v4", provider: "deepseek", costText: "seat ~$0" }];
   const lines = itemsToLines(items, 110);
-  const modelLine = lines.find((l) => l.some((s) => s.text.includes("fork")))!;
+  const modelLine = lines.find((l) => l.some((s) => s.text.includes("deepseek-v4")))!;
   expect(modelLine).toBeDefined();
-  const forkSpan = modelLine.find((s) => s.link === "gearbox:fork")!;
-  expect(forkSpan.text).toContain("⑂ fork");
-  // linkAt resolves the char column under the fork text to the link
-  let pos = 0;
-  for (const s of modelLine) { if (s.link === "gearbox:fork") break; pos += s.text.length; }
-  expect(linkAt(modelLine, pos + 2)).toBe("gearbox:fork");
-  expect(linkAt(modelLine, 0)).toBeUndefined();
+  const text = modelLine.map((s) => s.text).join("");
+  expect(text).toContain("● "); // provider identity dot
+  expect(text).toContain("deepseek-v4");
+  expect(text).toContain("seat ~$0"); // cost on the right
+  expect(modelLine.some((s) => !!s.bg)).toBe(true); // contained on the header tint
 });
 
 test("a run of >=4 plain settled tools coalesces into one line; ⌃O expands; output tools and short runs are untouched", () => {

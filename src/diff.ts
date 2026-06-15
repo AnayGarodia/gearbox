@@ -19,7 +19,7 @@ import { diffLines } from "diff";
  * `sign` is "+" for an added line, "-" for a removed line.
  * `text` is the line content without a trailing newline.
  */
-export type DiffLine = { sign: "+" | "-"; text: string };
+export type DiffLine = { sign: "+" | "-"; text: string; gap?: boolean };
 
 /**
  * Computes the line-level difference between two strings.
@@ -39,10 +39,21 @@ export type DiffLine = { sign: "+" | "-"; text: string };
  */
 export function computeDiff(before: string, after: string): DiffLine[] {
   const out: DiffLine[] = [];
+  // Context is stripped, but we remember when a stretch of unchanged lines sat
+  // BETWEEN two change blocks so the renderer can draw a hunk separator there
+  // (the first changed line of each new hunk carries `gap: true`).
+  let gapPending = false;
   for (const part of diffLines(before, after)) {
-    if (!part.added && !part.removed) continue; // skip unchanged context
+    if (!part.added && !part.removed) {
+      if (out.length) gapPending = true; // context after a change → a hunk boundary
+      continue;
+    }
     const sign: "+" | "-" = part.added ? "+" : "-";
-    for (const line of part.value.replace(/\n$/, "").split("\n")) out.push({ sign, text: line });
+    const segs = part.value.replace(/\n$/, "").split("\n");
+    segs.forEach((line, i) => {
+      out.push(i === 0 && gapPending ? { sign, text: line, gap: true } : { sign, text: line });
+      gapPending = false;
+    });
   }
   return out;
 }

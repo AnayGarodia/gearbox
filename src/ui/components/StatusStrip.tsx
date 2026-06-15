@@ -3,6 +3,7 @@ import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import { limitColor } from "../severity.ts";
 import { ShimmerText } from "./Shimmer.tsx";
+import { Pill } from "./kit.tsx";
 import { barCells, type LimitWindow, type UsageAcct } from "../../accounts/usage.ts";
 
 // One bar, one direction, everywhere: the fill is "% USED" colored by the
@@ -69,9 +70,9 @@ function StatusStripImpl({
       <Box justifyContent="space-between">
         <Text>
           <Text color={color.accent} bold>usage</Text>
-          {/* The live backend identity, right where you look when asking "what
-              is this running on?" — provider-hue dot + name + seat/API kind. */}
-          {active ? <Text color={active.hue}>{"   ● "}{active.label}</Text> : null}
+          {/* The live backend identity as a pill, right where you look when
+              asking "what is this running on?" — provider-hue dot + name. */}
+          {active ? <><Text>{"   "}</Text><Pill label={`● ${active.label}`} ink={active.hue} tick /></> : null}
         </Text>
         <Text color={color.faint}>/usage to hide</Text>
       </Box>

@@ -12,7 +12,7 @@ import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type Gho
 import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
 import { Working, workingRows } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
-import { itemsToLines, relPath, friendlyTool, fmtElapsed, linkAt, type Line } from "./lines.ts";
+import { itemsToLines, relPath, friendlyTool, fmtElapsed, linkAt, setTranscriptOptions, type Line } from "./lines.ts";
 import { collapseTurn, collapseDelegateGroups } from "./collapse.ts";
 import { buildRoutingLine } from "./routing-line.ts";
 import { policyLabel, type SelectorKind } from "./policy.ts";
@@ -770,6 +770,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     const t = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 500);
     return () => clearInterval(t);
   }, [busy]);
+
+  // Transcript render options from prefs (read once at mount). Currently just
+  // the optional per-turn wall-clock; folded into the static-line cache epoch.
+  useEffect(() => { setTranscriptOptions({ timestamps: loadPrefs().timestamps === true }); }, []);
 
   // Background semantic-index refresh: once per session, a few seconds after
   // boot so it never competes with the first turn. Incremental (content-hash)
@@ -1945,7 +1949,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     setItems((prev) => prev.map((it) => (it.id === id && it.kind === "phase" ? { ...it, state, label, detail } : it)));
   };
   const turnNoRef = useRef(0); // numbered sections: real prompts only (command echoes stay small)
-  const echo = (text: string, numbered = false) => push({ kind: "user", id: idRef.current++, text, turnNo: numbered ? ++turnNoRef.current : undefined });
+  const echo = (text: string, numbered = false) => push({ kind: "user", id: idRef.current++, text, turnNo: numbered ? ++turnNoRef.current : undefined, at: Date.now() });
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
 
   // Conductor → active session channel: a one-shot setup result (`.gearbox/setup`

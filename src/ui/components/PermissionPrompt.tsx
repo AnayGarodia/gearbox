@@ -1,6 +1,7 @@
 import React from "react";
 import { Box, Text } from "ink";
 import { color } from "../theme.ts";
+import { Pill } from "./kit.tsx";
 import type { PermRequest } from "../../permission.ts";
 
 // The consent line (Broadsheet): a flat element-layer block, not a floating
@@ -46,7 +47,8 @@ export function PermissionPrompt({ req, width }: { req: PermRequest; width: numb
       </Text>
       {options.map((o) => (
         <Text key={o.k} wrap="truncate-end">
-          <Text color={color.accent} bold>{"  " + o.k}</Text>
+          <Text>{" "}</Text>
+          <Pill label={o.k} ink={color.accent} />
           <Text color={color.text}>{" " + o.label}</Text>
           <Text color={color.faint}>{"  · " + o.note}</Text>
         </Text>

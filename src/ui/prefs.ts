@@ -23,6 +23,7 @@ export interface Prefs {
   sandbox?: "off" | "read-only" | "workspace-write"; // OS sandbox for agent shell commands (/sandbox); default workspace-write on macOS
   sandboxNetwork?: boolean; // allow network inside the sandbox (/sandbox network on); default off
   embeddings?: boolean; // semantic retrieval index + query embedding (default on when a provider has embeddings); false = pure BM25
+  timestamps?: boolean; // show a wall-clock on each turn heading (/config timestamps on); default off
 }
 
 function file(): string {

@@ -9,6 +9,7 @@ import { SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type GhostLook, type M
 import { setYolo, isYolo } from "../permission.ts";
 import { newSessionId, type Session, type TurnMeta, type CompactionArchive } from "../session.ts";
 import { setTheme, activeTheme, THEMES } from "./theme.ts";
+import { setTranscriptOptions } from "./lines.ts";
 import { loadPrefs, updatePrefs } from "./prefs.ts";
 import { resolveSandboxPolicy, parseSandboxMode, sandboxBackendAvailable } from "../sandbox/index.ts";
 import { resetShellSessions } from "../shell.ts";
@@ -1177,7 +1178,8 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
                 `  theme   ${p.theme ?? "dark"}        color palette for dark or light terminals (also /theme)\n` +
                 `  editor  ${p.editor ?? "vscode"}      clickable file links open here (vscode · cursor · windsurf · zed · off)\n` +
                 `  embeddings ${p.embeddings === true ? "on" : "off"}      semantic retrieval — embeds file heads via your OpenAI/Google key (opt-in)\n` +
-                `  change one: /config <vim|notify|inline|verify|theme|editor|embeddings> <value>`,
+                `  timestamps ${p.timestamps === true ? "on" : "off"}      a wall-clock on each turn heading\n` +
+                `  change one: /config <vim|notify|inline|verify|theme|editor|embeddings|timestamps> <value>`,
             );
             return;
           }
@@ -1216,8 +1218,13 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             updatePrefs({ theme: activeTheme() });
             setThemeEpochState((e) => e + 1);
             toast(`theme → ${activeTheme()}`);
+          } else if (key === "timestamps") {
+            updatePrefs({ timestamps: on });
+            setTranscriptOptions({ timestamps: on });
+            setThemeEpochState((e) => e + 1); // re-render the transcript with the new option
+            toast(`turn timestamps ${on ? "on" : "off"}`, "info");
           } else {
-            notice("settings: vim · notify · inline · verify · theme · editor");
+            notice("settings: vim · notify · inline · verify · theme · editor · timestamps");
           }
           return;
         }
@@ -1548,7 +1555,11 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             // re-deriving here showed a scorecard that disagreed with reality.
             const last = modeRef.current === "plan" ? null : routedKindRef.current;
             const card = sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : last?.kind });
-            push({ kind: "scorecard", id: idRef.current++, card: last ? { ...card, kindSource: last.source } : card });
+            // The session saved-vs-always-premium headline, same math as /cost.
+            const turns = sessionRef.current.turns;
+            const saved = estimateSavings(turns, premiumRate(modelRegistry()), (t) => estimateCost([t]));
+            const savingsNote = saved != null && saved >= 0.005 ? `~$${saved.toFixed(2)} vs always-premium across ${turns.length} turn${turns.length === 1 ? "" : "s"}` : undefined;
+            push({ kind: "scorecard", id: idRef.current++, card: last ? { ...card, kindSource: last.source } : card, savingsNote });
           } catch (e: any) {
             notice(e?.message ?? "couldn't build the scorecard");
           }

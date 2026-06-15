@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import { color, glyph } from "../theme.ts";
 import { selectionRange, wrapMap, wrapCaret, type Edit } from "../input.ts";
+import { Pill } from "./kit.tsx";
 
 // The soft-wrap column budget for a composer of `width` total columns:
 // 2 box edges + 3-col prompt prefix + 1 slack cell for the end-of-line cursor.
@@ -212,7 +213,7 @@ function ComposerImpl({
       {/* THE footer hint line (exactly one row · see the row-count contract above). */}
       <Box width={width} paddingX={1} justifyContent="space-between">
         <Text wrap="truncate-end">
-          {badge ? <Text color={badge.c} bold>{badge.text + "  "}</Text> : null}
+          {badge ? <><Pill label={badge.text} ink={badge.c} tick /><Text>{" "}</Text></> : null}
           <Text color={color.faint}>{hint}</Text>
           {policy ? <Text color={color.dim}>{`  ${glyph.bullet}  ${policy}`}</Text> : null}
         </Text>

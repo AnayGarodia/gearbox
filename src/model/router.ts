@@ -596,11 +596,15 @@ export class RoutingSelector implements ModelSelector {
       const capable = p.floor === 0 || clearsFloor(c);
       const chosen = scoreId(c) === winnerId;
       const pl = priorLine(p.kind, c.canonicalId ?? c.spec.id);
+      const prior = priorFor(p.kind, c.canonicalId ?? c.spec.id);
       entries.push({
         label: c.spec.label,
         backend: c.backend.kind === "cli" ? "seat" : "api",
         quality: adjQuality(c),
         priorNote: pl ?? qualityNote(c.canonicalId ?? c.spec.id, p.kind) ?? undefined,
+        priorRate: prior?.passRate,
+        priorN: prior?.n,
+        priorDelta: prior?.delta,
         qualitySrc: benchmarkRow(c.canonicalId ?? c.spec.id) ? "researched" : (profileFor(c.canonicalId ?? c.spec.id)?.quality.src ?? "seeded"),
         estCostPerMtok: costPerMtok(c),
         balanceText: balanceText(c.state),

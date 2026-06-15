@@ -35,7 +35,7 @@ export interface Usage {
   cacheCreationInputTokens?: number;
 }
 
-export type DiffLine = { sign: "+" | "-"; text: string };
+export type DiffLine = { sign: "+" | "-"; text: string; gap?: boolean };
 
 /**
  * Discriminated union of every event the agent pipeline can emit.
