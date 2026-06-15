@@ -44,6 +44,7 @@ import { deepseek, createDeepSeek } from "@ai-sdk/deepseek";
 import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { createVertex } from "@ai-sdk/google-vertex";
 import { createAzure } from "@ai-sdk/azure";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { EmbeddingModel, LanguageModel } from "ai";
 import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { profileFor } from "./model/profiles.ts";
@@ -699,15 +700,20 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
     })(spec.sdkId);
   }
 
-  // OpenAI-wire path: any non-native provider routes through createOpenAI with
-  // its catalog baseUrl (account-supplied or default). One path covers ~25
-  // providers. CRITICAL: use .chat() — calling the provider as a function in
-  // AI SDK 5 builds a Responses-API model that POSTs {baseURL}/responses, a
-  // route most OpenAI-compatible providers simply don't have (every turn used
-  // to 404/405). The Responses default is right only for openai itself.
+  // OpenAI-wire path: any non-native provider routes through its catalog baseUrl
+  // (account-supplied or default). One path covers ~25 providers. Use the
+  // @ai-sdk/openai-COMPATIBLE provider, NOT @ai-sdk/openai:
+  //   • openai's chat model bakes in OpenAI-only assumptions — for any model id
+  //     it doesn't recognize as gpt-3/4/chatgpt-4o it treats the model as a
+  //     "reasoning model" and sends the system prompt as role:"developer". Strict
+  //     endpoints (Azure AI Foundry's grok/deepseek/kimi deployments) reject that
+  //     with 422 "messages[0].role must be system|user|assistant". openai-compatible
+  //     always sends role:"system" and makes no model-specific assumptions.
+  //   • it POSTs to {baseURL}/chat/completions (not the Responses /responses route
+  //     that calling @ai-sdk/openai as a function used to 404/405 on).
   const baseURL = creds?.baseURL ?? (NATIVE.has(spec.provider) ? undefined : catalogProvider(spec.provider)?.baseUrl);
   if (baseURL) {
-    return createOpenAI({ baseURL, apiKey, headers: creds?.headers }).chat(spec.sdkId);
+    return createOpenAICompatible({ name: spec.provider, baseURL, apiKey, headers: creds?.headers, includeUsage: true })(spec.sdkId);
   }
   switch (spec.provider) {
     case "anthropic":
