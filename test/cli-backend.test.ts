@@ -89,6 +89,10 @@ test("buildCliArgs uses each binary's stream-json flags", () => {
   expect(c).toContain("--output-format");
   expect(c).toContain("stream-json");
   expect(c.includes("-p")).toBe(true);
+  // AskUserQuestion is disallowed so a print-mode turn can't hang on the CLI's
+  // interactive picker (the model asks in prose and ends the turn instead).
+  expect(c).toContain("--disallowedTools");
+  expect(c).toContain("AskUserQuestion");
 
   const x = buildCliArgs("codex", "do it", {});
   expect(x[0]).toBe("exec");

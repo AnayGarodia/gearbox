@@ -405,6 +405,12 @@ export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?:
   if (opts.bridge) args.push("--input-format", "stream-json", "--permission-prompt-tool", "stdio");
   if (model) args.push("--model", model);
   args.push("--permission-mode", opts.readOnly ? "plan" : opts.autoApprove ? "bypassPermissions" : "acceptEdits");
+  // Disallow the CLI's interactive AskUserQuestion: in print mode it can't show
+  // its picker and there's no way to feed an answer back, so ALLOWING it makes
+  // the subprocess hang forever waiting on input (the turn's timer just spins).
+  // Disallowed, the model simply asks its question in plain prose and ENDS the
+  // turn — which is the only thing that works in a one-shot headless run.
+  args.push("--disallowedTools", "AskUserQuestion");
   // Headless `claude -p` can't show its own approval UI. Two complementary
   // mechanisms keep a turn working without /yolo:
   //  - The interactive BRIDGE (opts.bridge, see runCliTask): any tool the CLI
@@ -556,12 +562,12 @@ export async function runCliTask(opts: {
   // Answer one can_use_tool request via gearbox's permission broker. Awaited in
   // the read loop, which is fine: the CLI blocks for the response anyway.
   const answerPermission = async (requestId: string, req: any) => {
-    // AskUserQuestion has no side effects — it's the model asking YOU a
-    // question. Never put a permission prompt ("Use AskUserQuestion · allow
-    // shell commands?") in front of it; allow it straight through so the
-    // question renders (as text, since print mode can't drive the CLI picker).
+    // AskUserQuestion is disallowed at the args level, but defend here too: if a
+    // CLI version still asks, DENY it (never allow — allowing executes the tool,
+    // which hangs forever in print mode with no way to answer). The denial nudges
+    // the model to ask in plain prose and end the turn. No user-facing prompt.
     if (String(req?.tool_name) === "AskUserQuestion") {
-      send({ type: "control_response", response: { subtype: "success", request_id: requestId, response: { behavior: "allow", updatedInput: req?.input ?? {} } } });
+      send({ type: "control_response", response: { subtype: "success", request_id: requestId, response: { behavior: "deny", message: "Interactive questions aren't supported here — ask your question in plain text and the user will reply in their next message." } } });
       return;
     }
     const { kind, title, detail } = cliToolPermission(req?.tool_name, req?.input, req?.description);
