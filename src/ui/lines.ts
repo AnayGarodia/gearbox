@@ -721,6 +721,28 @@ function isPlainSettledTool(it: any): boolean {
     !(it.diff?.length) && !it.preview && !it.outputTail && !it.stream && !it.activity && !(it.children?.length)
   );
 }
+
+function isMissingReadTool(it: any): boolean {
+  return (
+    it && it.kind === "tool" && it.status === "err" && !it.collapsed &&
+    (it.name === "read_file" || friendlyTool(it.name) === "read") &&
+    /enoent|no such file or directory|not found/i.test(String(it.summary ?? ""))
+  );
+}
+
+function missingReadSummary(items: any[], width: number): Line {
+  const paths = [...new Set(items.map((x) => (x.arg ? relPath(String(x.arg)) : "")).filter(Boolean))];
+  const shown = paths.slice(0, 4).map(humanArg);
+  const more = paths.length - shown.length;
+  const detail = shown.length ? ` · ${shown.join(", ")}${more > 0 ? ` +${more}` : ""}` : "";
+  return clipSpans([
+    { text: "  " },
+    { text: "▲ ", color: color.warn },
+    { text: `${items.length} missing read${items.length === 1 ? "" : "s"}`, color: color.warn },
+    { text: detail, color: color.faint },
+    { text: " · use glob/list_dir first", color: color.faint },
+  ], width);
+}
 // Coarse elapsed for a still-running step, ticking every second: "8s" or "1m 24s".
 export const fmtElapsed = (secs: number) =>
   secs >= 3600 ? `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
@@ -867,6 +889,21 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
     // gaps between consecutive tool steps). Skipping WITHOUT touching prevKind
     // lets the tools on either side coalesce as one tight run.
     if (it.kind === "assistant" && !(it.text ?? "").trim()) continue;
+    // Adjacent guessed read paths that all miss are one human fact, not N raw
+    // ENOENT lines. The model still receives every tool error; this only makes
+    // the transcript truthful and compact for the user.
+    if (!expand && isMissingReadTool(it)) {
+      let j = idx;
+      while (j < items.length && isMissingReadTool(items[j])) j++;
+      const run = j - idx;
+      if (run >= 2) {
+        if (prevKind !== "tool") out.push(BLANK);
+        prevKind = "tool";
+        out.push(missingReadSummary(items.slice(idx, j), width));
+        idx = j - 1;
+        continue;
+      }
+    }
     // Coalesce a run of >=4 consecutive plain settled tool calls of the same name
     // into ONE line (⌃O expands). A wall of identical no-output tool lines (an MCP
     // fetch/search storm, repeated reads) is noise — the count + total time is the
@@ -1090,8 +1127,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         const left: Span[] = [
           { text: "▏ ", color: it.surprising ? color.warn : hue, bg },
           { text: "● ", color: hue, bg },
-          { text: it.model, color: color.text, bold: true, bg },
-          { text: "  " + it.provider, color: color.faint, bg },
+          { text: it.backendText ?? `${it.model} via ${it.provider}`, color: color.text, bold: true, bg },
         ];
         if (it.reason) left.push({ text: "  · " + it.reason, color: reasonInk, bg });
         const right: Span[] = it.costText ? [{ text: it.costText + " ", color: it.surprising ? color.warn : color.faint, bg }] : [];

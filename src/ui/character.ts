@@ -4,32 +4,19 @@
 // concrete activity ("reading simulate.py") lives on the line below; this word
 // is just a quiet, human sign of life.
 
-// Single-word present participles. Mostly plain cognition words, with a few
-// delightful ones sprinkled in — warm and a little charming, never cutesy or
-// punny. One word that reads as "the agent is thinking," nothing more.
+// Single-word present participles. Plain phase words only: the status line must
+// communicate what kind of work is happening, not a mascot mood.
 export const WORKING_VERBS = [
   "Thinking",
-  "Pondering",
   "Reasoning",
-  "Cooking",
-  "Brewing",
-  "Percolating",
-  "Ruminating",
-  "Mulling",
-  "Noodling",
-  "Untangling",
-  "Synthesizing",
-  "Composing",
-  "Conjuring",
-  "Tinkering",
-  "Wrangling",
-  "Spelunking",
-  "Puzzling",
-  "Simmering",
-  "Distilling",
-  "Sketching",
-  "Plotting",
-  "Crunching",
+  "Planning",
+  "Reading",
+  "Checking",
+  "Reviewing",
+  "Tracing",
+  "Editing",
+  "Verifying",
+  "Summarizing",
 ];
 
 let last = -1;

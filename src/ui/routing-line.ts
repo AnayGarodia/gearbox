@@ -53,6 +53,7 @@ export interface RoutingLineInput extends SurpriseSignals {
 export interface RoutingLine {
   model: string;
   provider: string;
+  backendText: string;
   costText: string; // "$0.04" | "<$0.01" | "$0.00" | "subscription seat"
   surprising: boolean;
   reason: string | null; // present ONLY when surprising
@@ -120,6 +121,7 @@ export function buildRoutingLine(input: RoutingLineInput): RoutingLine {
   return {
     model,
     provider: input.provider,
+    backendText: `${model} via ${input.provider}`,
     costText: formatTurnCost(input.costUSD, input.kind, input.priced ?? true),
     surprising,
     reason,
@@ -129,6 +131,6 @@ export function buildRoutingLine(input: RoutingLineInput): RoutingLine {
 // Plain one-line string — the fallback renderer and the unit-test anchor. The
 // styled renderers split this into spans, but the wording is defined once here.
 export function routingLineText(line: RoutingLine): string {
-  const base = `routed → ${line.provider} · ${line.model} · ${line.costText}`;
+  const base = `routed → ${line.backendText} · ${line.costText}`;
   return line.surprising && line.reason ? `${base} · ${line.reason}` : base;
 }

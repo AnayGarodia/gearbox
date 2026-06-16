@@ -3,7 +3,6 @@ import { Box, Text } from "ink";
 import { color } from "../theme.ts";
 import { limitColor } from "../severity.ts";
 import { ShimmerText } from "./Shimmer.tsx";
-import { Pill } from "./kit.tsx";
 import { barCells, type LimitWindow, type UsageAcct } from "../../accounts/usage.ts";
 
 // One bar, one direction, everywhere: the fill is "% USED" colored by the
@@ -36,7 +35,6 @@ function StatusStripImpl({
   subProbing = false,
   api,
   apiHue,
-  active,
   forecast,
   width,
 }: {
@@ -48,7 +46,6 @@ function StatusStripImpl({
   subProbing?: boolean; // a usage probe is in flight for this account → show "checking…" not "ok"
   api?: UsageAcct | null;
   apiHue?: string; // provider brand hue for the api account row label
-  active?: { label: string; hue: string } | null; // the live backend identity chip ("● google · API key")
   forecast?: string | null; // "≈N turns left today …" when a daily cap is set
   width: number;
   epoch?: number; // /theme invalidates the memo (setTheme mutates `color` in place)
@@ -70,11 +67,8 @@ function StatusStripImpl({
       <Box justifyContent="space-between">
         <Text>
           <Text color={color.accent} bold>usage</Text>
-          {/* The live backend identity as a pill, right where you look when
-              asking "what is this running on?" — provider-hue dot + name. */}
-          {active ? <><Text>{"   "}</Text><Pill label={`● ${active.label}`} ink={active.hue} tick /></> : null}
         </Text>
-        <Text color={color.faint}>/usage to hide</Text>
+        <Text color={color.faint}>limits and spend</Text>
       </Box>
       {ctxPct != null ? (
         <Row label="context">
