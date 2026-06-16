@@ -97,7 +97,8 @@ import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { computeDiff, diffStat } from "../diff.ts";
 import { updateRetrievalFile, resetRetrievalIndex } from "../context/retrieve.ts";
 import { refreshEmbeddingsIndex, semanticScores } from "../context/embeddings.ts";
-import { addToast, TOAST_TTL_MS, type Toast, type ToastKind } from "./toast.ts";
+import { useToasts } from "./use-toasts.ts";
+import { useGhostMood } from "./use-ghost-mood.ts";
 import { editorNames, setEditorPref } from "./links.ts";
 import { liveCheckAll, formatDoctorRows } from "../accounts/doctor.ts";
 import { searchSessions } from "../session-search.ts";
@@ -496,16 +497,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
     return g && isGhostLook(g) ? g : "base";
   });
   // One-shot splash moods (wink after a pin, hearts after a theme switch,
-  // sleepy when idle on home). flashMood decays back to the base face; a real
-  // state change (typing, a turn starting) always wins because the splash only
-  // renders on the idle home/welcome screens.
-  const [ghostMood, setGhostMood] = useState<{ face: string; overlay?: "tears" | "dots" | "load" | "zzz" | "sparkle" | "confetti" | "hearts" } | null>(null);
-  const moodTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flashMood = (face: string, overlay?: "hearts" | "sparkle" | "confetti", ms = 1600) => {
-    setGhostMood({ face, overlay });
-    if (moodTimerRef.current) clearTimeout(moodTimerRef.current);
-    moodTimerRef.current = setTimeout(() => setGhostMood(null), ms);
-  };
+  // sleepy when idle on home) — see useGhostMood.
+  const { ghostMood, setGhostMood, flashMood } = useGhostMood();
   // Counter bumped on /theme so the whole tree repaints in the new palette
   // (components read `color.*` lazily; this just forces the render pass).
   // Threaded into memoized components (Banner) so their memo invalidates too.
@@ -631,10 +624,8 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [transcriptSelection, setTranscriptSelectionState] = useState<ViewSelection | null>(null);
   const transcriptSelectionRef = useRef<ViewSelection | null>(null);
   // Ephemeral toasts (src/ui/toast.ts): short confirmations that expire after
-  // ~2s instead of becoming permanent transcript lines.
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const toastIdRef = useRef(0);
-  const toastTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  // ~2s instead of becoming permanent transcript lines — see useToasts.
+  const { toasts, toast } = useToasts();
   const outCharsRef = useRef(0); // streamed output chars this turn, for a live tok/s estimate
   // The model id the current turn routed to, for the live spend estimate on the
   // working line. Set on model-pick, cleared at turn start.
@@ -1187,16 +1178,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
   useEffect(() => () => { if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current); }, []); // clear the paste coalescer timer on unmount
 
-  const toast = useCallback((text: string, kind: ToastKind = "ok") => {
-    const id = ++toastIdRef.current;
-    setToasts((prev) => addToast(prev, { id, text, kind, at: Date.now() }));
-    const t = setTimeout(() => {
-      toastTimersRef.current.delete(t);
-      setToasts((prev) => prev.filter((x) => x.id !== id));
-    }, TOAST_TTL_MS);
-    toastTimersRef.current.add(t);
-  }, []);
-  useEffect(() => () => { for (const t of toastTimersRef.current) clearTimeout(t); }, []);
   useEffect(() => () => { void shutdownAllLsp(); }, []); // language servers die with the app
   const copyWithFeedback = useCallback((text: string) => {
     const clean = text.replace(/[ \t]+\n/g, "\n").trim();
