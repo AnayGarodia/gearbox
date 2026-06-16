@@ -891,13 +891,14 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         continue;
       }
     }
-    // Blank line between items, EXCEPT between consecutive live-trace items
-    // (tool calls AND phase breadcrumbs) so a turn's "routing → building context
-    // → contacting model → read → edit" sequence renders as one tight ledger
-    // block instead of a sparse, hard-to-read ladder with a blank between every
-    // line. Blanks still separate prose (user/assistant) from the trace.
-    const isTrace = (k: string | null) => k === "tool" || k === "phase";
-    if (!(isTrace(prevKind) && isTrace(it.kind))) out.push(BLANK);
+    // Spacing rhythm (the Claude-Code ledger look): a single blank line BETWEEN
+    // distinct blocks, but TIGHT within a run of the SAME trace kind. So the
+    // startup phase group (routing → building context → contacting model) packs
+    // together, a run of tool calls packs together, but a blank still separates
+    // the phase group FROM the tool group and both from prose. A blank between
+    // every one-liner reads as too sparse; no blanks at all reads as a wall.
+    const tightRun = prevKind === it.kind && (it.kind === "tool" || it.kind === "phase");
+    if (!tightRun) out.push(BLANK);
     prevKind = it.kind;
     if (it.kind === "user" || it.kind === "assistant") {
       out.push(...staticItemLines(it, width, dimmed));
