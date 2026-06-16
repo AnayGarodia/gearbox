@@ -891,9 +891,13 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         continue;
       }
     }
-    // Blank line between items, except between consecutive tool calls so a run of
-    // reads/edits renders as a tight block rather than a sparse ladder.
-    if (!(prevKind === "tool" && it.kind === "tool")) out.push(BLANK);
+    // Blank line between items, EXCEPT between consecutive live-trace items
+    // (tool calls AND phase breadcrumbs) so a turn's "routing → building context
+    // → contacting model → read → edit" sequence renders as one tight ledger
+    // block instead of a sparse, hard-to-read ladder with a blank between every
+    // line. Blanks still separate prose (user/assistant) from the trace.
+    const isTrace = (k: string | null) => k === "tool" || k === "phase";
+    if (!(isTrace(prevKind) && isTrace(it.kind))) out.push(BLANK);
     prevKind = it.kind;
     if (it.kind === "user" || it.kind === "assistant") {
       out.push(...staticItemLines(it, width, dimmed));

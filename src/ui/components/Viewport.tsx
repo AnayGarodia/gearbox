@@ -130,8 +130,17 @@ const EMPTY_LINE: Line = [];
 // the screen (the cause of the earlier corruption).
 export function Viewport({ lines, scrollTop, height, width, selection }: { lines: Line[]; scrollTop: number; height: number; width: number; selection?: ViewSelection | null }) {
   const visible = lines.slice(scrollTop, scrollTop + height);
-  const padded: Line[] = visible.slice();
-  while (padded.length < height) padded.push(EMPTY_LINE);
+  // Bottom-align: when the transcript doesn't fill the viewport, pad with empty
+  // rows ABOVE the content (not below) so a short session sits just above the
+  // working line / composer instead of floating at the top with a big dead gap
+  // between it and the footer (the chat/terminal convention). Once content fills
+  // the height, topPad is 0 and this is the plain scrolling slice.
+  const topPad = Math.max(0, height - visible.length);
+  // rows[i].idx is the ABSOLUTE line index (−1 for a pad row) — used for the
+  // memo key AND the selection range so both stay correct after the shift.
+  const rows: { line: Line; idx: number }[] = [];
+  for (let k = 0; k < topPad; k++) rows.push({ line: EMPTY_LINE, idx: -1 });
+  visible.forEach((l, j) => rows.push({ line: l, idx: scrollTop + j }));
   const sel = normalized(selection);
 
   const total = lines.length;
@@ -149,8 +158,8 @@ export function Viewport({ lines, scrollTop, height, width, selection }: { lines
             every still-visible row's memoized element (same key, same line ref →
             LineRow's memo bails) instead of re-rendering the whole viewport.
             This is the difference between smooth and laggy wheel scrolling. */}
-        {padded.map((l, i) => (
-          <LineRow key={scrollTop + i} line={l} range={selectedRangeForLine(sel, scrollTop + i)} lineWidth={width - 1} />
+        {rows.map((r, i) => (
+          <LineRow key={r.idx >= 0 ? r.idx : `pad${i}`} line={r.line} range={r.idx >= 0 ? selectedRangeForLine(sel, r.idx) : null} lineWidth={width - 1} />
         ))}
       </Box>
       <Box flexDirection="column" width={1}>

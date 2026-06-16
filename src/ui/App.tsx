@@ -1308,9 +1308,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     };
     const viewportTop = 4; // masthead (marginTop + masthead row + rule = 3 rows); viewport begins on row 4.
     const transcriptPoint = (x: number, y: number): { line: number; col: number } | null => {
-      const viewportBottom = viewportTop + transcriptHeightLiveRef.current - 1;
+      const viewportH = transcriptHeightLiveRef.current;
+      const viewportBottom = viewportTop + viewportH - 1;
       if (y < viewportTop || y > viewportBottom) return null;
-      const line = scrollTopLiveRef.current + (y - viewportTop);
+      // Mirror the Viewport's bottom-align top-pad: when content underfills the
+      // viewport it's pushed down by `topPad` empty rows, so a click maps to a
+      // line that much higher (and clicks in the pad map to nothing).
+      const total = linesRef.current.length;
+      const topPad = Math.max(0, viewportH - (total - scrollTopLiveRef.current));
+      const rowIdx = y - viewportTop;
+      if (rowIdx < topPad) return null;
+      const line = scrollTopLiveRef.current + (rowIdx - topPad);
+      if (line < 0 || line >= total) return null;
       const text = lineText(linesRef.current[line] ?? []);
       return { line, col: Math.max(0, Math.min(text.length, x - 2)) };
     };
