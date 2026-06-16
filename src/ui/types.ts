@@ -77,7 +77,7 @@ export type Item =
   // `costText` is the formatted per-turn cost; `surprising`/`reason` are set only
   // for the three brief-defined surprising cases (escalation / fallback / cap hit),
   // which brighten the line to amber. Built by src/ui/routing-line.ts.
-  | { kind: "model"; id: number; model: string; provider: string; costText?: string; surprising?: boolean; reason?: string }
+  | { kind: "model"; id: number; model: string; provider: string; backendText?: string; costText?: string; surprising?: boolean; reason?: string }
   | {
       kind: "verification";
       id: number;

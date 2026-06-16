@@ -306,6 +306,7 @@ export async function runTask(opts: {
   depth?: number; // 0 = top-level turn (gets the delegate tool); >0 = sub-agent (no delegate tool, no recursion)
   root?: string; // workspace root for file/shell tools (a parallel sub-agent gets its own git worktree)
   maxRetries?: number; // SDK retry budget; set to 0 when offline so a no-network turn fails in one connect-timeout instead of the default 3-attempt storm
+  displayName?: string; // human backend identity, e.g. "DeepSeek-V4-Flash via Azure AI Foundry"
   pinnedModelId?: string; // when the user explicitly chose a model (via /model or "use opus"), delegated sub-tasks inherit it instead of re-routing to the cheapest
   extraTools?: Record<string, any>; // caller-supplied tool OVERRIDES merged last (after the delegate tools) — the ACP server swaps read_file/write_file for editor-buffer-aware versions
   cacheBreak?: number; // index of the last settled-history message (from the context engine), cache that prefix; the volatile turn-context tail rides after it
@@ -364,7 +365,7 @@ export async function runTask(opts: {
     // line), and only when the caller isn't driving failover (deferTerminal).
   };
 
-  onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
+  onEvent({ type: "phase", label: "contacting model", detail: opts.displayName ?? model.label, state: "running" });
 
   // Delegation is only available at depth 0 (and not in plan/read-only mode).
   // The injected subRunner calls runTask at depth+1, so the sub-agent receives
@@ -583,7 +584,6 @@ export async function runTask(opts: {
           const id = part.toolCallId ?? part.id ?? "";
           if (selfRender.has(id)) break; // delegate tools report their own failures
           onEvent({ type: "tool-end", id, ok: false, summary: String(part.error ?? "failed").slice(0, 64) });
-          onEvent({ type: "phase", label: "tool failed", state: "err" });
           break;
         }
         case "error": {
@@ -718,6 +718,7 @@ export async function runCompletion(opts: {
   creds?: ResolvedCreds;
   effort?: Effort;
   maxRetries?: number; // set to 0 when offline to fail fast instead of the 3-attempt retry storm
+  displayName?: string; // human backend identity, e.g. "DeepSeek-V4-Flash via Azure AI Foundry"
   _stream?: AsyncIterable<any>; // test seam
 }): Promise<{ text: string; usage: Usage }> {
   const { model, system, prompt, onEvent, signal } = opts;
@@ -730,7 +731,7 @@ export async function runCompletion(opts: {
     onEvent({ type: "error", message: unavailableModelHint(cleanError(err), model) });
   };
 
-  onEvent({ type: "phase", label: "contacting model", detail: model.label, state: "running" });
+  onEvent({ type: "phase", label: "contacting model", detail: opts.displayName ?? model.label, state: "running" });
   // Cache the (large, reused) /ask system corpus so repeat questions are cheap.
   const cached = withPromptCaching(model, system, [{ role: "user", content: prompt }]);
   const result = opts._stream
@@ -787,4 +788,3 @@ export async function runCompletion(opts: {
   onEvent({ type: "done", usage });
   return { text, usage };
 }
-

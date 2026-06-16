@@ -135,6 +135,11 @@ function firstPath(text: string): string | null {
   return m?.[1] ?? null;
 }
 
+function backendIdentity(model: ModelSpec, account?: Account | null): string {
+  const host = account ? accountName(account) : model.provider;
+  return `${model.label} via ${host}`;
+}
+
 function uniq<T>(xs: T[]): T[] {
   return [...new Set(xs)];
 }
@@ -2405,7 +2410,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         if (routeChanged(`api:${choice.model.provider}:${choice.model.id}`)) {
           onEvent({ type: "model-pick", model: choice.model.label, provider: choice.model.provider, reason: choice.reason, id: choice.model.id });
         }
-        onEvent({ type: "phase", label: "building context", detail: choice.model.label, state: "running" });
+        const displayName = backendIdentity(choice.model, choice.backend?.kind === "in-loop" ? choice.backend.account : null);
+        onEvent({ type: "phase", label: "building context", detail: displayName, state: "running" });
         const userContent = imageContent(prompt, activeImagesRef.current);
         // Semantic retrieval: one bounded query-embedding call (memoized across
         // hops of the same turn); null on timeout/no-index/no-provider → BM25.
@@ -2473,7 +2479,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const r = await runTask({
           model: choice.model, messages: ctx, onEvent, signal, plan, system, creds,
           root: rootRef.current, // tools stay rooted in THIS tab's tree even when another tab owns cwd
-          effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0,
+          effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, displayName,
           pinnedModelId: explicitModelId, cacheBreak,
           onBackground: (rep) => {
             // Surface NOW (notice + toast). The full text is delivered to the
@@ -3232,7 +3238,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             fellOverFrom: fellOverFromRef.current,
             escalated: /escalated after/.test(routedRef.current?.reason ?? ""),
           });
-          push({ kind: "model", id: idRef.current++, model: line.model, provider: line.provider, costText: line.costText, surprising: line.surprising, reason: line.reason ?? undefined });
+          push({ kind: "model", id: idRef.current++, model: line.model, provider: line.provider, backendText: line.backendText, costText: line.costText, surprising: line.surprising, reason: line.reason ?? undefined });
         }
         if (!hadError && getAccount(acctId)?.exec === "cli") {
           // Real rate events carry actual utilization when near a limit (e.g.
@@ -4698,10 +4704,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const stripApi = stripView ? ((usedAccountRef.current ? stripView.apiKeys.find((a) => a.id === usedAccountRef.current) : null) ?? stripView.apiKeys[0] ?? null) : null;
   // The strip's header identity chip — memoized (the strip is React.memo'd, a
   // fresh object every render would defeat it).
-  const stripActive = useMemo(
-    () => (statusPinned && bannerAccount ? { label: bannerAccount, hue: provHue } : null),
-    [statusPinned, bannerAccount, provHue],
-  );
   // Same hot-path rule as stripView: turnsLeftForecast calls totalSpentToday(),
   // which reads usage.json from disk — computing it inline in the strip JSX ran
   // that read on every render (every scroll frame while the strip is pinned).
@@ -5022,7 +5024,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           ) : <Text> </Text>}
         </Box>
         {quickPickerJsx}
-        {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} apiHue={stripApi ? providerColor(getAccount(stripApi.id)?.provider) : undefined} active={stripActive} forecast={stripForecast!} width={pageW} epoch={themeEpochState} /> : null}
+        {statusPinned ? <StatusStrip ctxPct={ctxPct} tokens={tokens} contextWindow={activeCtxWindow} cost={estimateCost(sessionRef.current.turns)} sub={stripSub} subProbing={!!(activeCli && probing.has(activeCli.id))} api={stripApi} apiHue={stripApi ? providerColor(getAccount(stripApi.id)?.provider) : undefined} forecast={stripForecast!} width={pageW} epoch={themeEpochState} /> : null}
       </Box>
       {/* The command/file palette sits in the page column, aligned with the composer above it. */}
       {homeScreen ? null : <Box height={PALETTE_ROWS} flexDirection="column" marginLeft={pageLeft} width={pageW} flexShrink={0}>{paletteAt(pageW - 2)}</Box>}

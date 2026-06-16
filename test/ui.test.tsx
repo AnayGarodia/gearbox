@@ -61,7 +61,7 @@ test("transcript renders live phase, model, verification, and preference rows", 
   ];
   const f = render(<Transcript items={items} width={120} />).lastFrame() ?? "";
   expect(f).toContain("building context");
-  expect(f).toContain("routed → anthropic · sonnet-4.6");
+  expect(f).toContain("routed → sonnet-4.6 via anthropic");
   expect(f).toContain("$0.04");
   expect(f).toContain("│ one");
   expect(f).toContain("check");

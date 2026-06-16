@@ -64,6 +64,7 @@ test("buildRoutingLine: composes the real fields + surprise verdict", () => {
   expect(routine).toEqual({
     model: "haiku",
     provider: "anthropic",
+    backendText: "haiku via anthropic",
     costText: "<$0.01",
     surprising: false,
     reason: null,
@@ -76,7 +77,7 @@ test("buildRoutingLine: composes the real fields + surprise verdict", () => {
 
 test("routingLineText: routine prints a dim single line; surprising appends the reason", () => {
   const routine = buildRoutingLine({ model: "haiku", provider: "anthropic", costUSD: 0.04, kind: "metered" });
-  expect(routingLineText(routine)).toBe("routed → anthropic · haiku · $0.04");
+  expect(routingLineText(routine)).toBe("routed → haiku via anthropic · $0.04");
 
   const surprising = buildRoutingLine({
     model: "opus",
@@ -85,7 +86,13 @@ test("routingLineText: routine prints a dim single line; surprising appends the 
     kind: "metered",
     fellOverFrom: "gpt-5",
   });
-  expect(routingLineText(surprising)).toBe("routed → anthropic · opus · $0.50 · fell back from gpt-5");
+  expect(routingLineText(surprising)).toBe("routed → opus via anthropic · $0.50 · fell back from gpt-5");
+});
+
+test("buildRoutingLine: hosted models read as one backend identity", () => {
+  const line = buildRoutingLine({ model: "DeepSeek-V4-Flash", provider: "Azure AI Foundry", costUSD: 0.03, kind: "metered" });
+  expect(line.backendText).toBe("DeepSeek-V4-Flash via Azure AI Foundry");
+  expect(routingLineText(line)).toBe("routed → DeepSeek-V4-Flash via Azure AI Foundry · $0.03");
 });
 
 import { servedMatchesRequested } from "../src/ui/routing-line.ts";

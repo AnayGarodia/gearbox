@@ -534,7 +534,7 @@ function ModelLine({ item }: { item: Extract<Item, { kind: "model" }> }) {
   return (
     <Box marginTop={1} marginLeft={2}>
       <Text color={head}>↳ routed → </Text>
-      <Text color={body}>{item.provider + " · " + item.model}</Text>
+      <Text color={body}>{item.backendText ?? `${item.model} via ${item.provider}`}</Text>
       {item.costText ? <Text color={head}>{" · " + item.costText}</Text> : null}
       {item.surprising && item.reason ? <Text color={color.warn}>{" · " + item.reason}</Text> : null}
     </Box>
