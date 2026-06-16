@@ -883,7 +883,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         const left: Span[] = [
           { text: "  " },
           { text: glyph.corner, color: color.faint },
-          { text: "  " + coalescedPhrase((it as any).name, run), color: color.dim, bold: true },
+          { text: "  " + coalescedPhrase((it as any).name, run), color: color.dim },
         ];
         if (shownArgs.length) left.push({ text: "  ·  " + shownArgs.join(", ") + (moreN > 0 ? ` +${moreN}` : ""), color: color.faint });
         out.push(marginLine(left, totalMs ? [{ text: fmtMs(totalMs), color: color.faint }] : [], width));
@@ -926,7 +926,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
           out.push(marginLine([
             { text: "  " },
             { text: it.status === "running" ? glyph.off : glyph.corner, color: it.status === "err" ? color.err : it.status === "running" ? toolColor(it) : color.faint },
-            { text: "  " + friendlyTool(it.name), color: color.dim, bold: true },
+            { text: "  " + friendlyTool(it.name), color: color.dim },
             ...(it.summary ? [{ text: "  ·  " + it.summary, color: color.dim }] : []),
             ...((it.children?.length ?? 0) ? [{ text: expand ? "  ⌃O collapses" : "  ⌃O expands", color: color.faint }] : []),
           ], it.durationMs != null ? [{ text: "~" + fmtMs(it.durationMs), color: color.faint }] : [], width));
@@ -942,7 +942,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         const isWrite = !isShell && (it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change");
         // WHERE TO LOOK: mutating tools (write/edit) carry the consequences, so
         // their verb renders in full ink; read-only steps stay dim and recede.
-        const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: it.status === "err" ? color.err : isWrite ? color.text : color.dim, bold: true }];
+        const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: it.status === "err" ? color.err : isWrite ? color.text : color.dim }];
         const headUsed = 2 + 1 + 2 + 6; // pad + dot + spaces + name
         if (it.arg) {
           // Collapse embedded newlines to a ⏎ marker — a heredoc / multi-line
@@ -952,7 +952,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
           // File-tool heads are clickable: OSC 8 → the configured editor
           // (vscode:// by default; /config editor changes or disables it).
           const link = !isShell && pathish(shownArg) ? editorUrl(shownArg) : undefined;
-          head.push({ text: " " + sliceWidth(shownArg, Math.max(width - headUsed - 1, 0)).text, color: isShell ? color.text : color.path, bold: true, link });
+          head.push({ text: " " + sliceWidth(shownArg, Math.max(width - headUsed - 1, 0)).text, color: isShell ? color.text : color.path, link });
         }
         if (it.status === "running") {
           // No "working" badge here (it shows once at the bottom) — just the ticking
