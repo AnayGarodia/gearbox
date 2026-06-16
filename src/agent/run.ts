@@ -66,6 +66,19 @@ const HEAD_FIELD: Record<string, string> = { run_shell: "command" };
 // from the array input). Skip our UI and let the tool drive its own display.
 const SELF_RENDERING = new Set(["delegate", "delegate_parallel", "spawn_subagent", "collect_subagents", "ask_user", "update_plan"]);
 
+// How deep delegation may nest. A turn at depth `d` gets the delegate tools only
+// when `d < maxDelegateDepth()`. Default 1 → only the top-level turn (depth 0)
+// delegates; its sub-agents (depth 1) cannot, so delegation never recurses (the
+// original invariant). Set GEARBOX_MAX_DELEGATE_DEPTH=2 to let a sub-agent
+// delegate ONCE more (depth-2 nesting) — flagged + hard-capped at 2 so a runaway
+// fan-out tree is impossible no matter what the env says.
+export const DELEGATE_DEPTH_CAP = 2;
+export function maxDelegateDepth(): number {
+  const n = Number(process.env.GEARBOX_MAX_DELEGATE_DEPTH);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(DELEGATE_DEPTH_CAP, Math.floor(n));
+}
+
 /**
  * Incrementally decodes ONE JSON string field out of a partial JSON buffer as
  * it streams in. The SDK hands us raw `inputTextDelta` chunks of the tool
@@ -309,6 +322,8 @@ export async function runTask(opts: {
   displayName?: string; // human backend identity, e.g. "DeepSeek-V4-Flash via Azure AI Foundry"
   pinnedModelId?: string; // when the user explicitly chose a model (via /model or "use opus"), delegated sub-tasks inherit it instead of re-routing to the cheapest
   extraTools?: Record<string, any>; // caller-supplied tool OVERRIDES merged last (after the delegate tools) — the ACP server swaps read_file/write_file for editor-buffer-aware versions
+  allowTools?: string[]; // agent tool allowlist (strict) — only these survive (src/agents.ts `tools:`)
+  denyTools?: string[]; // agent tool denylist — removed after the allowlist (src/agents.ts `disallowed_tools:`)
   cacheBreak?: number; // index of the last settled-history message (from the context engine), cache that prefix; the volatile turn-context tail rides after it
   onBackground?: (r: { id: number; task: string; ok: boolean; text: string }) => void; // backgrounded delegate reports (host injects them into the conversation)
   _stream?: AsyncIterable<any>; // test seam: feed a simulated SDK fullStream
@@ -367,11 +382,13 @@ export async function runTask(opts: {
 
   onEvent({ type: "phase", label: "contacting model", detail: opts.displayName ?? model.label, state: "running" });
 
-  // Delegation is only available at depth 0 (and not in plan/read-only mode).
-  // The injected subRunner calls runTask at depth+1, so the sub-agent receives
-  // no delegate tool and cannot spawn further sub-agents. Its prose is captured
-  // as the tool result; its non-text events (tool-start/end, phase, etc.) are
-  // forwarded directly upward to the parent's onEvent so the UI can show them.
+  // Delegation is available while depth < maxDelegateDepth() (and not in plan/
+  // read-only mode) — depth 0 by default, optionally depth 1 too (depth-2 nesting,
+  // GEARBOX_MAX_DELEGATE_DEPTH=2). The injected subRunner calls runTask at depth+1,
+  // which re-evaluates the same gate, so a sub-agent past the cap receives no
+  // delegate tool and delegation can't recurse beyond the cap. A sub-agent's prose
+  // is captured as the tool result; its non-text events (tool-start/end, phase,
+  // etc.) forward directly upward to the parent's onEvent so the UI can show them.
   const subRunner: SubAgentRunner = async (p) => {
     let text = "";
     const wrapped: OnEvent = (e) => { if (e.type === "text") text += e.text; else p.onEvent(e); };
@@ -386,7 +403,7 @@ export async function runTask(opts: {
       });
       if (imgs.length) content = imageContent(p.prompt, imgs);
     }
-    const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries });
+    const sr = await runTask({ model: p.model, creds: p.creds, system: p.system, messages: [{ role: "user", content }], onEvent: wrapped, signal: p.signal, depth: depth + 1, deferTerminal: true, root: p.root, maxRetries: opts.maxRetries, plan: p.plan, allowTools: p.allowTools, denyTools: p.denyTools, effort: p.effort });
     return { text, usage: sr.usage, failure: sr.failure ? { message: sr.failure.message } : undefined };
   };
   // The orchestrator's own model + this turn's prompt feed the delegation guards
@@ -402,7 +419,7 @@ export async function runTask(opts: {
   })();
   // Sweep any worktrees from spawn_subagent jobs the model never collected (#8).
   const spawnCleanup: { current?: () => void } = {};
-  const delegateTools = depth === 0 && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, root: opts.root, onBackground: opts.onBackground, orchestratorModelId: model.id, orchestratorPrompt: lastUserPrompt, spawnCleanup }) : undefined;
+  const delegateTools = depth < maxDelegateDepth() && !plan ? makeDelegateTools({ onEvent, signal, run: subRunner, pinnedModelId: opts.pinnedModelId, root: opts.root, onBackground: opts.onBackground, orchestratorModelId: model.id, orchestratorPrompt: lastUserPrompt, spawnCleanup }) : undefined;
   // Caller overrides merge LAST so they can replace built-ins by name.
   const extraTools = delegateTools || opts.extraTools ? { ...delegateTools, ...opts.extraTools } : undefined;
   // Loop guard: the 3rd/4th consecutive identical tool call is blocked with a
@@ -410,7 +427,7 @@ export async function runTask(opts: {
   // the turn (reported below as a structured failure).
   let loopStop = false;
   const activeTools = guardToolLoops(
-    await createToolset(onEvent, { readOnly: Boolean(plan), extraTools, root: opts.root }),
+    await createToolset(onEvent, { readOnly: Boolean(plan), extraTools, root: opts.root, allowTools: opts.allowTools, denyTools: opts.denyTools }),
     () => { loopStop = true; },
   );
 

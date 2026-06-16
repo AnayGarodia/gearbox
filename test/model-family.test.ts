@@ -1,6 +1,31 @@
 import { test, expect } from "bun:test";
-import { modelFamily, candidateModelsFor } from "../src/model/family.ts";
+import { modelFamily, candidateModelsFor, modelVendorAliases, modelInFamily } from "../src/model/family.ts";
 import { findModel } from "../src/providers.ts";
+
+// ── coarse VENDOR lineage (the cross-family-reviewer axis) ────────────────────
+
+test("modelVendorAliases groups by vendor across versions and hosts", () => {
+  expect(modelVendorAliases("claude-opus-4-8")).toContain("claude");
+  expect(modelVendorAliases("claude-sonnet-4-6")).toContain("claude"); // same vendor as opus
+  expect(modelVendorAliases("bedrock/anthropic.claude-opus-4-20250514-v1:0")).toContain("anthropic");
+  expect(modelVendorAliases("gpt-5.5-pro")).toContain("gpt");
+  expect(modelVendorAliases("gemini-3.1-pro")).toContain("gemini");
+  expect(modelVendorAliases("deepseek-v4-pro")).toContain("deepseek");
+  expect(modelVendorAliases("some-unknown-model")).toEqual([]);
+});
+
+test("modelInFamily matches alias-aware and is cross-vendor exclusive", () => {
+  // sonnet IS claude/anthropic — a same-vendor reviewer is correctly excluded.
+  expect(modelInFamily("claude-sonnet-4-6", "claude")).toBe(true);
+  expect(modelInFamily("claude-sonnet-4-6", "anthropic")).toBe(true);
+  // a different vendor is NOT in the claude family → kept as a reviewer.
+  expect(modelInFamily("deepseek-v4-pro", "claude")).toBe(false);
+  expect(modelInFamily("gpt-5.5-pro", "claude")).toBe(false);
+  // passing a full author id still excludes its vendor-mates (containment).
+  expect(modelInFamily("claude-sonnet-4-6", "claude-opus-4-8")).toBe(true);
+  expect(modelInFamily("", "claude")).toBe(false);
+  expect(modelInFamily("claude-sonnet-4-6", "")).toBe(false);
+});
 
 test("collapses provider-specific ids to a shared family", () => {
   expect(modelFamily("claude-sonnet-4-6")).toBe("claude-sonnet-4");

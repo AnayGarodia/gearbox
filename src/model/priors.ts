@@ -34,6 +34,11 @@ interface PriorsFile {
   // learn "high effort was worth it HERE" and self-correct the modeled effort
   // curve (effort.ts). Separate tree so the per-model priors above are unaffected.
   effortOutcomes?: Record<string, Record<string, Record<string, Record<string, OutcomeCounts>>>>;
+  // Per-AGENT outcomes (repo → agent → kind → modelId), so the flywheel learns
+  // which model does best FOR A GIVEN ROLE here — e.g. @review on a cross-family
+  // model, @explore on a cheap one. A separate tree, gated by the same MIN_N, so
+  // it only overrides the kind-level prior once an agent has its own evidence.
+  agentOutcomes?: Record<string, Record<string, Record<string, Record<string, OutcomeCounts>>>>;
 }
 
 export type Outcome = keyof OutcomeCounts;
@@ -83,12 +88,17 @@ function save(f: PriorsFile): void {
   } catch { /* best-effort */ }
 }
 
-let cache: { f: PriorsFile; at: number } | null = null;
+let cache: { f: PriorsFile; at: number; path: string } | null = null;
 const TTL = 10_000;
 
 function cached(): PriorsFile {
   const now = Date.now();
-  if (!cache || now - cache.at > TTL) cache = { f: load(), at: now };
+  const path = file();
+  // Reload when the TTL lapses OR the resolved priors PATH changed — the latter
+  // keeps the in-memory cache from leaking one GEARBOX_HOME's priors into another
+  // (a test sets a fresh home; without this the time-based cache would serve the
+  // previous home's data and silently skew routing for ~10s).
+  if (!cache || cache.path !== path || now - cache.at > TTL) cache = { f: load(), at: now, path };
   return cache.f;
 }
 
@@ -101,7 +111,7 @@ const decay = (c: OutcomeCounts): void => {
   }
 };
 
-export function recordTurnOutcome(opts: { kind: string; modelId: string; outcome: Outcome; repo?: string; effort?: string }): void {
+export function recordTurnOutcome(opts: { kind: string; modelId: string; outcome: Outcome; repo?: string; effort?: string; agent?: string }): void {
   const f = cached();
   const repo = opts.repo ?? repoSlug();
   const byModel = ((f.repos[repo] ??= {})[opts.kind] ??= {});
@@ -116,8 +126,16 @@ export function recordTurnOutcome(opts: { kind: string; modelId: string; outcome
     ec[opts.outcome] += 1;
     decay(ec);
   }
+  // Per-agent tree (when the turn ran AS an agent/role): same counts, keyed by
+  // agent, so priorFor can prefer the model that does best for THIS role here.
+  if (opts.agent) {
+    const byAgent = ((((f.agentOutcomes ??= {})[repo] ??= {})[opts.agent] ??= {})[opts.kind] ??= {});
+    const gc = (byAgent[opts.modelId] ??= { passed: 0, failed: 0, undone: 0, unverified: 0 });
+    gc[opts.outcome] += 1;
+    decay(gc);
+  }
   save(f);
-  cache = { f, at: Date.now() };
+  cache = { f, at: Date.now(), path: file() };
 }
 
 /** Measured pass rate for (kind, model, effort) in this repo, or null below
@@ -138,13 +156,9 @@ export interface Prior {
   delta: number; // quality adjustment, clamped [MIN_DELTA, MAX_DELTA]
 }
 
-/** The measured prior for (kind, model) in this repo, or null below MIN_N.
- *  An /undo counts as HALF a failure — a human revert is negative signal, but
- *  it is ambiguous (often the user changing direction or cleaning up), while a
- *  red VERIFY is unambiguous. Weighting undo below failed keeps routine
- *  cleanups from sinking a good model below the bar. */
-export function priorFor(kind: string, modelId: string, repo?: string): Prior | null {
-  const c = cached().repos[repo ?? repoSlug()]?.[kind]?.[modelId];
+// Turn raw outcome counts into a gated Prior (null below MIN_N). One place so the
+// per-(kind,model), per-agent, and any future tree all smooth + clamp identically.
+function priorFromCounts(c: OutcomeCounts | undefined): Prior | null {
   if (!c) return null;
   const fails = c.failed + UNDO_WEIGHT * c.undone;
   const n = c.passed + c.failed + c.undone;
@@ -152,6 +166,24 @@ export function priorFor(kind: string, modelId: string, repo?: string): Prior | 
   const passRate = (c.passed + 1) / (c.passed + fails + 2);
   const delta = Math.max(MIN_DELTA, Math.min(MAX_DELTA, (passRate - BASELINE) * SCALE));
   return { n, passRate, delta };
+}
+
+/** The measured prior for (kind, model) in this repo, or null below MIN_N.
+ *  When `agent` is given and that agent has its OWN ≥MIN_N evidence for this
+ *  (kind, model), the agent-specific prior wins — the flywheel has learned how
+ *  this model does in this ROLE here, which is more specific than the kind-wide
+ *  prior; otherwise it falls back to the kind-level prior.
+ *  An /undo counts as HALF a failure — a human revert is negative signal, but
+ *  it is ambiguous (often the user changing direction or cleaning up), while a
+ *  red VERIFY is unambiguous. Weighting undo below failed keeps routine
+ *  cleanups from sinking a good model below the bar. */
+export function priorFor(kind: string, modelId: string, repo?: string, agent?: string): Prior | null {
+  const r = repo ?? repoSlug();
+  if (agent) {
+    const ap = priorFromCounts(cached().agentOutcomes?.[r]?.[agent]?.[kind]?.[modelId]);
+    if (ap) return ap; // agent-specific evidence is more specific — it wins once it reaches MIN_N
+  }
+  return priorFromCounts(cached().repos[r]?.[kind]?.[modelId]);
 }
 
 /** The measured failure rate for (kind, model) in this repo, or null below MIN_N.
@@ -185,9 +217,10 @@ export function repoFailRate(kind: string, cwd?: string): { rate: number; n: num
   return { rate: fails / (passed + fails), n };
 }
 
-/** Human line for /why: "measured here: 7/9 ✓ (−0.04)". Null when no prior. */
-export function priorLine(kind: string, modelId: string, repo?: string): string | null {
-  const p = priorFor(kind, modelId, repo);
+/** Human line for /why: "measured here: 7/9 ✓ (−0.04)". Null when no prior.
+ *  Passes `agent` through so /why reflects the same prior routing actually used. */
+export function priorLine(kind: string, modelId: string, repo?: string, agent?: string): string | null {
+  const p = priorFor(kind, modelId, repo, agent);
   if (!p) return null;
   const sign = p.delta >= 0 ? "+" : "−";
   return `measured here: ${Math.round(p.passRate * p.n)}/${p.n} ✓ (${sign}${Math.abs(p.delta).toFixed(2)})`;

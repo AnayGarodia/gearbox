@@ -3,7 +3,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseAgentFile, loadAgents, agentInvocation } from "../src/agents.ts";
+import { parseAgentFile, loadAgents, agentInvocation, agentRouteMode, agentPinId } from "../src/agents.ts";
 
 let home: string, proj: string;
 const saved = process.env.GEARBOX_HOME;
@@ -24,6 +24,64 @@ test("parseAgentFile: frontmatter + body; body-less files are rejected", () => {
   expect(a.model).toBe("claude-opus-4-8");
   expect(a.system).toBe("You are a reviewer.");
   expect(parseAgentFile("---\ndescription: empty\n---\n", "x", "project")).toBeNull();
+});
+
+test("parseAgentFile: the extended frontmatter is parsed (tools, effort, mode, isolation, …)", () => {
+  const a = parseAgentFile(
+    [
+      "---",
+      "description: read-only code reviewer",
+      "model: auto",
+      "when_to_use: reviewing a diff for bugs or security issues",
+      "tools: read_file, search glob",
+      "disallowed_tools: write_file edit_file run_shell",
+      "effort: HIGH",
+      "mode: plan",
+      "isolation: worktree",
+      "exclude_family: claude, GPT",
+      "---",
+      "You review code.",
+    ].join("\n"),
+    "reviewer",
+    "project",
+  )!;
+  expect(a.whenToUse).toBe("reviewing a diff for bugs or security issues");
+  expect(a.tools).toEqual(["read_file", "search", "glob"]);
+  expect(a.disallowedTools).toEqual(["write_file", "edit_file", "run_shell"]);
+  expect(a.effort).toBe("high");
+  expect(a.permissionMode).toBe("plan");
+  expect(a.isolation).toBe("worktree");
+  expect(a.excludeFamily).toEqual(["claude", "gpt"]);
+});
+
+test("agentRouteMode/agentPinId: auto is the default, inherit takes the parent pin, an id pins", () => {
+  const mk = (model?: string) => ({ name: "x", description: "d", system: "s", source: "project" as const, model });
+  // omitted → auto-route (the default for agents)
+  expect(agentRouteMode(mk())).toBe("auto");
+  expect(agentPinId(mk(), "claude-opus-4-8")).toBeUndefined(); // auto ignores the parent pin
+  // explicit auto
+  expect(agentRouteMode(mk("auto"))).toBe("auto");
+  // inherit → parent's pin if pinned, else route
+  expect(agentRouteMode(mk("inherit"))).toBe("inherit");
+  expect(agentPinId(mk("inherit"), "gpt-5")).toBe("gpt-5");
+  expect(agentPinId(mk("inherit"))).toBeUndefined();
+  // a concrete id pins regardless of the parent
+  expect(agentRouteMode(mk("claude-opus-4-8"))).toBe("pinned");
+  expect(agentPinId(mk("claude-opus-4-8"), "gpt-5")).toBe("claude-opus-4-8");
+});
+
+test("loadAgents: explore + review ship built in, auto-routed and read-only", () => {
+  const defs = loadAgents(proj);
+  const explore = defs.find((a) => a.name === "explore")!;
+  expect(explore.source).toBe("builtin");
+  expect(agentRouteMode(explore)).toBe("auto"); // model: auto — routed, not pinned
+  expect(explore.permissionMode).toBe("plan"); // read-only
+  expect(explore.tools).toContain("read_file");
+  expect(explore.tools).not.toContain("write_file");
+  const review = defs.find((a) => a.name === "review")!;
+  expect(agentRouteMode(review)).toBe("auto");
+  expect(review.permissionMode).toBe("plan");
+  expect(review.effort).toBe("high");
 });
 
 test("loadAgents: scout ships built in; project overrides global by name", () => {

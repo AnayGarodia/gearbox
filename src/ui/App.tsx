@@ -104,7 +104,7 @@ import { searchSessions } from "../session-search.ts";
 import { syncModelsDev } from "../model/modelsdev.ts";
 import { checkFileDiagnostics, formatDiagnostics, shutdownAllLsp } from "../lsp/diagnostics.ts";
 import { loadPlugins, emitHook, installPluginLogger } from "../plugins.ts";
-import { loadAgents, agentInvocation, type AgentDef } from "../agents.ts";
+import { loadAgents, agentInvocation, agentPinId, type AgentDef } from "../agents.ts";
 import { recordTurnOutcome } from "../model/priors.ts";
 import { armDeviceLogin, armAuthReady } from "../accounts/azure-arm.ts";
 import { spawnSync as nodeSpawnSync } from "node:child_process";
@@ -590,7 +590,7 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   // The first in-loop turn replaces it with the measured value.
   const ctxOverheadRef = useRef(12_000);
   const lastContextSectionsRef = useRef<ContextSection[]>([]);
-  const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string } | null>(null);
+  const lastOutcomeKeyRef = useRef<{ kind: string; modelId: string; agent?: string } | null>(null);
   const capsRef = useRef<BudgetCaps>(loadPrefs().budgetCaps ?? {}); // hard spend ceilings (/cap)
   const undoStackRef = useRef<{ changes: FileChange[]; at: number; checkpoint?: string }[]>([]); // per-turn file snapshots for /undo + /diff
   // Lazy whole-tree turn checkpoint (the /undo substrate for shell deletes and
@@ -2368,7 +2368,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         });
       }
 
-      const plan = modeRef.current === "plan";
+      // An @agent with `mode: plan` runs read-only for this turn (the clean way
+      // to make a reviewer truly unable to write), in addition to the user's mode.
+      const plan = modeRef.current === "plan" || agentTurnRef.current?.permissionMode === "plan";
       const requires: ModelRequirement[] = ["tools", ...(imagesPresent ? ["images" as const] : [])];
 
       // Emit the terminal events the inner runners deferred, for the FINAL outcome
@@ -2456,22 +2458,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         usedAccountRef.current = account?.id ?? null;
         cliMetaRef.current = null;
         if (account) markUsed(account.id);
-        // Effort: when the user hasn't pinned one (default "auto"), use the
-        // router's per-task pick (choice.effort, already valid for this model).
-        // A pinned effort is honored and clamped to the model's vocabulary.
+        // Effort: when the user hasn't pinned one (default "auto"), use the active
+        // @agent's declared effort if it has one, else the router's per-task pick
+        // (choice.effort, already valid for this model). A user-pinned effort
+        // (/effort) overrides both. Either way it's clamped to the model's vocab.
         let _effortRaw: string | null;
-        if (effortRef.current === "auto") {
+        const baseEffort = effortRef.current === "auto" ? (agentDef?.effort ?? "auto") : effortRef.current;
+        if (baseEffort === "auto") {
           _effortRaw = choice.effort ?? null;
         } else {
-          _effortRaw = normalizeEffort(effortRef.current, effortLevels(choice.model));
-          if (_effortRaw === null && effortRef.current !== "medium") {
-            // A pinned effort the (often auto-routed) model doesn't support → CLAMP
-            // to the nearest supported level instead of throwing (R-4).
+          _effortRaw = normalizeEffort(baseEffort, effortLevels(choice.model));
+          if (_effortRaw === null && baseEffort !== "medium") {
+            // A requested effort the (often auto-routed) model doesn't support →
+            // CLAMP to the nearest supported level instead of throwing (R-4).
             const supported = effortLevels(choice.model);
             if (supported.length) {
-              const { level: nearest, clamped } = clampEffort(effortRef.current, supported);
+              const { level: nearest, clamped } = clampEffort(baseEffort, supported);
               _effortRaw = nearest;
-              if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${effortRef.current} → ${nearest}`, state: "running" });
+              if (clamped) onEvent({ type: "phase", label: "effort clamped", detail: `${choice.model.label}: ${baseEffort} → ${nearest}`, state: "running" });
             }
           }
         }
@@ -2481,6 +2485,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           root: rootRef.current, // tools stay rooted in THIS tab's tree even when another tab owns cwd
           effort: _effortRaw ?? undefined, deferTerminal: true, maxRetries: onlineRef.current ? 2 : 0, displayName,
           pinnedModelId: explicitModelId, cacheBreak,
+          // An @agent's tool allow/deny lists scope this turn's toolset (a
+          // read-only reviewer, a search-only explorer). Absent for plain turns.
+          allowTools: agentDef?.tools, denyTools: agentDef?.disallowedTools,
           onBackground: (rep) => {
             // Surface NOW (notice + toast). The full text is delivered to the
             // model on the next turn — auto-woken when idle, else the user's next.
@@ -2516,7 +2523,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // invisible and you'd get sonnet. A direct /model pin (FixedSelector) already
       // wins; this adds the natural-language path.
       const agentDef = agentTurnRef.current; // set by runTurn for @agent turns
-      const directiveId = (agentDef?.model ?? null) || (sel instanceof RoutingSelector ? modelDirectiveIn(prompt) : null);
+      // An agent pins ONLY when its model: is a concrete id; "auto"/"inherit"
+      // (and an absent model:) defer to the active selector — so @reviewer with
+      // model: auto routes per task instead of being read as a model named "auto".
+      const directiveId = (agentDef ? agentPinId(agentDef) : undefined) ?? (sel instanceof RoutingSelector ? modelDirectiveIn(prompt) : null);
       let routedSource = "plan mode"; // only plan pre-sets routedKind; otherwise the classifier below decides
       if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
@@ -2539,7 +2549,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires, estTokens }); // directive model unavailable → fall back to routing
       }
@@ -2549,7 +2559,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // state. Cleared when not auto-routing (a pin/directive ran).
       if (sel instanceof RoutingSelector && !directiveId && sel.explain) {
         try {
-          const card = sel.explain({ prompt, kind: routedKind, requires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens });
+          const card = sel.explain({ prompt, kind: routedKind, requires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
           lastScorecardRef.current = routedKind ? { ...card, kindSource: routedSource } : card;
         } catch { lastScorecardRef.current = null; }
       } else {
@@ -3368,8 +3378,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (changed.length && ranModel && ranModel !== "unknown") {
             const outcomeKind = routedKindRef.current?.kind ?? "code";
             const outcome = failed.length ? "failed" : tier && tier !== "none" ? "passed" : "unverified";
-            try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome, effort: ranEffortRef.current }); } catch { /* never break settle */ }
-            lastOutcomeKeyRef.current = { kind: outcomeKind, modelId: ranModel };
+            // Per-agent flywheel: when the turn ran AS an @agent, also key the
+            // outcome by that agent so the router learns the best model for the role.
+            const outcomeAgent = agentTurnRef.current?.name;
+            try { recordTurnOutcome({ kind: outcomeKind, modelId: ranModel, outcome, effort: ranEffortRef.current, agent: outcomeAgent }); } catch { /* never break settle */ }
+            lastOutcomeKeyRef.current = { kind: outcomeKind, modelId: ranModel, agent: outcomeAgent };
           }
           // Once per session, after a clean code-changing turn in a project whose
           // checks can't prove behavior (no test command at all, or only

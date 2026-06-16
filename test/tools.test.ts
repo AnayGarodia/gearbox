@@ -2,7 +2,24 @@ import { test, expect } from "bun:test";
 import { mkdtempSync, writeFileSync, rmSync, symlinkSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTools } from "../src/tools.ts";
+import { createTools, scopeTools } from "../src/tools.ts";
+
+test("scopeTools: an allowlist is strict, a denylist removes, empty allowlist is no-op", () => {
+  const set: any = { read_file: 1, write_file: 1, search: 1, run_shell: 1, delegate: 1 };
+  // strict allowlist: only the listed tools survive (a read-only reviewer).
+  expect(Object.keys(scopeTools(set, ["read_file", "search"]))).toEqual(["read_file", "search"]);
+  // denylist: drop the mutators, keep the rest.
+  expect(Object.keys(scopeTools(set, undefined, ["write_file", "edit_file", "run_shell"]))).toEqual([
+    "read_file",
+    "search",
+    "delegate",
+  ]);
+  // allow + deny compose (allow first, then deny prunes).
+  expect(Object.keys(scopeTools(set, ["read_file", "write_file"], ["write_file"]))).toEqual(["read_file"]);
+  // empty/absent lists = no restriction (a typo'd-away allowlist can't strand the agent).
+  expect(Object.keys(scopeTools(set, []))).toEqual(Object.keys(set));
+  expect(Object.keys(scopeTools(set))).toEqual(Object.keys(set));
+});
 
 function tmpRepo(): string {
   return mkdtempSync(join(tmpdir(), "gb-read-"));

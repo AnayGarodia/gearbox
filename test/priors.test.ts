@@ -31,6 +31,31 @@ test("a prior stays silent below 8 verified outcomes (opinion is not evidence)",
   expect(priorFor("code", "m", "r")).not.toBeNull();
 });
 
+test("per-agent dimension: an agent's own ≥MIN_N evidence overrides the kind-level prior", () => {
+  // Kind-level: model 'm' looks BAD for code in this repo (8 failures).
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
+  // But AS the @review agent, 'm' has its own track record of passing (8 passes).
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r", agent: "review" });
+  const kindLevel = priorFor("code", "m", "r")!;
+  const agentLevel = priorFor("code", "m", "r", "review")!;
+  expect(kindLevel.delta).toBeLessThan(0); // sunk by the kind-wide failures
+  expect(agentLevel.delta).toBeGreaterThan(0); // the agent's own passes win
+  // An agent WITHOUT its own evidence falls back to the kind-level prior.
+  expect(priorFor("code", "m", "r", "explore")!.delta).toBe(kindLevel.delta);
+});
+
+test("per-agent dimension stays silent below MIN_N (falls back to kind), then speaks", () => {
+  // A clean positive kind-level baseline, with NO agent-tagged outcomes yet.
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "passed", repo: "r" });
+  // No 'review' evidence → priorFor falls back to the (positive) kind-level prior.
+  expect(priorFor("code", "m", "r", "review")!.delta).toBeGreaterThan(0);
+  // Accumulate the agent's OWN evidence (these also count kind-level — a real turn
+  // either way — but the kind tree stays net-positive at 8P vs 8F).
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r", agent: "review" });
+  // Now the agent has ≥MIN_N of its OWN evidence (8 failures) → it takes over.
+  expect(priorFor("code", "m", "r", "review")!.delta).toBeLessThan(0);
+});
+
 test("persistent failures pull quality DOWN; passes push it up only slightly", () => {
   for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "bad", outcome: "failed", repo: "r" });
   for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: "good", outcome: "passed", repo: "r" });

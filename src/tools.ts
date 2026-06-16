@@ -800,7 +800,18 @@ function readOnlySubset(all: ReturnType<typeof createTools>) {
  */
 export async function createToolset(
   onEvent?: OnEvent,
-  opts: { readOnly?: boolean; extraTools?: Record<string, Tool<any, any>>; root?: string; extraReadRoots?: string[] } = {},
+  opts: {
+    readOnly?: boolean;
+    extraTools?: Record<string, Tool<any, any>>;
+    root?: string;
+    extraReadRoots?: string[];
+    // Agent tool scoping (src/agents.ts). allowTools = a strict allowlist (only
+    // these survive); denyTools = a denylist removed after. Applied to the FULL
+    // merged set (built-ins + MCP + delegate), so e.g. a reviewer agent declared
+    // `tools: read_file, search, glob` truly cannot write or delegate.
+    allowTools?: string[];
+    denyTools?: string[];
+  } = {},
 ) {
   const all = createTools(onEvent, opts.root, opts.extraReadRoots); // root scopes every file/shell op (worktree isolation)
   const base = opts.readOnly ? readOnlySubset(all) : all;
@@ -809,7 +820,28 @@ export async function createToolset(
   // agents don't get them, so delegation can't recurse. Absent means no delegation
   // (plan mode, sub-agents).
   if (opts.extraTools) for (const [k, v] of Object.entries(opts.extraTools)) set[k] = v;
-  return wrapWithPluginHooks(set);
+  return wrapWithPluginHooks(scopeTools(set, opts.allowTools, opts.denyTools));
+}
+
+/** Apply an agent's tool allow/deny lists to a built toolset. allow is strict
+ *  (only listed tools survive — an empty allow list is treated as "no
+ *  restriction" so a typo can't strand the agent toolless); deny removes after.
+ *  Pure; exported for direct testing. */
+export function scopeTools(
+  set: Record<string, Tool<any, any>>,
+  allow?: string[],
+  deny?: string[],
+): Record<string, Tool<any, any>> {
+  let out = set;
+  if (allow && allow.length) {
+    const keep = new Set(allow);
+    out = Object.fromEntries(Object.entries(out).filter(([k]) => keep.has(k)));
+  }
+  if (deny && deny.length) {
+    const drop = new Set(deny);
+    out = Object.fromEntries(Object.entries(out).filter(([k]) => !drop.has(k)));
+  }
+  return out;
 }
 
 // Plugin hooks around EVERY tool call (built-ins, MCP, delegate alike):

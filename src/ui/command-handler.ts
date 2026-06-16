@@ -57,7 +57,7 @@ import { editorNames, setEditorPref } from "./links.ts";
 import { liveCheckAll, formatDoctorRows } from "../accounts/doctor.ts";
 import { searchSessions } from "../session-search.ts";
 import { syncModelsDev } from "../model/modelsdev.ts";
-import { loadAgents } from "../agents.ts";
+import { loadAgents, agentRouteMode } from "../agents.ts";
 import { recordTurnOutcome } from "../model/priors.ts";
 import { armDeviceLogin } from "../accounts/azure-arm.ts";
 import type { CliModelChoice } from "./App.tsx";
@@ -156,7 +156,7 @@ export interface CommandCtx {
   idRef: MutableRefObject<number>;
   itemsRef: MutableRefObject<Item[]>;
   lastChangedFilesRef: MutableRefObject<string[]>;
-  lastOutcomeKeyRef: MutableRefObject<{ kind: string; modelId: string } | null>;
+  lastOutcomeKeyRef: MutableRefObject<{ kind: string; modelId: string; agent?: string } | null>;
   lastPromptRef: MutableRefObject<string | null>;
   modeRef: MutableRefObject<"normal" | "auto-accept" | "plan">;
   msgRef: MutableRefObject<ModelMessage[]>;
@@ -608,10 +608,16 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
         case "agents": {
           echo(text);
           const defs = loadAgents();
+          const routeNote = (a: (typeof defs)[number]) => {
+            const mode = agentRouteMode(a);
+            if (mode === "pinned") return ` · pinned to ${a.model}`;
+            if (mode === "inherit") return " · inherits your model";
+            return " · auto-routed";
+          };
           notice(
             "agents · run one with @<name> <task>\n" +
-              defs.map((a) => `  @${a.name.padEnd(14)} ${a.description}${a.model ? ` · pinned to ${a.model}` : ""} · ${a.source}`).join("\n") +
-              "\n  add your own: .gearbox/agents/<name>.md (frontmatter: description, model) — body = its system prompt",
+              defs.map((a) => `  @${a.name.padEnd(14)} ${a.description}${routeNote(a)}${a.tools ? ` · tools: ${a.tools.join(",")}` : ""} · ${a.source}`).join("\n") +
+              "\n  add your own: .gearbox/agents/<name>.md (frontmatter: description, model: auto|inherit|<id>, tools, effort, mode) — body = its system prompt",
           );
           return;
         }

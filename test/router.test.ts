@@ -85,6 +85,22 @@ test("with a DeepSeek key, coding routes to the cheapest capable model", () => {
   expect(r.select({ prompt: "refactor the parser", kind: "code", verifierTier: "tests" }).model.id).toBe("deepseek-v4-flash");
 });
 
+// ── cross-family exclusion (the reviewer that must differ from the author) ─────
+test("excludeFamily routes AROUND a vendor, but keeps the pool if it would empty it", () => {
+  only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");
+  const r = new RoutingSelector();
+  const base = { prompt: "refactor the parser", kind: "code" as const, verifierTier: "tests" as const };
+  // normally the cheapest capable wins: deepseek.
+  expect(r.select(base).model.id).toBe("deepseek-v4-flash");
+  // excluding deepseek's vendor pushes the pick to the other vendor (anthropic).
+  const noDeepseek = r.select({ ...base, excludeFamily: ["deepseek"] });
+  expect(noDeepseek.model.provider).toBe("anthropic");
+  // excluding EVERY available vendor would empty the pool → keep it (a same-family
+  // reviewer beats no reviewer); the turn still resolves to a real model.
+  const both = r.select({ ...base, excludeFamily: ["deepseek", "claude", "anthropic"] });
+  expect(both.model.id).toBeTruthy();
+});
+
 // ── escalation: a miss raises the capability floor, climbing off the failed tier ──
 test("escalation climbs to a stronger model after misses (floor rises by failure kind)", () => {
   only("ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY");

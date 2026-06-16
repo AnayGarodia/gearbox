@@ -32,6 +32,7 @@ import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./
 import { priorFor, priorLine, failRateFor, effortPassRate } from "./priors.ts";
 import { estimateDifficulty, type Difficulty, type DifficultySignals } from "./difficulty.ts";
 import { qualityForKind, qualityNote, benchmarkRow } from "./benchmarks.ts";
+import { modelInFamily } from "./family.ts";
 import { effortLevels } from "./reasoning.ts";
 import { bestEffort } from "./effort.ts";
 import { detectProofTier } from "../verify.ts";
@@ -510,14 +511,22 @@ export class RoutingSelector implements ModelSelector {
       const rules = [...(pol?.avoidProviders ?? []), ...(pol?.avoidModels ?? [])].join(", ");
       throw new Error(`Your policy avoids every available model (avoiding: ${rules}) — this blocks every routed turn, including delegates and compaction. /prefer allow <name> lifts a rule (/prefer shows the policy), or add an account.`);
     }
-    const eligible = allowed;
+    // Cross-family exclusion (a reviewer that must differ from the author's
+    // vendor). Drops candidates in any named family; but a reviewer on the same
+    // family beats no reviewer, so if excluding empties the pool we keep it.
+    let eligible = allowed;
+    if (task.excludeFamily?.length) {
+      const fams = task.excludeFamily;
+      const kept = allowed.filter((c) => !fams.some((f) => modelInFamily(c.spec, f) || (c.canonicalId ? modelInFamily(c.canonicalId, f) : false)));
+      if (kept.length) eligible = kept;
+    }
     const pool = applyGlobalPreference(eligible);
     // Capability FLOOR (the only quality threshold left): exclude models that are
     // genuinely incapable of this kind, so a cheap-but-junk model can never win
     // on price. NOT the old bar — it does not pick the tier, only removes the
     // unqualified. A CLI seat with no benchmark gets the benefit of the doubt
     // (kept). Prior-adjusted so a model the flywheel has sunk here floors out too.
-    const adjQuality = (c: Candidate): number => qualityOf(c, kind) + (priorFor(kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
+    const adjQuality = (c: Candidate): number => qualityOf(c, kind) + (priorFor(kind, c.canonicalId ?? c.spec.id, undefined, task.agent)?.delta ?? 0);
     const clearsFloor = (c: Candidate): boolean => {
       // Flywheel hard stop: a model proven to keep failing HERE is excluded.
       if ((failRateFor(kind, c.canonicalId ?? c.spec.id)?.rate ?? 0) >= MEASURED_FAIL_EXCLUDE) return false;
@@ -614,7 +623,7 @@ export class RoutingSelector implements ModelSelector {
       : pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind, p.pol, effortCtx)), ...flags }).candidate.id;
 
     // Mirror prepare()'s capability floor so the verdict matches what select did.
-    const adjQuality = (c: Candidate): number => qualityOf(c, p.kind) + (priorFor(p.kind, c.canonicalId ?? c.spec.id)?.delta ?? 0);
+    const adjQuality = (c: Candidate): number => qualityOf(c, p.kind) + (priorFor(p.kind, c.canonicalId ?? c.spec.id, undefined, task.agent)?.delta ?? 0);
     const clearsFloor = (c: Candidate): boolean => {
       if ((failRateFor(p.kind, c.canonicalId ?? c.spec.id)?.rate ?? 0) >= MEASURED_FAIL_EXCLUDE) return false;
       if (p.floor === 0) return true;
@@ -625,8 +634,8 @@ export class RoutingSelector implements ModelSelector {
       const s = scored.get(scoreId(c))!;
       const capable = p.floor === 0 || clearsFloor(c);
       const chosen = scoreId(c) === winnerId;
-      const pl = priorLine(p.kind, c.canonicalId ?? c.spec.id);
-      const prior = priorFor(p.kind, c.canonicalId ?? c.spec.id);
+      const pl = priorLine(p.kind, c.canonicalId ?? c.spec.id, undefined, task.agent);
+      const prior = priorFor(p.kind, c.canonicalId ?? c.spec.id, undefined, task.agent);
       entries.push({
         label: c.spec.label,
         backend: c.backend.kind === "cli" ? "seat" : "api",

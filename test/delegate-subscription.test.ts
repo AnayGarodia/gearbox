@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeDelegateTools } from "../src/agent/delegate.ts";
 import { putAccount } from "../src/accounts/store.ts";
+import { clearCooldowns } from "../src/model/cooldown.ts";
 
 // Isolate the store and clear every provider env key so the ONLY route is the
 // claude-cli seat we add. (Mirrors test/router-subscription.test.ts setup.)
@@ -15,6 +16,7 @@ const ENV_KEYS = [
 ];
 const saved: Record<string, string | undefined> = {};
 beforeEach(() => {
+  clearCooldowns();
   for (const k of ENV_KEYS) { saved[k] = process.env[k]; delete process.env[k]; }
   process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-delegate-sub-"));
   putAccount({
@@ -23,6 +25,10 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  // A CLI auth/rate failure now parks a (real) cooldown via the delegation
+  // failover cascade — clear it so the 24h auth park can't leak into another
+  // file's routing assertions (the global cooldown map is process-wide).
+  clearCooldowns();
   for (const k of ENV_KEYS) {
     if (saved[k] === undefined) delete process.env[k];
     else process.env[k] = saved[k]!;

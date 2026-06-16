@@ -67,6 +67,18 @@ export interface Task {
   // candidates (done > fast > cheap when waiting). Omit for background work
   // (delegated sub-tasks, compaction) where latency is free and cheapest wins.
   interactive?: boolean;
+  // The active agent/role for this turn (an @agent name, or a delegation role),
+  // when one is driving it. The flywheel keys a per-agent prior off this, so the
+  // router prefers the model that does best for THIS role here (priors.ts). Absent
+  // for a plain turn → the kind-level prior is used.
+  agent?: string;
+  // Model families/vendors to keep OUT of routing for this turn (the cross-
+  // family reviewer: a reviewer that must differ from the author's vendor catches
+  // what a same-vendor model rationalizes). Each entry is matched alias-aware
+  // (src/model/family.ts modelInFamily). Ignored by FixedSelector. If excluding
+  // would empty the candidate pool, the router keeps the pool (a reviewer on the
+  // same family beats no reviewer at all).
+  excludeFamily?: string[];
   // Cache locality: the (account, model) currently loaded — i.e. what served the
   // previous turn — so the scorer can charge cold candidates a switch penalty and
   // a near-tie sticks with the warm model instead of ping-ponging. Shape matches

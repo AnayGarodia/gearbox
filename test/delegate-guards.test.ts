@@ -6,7 +6,7 @@ import { test, expect } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { isWholeTask, makeDelegateTools } from "../src/agent/delegate.ts";
+import { isWholeTask, makeDelegateTools, sameModelDelegateWorthIt, deriveSubTaskSignals } from "../src/agent/delegate.ts";
 
 // Isolate the account store (no real CLI seats) + give one in-loop key so the
 // sub-task routes deterministically to an in-loop Anthropic model.
@@ -43,4 +43,31 @@ test("a sequential delegate to the orchestrator's OWN model is refused, not run"
   const out = await (tools.delegate as any).execute({ task: "write a small helper to format dates" });
   expect(String(out)).toContain("same model");
   expect(ran).toBe(0); // the guard fired before any sub-agent ran
+});
+
+// The relaxation: a SUBSTANTIAL same-model sub-task (multi-file, the context-
+// isolation case) is allowed to run, because a fresh focused window is a real
+// benefit even on the same model — just like Claude Code / Goose subagents.
+test("a substantial same-model sub-task is ALLOWED (context isolation is a real benefit)", async () => {
+  let ran = 0;
+  const tools = makeDelegateTools({
+    onEvent: () => {},
+    run: async () => { ran++; return { text: "did it", usage: { inputTokens: 0, outputTokens: 0 } }; },
+    pinnedModelId: "claude-sonnet-4-6",
+    orchestratorModelId: "claude-sonnet-4-6",
+    orchestratorPrompt: "some unrelated long orchestrator prompt about the build pipeline and deploy",
+  });
+  // names several files → touchedFiles ≥ 2 → worth isolating into a sub-agent.
+  const out = await (tools.delegate as any).execute({
+    task: "rename the OldClient symbol across src/a.ts, src/b.ts, and src/c.ts and update their imports",
+  });
+  expect(String(out)).not.toContain("same model");
+  expect(ran).toBe(1); // the sub-agent ran
+});
+
+test("sameModelDelegateWorthIt: multi-file or large working set yes, tiny no", () => {
+  expect(sameModelDelegateWorthIt({ touchedFiles: ["a.ts", "b.ts"], estTokens: 100 })).toBe(true);
+  expect(sameModelDelegateWorthIt({ touchedFiles: [], estTokens: 9_000 })).toBe(true);
+  expect(sameModelDelegateWorthIt({ touchedFiles: ["a.ts"], estTokens: 500 })).toBe(false);
+  expect(sameModelDelegateWorthIt(deriveSubTaskSignals("write a small helper to format dates"))).toBe(false);
 });

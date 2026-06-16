@@ -1,12 +1,13 @@
 import { test, expect, afterAll } from "bun:test";
 import type { ModelMessage } from "ai";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { countTokens, baseTokens } from "../src/model/tokens.ts";
 import { buildContext, buildReminderBlock, sanitizeToolPairs, dedupeFileReads, distillToolCalls, elideTurn, capToolResults, recentlyReadPaths } from "../src/context/builder.ts";
 import { repoMap } from "../src/context/repomap.ts";
 import { rankFiles, retrieveFiles, resetRetrievalIndex } from "../src/context/retrieve.ts";
+import { invalidateFileListCache } from "../src/ui/files.ts";
 import { appendFact, loadFacts } from "../src/context/memory.ts";
 import { compactHistory, estimateHistoryTokens, elideHistory, shouldAutoCompact, type Summarizer } from "../src/context/compact.ts";
 import { findModel, type ModelSpec } from "../src/providers.ts";
@@ -426,20 +427,29 @@ test("capToolResults head-truncates an oversized result and keeps pairing", () =
 
 test("a recent turn with one giant tool result is capped, not dropped (turn survives)", () => {
   const tiny: ModelSpec = { ...sonnet, contextWindow: 40_000 };
-  const big = "important context ".repeat(8000); // single ~20k+ token tool result
-  const history: ModelMessage[] = [
-    { role: "user", content: "the question that must survive" },
-    { role: "assistant", content: [{ type: "tool-call", toolCallId: "g1", toolName: "read_file", input: { path: "huge.ts" } }] as any },
-    { role: "tool", content: [{ type: "tool-result", toolCallId: "g1", toolName: "read_file", output: { type: "text", value: big } }] as any },
-    { role: "assistant", content: "noted" },
-    { role: "user", content: "and a second turn" },
-    { role: "assistant", content: "ok" },
-  ];
-  const { messages } = buildContext({ history, userText: "final", model: tiny, recentTurns: 5 });
-  // The whole-turn trim used to drop the oversized turn outright; the cap keeps it.
-  expect(messages.some((m) => m.role === "user" && String(m.content).includes("must survive"))).toBe(true);
-  const { calls, results } = toolIds(messages);
-  expect([...calls].sort()).toEqual([...results].sort());
+  // A single tool result LARGER than the whole window, so the cap is forced
+  // regardless of what else is in context. cwd is an empty dir so repo map +
+  // retrieval don't read this repo's files (which would make the budget — and
+  // thus this assertion — drift as the repo grows).
+  const emptyCwd = mkdtempSync(join(tmpdir(), "gb-ctx-empty-"));
+  try {
+    const big = "important context ".repeat(20000); // single ~90k+ token tool result, dwarfs the 40k window
+    const history: ModelMessage[] = [
+      { role: "user", content: "the question that must survive" },
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "g1", toolName: "read_file", input: { path: "huge.ts" } }] as any },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "g1", toolName: "read_file", output: { type: "text", value: big } }] as any },
+      { role: "assistant", content: "noted" },
+      { role: "user", content: "and a second turn" },
+      { role: "assistant", content: "ok" },
+    ];
+    const { messages } = buildContext({ history, userText: "final", model: tiny, recentTurns: 5, cwd: emptyCwd });
+    // The whole-turn trim used to drop the oversized turn outright; the cap keeps it.
+    expect(messages.some((m) => m.role === "user" && String(m.content).includes("must survive"))).toBe(true);
+    const { calls, results } = toolIds(messages);
+    expect([...calls].sort()).toEqual([...results].sort());
+  } finally {
+    rmSync(emptyCwd, { recursive: true, force: true });
+  }
 });
 
 // ── retrieval: the top hit is included head-truncated instead of vanishing ──
@@ -477,25 +487,45 @@ test("buildContext skips retrieval for files read in the kept window", () => {
 test("a read in a turn the budget DROPPED no longer suppresses retrieval", () => {
   const tiny: ModelSpec = { ...sonnet, contextWindow: 40_000 }; // 8k input floor
   const query = "how does the agent stream events";
-  const top = retrieveFiles(query, process.cwd(), 6, 12_000)[0];
-  expect(top).toBeTruthy();
-  // Turn 1 reads the top retrieval hit…
-  const history: ModelMessage[] = [
-    { role: "user", content: "read that file" },
-    { role: "assistant", content: [{ type: "tool-call", toolCallId: "rr2", toolName: "read_file", input: { path: top!.file } }] as any },
-    { role: "tool", content: [{ type: "tool-result", toolCallId: "rr2", toolName: "read_file", output: { type: "text", value: "current contents" } }] as any },
-  ];
-  // …then enough filler turns follow that the budget trim must drop turn 1.
-  const filler = "filler words about nothing in particular ".repeat(400); // ~5k tokens/turn
-  for (let i = 0; i < 8; i++) {
-    history.push({ role: "user", content: `${filler} filler ${i}` });
-    history.push({ role: "assistant", content: `ack ${i}` });
+  // A FIXTURE repo (not this one): retrieval is deterministic regardless of how
+  // gearbox's own files rank for the query, so the test can't drift as the repo
+  // grows. The fixture has one clearly-matching file plus noise.
+  const repo = mkdtempSync(join(tmpdir(), "gb-ctx-retr-"));
+  try {
+    writeFileSync(
+      join(repo, "stream.ts"),
+      "// how the agent streams events to the UI\nexport function streamEvents(){ /* the agent stream emits events as they arrive */ }\n".repeat(60),
+    );
+    writeFileSync(join(repo, "noise.ts"), "export const unrelated = 1;\n".repeat(60));
+    // The retrieval index AND the process-wide file-list cache both key off the
+    // live repo by default; reset both so retrieval actually scans the fixture
+    // (a prior test caches gearbox's own file list otherwise).
+    invalidateFileListCache();
+    resetRetrievalIndex();
+    const top = retrieveFiles(query, repo, 6, 12_000)[0];
+    expect(top).toBeTruthy();
+    // Turn 1 reads the top retrieval hit…
+    const history: ModelMessage[] = [
+      { role: "user", content: "read that file" },
+      { role: "assistant", content: [{ type: "tool-call", toolCallId: "rr2", toolName: "read_file", input: { path: top!.file } }] as any },
+      { role: "tool", content: [{ type: "tool-result", toolCallId: "rr2", toolName: "read_file", output: { type: "text", value: "current contents" } }] as any },
+    ];
+    // …then enough filler turns follow that the budget trim must drop turn 1.
+    const filler = "filler words about nothing in particular ".repeat(400); // ~5k tokens/turn
+    for (let i = 0; i < 8; i++) {
+      history.push({ role: "user", content: `${filler} filler ${i}` });
+      history.push({ role: "assistant", content: `ack ${i}` });
+    }
+    const { messages } = buildContext({ history, userText: query, model: tiny, recentTurns: 99, cwd: repo });
+    // The read turn was trimmed away, so its file is NOT in-context anymore —
+    // retrieval must re-inject it (the pre-trim filter wrongly skipped it).
+    expect(messages.some((m) => JSON.stringify((m as any).content).includes('"rr2"'))).toBe(false);
+    expect(userMsgText(messages[messages.length - 1]!)).toContain(`=== ${top!.file} ===`);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+    resetRetrievalIndex();
+    invalidateFileListCache(); // next test re-scans the live repo
   }
-  const { messages } = buildContext({ history, userText: query, model: tiny, recentTurns: 99 });
-  // The read turn was trimmed away, so its file is NOT in-context anymore —
-  // retrieval must re-inject it (the pre-trim filter wrongly skipped it).
-  expect(messages.some((m) => JSON.stringify((m as any).content).includes('"rr2"'))).toBe(false);
-  expect(userMsgText(messages[messages.length - 1]!)).toContain(`=== ${top!.file} ===`);
 });
 
 // ── model-free compaction fallback ──

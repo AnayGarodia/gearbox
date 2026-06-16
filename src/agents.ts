@@ -15,13 +15,58 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join, basename } from "node:path";
 import { homedir } from "node:os";
+import { ROLES, type RoleSpec } from "./agent/roles.ts";
+
+export type AgentRouteMode = "auto" | "inherit" | "pinned";
+export type AgentPermissionMode = "normal" | "auto" | "plan" | "yolo";
 
 export interface AgentDef {
   name: string;
   description: string;
+  // Raw `model:` frontmatter. A concrete model id pins the agent; the literals
+  // "auto" (route per task — the DEFAULT when omitted) and "inherit" (use the
+  // parent's pin if pinned, else route) defer the choice to the router. Read it
+  // through agentPinId()/agentRouteMode(), never raw, so auto/inherit aren't
+  // mistaken for a model id named "auto".
   model?: string;
+  // `when_to_use:` — extra natural-language guidance for description-driven role
+  // selection (the orchestrator picks an agent for a sub-task by matching this).
+  whenToUse?: string;
+  // `tools:` allowlist / `disallowed_tools:` denylist, applied to the agent's
+  // toolset so e.g. a reviewer is read-only. Empty/absent = the full toolset.
+  tools?: string[];
+  disallowedTools?: string[];
+  // `effort:` reasoning-effort hint for the agent's model (clamped to whatever
+  // the routed model actually supports).
+  effort?: string;
+  // `mode:` / `permission_mode:` — permission posture for the agent's turn.
+  permissionMode?: AgentPermissionMode;
+  // `isolation: worktree` — run a delegated instance of this agent in its own
+  // git worktree so its writes can't collide with the parent's.
+  isolation?: "none" | "worktree";
+  // `exclude_family:` — model families to keep OUT of routing for this agent
+  // (e.g. a reviewer that must differ from the author's family).
+  excludeFamily?: string[];
   system: string;
   source: "builtin" | "global" | "project";
+}
+
+/** Interpret the agent's `model:` field. Omitted → auto-route (the default). */
+export function agentRouteMode(a: AgentDef): AgentRouteMode {
+  const m = a.model?.trim().toLowerCase();
+  if (!m || m === "auto") return "auto";
+  if (m === "inherit") return "inherit";
+  return "pinned";
+}
+
+/** The concrete model id to PIN this agent to, or undefined when it auto-routes
+ *  / inherits — the caller then defers to the active selector. `parentPinId` is
+ *  the parent turn's pin (if any), used only for the "inherit" mode. */
+export function agentPinId(a: AgentDef, parentPinId?: string): string | undefined {
+  const mode = agentRouteMode(a);
+  if (mode === "pinned") return a.model!.trim();
+  if (mode === "inherit") return parentPinId;
+  return undefined; // auto
 }
 
 // Scout — the most-praised OpenCode subagent, rebuilt on gearbox primitives:
@@ -49,12 +94,53 @@ const SCOUT: AgentDef = {
   ].join("\n"),
 };
 
-const BUILTINS: AgentDef[] = [SCOUT];
+// Two builtin agents derived from the delegation roles (src/agent/roles.ts), so
+// `@explore <q>` and `@review <diff>` work out of the box and the role's posture
+// (read-only, tool scoping, effort, cross-family for the reviewer) is applied
+// through the same machinery a user's custom agent uses. model: auto — the right
+// model for the task is routed, not hardcoded.
+function builtinFromRole(name: AgentDef["name"], description: string, role: RoleSpec): AgentDef {
+  return {
+    name,
+    description,
+    source: "builtin",
+    model: "auto",
+    system: role.systemHint,
+    tools: role.tools,
+    disallowedTools: role.disallowedTools,
+    effort: role.effort,
+    permissionMode: role.readOnly ? "plan" : undefined,
+  };
+}
 
-/** Parse one agent file: optional `---` frontmatter (description/model), body = system prompt. */
+const EXPLORE = builtinFromRole("explore", "read-only codebase explorer — maps relevant code and reports findings with file:line", ROLES.explore);
+const REVIEWER = builtinFromRole("review", "read-only code reviewer — judges a diff for real bugs & security issues (auto-routed, cross-family)", ROLES.review);
+
+const BUILTINS: AgentDef[] = [SCOUT, EXPLORE, REVIEWER];
+
+// A frontmatter value may be quoted; strip a single pair of surrounding quotes.
+const unquote = (s: string): string => s.replace(/^["']([\s\S]*)["']$/, "$1").trim();
+// A list value is comma- or whitespace-separated ("read_file, search glob").
+const parseList = (s: string): string[] | undefined => {
+  const items = unquote(s).split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
+  return items.length ? items : undefined;
+};
+const parsePermissionMode = (s: string): AgentPermissionMode | undefined => {
+  const v = unquote(s).toLowerCase();
+  if (v === "normal") return "normal";
+  if (v === "auto" || v === "auto-accept" || v === "accept") return "auto";
+  if (v === "plan" || v === "read-only" || v === "readonly") return "plan";
+  if (v === "yolo" || v === "all") return "yolo";
+  return undefined;
+};
+
+/** Parse one agent file: optional `---` frontmatter, body = system prompt.
+ *  Recognized keys: description, model, name, when_to_use, tools,
+ *  disallowed_tools, effort, mode/permission_mode, isolation, exclude_family.
+ *  Unknown keys are ignored (forward-compatible). */
 export function parseAgentFile(content: string, fallbackName: string, source: AgentDef["source"]): AgentDef | null {
+  const def: Partial<AgentDef> = {};
   let description = "";
-  let model: string | undefined;
   let body = content;
   const fm = content.match(/^---\n([\s\S]*?)\n---\n?/);
   if (fm) {
@@ -62,14 +148,31 @@ export function parseAgentFile(content: string, fallbackName: string, source: Ag
     for (const line of fm[1]!.split("\n")) {
       const m = line.match(/^(\w[\w-]*):\s*(.*)$/);
       if (!m) continue;
-      if (m[1] === "description") description = m[2]!.trim();
-      if (m[1] === "model") model = m[2]!.trim() || undefined;
-      if (m[1] === "name") fallbackName = m[2]!.trim() || fallbackName;
+      const key = m[1]!.toLowerCase().replace(/-/g, "_");
+      const val = m[2]!.trim();
+      switch (key) {
+        case "description": description = unquote(val); break;
+        case "model": def.model = unquote(val) || undefined; break;
+        case "name": fallbackName = unquote(val) || fallbackName; break;
+        case "when_to_use": case "whentouse": def.whenToUse = unquote(val) || undefined; break;
+        case "tools": def.tools = parseList(val); break;
+        case "disallowed_tools": case "disallowedtools": def.disallowedTools = parseList(val); break;
+        case "effort": def.effort = unquote(val).toLowerCase() || undefined; break;
+        case "mode": case "permission_mode": case "permissionmode": def.permissionMode = parsePermissionMode(val); break;
+        case "isolation": def.isolation = unquote(val).toLowerCase() === "worktree" ? "worktree" : "none"; break;
+        case "exclude_family": case "excludefamily": def.excludeFamily = parseList(val)?.map((x) => x.toLowerCase()); break;
+      }
     }
   }
   const system = body.trim();
   if (!system) return null;
-  return { name: fallbackName.toLowerCase(), description: description || system.split("\n")[0]!.slice(0, 80), model, system, source };
+  return {
+    name: fallbackName.toLowerCase(),
+    description: description || system.split("\n")[0]!.slice(0, 80),
+    system,
+    source,
+    ...def,
+  };
 }
 
 function readDir(dir: string, source: AgentDef["source"]): AgentDef[] {
