@@ -20,12 +20,12 @@ import type { ProviderId } from "../providers.ts";
 export interface Price {
   in: number;
   out: number;
-  /** Cached-input read rate where the provider publishes one (informational; the
-   *  engine applies cacheReadDiscount per provider). */
+  /** Cached-input read rate where the provider publishes one. estimateCost uses
+   *  it for the cache-read term (via priceMetaFor), replacing the flat 0.1x
+   *  fallback when present. */
   cachedIn?: number;
-  /** Per-request surcharge (Perplexity Sonar search fee), USD per request.
-   *  Reference data only — estimateCost does NOT yet apply it (it has no per-turn
-   *  request count threaded in). Captured so the wiring has the number when added. */
+  /** Per-request surcharge (e.g. Perplexity Sonar search fee), USD per request.
+   *  estimateCost adds it once per turn (via priceMetaFor). */
   perRequestUSD?: number;
   src: "live" | "researched" | "seeded";
 }

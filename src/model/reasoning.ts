@@ -46,6 +46,13 @@ export function effortLevels(spec: ModelSpec): string[] {
   // must run BEFORE spec.efforts, or a curated `efforts` list (gpt-5.5-pro ships
   // one) would display levels the wire silently rewrites to `high`. (S1)
   if (contract.reasoning.force) return [contract.reasoning.force];
+  // A contract shape reasoningOptions() can't EMIT (provider-native thinking-
+  // toggle / variant-id / think-tag / always-on, or `none`) has no wire knob, so
+  // offer NO effort — even when a curated `efforts` list exists. The shipping
+  // bedrock/anthropic.claude-haiku spec carries efforts but its contract shape is
+  // `none`; without gating BEFORE spec.efforts the picker/router/flywheel would
+  // record an effort the wire never sends. (#11)
+  if (!EMITTABLE_SHAPES.has(contract.reasoning.shape)) return [];
   const vocab = contract.reasoning.vocab;
   if (spec.efforts) {
     // The contract vocab is AUTHORITATIVE: a curated `efforts` list can be stale
@@ -59,15 +66,11 @@ export function effortLevels(spec: ModelSpec): string[] {
   // unset — every discovered/generated/models.dev spec — fall to the contract's
   // shape, so an Azure/Foundry reasoning deployment still clamps to its vocab
   // instead of getting no effort knob at all. (N10)
+  // Honor an EXPLICIT spec.reasoning === false (a curated model marked non-
+  // reasoning even though its contract shape can emit). (The EMITTABLE gate above
+  // already handled non-emittable shapes.)
   const reasons = spec.reasoning ?? contract.reasoning.shape !== "none";
   if (!reasons) return [];
-  // Only offer effort for shapes reasoningOptions() can actually EMIT
-  // (openai-effort / anthropic-thinking / google-thinking). For provider-native
-  // shapes (thinking-toggle, variant-id, think-tag, always-on) the AI SDK carries
-  // no param yet, so reasoningOptions returns {} — offering a level here would let
-  // the picker/router/flywheel record an effort the wire never sends (the #11
-  // divergence). Honest: no knob until the native param is wired. (#11)
-  if (!EMITTABLE_SHAPES.has(contract.reasoning.shape)) return [];
   // The per-model contract carries the DOCUMENTED effort vocabulary per family
   // (o3 = low/med/high only, base gpt-5 adds minimal) — prefer it over the coarse
   // provider-wide default below.

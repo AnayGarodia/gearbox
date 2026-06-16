@@ -151,7 +151,7 @@ const CURATED: ModelSpec[] = [
   // Amazon Bedrock: Claude and Nova models hosted on AWS. Pricing is ~10% above direct.
   // IDs use "provider/sdkId" format to stay unique and match generated-model keys.
   { id: "bedrock/anthropic.claude-sonnet-4-20250514-v1:0", provider: "bedrock", sdkId: "anthropic.claude-sonnet-4-20250514-v1:0", label: "bedrock/sonnet-4", contextWindow: 200_000, cost: { inUSDPerMtok: 3.3, outUSDPerMtok: 16.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
-  { id: "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0", provider: "bedrock", sdkId: "anthropic.claude-haiku-4-5-20251001-v1:0", label: "bedrock/haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 1.1, outUSDPerMtok: 5.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
+  { id: "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0", provider: "bedrock", sdkId: "anthropic.claude-haiku-4-5-20251001-v1:0", label: "bedrock/haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 1.1, outUSDPerMtok: 5.5 } },
   { id: "bedrock/anthropic.claude-opus-4-20250514-v1:0", provider: "bedrock", sdkId: "anthropic.claude-opus-4-20250514-v1:0", label: "bedrock/opus-4", contextWindow: 200_000, cost: { inUSDPerMtok: 5.5, outUSDPerMtok: 27.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
   { id: "bedrock/amazon.nova-pro-v1:0", provider: "bedrock", sdkId: "amazon.nova-pro-v1:0", label: "bedrock/nova-pro", contextWindow: 300_000, cost: { inUSDPerMtok: 0.8, outUSDPerMtok: 3.2 } },
   { id: "bedrock/amazon.nova-lite-v1:0", provider: "bedrock", sdkId: "amazon.nova-lite-v1:0", label: "bedrock/nova-lite", contextWindow: 300_000, cost: { inUSDPerMtok: 0.06, outUSDPerMtok: 0.24 } },
