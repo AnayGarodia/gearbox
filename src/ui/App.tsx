@@ -3395,7 +3395,18 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             ? { kind: "preference", id: idRef.current++, text: "no test command in this project — capture the changed code's current behavior with a characterization test?", acceptCommand: "/verify test" }
             : null;
           if (offerCharTest) charTestOfferedRef.current = true;
-          setItems([...collapsed, ...(summaryItem ? [summaryItem] : []), ...(offerItem ? [offerItem] : [])]);
+          // Plan-ready offer: when this turn ran in plan mode (read-only) and the
+          // model actually presented a plan — an update_plan checklist or a
+          // substantive write-up — close the turn with the consent to BUILD it.
+          // Accepting (/proceed) exits plan mode and submits the implementation.
+          // Same consent-offer family as the char-test/prefer offers (it doesn't
+          // block the turn), so it stays a clickable line, not a modal card.
+          const presentedPlan = modeRef.current === "plan" &&
+            turnItems.some((i) => i.kind === "plan" || (i.kind === "assistant" && (i.text ?? "").trim().length > 40));
+          const planOffer: Item | null = presentedPlan
+            ? { kind: "preference", id: idRef.current++, text: "plan ready — approve and build it?", acceptCommand: "/proceed" }
+            : null;
+          setItems([...collapsed, ...(summaryItem ? [summaryItem] : []), ...(offerItem ? [offerItem] : []), ...(planOffer ? [planOffer] : [])]);
           // Time awareness after every prompt: how long the turn took, plus the
           // prompt-cache hit when the provider served part of the input from cache.
           const elapsed = formatDuration(Date.now() - turnStart);
