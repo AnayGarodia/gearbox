@@ -101,9 +101,13 @@ curl -fsSL https://unpkg.com/gearbox-code@latest/install.sh | bash
 ## What It Is
 
 Gearbox is a terminal coding agent that can use the model accounts you already
-pay for. It supports provider accounts, local credential storage, model routing,
-session history, file edits, shell commands, MCP tools, web search, image input,
-and permission gates.
+pay for. Its defining feature is intelligent per-task model routing: for each
+turn it classifies the task, filters models by a quality bar, and picks the
+cheapest winner across every provider and account you have — favouring near-free
+subscription seats until their rate limit, then failing over to metered APIs.
+Around that it provides provider accounts, local credential storage, session
+history, file edits, shell commands, MCP tools, web search, image input, and
+permission gates.
 
 Supported setup paths include API keys, detected env/cloud credentials, Azure,
 and provider CLIs where available.
