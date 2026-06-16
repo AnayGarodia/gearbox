@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { formatDuration } from "../src/ui/App.tsx";
+import { formatDuration } from "../src/ui/app-helpers.ts";
 
 test("formatDuration carries rounded seconds into minutes (no '1m 60s')", () => {
   expect(formatDuration(4200)).toBe("4.2s");

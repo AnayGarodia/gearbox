@@ -60,7 +60,7 @@ import { syncModelsDev } from "../model/modelsdev.ts";
 import { loadAgents } from "../agents.ts";
 import { recordTurnOutcome } from "../model/priors.ts";
 import { armDeviceLogin } from "../accounts/azure-arm.ts";
-import type { CliModelChoice } from "./App.tsx";
+import type { CliModelChoice } from "./app-helpers.ts";
 
 export const KEYS_HELP = [
   "keyboard shortcuts",
