@@ -860,6 +860,13 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
   for (let idx = 0; idx < items.length; idx++) {
     const it = items[idx]!;
     const dimmed = recede && idx < tailStart;
+    // Skip an empty/whitespace-only assistant item entirely: models routinely
+    // emit a stray newline between tool calls, which committed as a blank
+    // assistant item that rendered as a near-blank line AND broke the tool run
+    // (so the surrounding tools each got their own blank-padded block — the big
+    // gaps between consecutive tool steps). Skipping WITHOUT touching prevKind
+    // lets the tools on either side coalesce as one tight run.
+    if (it.kind === "assistant" && !(it.text ?? "").trim()) continue;
     // Coalesce a run of >=4 consecutive plain settled tool calls of the same name
     // into ONE line (⌃O expands). A wall of identical no-output tool lines (an MCP
     // fetch/search storm, repeated reads) is noise — the count + total time is the
