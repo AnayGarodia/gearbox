@@ -239,7 +239,13 @@ function hasKnownQuality(c: Candidate): boolean {
 }
 
 function costPair(c: Candidate): { inUSDPerMtok: number; outUSDPerMtok: number } {
-  const cost = profileFor(c.canonicalId ?? c.spec.id)?.cost ?? c.spec.cost;
+  // Precedence MUST match costFor() (the billing path, providers.ts): spec.cost
+  // first, then the profile. Reading the profile first scored a discovered
+  // Foundry deployment at the native canonical rate (~4.8x too cheap) while
+  // billing used the baked host rate — routing then preferred Foundry on cost,
+  // then the ledger charged ~4.8x more, and /why disagreed with the ledger. For
+  // curated models spec.cost == profile.cost, so this is a no-op there. (#4)
+  const cost = c.spec.cost ?? profileFor(c.canonicalId ?? c.spec.id)?.cost;
   // Unknown cost sorts last. The sentinel 1e6 matches prior POSITIVE_INFINITY behaviour.
   return cost ?? { inUSDPerMtok: 1e6, outUSDPerMtok: 1e6 };
 }

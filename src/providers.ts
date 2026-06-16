@@ -48,6 +48,8 @@ import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { EmbeddingModel, LanguageModel } from "ai";
 import { accountsForProvider, listAccounts } from "./accounts/store.ts";
 import { profileFor } from "./model/profiles.ts";
+import { contractFor } from "./model/contract.ts";
+import { listPriceFor, priceFor, type Price } from "./model/pricing.ts";
 import { CATALOG, catalogProvider } from "./accounts/catalog.ts";
 import type { Account, ResolvedCreds } from "./accounts/types.ts";
 import { loadCachedCatalog } from "./model/modelsdev.ts";
@@ -149,7 +151,7 @@ const CURATED: ModelSpec[] = [
   // Amazon Bedrock: Claude and Nova models hosted on AWS. Pricing is ~10% above direct.
   // IDs use "provider/sdkId" format to stay unique and match generated-model keys.
   { id: "bedrock/anthropic.claude-sonnet-4-20250514-v1:0", provider: "bedrock", sdkId: "anthropic.claude-sonnet-4-20250514-v1:0", label: "bedrock/sonnet-4", contextWindow: 200_000, cost: { inUSDPerMtok: 3.3, outUSDPerMtok: 16.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
-  { id: "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0", provider: "bedrock", sdkId: "anthropic.claude-haiku-4-5-20251001-v1:0", label: "bedrock/haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 1.1, outUSDPerMtok: 5.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
+  { id: "bedrock/anthropic.claude-haiku-4-5-20251001-v1:0", provider: "bedrock", sdkId: "anthropic.claude-haiku-4-5-20251001-v1:0", label: "bedrock/haiku-4.5", contextWindow: 200_000, cost: { inUSDPerMtok: 1.1, outUSDPerMtok: 5.5 } },
   { id: "bedrock/anthropic.claude-opus-4-20250514-v1:0", provider: "bedrock", sdkId: "anthropic.claude-opus-4-20250514-v1:0", label: "bedrock/opus-4", contextWindow: 200_000, cost: { inUSDPerMtok: 5.5, outUSDPerMtok: 27.5 }, reasoning: true, efforts: ["low", "medium", "high", "max"] },
   { id: "bedrock/amazon.nova-pro-v1:0", provider: "bedrock", sdkId: "amazon.nova-pro-v1:0", label: "bedrock/nova-pro", contextWindow: 300_000, cost: { inUSDPerMtok: 0.8, outUSDPerMtok: 3.2 } },
   { id: "bedrock/amazon.nova-lite-v1:0", provider: "bedrock", sdkId: "amazon.nova-lite-v1:0", label: "bedrock/nova-lite", contextWindow: 300_000, cost: { inUSDPerMtok: 0.06, outUSDPerMtok: 0.24 } },
@@ -225,8 +227,12 @@ function accountModelSpecs(): ModelSpec[] {
       // rate when the deployment name unambiguously matches one (DeepSeek-V4-Pro,
       // my-gpt-5.5, …) so cost estimates and routing aren't blind. No match →
       // cost stays undefined and the UI keeps the honest "$ unknown".
+      // PROVIDER-SCOPED first: the same model bills differently per host (a
+      // Foundry-hosted DeepSeek is ~4x its native rate), and this baked spec.cost
+      // is read before the listPriceFor fallback in costFor — so the host rate has
+      // to land HERE or it's shadowed by the native canonical rate.
       const canonical = canonicalIdFor(sdkId);
-      const cost = canonicalPricingFor(sdkId);
+      const cost = listPriceFor(account.provider, sdkId) ?? canonicalPricingFor(sdkId);
       out.push({
         id,
         provider: account.provider,
@@ -537,8 +543,22 @@ function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | 
     spec?.cost ??
     profileFor(id)?.cost ??
     (spec ? profileFor(spec.sdkId)?.cost : undefined) ??
+    // The comprehensive, PROVIDER-SCOPED list-price table (src/model/pricing.ts):
+    // fills the long tail and, crucially, prices a model at its HOST's rate — a
+    // Foundry-hosted DeepSeek costs ~4x its native API rate, so the provider
+    // scope matters for an honest estimate.
+    listPriceFor(spec?.provider, spec?.sdkId ?? id) ??
     canonicalPricingFor(spec?.sdkId ?? id)
   );
+}
+
+/** The full price record (incl. cached-input rate + per-request fee) for a model
+ *  id, provider-scoped — used by estimateCost for the cache-read and Sonar
+ *  per-request terms. Undefined for curated/profile-priced models (they fall back
+ *  to the flat cache approximation, which is what they did before). */
+function priceMetaFor(id: string): Price | undefined {
+  const spec = modelRegistry().find((m) => m.id === id);
+  return priceFor(spec?.provider, spec?.sdkId ?? id);
 }
 
 // ── pricing fallback for discovered deployments ──────────────────────────────
@@ -551,7 +571,10 @@ function costFor(id: string): { inUSDPerMtok: number; outUSDPerMtok: number } | 
 // Tier/size modifiers that change a family's price (a "-mini"/"-lite" variant is
 // NOT the base model): when the unmatched remainder carries one, refuse the match
 // rather than bill-estimate the wrong tier.
-const TIER_MODIFIER = /(^|-)(mini|nano|micro|lite|small|tiny|air|turbo|ultra|flash)($|-)/;
+// `codex` and `chat` are SURFACE/variant modifiers, not size tiers, but they
+// equally mean "not the base model": gpt-5.5-codex (Responses, own price) must
+// NOT canonical-match gpt-5.5 (chat), nor gpt-5-chat → gpt-5. (#19)
+const TIER_MODIFIER = /(^|-)(mini|nano|micro|lite|small|tiny|air|turbo|ultra|flash|codex|chat)($|-)/;
 
 /** Lowercase, dash-normalize, and strip a trailing date stamp ("-20251001",
  *  "-2025-10-01") so deployment names compare against canonical ids. Pure. */
@@ -632,8 +655,15 @@ export function estimateCost(
     if (!c) continue;
     const inPerTok = c.inUSDPerMtok / 1e6;
     usd += t.inputTokens * inPerTok + (t.outputTokens / 1e6) * c.outUSDPerMtok;
-    if (t.cachedInputTokens) usd += t.cachedInputTokens * inPerTok * 0.1;
+    // Cache-read rate: use the model's PUBLISHED cached-input rate when the price
+    // table carries one; else the flat 0.1x approximation. (N8)
+    const meta = priceMetaFor(t.model);
+    const cacheReadPerTok = meta?.cachedIn != null ? meta.cachedIn / 1e6 : inPerTok * 0.1;
+    if (t.cachedInputTokens) usd += t.cachedInputTokens * cacheReadPerTok;
     if (t.cacheCreationInputTokens) usd += t.cacheCreationInputTokens * inPerTok * 1.25;
+    // Per-request surcharge (Perplexity Sonar search fee): one request per turn
+    // (a turn maps to one logical model call for the fee-bearing Sonar models). (N8)
+    if (meta?.perRequestUSD) usd += meta.perRequestUSD;
   }
   return usd;
 }
@@ -665,6 +695,18 @@ export function estimateCost(
 export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageModel {
   const apiKey = creds?.apiKey ?? (envVarFor(spec.provider) ? process.env[envVarFor(spec.provider)!] : undefined);
 
+  // The request CONTRACT decides which wire surface this model answers on. The
+  // load-bearing case: OpenAI/Azure codex & *-pro deployments are Responses-API
+  // ONLY — a chat-completions request to them returns "The requested operation
+  // is unsupported." We pick `.responses()` here so the FIRST call is correct.
+  // Resolve the surface from the RAW sdkId first (a real model id like
+  // "gpt-5.5-codex" must win), then the canonical family — otherwise a discovered
+  // "gpt-5.5-codex" whose canonicalId normalizes to the chat family "gpt-5.5"
+  // would route chat and 400. Responses if EITHER says so. (#6)
+  const wantsResponses =
+    contractFor(spec.provider, spec.sdkId).surface === "responses" ||
+    (spec.canonicalId ? contractFor(spec.provider, spec.canonicalId).surface === "responses" : false);
+
   // Cloud providers (data-driven by catalog authKind): build the cloud client
   // from account creds, else the SDK's own credential chain (AWS profile/role,
   // ADC, etc.). Each carries config beyond a single key.
@@ -686,7 +728,8 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
   }
   if (creds?.azure || authKind === "azure") {
     const az = creds?.azure ?? azureFromEnv();
-    return createAzure(azureClientConfig({ ...az, apiKey: az?.apiKey ?? apiKey }))(spec.sdkId);
+    const azp = createAzure(azureClientConfig({ ...az, apiKey: az?.apiKey ?? apiKey }));
+    return wantsResponses ? azp.responses(spec.sdkId) : azp(spec.sdkId);
   }
   if (creds?.vertex || authKind === "vertex") {
     const vx = creds?.vertex ?? vertexFromEnv();
@@ -713,13 +756,25 @@ export function resolveModel(spec: ModelSpec, creds?: ResolvedCreds): LanguageMo
   //     that calling @ai-sdk/openai as a function used to 404/405 on).
   const baseURL = creds?.baseURL ?? (NATIVE.has(spec.provider) ? undefined : catalogProvider(spec.provider)?.baseUrl);
   if (baseURL) {
+    // Responses-only families (codex/*-pro on Azure AI Foundry's /openai/v1
+    // surface) can't ride @ai-sdk/openai-compatible — it only POSTs to
+    // /chat/completions. Route them through @ai-sdk/openai's `.responses()`
+    // against the same baseURL (the /openai/v1 surface serves /responses).
+    if (wantsResponses) {
+      return createOpenAI({ baseURL, apiKey, headers: creds?.headers }).responses(spec.sdkId);
+    }
     return createOpenAICompatible({ name: spec.provider, baseURL, apiKey, headers: creds?.headers, includeUsage: true })(spec.sdkId);
   }
   switch (spec.provider) {
     case "anthropic":
       return apiKey ? createAnthropic({ apiKey })(spec.sdkId) : anthropic(spec.sdkId);
-    case "openai":
-      return apiKey ? createOpenAI({ apiKey })(spec.sdkId) : openai(spec.sdkId);
+    case "openai": {
+      const oai = apiKey ? createOpenAI({ apiKey }) : openai;
+      // oai(id) (provider-as-function) routes to the RESPONSES API in
+      // @ai-sdk/openai v2 — so a `chat` contract must call .chat() explicitly to
+      // actually POST /chat/completions. (#15)
+      return wantsResponses ? oai.responses(spec.sdkId) : oai.chat(spec.sdkId);
+    }
     case "google":
       return apiKey ? createGoogleGenerativeAI({ apiKey })(spec.sdkId) : google(spec.sdkId);
     case "deepseek":
