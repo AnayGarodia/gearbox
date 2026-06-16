@@ -44,11 +44,12 @@ const textColors = (lines: Line[], needle: string) =>
 
 test("itemsToLines with recede dims everything except the last 2 items", () => {
   const lines = itemsToLines(items, 80, false, true);
-  // Prompts render in heading ink (color.text): the settled one recedes to dim,
-  // the live tail's stays bright.
+  // Prompts render in the brand's light-indigo `user` ink (Quiet Workshop): the
+  // settled one recedes to dim (identity ink drops one level), the live tail's
+  // stays in user ink.
   const prompts = textColors(lines, "prompt"); // [old prompt, new prompt]
   expect(prompts[0]).toBe(color.dim);
-  expect(prompts[1]).toBe(color.text);
+  expect(prompts[1]).toBe(color.user);
   const replies = textColors(lines, "reply"); // [old reply, streaming reply]
   expect(replies[0]).toBe(color.dim);
   expect(replies[1]).toBe(color.text);
@@ -58,7 +59,7 @@ test("the cache never serves receded lines to a normal render (recede keys the c
   const receded = itemsToLines(items, 80, false, true);
   expect(textColors(receded, "prompt")[0]).toBe(color.dim);
   const normal = itemsToLines(items, 80, false, false);
-  expect(textColors(normal, "prompt")[0]).toBe(color.text); // same item objects, bright again
+  expect(textColors(normal, "prompt")[0]).toBe(color.user); // same item objects, bright again
   const recededAgain = itemsToLines(items, 80, false, true);
   expect(textColors(recededAgain, "prompt")[0]).toBe(color.dim);
 });

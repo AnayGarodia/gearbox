@@ -1,90 +1,104 @@
-# Broadsheet — the Gearbox UI design contract
+# Quiet Workshop — the Gearbox UI design contract
 
-Gearbox's UI is not a chat log. It is **a typeset work ledger with a live
-telemetry margin** — the terminal treated as a printed page whose material is
-type, space, and alignment. This document is the contract every UI change is
-held to.
+Gearbox's UI is **a calm, prose-first coding companion**. The model talks to you
+in plain language; the machinery (tools, figures, chrome) recedes to faint marks
+beneath it. The screen reads like a conversation, not a dashboard. This document
+is the contract every UI change is held to. It supersedes the earlier
+"Broadsheet" contract (the typeset-ledger identity with a telemetry margin and
+numbered turn sections — deliberately retired: it read as both noisy and sterile).
 
-## The first principle: design for the moment
+## The first principle: quiet by default, loud only to decide
 
-At any given moment, show exactly what the user needs to know right now, in
-the best form for knowing it. Surfaces are derived from moments:
+At any moment, show exactly what the user needs, in the calmest form that still
+reads. The prose is the surface; everything else is a footnote to it. The ONE
+exception is a **decision** — a permission, a plan, a question — which becomes
+the single bright, contained thing on screen until answered.
 
 | Moment | What the user needs | The form |
 |---|---|---|
-| Idle / home | Am I set up? Who answers? What can I do? | Boo (+ shows) · one readiness line (`N accounts ready · pin`) · the centered composer |
-| Composing | Who handles this, what it costs | Composer footer: live pick `provider · model` beside the cursor |
-| Working | Progress? Doing what now? How to stop? | Boo's head-crop ghost (face = agent state) + shimmer verb, `Ns · esc` right; **history recedes** to faint ink. Narrow frames drop the ghost |
-| Reviewing | What changed? Proven? Cost? | The receipt: verdict · files · proof tier; margin carries model · $ · time; ⌃O reopens detail |
-| Deciding | What am I approving, options | The consent line: verbatim command, single-key options — the only bright element while pending |
-| Auditing | Where did money go? Why this model? | Per-turn margin figures · the meter (ctx gauge · session $) · /cost and /why for depth |
+| Idle / home | Am I set up? Who answers? | Boo splash · one readiness line (`N accounts ready · model`) · centered composer |
+| Composing | Who handles this, what it costs | The slim meter line below: `cwd:branch · model · ctx% · $` |
+| Working | Progress? Doing what? How to stop? | Boo head-crop ghost (face = state) + shimmer verb + `Ns · esc`; history recedes to faint |
+| Reading the flow | What did it do? | Prose, then `⏺ Tool(arg) ⎿ result` footnotes, then a quiet verify line |
+| Reviewing a change | What changed? Proven? Cost? | The diff card + the closing verify line: `✓ verified · N passed · model · Ns · $` |
+| Deciding | What am I approving? | A rounded decision card with hotkey buttons — the only bordered, bright surface |
 
-## The three signature ideas
+## The signature ideas
 
-1. **The telemetry margin** (`lines.ts marginLine`, `MARGIN_W = 16`): a page of
-   two channels — prose ≤76 cols left, right-aligned figures (model, $,
-   duration, ±lines, proof) in a 16-col margin when the content column is
-   ≥88 cols; below that the figures fold inline (` · $0.02 · 4s`). Narrative
-   left, truth right. Any number belongs in the margin.
-2. **Turns are numbered sections** (`lines.ts` user item with `turnNo`): a
-   faint hairline between turns, the index (`01`, `02`…) in the brand ink, the
-   prompt set bold. No boxes, no background slabs. Command echoes render as
-   one small `❯` line.
-3. **Turns settle into receipts** (`collapse.ts` + the summary item): live =
-   full tool ladder; settled = verdict (bold) · touched files · proof tier in
-   the margin, beside the routed line's model · cost. ⌃O expands.
+1. **Prose leads; tools recede.** A turn is your `›` prompt (light-indigo `user`
+   ink), the model's plain prose, then tool steps as compact one-liners:
+   `⏺ Tool(arg)  ⎿ short result`. The `⏺` dot carries status by COLOR (indigo
+   running · green a write landed · red failed · calm indigo a quiet read). No
+   per-tool figures, no boxes, no ledger.
+2. **No telemetry margin.** The old right-aligned figure column is gone
+   (`marginWidth` is always 0). Any number folds inline as a faint ` · fig` tail
+   beside the fact it belongs to (`lines.ts marginLine`).
+3. **Turns separate by whitespace.** No numbered sections, no `#NN` index, no
+   tinted band, no left spine. A single blank line between turns — the page reads
+   like a conversation.
+4. **Decisions look like decisions.** Permission / ask / plan share one idiom:
+   a ROUNDED bordered card (the only borders in the UI) with single-key BUTTONS
+   (`[⏎ Allow] [2 Always] [a Yolo] [esc Deny]`). Shell consent wears the
+   `warn`-amber border; everything else the `accent` border. While pending,
+   history recedes so the card is the only bright thing.
 
 ## Brand
 
-Boo is the identity. The default palette ("ghost", `theme.ts dark`) derives
-from him: ghost-indigo accent `#8B93F8`, light-indigo heading ink `#B9BDF9`,
-warm-paper grays, money in neutral ink (never green — spend isn't "good").
-Boo appears exactly twice: the home screen (with the persona shows and the
-`/ghost` wardrobe) and the working beat. Never in the flow otherwise.
+Boo is the identity, used with **restraint**. The default palette ("ghost",
+`theme.ts dark`) derives from him: ghost-indigo accent `#8B93F8`, light-indigo
+`user` ink `#B9BDF9` for your prompts, warm-paper grays, money in neutral ink
+(never green — spend isn't "good"). Boo appears exactly twice: the home splash
+and the working beat. Never in the flow otherwise. The accent is for
+interactive/now ONLY (live composer, selected row, a decision card's border, a
+clickable zone) — never prose, filenames, or status glyphs.
+
+## Chrome: two slim lines, nothing more
+
+Fullscreen stays the substrate (Conductor tabs, virtualized viewport, scrollbar,
+mouse all survive) but it FEELS inline. Chrome is exactly two single rows:
+
+- **Top** (`Masthead.tsx`): `gearbox` wordmark · account, plus the clickable
+  Conductor tab cells, under one hairline rule. No full-width color bar (the old
+  provider-hue `▔` band is gone — calm over branding).
+- **Bottom** (`StatusBar.tsx`): `cwd:branch · model · ctx% · $`, with click zones
+  (model→picker, $→/usage, ctx→/context) and an `esc` hint when interruptible.
 
 ## Supporting principles
 
-- **One page.** A single centered column holds everything in fullscreen —
-  transcript, now-row, queued chips, toasts, consent, composer. Full-width is
-  reserved for two chrome rows: the masthead (wordmark · account) and the
-  meter (cwd:branch · model · ctx gauge · $). There are no tabs: every fact a
-  tab once held already has a home (per-turn margin figures, /why, /account,
-  /cost) — a second dashboard for the same fact is a contract violation.
+- **One page.** A single centered column holds the transcript, decision cards,
+  queued chips, toasts, and composer. The two chrome rows are the only
+  full-width elements. No second dashboard for a fact that already has a home.
 - **Hierarchy is ink, not noise.** Three ink levels (text/dim/faint) + one
-  accent + ok/warn/err. Bold marks identity. Backgrounds only on interactive
-  surfaces. Attention is directed by *receding* what isn't this moment's
-  answer (`recedeLine`), never by adding brightness.
-- **Motion is information.** Nothing idles. Allowed: the streaming shimmer,
-  margin figures landing, Boo's home shows and one-shot moods, ⌃O expand.
-  `GEARBOX_NO_MOTION=1` freezes everything.
-- **Decisions look like decisions.** Permission, verify-failure, and
-  preference offers share the consent-line pattern (▸ + element bg + accent
-  edge + single-key options); shell consent wears the warn edge.
-- **Settled work is quiet.** The default screen state reads like a printed
-  page.
+  accent + ok/warn/err. Bold marks identity. Borders ONLY on decision cards;
+  background tints only on diffs/code/panels. Attention is directed by RECEDING
+  what isn't this moment's answer (`recedeLine`), never by adding brightness.
+- **Motion is information.** Nothing idles. Allowed: the streaming shimmer, Boo's
+  home shows and one-shot moods, ⌃O expand. `GEARBOX_NO_MOTION=1` freezes it.
+- **Settled work is quiet.** The default screen reads like a calm conversation.
 
 ## Row-count contracts (change ONLY in lockstep, all sites commented)
 
 | Contract | Value | Sites |
 |---|---|---|
-| HEADER (masthead + rule) | 3 | App.tsx HEADER · Masthead (Masthead.tsx) |
-| Composer block | 5 (marginTop + pad + input + pad + footer hint) | Composer.tsx · App footer estimate |
-| Consent (permission) footer | 5 | PermissionPrompt.tsx · App `if (perm) footer +=` |
-| Meter row | bottom row of the frame (y = termRows) | StatusBar.tsx statusBarHit · App |
-| Content cap | 92 cols (76 prose + 16 margin) | App lineWidth · lines.ts MARGIN_W |
+| HEADER (masthead + rule) | 3 | App.tsx HEADER · Masthead.tsx |
+| Composer block | 4 + capped input rows | Composer.tsx · App footer estimate |
+| Permission card | 7 | PermissionPrompt.tsx · App `if (perm) footer += 7` |
+| Ask card | options + 6 | AskPrompt.tsx askPromptRows · App footer |
+| Meter row | bottom row of the frame | StatusBar.tsx · App |
 
 ## Invariants (tested; never weaken)
 
-Every emitted Line ≤ width. No raw ANSI — Ink color props only. The routing
-seam is untouched by UI work. The frame never exceeds the terminal (footer
-over-estimated, alt-screen clips). Mouse hit-tests derive from the same
-constants as the render (no drift). Diffs: unified with tinted line-number
-gutters below 120 cols, side-by-side at ≥120 (`SIDE_BY_SIDE_MIN`); LSP
-diagnostics render under the diff they belong to (◆ line:col message).
+Every emitted Line ≤ width. No raw ANSI — Ink color props only. The routing seam
+is untouched by UI work. The frame never exceeds the terminal (footer
+over-estimated, alt-screen clips). Mouse hit-tests derive from the same constants
+as the render (no drift). Diffs: unified with tinted line-number gutters below
+120 cols, side-by-side at ≥120 (`SIDE_BY_SIDE_MIN`); LSP diagnostics render under
+the diff they belong to (`◆ line:col message`). The `⏺`/`⎿` tool glyphs and the
+`›` turn glyph live in `theme.ts glyph`.
 
 ## Verification
 
-`bun test` + `bun run typecheck`, then the PTY harness at 150x55 / 120x36 /
-100x30 / 80x24 (`/tmp/gb-shot.py`, `/tmp/gb-frames2.py`): `scrolled=0
-wrapped=0`, masthead/meter/composer present, margin column right-aligned,
-narrow widths showing inline-folded figures.
+`bun test` + `bun run typecheck`, then eyeball the flow with a render harness
+(itemsToLines over a sample transcript) and a live session at 150x55 / 100x30 /
+80x24: prose-first turns, `⏺/⎿` tool footnotes, no margin column, decision cards
+rendering as rounded bordered buttons, every line within width.

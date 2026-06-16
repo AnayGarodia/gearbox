@@ -196,12 +196,15 @@ function noticeSpans(text: string): Span[] {
   return out.length ? out : [{ text, color: color.dim }];
 }
 
-// ── The telemetry margin (Broadsheet) ─────────────────────────────────────────
-// The page has two channels: a prose column and a right-aligned MARGIN column of
-// figures (model, $, duration, ±lines). Narrative left, truth right. Below the
-// threshold the margin folds inline (` · fig · fig`) — same data, narrow form.
+// ── Figures (Quiet Workshop) ───────────────────────────────────────────────────
+// The telemetry margin is GONE. The broadsheet's right-aligned figure column read
+// as noise running down every turn; in the quiet idiom, per-turn figures fold
+// inline as a faint ` · fig · fig` tail on the line they belong to. marginLine is
+// kept as the one place that appends figures so the call sites are untouched, but
+// marginWidth is now always 0 (always inline). Any number lives beside its fact,
+// never in a parallel column.
 export const MARGIN_W = 16;
-export const marginWidth = (width: number): number => (width >= 88 ? MARGIN_W : 0);
+export const marginWidth = (_width: number): number => 0;
 
 /** One line: body clipped to the prose column, figures right-aligned in the
  *  margin column (or folded inline when the page is narrow). ≤width always. */
@@ -765,7 +768,10 @@ export function recedeLine(line: Line): Line {
   return line.map((s) => {
     const c = s.color;
     if (c === color.err || c === color.warn || c === color.ok || c === color.accent) return s;
-    if (c === color.text) return { ...s, color: color.dim };
+    // text AND user (the light-indigo prompt ink) are identity inks — they drop
+    // ONE level to dim, not all the way to faint, so a settled prompt stays
+    // legible as the section it heads.
+    if (c === color.text || c === color.user) return { ...s, color: color.dim };
     return { ...s, color: color.faint };
   });
 }
@@ -788,26 +794,25 @@ export function staticItemLines(it: Item, width: number, receded = false): Line[
   const lines: Line[] = [];
   if (it.kind === "user") {
     if (it.turnNo != null) {
-      // The ledger heading: turns are numbered SECTIONS. A blank gap separates
-      // turns, then the prompt sits in a tinted BAND — a user-ink spine, the turn
-      // index, the prompt bold, and (optional) a wall-clock at the right edge —
-      // so a glance instantly reads "this is what I asked" vs the reply below.
+      // The prompt heading (Quiet Workshop): no band, no index, no spine. A turn
+      // is just your words on a `›` line, set in the brand's light-indigo `user`
+      // ink and bold — calm enough to read as a conversation, distinct enough to
+      // anchor the page. Turns separate by a single blank line, nothing more. An
+      // optional wall-clock folds faint at the right when timestamps are on.
       if (it.turnNo > 1) lines.push(BLANK);
-      const idx = "#" + String(it.turnNo).padStart(2, "0");
       const stamp = transcriptOpts.timestamps && it.at ? clockOf(it.at) : "";
-      const prefix = `▌ ${idx}  `;
+      const prefix = "  " + glyph.turn + " ";
       const prefixW = displayWidth(prefix);
       const stampW = stamp ? stamp.length + 2 : 0; // reserve so a gap always remains
-      const wrapped = wrapSpans(proseSpans(it.text, { color: color.text, bold: true }), Math.max(width - prefixW - stampW, 1));
+      const wrapped = wrapSpans(proseSpans(it.text, { color: color.user, bold: true }), Math.max(width - prefixW - stampW, 1));
       wrapped.forEach((l, i) => {
-        const lead: Span = { text: i === 0 ? prefix : " ".repeat(prefixW), color: color.user, bold: true, bg: color.userBg };
-        const body = l.map((s) => ({ ...s, bg: color.userBg }));
+        const lead: Span = { text: i === 0 ? prefix : " ".repeat(prefixW), color: color.user, bold: true };
         if (i === 0 && stamp) {
-          const leftW = prefixW + body.reduce((n, s) => n + displayWidth(s.text), 0);
+          const leftW = prefixW + l.reduce((n, s) => n + displayWidth(s.text), 0);
           const gap = Math.max(1, width - leftW - (stamp.length + 1));
-          lines.push([lead, ...body, { text: " ".repeat(gap), bg: color.userBg }, { text: stamp + " ", color: color.faint, bg: color.userBg }]);
+          lines.push([lead, ...l, { text: " ".repeat(gap) }, { text: stamp + " ", color: color.faint }]);
         } else {
-          lines.push(bgRow([lead, ...body], width, color.userBg));
+          lines.push([lead, ...l]);
         }
       });
     } else {
@@ -926,7 +931,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         const moreN = uniq.length - shownArgs.length;
         const left: Span[] = [
           { text: "  " },
-          { text: glyph.corner, color: color.faint },
+          { text: glyph.tool, color: color.accentDim },
           { text: "  " + coalescedPhrase((it as any).name, run), color: color.dim },
         ];
         if (shownArgs.length) left.push({ text: "  ·  " + shownArgs.join(", ") + (moreN > 0 ? ` +${moreN}` : ""), color: color.faint });
@@ -969,7 +974,7 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         if (it.collapsed) {
           out.push(marginLine([
             { text: "  " },
-            { text: it.status === "running" ? glyph.off : glyph.corner, color: it.status === "err" ? color.err : it.status === "running" ? toolColor(it) : color.faint },
+            { text: glyph.tool, color: it.status === "err" ? color.err : it.status === "running" ? toolColor(it) : color.accentDim },
             { text: "  " + friendlyTool(it.name), color: color.dim },
             ...(it.summary ? [{ text: "  ·  " + it.summary, color: color.dim }] : []),
             ...((it.children?.length ?? 0) ? [{ text: expand ? "  ⌃O collapses" : "  ⌃O expands", color: color.faint }] : []),
@@ -977,17 +982,20 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
           if (expand && it.children?.length) out.push(...indent(itemsToLines(it.children, Math.max(width - 2, 8), expand), 2));
           break;
         }
-        // Corner-glyph stub (the opencode `∟ Edit src/foo.ts` shape) — status
-        // carried by the GLYPH's color (purple running, red failed, dim done),
-        // the name stays quiet so a run of tools reads as a step list.
-        const dot: Span = it.status === "running" ? { text: glyph.off, color: toolColor(it) } : { text: glyph.corner, color: it.status === "err" ? color.err : color.faint };
+        // The tool step (Quiet Workshop): a filled ⏺ dot whose COLOR carries
+        // status (indigo running · green a write landed · red failed · calm
+        // indigo a quiet read), then the Capitalized verb and its argument in
+        // parens — `⏺ Read(src/auth.ts)` — so a run of tools reads as Claude-
+        // Code-style footnotes beneath the prose, never a loud ledger.
         const name = friendlyTool(it.name);
         const isShell = it.name === "run_shell" || it.name === "command_execution" || it.name === "Bash";
         const isWrite = !isShell && (it.name.toLowerCase().includes("write") || it.name.toLowerCase().includes("edit") || it.name === "file_change");
+        const dotColor = it.status === "err" ? color.err : it.status === "running" ? toolColor(it) : isWrite ? color.ok : color.accentDim;
+        const dot: Span = { text: glyph.tool, color: dotColor };
+        const Name = name.charAt(0).toUpperCase() + name.slice(1);
         // WHERE TO LOOK: mutating tools (write/edit) carry the consequences, so
         // their verb renders in full ink; read-only steps stay dim and recede.
-        const head: Line = [{ text: "  " }, dot, { text: "  " + name.padEnd(6), color: it.status === "err" ? color.err : isWrite ? color.text : color.dim }];
-        const headUsed = 2 + 1 + 2 + 6; // pad + dot + spaces + name
+        const head: Line = [{ text: "  " }, dot, { text: " " + Name, color: it.status === "err" ? color.err : isWrite ? color.text : color.dim }];
         if (it.arg) {
           // Collapse embedded newlines to a ⏎ marker — a heredoc / multi-line
           // shell command (e.g. `python << 'EOF' … EOF`) otherwise breaks the
@@ -996,7 +1004,11 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
           // File-tool heads are clickable: OSC 8 → the configured editor
           // (vscode:// by default; /config editor changes or disables it).
           const link = !isShell && pathish(shownArg) ? editorUrl(shownArg) : undefined;
-          head.push({ text: " " + sliceWidth(shownArg, Math.max(width - headUsed - 1, 0)).text, color: isShell ? color.text : color.path, link });
+          const headUsed = head.reduce((n, s) => n + displayWidth(s.text), 0);
+          const argText = sliceWidth(shownArg, Math.max(width - headUsed - 3, 0)).text;
+          head.push({ text: "(", color: color.faint });
+          head.push({ text: argText, color: isShell ? color.text : color.path, link });
+          head.push({ text: ")", color: color.faint });
         }
         if (it.status === "running") {
           // No "working" badge here (it shows once at the bottom) — just the ticking
@@ -1020,7 +1032,8 @@ export function itemsToLines(items: Item[], width: number, expand = false, reced
         const hasExtraOutput = !!(it.preview || (it.outputTail ?? it.stream) || it.diff?.length);
         const inlineSummary = it.status !== "running" && it.summary && !redundantSummary && !hasExtraOutput && !(isShell && (it.outputTail ?? it.stream));
         if (inlineSummary) {
-          head.push({ text: "  " + it.summary, color: it.status === "err" ? color.err : color.dim });
+          head.push({ text: "  " + glyph.result + " ", color: color.faint });
+          head.push({ text: it.summary, color: it.status === "err" ? color.err : color.dim });
           out.push(clipSpans(head, width));
         } else {
           out.push(head);

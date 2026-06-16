@@ -285,6 +285,7 @@ export function providerColor(provider: string | null | undefined): string {
 // not a tick), an angle prompt, a hairline rule. Restraint over decoration.
 export const glyph = {
   prompt: "❯", // composer
+  turn: "›", // your prompt heading in the flow (Quiet Workshop) — lighter than the composer ❯
   userBar: "▌", // the colored spine on your messages (thin ▎ = glyph.quote)
   corner: "∟", // collapsed tool stub (the opencode-style step marker)
   tool: "⏺", // tool call (color = status)

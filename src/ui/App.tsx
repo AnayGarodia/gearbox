@@ -3773,7 +3773,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       return;
     }
     if (permRef.current) {
-      if (input === "1") resolvePerm("once");
+      // ⏎ is the primary "Allow once" button on the consent card; 1 still works.
+      if (input === "1" || key.return) resolvePerm("once");
       else if (input === "2") resolvePerm("always");
       else if (input === "a" || input === "A") resolvePerm("all");
       else if (input === "3" || key.escape) resolvePerm("deny");
@@ -4667,7 +4668,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
-  if (perm) footer += 8; // consent block: marginTop + title + command + 4 option rows + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
+  if (perm) footer += 7; // consent card: marginTop + borderTop + title + command + buttons + borderBottom + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
   if (ask) footer += askPromptRows(ask.req, ask.picker); // ask block height (AskPrompt.tsx row contract)
   else if (!panel && !homeScreen) footer += 4 + composerVisibleRows(edit.value, pageW); // composer (marginTop + pad + CAPPED input rows + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer
