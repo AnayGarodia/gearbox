@@ -69,9 +69,12 @@ export function modelInFamily(idOrSpec: string | ModelSpec, family: string): boo
   const f = family.trim().toLowerCase();
   if (!f) return false;
   const aliases = modelVendorAliases(idOrSpec);
-  if (aliases.some((a) => a === f || a.includes(f) || f.includes(a))) return true;
-  // Fall back to a raw id/provider substring so an unknown vendor token still
-  // works ("foundry", a bespoke deployment name, etc.).
+  // Exact alias always matches. Substring containment is only allowed for tokens
+  // ≥3 chars, so a 2-char alias ("o1"/"o3"/"ai") can't mis-match an unrelated id
+  // (e.g. "ai" inside "openai", or "o4" inside an arbitrary deployment name).
+  if (aliases.some((a) => a === f || (f.length >= 3 && a.includes(f)) || (a.length >= 3 && f.includes(a)))) return true;
+  // Fall back to a raw id substring (≥3 chars) so an unknown vendor token still
+  // works ("foundry", a bespoke deployment name) without short-token false hits.
   const id = (typeof idOrSpec === "string" ? idOrSpec : idOrSpec.id).toLowerCase();
-  return id.includes(f);
+  return f.length >= 3 && id.includes(f);
 }

@@ -93,3 +93,40 @@ test("an `after` dependency sees the dependency's merged result", async () => {
   expect(final.indexOf("SECOND")).toBeGreaterThan(final.indexOf("FIRST")); // ordered
   expect(String(out)).toContain("waves");
 });
+
+test("same-wave overlapping edits to one file leave 3-way conflict markers, reported", async () => {
+  // Tasks name NO file (so the planner can't separate them) → same wave; both
+  // replace line 1 differently → a genuine 3-way conflict.
+  const overwrite: SubAgentRunner = async (p) => {
+    const mark = (p.prompt.match(/write (\w+)/) ?? [, "X"])[1];
+    writeFileSync(join(p.root!, "shared.ts"), mark + "\n");
+    return { text: `wrote ${mark}`, usage: { inputTokens: 1, outputTokens: 1 } };
+  };
+  const tools = makeDelegateTools({ onEvent: () => {}, run: overwrite, root: repo, orchestratorPrompt: ORCH });
+  const out = await (tools.delegate_parallel as any).execute({
+    tasks: [
+      { task: "write AAA replacing everything", kind: "code" },
+      { task: "write BBB replacing everything", kind: "code" },
+    ],
+  });
+  expect(String(out)).toContain("Conflict markers");
+  expect(readFileSync(join(repo, "shared.ts"), "utf8")).toContain("<<<<<<<");
+});
+
+test("a delete-vs-edit on the same file in one wave is flagged, not silently dropped", async () => {
+  const deleteOrEdit: SubAgentRunner = async (p) => {
+    if (/delete it/.test(p.prompt)) { rmSync(join(p.root!, "shared.ts"), { force: true }); return { text: "deleted", usage: { inputTokens: 1, outputTokens: 1 } }; }
+    writeFileSync(join(p.root!, "shared.ts"), "edited\n");
+    return { text: "edited", usage: { inputTokens: 1, outputTokens: 1 } };
+  };
+  const tools = makeDelegateTools({ onEvent: () => {}, run: deleteOrEdit, root: repo, orchestratorPrompt: ORCH });
+  // No filenames → same wave; one deletes, one edits → real conflict, must be
+  // surfaced (the old code filtered out the delete and reported a clean merge).
+  const out = await (tools.delegate_parallel as any).execute({
+    tasks: [
+      { task: "remove the old module, delete it entirely", kind: "code" },
+      { task: "tweak the old module instead", kind: "code" },
+    ],
+  });
+  expect(String(out)).toContain("Conflict markers");
+});

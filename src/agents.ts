@@ -29,8 +29,9 @@ export interface AgentDef {
   // through agentPinId()/agentRouteMode(), never raw, so auto/inherit aren't
   // mistaken for a model id named "auto".
   model?: string;
-  // `when_to_use:` — extra natural-language guidance for description-driven role
-  // selection (the orchestrator picks an agent for a sub-task by matching this).
+  // `when_to_use:` — extra selection guidance. RESERVED: parsed and surfaced, but
+  // not yet consumed by an automatic agent picker (delegation uses the explicit
+  // `role` param today). Forward-compat; don't assume it influences routing.
   whenToUse?: string;
   // `tools:` allowlist / `disallowed_tools:` denylist, applied to the agent's
   // toolset so e.g. a reviewer is read-only. Empty/absent = the full toolset.
@@ -41,8 +42,9 @@ export interface AgentDef {
   effort?: string;
   // `mode:` / `permission_mode:` — permission posture for the agent's turn.
   permissionMode?: AgentPermissionMode;
-  // `isolation: worktree` — run a delegated instance of this agent in its own
-  // git worktree so its writes can't collide with the parent's.
+  // `isolation: worktree` — RESERVED: parsed but not yet consumed for @agent turns
+  // (delegate_parallel/spawn already isolate sub-agents in worktrees regardless).
+  // Forward-compat; setting it does NOT itself create isolation today.
   isolation?: "none" | "worktree";
   // `exclude_family:` — model families to keep OUT of routing for this agent
   // (e.g. a reviewer that must differ from the author's family).
@@ -114,23 +116,31 @@ function builtinFromRole(name: AgentDef["name"], description: string, role: Role
 }
 
 const EXPLORE = builtinFromRole("explore", "read-only codebase explorer — maps relevant code and reports findings with file:line", ROLES.explore);
-const REVIEWER = builtinFromRole("review", "read-only code reviewer — judges a diff for real bugs & security issues (auto-routed, cross-family)", ROLES.review);
+const REVIEWER = builtinFromRole("review", "read-only code reviewer — judges a diff for real bugs & security issues (auto-routed; cross-family when delegated)", ROLES.review);
 
 const BUILTINS: AgentDef[] = [SCOUT, EXPLORE, REVIEWER];
 
 // A frontmatter value may be quoted; strip a single pair of surrounding quotes.
 const unquote = (s: string): string => s.replace(/^["']([\s\S]*)["']$/, "$1").trim();
-// A list value is comma- or whitespace-separated ("read_file, search glob").
+// A list value is comma- or whitespace-separated ("read_file, search glob"), and
+// also accepts YAML flow-array syntax ("[read_file, run_shell]") — without the
+// bracket strip a denylist would parse to ["[read_file", "run_shell]"] and match
+// no real tool key, silently leaving the agent with FULL access (a deny-only
+// reviewer would still write/shell — fails OPEN, the dangerous direction).
 const parseList = (s: string): string[] | undefined => {
-  const items = unquote(s).split(/[,\s]+/).map((x) => x.trim()).filter(Boolean);
+  const inner = unquote(s).replace(/^\[([\s\S]*)\]$/, "$1");
+  const items = inner.split(/[,\s]+/).map((x) => x.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
   return items.length ? items : undefined;
 };
 const parsePermissionMode = (s: string): AgentPermissionMode | undefined => {
   const v = unquote(s).toLowerCase();
-  if (v === "normal") return "normal";
-  if (v === "auto" || v === "auto-accept" || v === "accept") return "auto";
+  // Only the postures the @agent turn actually ENFORCES are recognized, so the
+  // frontmatter never promises behavior that silently does nothing. "plan" makes
+  // the turn read-only; "normal" is the default. auto-accept / yolo are reserved
+  // (the type carries them) but NOT wired yet — recognizing them would imply an
+  // auto-approve grant the runner doesn't apply, so they fall through to normal.
   if (v === "plan" || v === "read-only" || v === "readonly") return "plan";
-  if (v === "yolo" || v === "all") return "yolo";
+  if (v === "normal") return "normal";
   return undefined;
 };
 

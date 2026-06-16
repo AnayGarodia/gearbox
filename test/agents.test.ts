@@ -54,6 +54,18 @@ test("parseAgentFile: the extended frontmatter is parsed (tools, effort, mode, i
   expect(a.excludeFamily).toEqual(["claude", "gpt"]);
 });
 
+test("parseAgentFile: YAML flow-array lists are parsed (a deny list must not be left inert)", () => {
+  // Regression: a bracketed denylist used to parse to ["[write_file","run_shell]"]
+  // → matched no tool key → the agent kept full write/shell access (fails OPEN).
+  const a = parseAgentFile(
+    ["---", "description: reviewer", "disallowed_tools: [write_file, run_shell]", "tools: [read_file, search]", "---", "Review."].join("\n"),
+    "reviewer",
+    "project",
+  )!;
+  expect(a.disallowedTools).toEqual(["write_file", "run_shell"]);
+  expect(a.tools).toEqual(["read_file", "search"]);
+});
+
 test("agentRouteMode/agentPinId: auto is the default, inherit takes the parent pin, an id pins", () => {
   const mk = (model?: string) => ({ name: "x", description: "d", system: "s", source: "project" as const, model });
   // omitted → auto-route (the default for agents)

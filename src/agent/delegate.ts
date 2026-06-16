@@ -260,7 +260,7 @@ export function deriveSubTaskSignals(task: string, root?: string): { touchedFile
  * itself, run one-shot in the sub-task's workspace root — so a subscription-only
  * setup can still delegate (S-B) instead of erroring out.
  */
-function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?: string, root?: string, extra?: { excludeFamily?: string[] }): Routed | { error: string } {
+function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?: string, root?: string, extra?: { excludeFamily?: string[]; agent?: string }): Routed | { error: string } {
   const k = kind ?? classify(task);
   // Route a sub-task with the SAME economics as a top-level turn: a sub-agent
   // runs in the background (no user waiting → latency-neutral → cheapest among
@@ -272,7 +272,7 @@ function routeSubTask(task: string, kind?: z.infer<typeof KIND>, pinnedModelId?:
   // (a cross-family review role) routes the sub-task AWAY from the author's vendor.
   const verifierTier = root ? detectProofTier(root) : undefined;
   const { touchedFiles, estTokens } = deriveSubTaskSignals(task, root);
-  const base = { prompt: task, kind: k, interactive: false, verifierTier, touchedFiles, estTokens, excludeFamily: extra?.excludeFamily } as const;
+  const base = { prompt: task, kind: k, interactive: false, verifierTier, touchedFiles, estTokens, excludeFamily: extra?.excludeFamily, agent: extra?.agent } as const;
   let choice;
   try {
     choice = (pinnedModelId ? new FixedSelector(pinnedModelId) : new RoutingSelector()).select({ ...base, requires: ["tools"] });
@@ -604,7 +604,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       // model (the "author") so the reviewer lands on a different vendor.
       const roleSpec = role ? roleByName(role) : undefined;
       const roleSig = roleSpec ? roleRoutingSignals(roleSpec, orchestratorModelId) : {};
-      const reroute = () => routeSubTask(task, roleSig.kind ?? kind, opts.pinnedModelId, opts.root, { excludeFamily: roleSig.excludeFamily });
+      const reroute = () => routeSubTask(task, roleSig.kind ?? kind, opts.pinnedModelId, opts.root, { excludeFamily: roleSig.excludeFamily, agent: roleSpec?.readOnly ? roleSpec.name : undefined });
       const routed = reroute();
       if ("error" in routed) return `delegation skipped: ${routed.error}. Do it yourself.`;
       // GUARD 2 (same-model, size-gated): a SEQUENTIAL delegate to your own model
@@ -681,7 +681,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       const specs: Spec[] = tasks.map((t, idx) => {
         const role = t.role ? roleByName(t.role) : undefined;
         const roleSig = role ? roleRoutingSignals(role, orchestratorModelId) : {};
-        const reroute = () => routeSubTask(t.task, roleSig.kind ?? t.kind, opts.pinnedModelId, opts.root, { excludeFamily: roleSig.excludeFamily });
+        const reroute = () => routeSubTask(t.task, roleSig.kind ?? t.kind, opts.pinnedModelId, opts.root, { excludeFamily: roleSig.excludeFamily, agent: role?.readOnly ? role.name : undefined });
         const routed = reroute();
         const files = parseTouchedFiles(t.task).map((f) => f.toLowerCase());
         const after = (t.after ?? []).map((a) => a - 1); // 1-based → 0-based
@@ -692,6 +692,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       onEvent({ type: "tool-start", id: groupId, name: "delegate_parallel", arg: `${tasks.length} sub-tasks${waves.length > 1 ? ` · ${waves.length} waves` : " in parallel"}` });
 
       const skipped: string[] = [];
+      const skippedIdx = new Set<number>(); // tasks that didn't run, so their dependents can cascade-skip
       const results: { spec: Spec; res: { ok: boolean; text: string }; changed: { path: string; deleted: boolean }[] }[] = [];
       let applied = 0, autoMerged = 0;
       const conflicted: string[] = [];
@@ -705,9 +706,13 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
           const jobs: { spec: Spec; routed: Routed; dir: string }[] = [];
           for (const i of wave) {
             const s = specs[i]!;
-            if (s.error || !s.routed) { skipped.push(`#${s.idx + 1}: ${s.error ?? "no model"}`); continue; }
+            if (s.error || !s.routed) { skipped.push(`#${s.idx + 1}: ${s.error ?? "no model"}`); skippedIdx.add(s.idx); continue; }
+            // Cascade-skip: a task whose dependency was skipped would run against
+            // stale (pre-dependency) state and falsely "succeed" — skip it instead.
+            const deadDeps = s.after.filter((d) => skippedIdx.has(d));
+            if (deadDeps.length) { skipped.push(`#${s.idx + 1}: depends on skipped #${deadDeps.map((d) => d + 1).join(", #")}`); skippedIdx.add(s.idx); continue; }
             const dir = join(tmpdir(), `gearbox-fanout-${batch}-${s.idx}-${Date.now()}`);
-            if (!addSeededWorktree(repoRoot, dir)) { skipped.push(`#${s.idx + 1}: couldn't create a worktree`); continue; }
+            if (!addSeededWorktree(repoRoot, dir)) { skipped.push(`#${s.idx + 1}: couldn't create a worktree`); skippedIdx.add(s.idx); continue; }
             created.push(dir);
             jobs.push({ spec: s, routed: s.routed, dir });
           }
@@ -744,9 +749,14 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
                 applied++;
               } catch { continue; }
             } else {
-              const hadMarkers = mergeFileBack(repoRoot, path, who.filter((w) => !w.deleted).map((w) => w.dir));
-              autoMerged++;
-              if (hadMarkers) conflicted.push(path);
+              const dirs = who.filter((w) => !w.deleted).map((w) => w.dir);
+              if (!dirs.length) { if (existed) rmSync(dst, { force: true }); applied++; } // every writer deleted it — consistent
+              else {
+                const hadMarkers = mergeFileBack(repoRoot, path, dirs);
+                // A delete-vs-edit on one file is a real conflict, not a clean merge:
+                // the edit lands but we FLAG it so the orchestrator resolves the intent.
+                if (hadMarkers || who.some((w) => w.deleted)) conflicted.push(path); else autoMerged++;
+              }
             }
             onEvent({ type: "file-change", path: relative(opts.root ?? process.cwd(), dst), before, existed });
           }
@@ -798,7 +808,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
   // orphan the temp dirs + git worktree registrations. run.ts calls this in a
   // finally to sweep any uncollected ones.
   if (opts.spawnCleanup) opts.spawnCleanup.current = () => {
-    const root = gitToplevel();
+    const root = gitToplevel(opts.root); // THIS session's root, not whichever tab chdir'd last
     for (const j of spawned) if (!collectedNums.has(j.num) && j.dir && root) { collectedNums.add(j.num); removeWorktree(root, j.dir); }
   };
   // Concurrency cap so 20-30 spawns don't open 20-30 model streams at once.
@@ -826,11 +836,11 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       }
       const roleSpec = role ? roleByName(role) : undefined;
       const roleSig = roleSpec ? roleRoutingSignals(roleSpec, orchestratorModelId) : {};
-      const reroute = () => routeSubTask(task, roleSig.kind ?? kind, opts.pinnedModelId, opts.root, { excludeFamily: roleSig.excludeFamily });
+      const reroute = () => routeSubTask(task, roleSig.kind ?? kind, opts.pinnedModelId, opts.root, { excludeFamily: roleSig.excludeFamily, agent: roleSpec?.readOnly ? roleSpec.name : undefined });
       const routed = reroute();
       if ("error" in routed) return `spawn skipped: ${routed.error}. Do it yourself.`;
       const num = ++counter;
-      const repoRoot = gitToplevel();
+      const repoRoot = gitToplevel(opts.root); // THIS session's root (Conductor tabs mutate process.cwd())
       let dir: string | undefined;
       if (repoRoot) {
         const d = join(tmpdir(), `gearbox-spawn-${num}-${Date.now()}`);
@@ -869,7 +879,7 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
       const ready = wait ? outstanding : outstanding.filter((j) => j.settled);
       if (!ready.length) return `Nothing finished yet (${outstanding.length} still running). Keep working, or call collect_subagents with wait:true.`;
       const results = await Promise.all(ready.map(async (j) => ({ j, s: j.settled ?? (await j.promise) })));
-      const repoRoot = gitToplevel();
+      const repoRoot = gitToplevel(opts.root); // THIS session's root, so merges land in the right tree
       // Merge each finished worktree back (reuse the same per-file apply/3-way
       // logic as delegate_parallel), then clean the worktree up.
       const writers = new Map<string, { dir: string; deleted: boolean }[]>();
@@ -884,10 +894,16 @@ export function makeDelegateTools(opts: { onEvent: OnEvent; signal?: AbortSignal
           const w = who[0]!;
           try { if (w.deleted) { if (existed) rmSync(dst, { force: true }); } else { mkdirSync(dirname(dst), { recursive: true }); copyFileSync(join(w.dir, path), dst); } applied++; } catch { continue; }
         } else {
-          if (mergeFileBack(repoRoot, path, who.filter((w) => !w.deleted).map((w) => w.dir))) conflicted.push(path);
-          autoMerged++;
+          const dirs = who.filter((w) => !w.deleted).map((w) => w.dir);
+          if (!dirs.length) { if (existed) rmSync(dst, { force: true }); applied++; } // every writer deleted it — consistent
+          else {
+            const hadMarkers = mergeFileBack(repoRoot, path, dirs);
+            // A delete-vs-edit on one file is a real conflict, not a clean merge:
+            // the edit lands but we FLAG it so the orchestrator resolves the intent.
+            if (hadMarkers || who.some((w) => w.deleted)) conflicted.push(path); else autoMerged++;
+          }
         }
-        onEvent({ type: "file-change", path: relative(process.cwd(), dst), before, existed });
+        onEvent({ type: "file-change", path: relative(opts.root ?? process.cwd(), dst), before, existed });
       }
       for (const { j } of results) { collectedNums.add(j.num); if (repoRoot && j.dir) removeWorktree(repoRoot, j.dir); }
       const remaining = spawned.filter((x) => !collectedNums.has(x.num)).length;
