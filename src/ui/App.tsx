@@ -3406,7 +3406,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const planOffer: Item | null = presentedPlan
             ? { kind: "preference", id: idRef.current++, text: "plan ready — approve and build it?", acceptCommand: "/proceed" }
             : null;
-          setItems([...collapsed, ...(summaryItem ? [summaryItem] : []), ...(offerItem ? [offerItem] : []), ...(planOffer ? [planOffer] : [])]);
+          // Only ever ONE live plan-ready offer: a fresh plan-mode turn refreshes
+          // it to the bottom rather than stacking a new "approve and build it?"
+          // line on top of the prior ones (collapseTurn preserves preference items).
+          const base = planOffer ? collapsed.filter((i) => !(i.kind === "preference" && i.acceptCommand === "/proceed")) : collapsed;
+          setItems([...base, ...(summaryItem ? [summaryItem] : []), ...(offerItem ? [offerItem] : []), ...(planOffer ? [planOffer] : [])]);
           // Time awareness after every prompt: how long the turn took, plus the
           // prompt-cache hit when the provider served part of the input from cache.
           const elapsed = formatDuration(Date.now() - turnStart);
