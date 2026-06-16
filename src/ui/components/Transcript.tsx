@@ -314,14 +314,13 @@ function UserLine({ text, width, turnNo }: { text: string; width: number; turnNo
       </Box>
     );
   }
-  const idx = String(turnNo).padStart(2, "0");
+  // Quiet Workshop: no band, no #NN index, no rule — a turn is just your words on
+  // a `›` line in the brand's light-indigo `user` ink, turns separated by a blank
+  // line (the marginTop). Mirrors the fullscreen heading in lines.ts.
   return (
-    <Box marginTop={1} flexDirection="column">
-      {turnNo > 1 ? <Text color={color.faint} dimColor>{glyph.rule.repeat(Math.max(8, width - 2))}</Text> : null}
-      <Box marginTop={turnNo > 1 ? 1 : 0}>
-        <Text color={color.user}>{idx + "  "}</Text>
-        <Text color={color.text} bold>{text}</Text>
-      </Box>
+    <Box marginTop={1}>
+      <Text color={color.user} bold>{"  " + glyph.turn + " "}</Text>
+      <Text color={color.user} bold>{text.split("\n")[0]}</Text>
     </Box>
   );
 }
@@ -349,8 +348,8 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
     return (
       <Box flexDirection="column" marginLeft={2} marginTop={1}>
         <Box>
-          <Text color={item.status === "err" ? color.err : item.status === "running" ? toolColor(item) : color.faint}>{item.status === "running" ? glyph.off : glyph.corner}</Text>
-          <Text color={color.dim} bold>{"  " + friendlyTool(item.name)}</Text>
+          <Text color={item.status === "err" ? color.err : item.status === "running" ? toolColor(item) : color.accentDim}>{glyph.tool}</Text>
+          <Text color={color.dim} bold>{" " + friendlyTool(item.name)}</Text>
           {item.summary ? <Text color={color.dim}>{"  ·  " + item.summary}</Text> : null}
           {item.durationMs != null ? <Text color={color.faint}>{"  ·  ~" + fmtMs(item.durationMs) + " total"}</Text> : null}
           {item.children?.length ? <Text color={color.faint}>{expandAll ? "  ⌃O collapses" : "  ⌃O expands"}</Text> : null}
@@ -361,12 +360,16 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
       </Box>
     );
   }
-  const dotColor = toolColor(item);
   const out = item.outputTail ?? item.stream;
   const outLines = item.outputLines ?? item.streamCount ?? 0;
-  const verb = friendlyTool(item.name).padEnd(6);
   const isShell = item.name === "run_shell" || item.name === "command_execution" || item.name === "Bash";
   const isWrite = !isShell && (item.name.toLowerCase().includes("write") || item.name.toLowerCase().includes("edit") || item.name === "file_change");
+  // Quiet Workshop tool step (mirrors lines.ts): a filled ⏺ whose COLOR carries
+  // status (running indigo · a write green · failed red · a quiet read dim), the
+  // Capitalized verb, and the arg in parens — `⏺ Read(src/auth.ts)`.
+  const dotColor = item.status === "err" ? color.err : item.status === "running" ? toolColor(item) : isWrite ? color.ok : color.accentDim;
+  const name = friendlyTool(item.name);
+  const Name = name.charAt(0).toUpperCase() + name.slice(1);
   const previewLines = item.preview?.split("\n") ?? [];
   const previewShown = expandAll ? previewLines : previewLines.slice(0, 8);
   const codeWidth = Math.max(30, width - 10);
@@ -374,9 +377,9 @@ function ToolLine({ item, width, expandAll = false }: { item: Extract<Item, { ki
   return (
     <Box flexDirection="column" marginLeft={2} marginTop={1}>
       <Box>
-        <Text color={item.status === "err" ? color.err : item.status === "running" ? dotColor : color.faint}>{item.status === "running" ? glyph.off : glyph.corner}</Text>
-        <Text color={item.status === "err" ? color.err : color.dim} bold>{"  " + verb}</Text>
-        {item.arg ? <Text color={isShell ? color.text : color.path} bold>{" " + (isShell ? item.arg : relPath(item.arg))}</Text> : null}
+        <Text color={dotColor}>{glyph.tool}</Text>
+        <Text color={item.status === "err" ? color.err : isWrite ? color.text : color.dim} bold>{" " + Name}</Text>
+        {item.arg ? <Text color={color.faint}>{"("}<Text color={isShell ? color.text : color.path} bold>{(isShell ? item.arg : relPath(item.arg))}</Text>{")"}</Text> : null}
         {item.status === "running" && item.startedAt && Date.now() - item.startedAt >= 2000 ? <Text color={color.faint}>{"  " + fmtElapsed(Math.floor((Date.now() - item.startedAt) / 1000))}</Text> : null}
         {item.status !== "running" && item.durationMs != null ? <Text color={color.faint}>{"  " + fmtMs(item.durationMs)}</Text> : null}
         {item.exitCode != null ? <Text color={item.exitCode === 0 ? color.faint : color.err}>{"  exit " + item.exitCode}</Text> : null}

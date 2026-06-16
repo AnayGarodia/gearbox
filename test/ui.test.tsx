@@ -40,15 +40,16 @@ test("transcript renders user, assistant, tools, error with the right glyphs", (
   const f = lastFrame() ?? "";
   expect(f).toContain("fix the auth bug");
   expect(f).toContain("On it.");
-  expect(f).toContain("read");
+  expect(f).toContain("Read"); // Quiet Workshop: Capitalized verb
   expect(f).toContain("auth.ts");
   expect(f).toContain("42 lines");
-  expect(f).toContain("shell");
+  expect(f).toContain("Shell");
   expect(f).toContain("rate limited");
-  expect(f).toContain("01"); // numbered turn heading (the ledger section index)
-  expect(f).toContain("∟"); // tool call stub marker (corner glyph)
+  expect(f).toContain("›"); // prose-first turn heading (no #NN ledger index)
+  expect(f).not.toContain("01  fix"); // the numbered turn index is GONE
+  expect(f).toContain("⏺"); // tool step dot (replaces the old ∟/○ corner)
   expect(f).toContain("⎿"); // tool result connector
-  expect(f).toContain("▎"); // error lane: a single red left bar (was a ▲ marker)
+  expect(f).toContain("▎"); // error lane: a single red left bar
 });
 
 test("transcript renders live phase, model, verification, and preference rows", () => {

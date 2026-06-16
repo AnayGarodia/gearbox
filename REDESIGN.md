@@ -36,11 +36,14 @@ the single bright, contained thing on screen until answered.
 3. **Turns separate by whitespace.** No numbered sections, no `#NN` index, no
    tinted band, no left spine. A single blank line between turns — the page reads
    like a conversation.
-4. **Decisions look like decisions.** Permission / ask / plan share one idiom:
-   a ROUNDED bordered card (the only borders in the UI) with single-key BUTTONS
-   (`[⏎ Allow] [2 Always] [a Yolo] [esc Deny]`). Shell consent wears the
-   `warn`-amber border; everything else the `accent` border. While pending,
-   history recedes so the card is the only bright thing.
+4. **Decisions look like decisions.** A blocking decision is the loud moment —
+   the only bordered surface in the UI. Two are ROUNDED cards: **permission** (a
+   `warn`-amber border for shell, `accent` otherwise) with single-key hotkey
+   BUTTONS (`[⏎ Allow] [2 Always] [a Yolo] [esc Deny]`), and **ask_user** (an
+   `accent` card with a radio/checkbox option list). The **plan-approval** consent
+   is deliberately quieter — not a card but an inline clickable line
+   (`▸ plan ready — approve and build it? · /proceed`), because it doesn't block
+   the turn. While a card is pending, history recedes so it's the only bright thing.
 
 ## Brand
 

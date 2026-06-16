@@ -206,30 +206,17 @@ function noticeSpans(text: string): Span[] {
 export const MARGIN_W = 16;
 export const marginWidth = (_width: number): number => 0;
 
-/** One line: body clipped to the prose column, figures right-aligned in the
- *  margin column (or folded inline when the page is narrow). ≤width always. */
+/** One line: the body with any per-turn figures folded inline as a faint
+ *  ` · fig · fig` tail beside the fact they belong to (the telemetry margin is
+ *  gone — marginWidth is always 0). Clipped to ≤width always. */
 export function marginLine(body: Span[], figures: Span[], width: number): Line {
-  const m = marginWidth(width);
   if (!figures.length) return clipSpans(body, width);
-  if (m === 0) {
-    const folded: Span[] = [...body];
-    figures.forEach((f, i) => {
-      folded.push({ text: i === 0 ? "  · " : " · ", color: color.faint });
-      folded.push(f);
-    });
-    return clipSpans(folded, width);
-  }
-  const bodyW = width - m;
-  const clipped = clipSpans(body, bodyW);
-  const used = lineWidth(clipped);
-  const figs: Span[] = [];
+  const folded: Span[] = [...body];
   figures.forEach((f, i) => {
-    if (i > 0) figs.push({ text: " · ", color: color.faint });
-    figs.push(f);
+    folded.push({ text: i === 0 ? "  · " : " · ", color: color.faint });
+    folded.push(f);
   });
-  const figLine = clipSpans(figs, m);
-  const pad = Math.max(0, bodyW - used + (m - lineWidth(figLine)));
-  return [...clipped, { text: " ".repeat(pad) }, ...figLine];
+  return clipSpans(folded, width);
 }
 
 /** The span link under a CHARACTER offset in a line (the transcript mouse

@@ -9,7 +9,7 @@ import { CommandPalette, type PaletteRow } from "./components/CommandPalette.tsx
 import { FilePalette } from "./components/FilePalette.tsx";
 import { Composer, composerRows, composerVisibleRows, composerWindow, composerWrapW } from "./components/Composer.tsx";
 import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type GhostLook, type MascotState } from "./components/Mascot.tsx";
-import { PermissionPrompt } from "./components/PermissionPrompt.tsx";
+import { PermissionPrompt, permPromptRows } from "./components/PermissionPrompt.tsx";
 import { Working, workingRows } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
 import { itemsToLines, relPath, friendlyTool, fmtElapsed, linkAt, setTranscriptOptions, type Line } from "./lines.ts";
@@ -3414,8 +3414,21 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           // Accepting (/proceed) exits plan mode and submits the implementation.
           // Same consent-offer family as the char-test/prefer offers (it doesn't
           // block the turn), so it stays a clickable line, not a modal card.
+          // A real plan is an update_plan checklist OR plan-SHAPED prose (numbered
+          // steps / a bulleted list / a "plan/steps/approach" heading, and
+          // substantial). The bare >40-char floor used to fire on clarifying
+          // questions and "couldn't find X" — offering to "build" a plan that was
+          // never laid out. (#2)
+          const looksLikePlan = (t: string): boolean => {
+            const s = t.trim();
+            if (s.length < 120) return false;
+            const numbered = (s.match(/^\s*\d+[.)]\s+/gm) ?? []).length >= 2;
+            const bullets = (s.match(/^\s*[-*•]\s+\S/gm) ?? []).length >= 3;
+            const heading = /\b(plan|steps?|approach|implementation)\b/i.test((s.split("\n")[0] ?? ""));
+            return numbered || bullets || heading;
+          };
           const presentedPlan = modeRef.current === "plan" &&
-            turnItems.some((i) => i.kind === "plan" || (i.kind === "assistant" && (i.text ?? "").trim().length > 40));
+            turnItems.some((i) => i.kind === "plan" || (i.kind === "assistant" && looksLikePlan(i.text ?? "")));
           const planOffer: Item | null = presentedPlan
             ? { kind: "preference", id: idRef.current++, text: "plan ready — approve and build it?", acceptCommand: "/proceed" }
             : null;
@@ -4696,7 +4709,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
-  if (perm) footer += 7; // consent card: marginTop + borderTop + title + command + buttons + borderBottom + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
+  if (perm) footer += permPromptRows(perm, pageW); // consent card height — width-aware (the button row wraps on narrow widths); see PermissionPrompt.tsx row contract
   if (ask) footer += askPromptRows(ask.req, ask.picker); // ask block height (AskPrompt.tsx row contract)
   else if (!panel && !homeScreen) footer += 4 + composerVisibleRows(edit.value, pageW); // composer (marginTop + pad + CAPPED input rows + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer

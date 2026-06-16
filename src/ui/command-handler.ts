@@ -526,8 +526,17 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           // mirrors the characterization-test offer's accept (runTurnRef + a
           // deferred tick so the mode flip lands first).
           echo(text);
-          if (modeRef.current !== "plan") { notice("not in plan mode — nothing to build yet"); return; }
-          togglePlan(); // plan → normal
+          // Don't start a second overlapping turn (runTurn has no re-entrancy guard).
+          if (busyRef.current) { notice("busy — wait for the current turn to finish, then /proceed"); return; }
+          // Drive the guard off the PENDING OFFER, not the current mode: the offer
+          // persists across a manual shift-tab out of plan mode, and the consent
+          // advertises /proceed — so refusing it because the mode flipped would be
+          // a dead end. Only "nothing to build" when there's truly no plan offer.
+          const hasPlanOffer = itemsRef.current.some((i) => i.kind === "preference" && (i as any).acceptCommand === "/proceed");
+          if (!hasPlanOffer && modeRef.current !== "plan") { notice("nothing to build yet — /proceed approves a plan a plan-mode turn laid out"); return; }
+          if (modeRef.current === "plan") togglePlan(); // plan → normal (only if still in plan mode)
+          // Consume the offer so a second /proceed can't re-submit the same plan.
+          setItems((prev) => prev.filter((i) => !(i.kind === "preference" && (i as any).acceptCommand === "/proceed")));
           setTimeout(() => void runTurnRef.current?.("Go ahead and implement the plan you just laid out. Make the actual edits now.", 0), 0);
           return;
         }
