@@ -521,7 +521,6 @@ export async function runTask(opts: {
           if (SELF_RENDERING.has(name)) { selfRender.add(id); break; } // the tool drives its own UI
           openStream(id, name);
           onEvent({ type: "tool-start", id, name, arg: "" });
-          onEvent({ type: "phase", label: friendlyToolPhase(name), state: "running" });
           break;
         }
         case "tool-input-delta": {
@@ -564,7 +563,6 @@ export async function runTask(opts: {
             started.add(id);
             producedOutput = true;
             onEvent({ type: "tool-start", id, name, arg });
-            onEvent({ type: "phase", label: friendlyToolPhase(name), detail: arg, state: "running" });
           }
           break;
         }
@@ -790,9 +788,3 @@ export async function runCompletion(opts: {
   return { text, usage };
 }
 
-function friendlyToolPhase(name: string): string {
-  if (name === "read_file" || name === "list_dir" || name === "glob" || name === "search") return "reading context";
-  if (name === "write_file" || name === "edit_file") return "editing files";
-  if (name === "run_shell") return "running command";
-  return "using tool";
-}
