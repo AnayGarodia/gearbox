@@ -3408,7 +3408,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             ? { kind: "preference", id: idRef.current++, text: "no test command in this project — capture the changed code's current behavior with a characterization test?", acceptCommand: "/verify test" }
             : null;
           if (offerCharTest) charTestOfferedRef.current = true;
-          setItems([...collapsed, ...(summaryItem ? [summaryItem] : []), ...(offerItem ? [offerItem] : [])]);
+          // Plan-ready offer: when this turn ran in plan mode (read-only) and the
+          // model actually presented a plan — an update_plan checklist or a
+          // substantive write-up — close the turn with the consent to BUILD it.
+          // Accepting (/proceed) exits plan mode and submits the implementation.
+          // Same consent-offer family as the char-test/prefer offers (it doesn't
+          // block the turn), so it stays a clickable line, not a modal card.
+          const presentedPlan = modeRef.current === "plan" &&
+            turnItems.some((i) => i.kind === "plan" || (i.kind === "assistant" && (i.text ?? "").trim().length > 40));
+          const planOffer: Item | null = presentedPlan
+            ? { kind: "preference", id: idRef.current++, text: "plan ready — approve and build it?", acceptCommand: "/proceed" }
+            : null;
+          // Only ever ONE live plan-ready offer: a fresh plan-mode turn refreshes
+          // it to the bottom rather than stacking a new "approve and build it?"
+          // line on top of the prior ones (collapseTurn preserves preference items).
+          const base = planOffer ? collapsed.filter((i) => !(i.kind === "preference" && i.acceptCommand === "/proceed")) : collapsed;
+          setItems([...base, ...(summaryItem ? [summaryItem] : []), ...(offerItem ? [offerItem] : []), ...(planOffer ? [planOffer] : [])]);
           // Time awareness after every prompt: how long the turn took, plus the
           // prompt-cache hit when the provider served part of the input from cache.
           const elapsed = formatDuration(Date.now() - turnStart);
@@ -3786,7 +3801,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       return;
     }
     if (permRef.current) {
-      if (input === "1") resolvePerm("once");
+      // ⏎ is the primary "Allow once" button on the consent card; 1 still works.
+      if (input === "1" || key.return) resolvePerm("once");
       else if (input === "2") resolvePerm("always");
       else if (input === "a" || input === "A") resolvePerm("all");
       else if (input === "3" || key.escape) resolvePerm("deny");
@@ -4680,7 +4696,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // Composer is hidden while a panel is open — subtract its rows so the panel is taller.
   // Permission card renders even while a panel is open (it owns the keys), so
   // its rows are budgeted regardless of the panel.
-  if (perm) footer += 8; // consent block: marginTop + title + command + 4 option rows + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
+  if (perm) footer += 7; // consent card: marginTop + borderTop + title + command + buttons + borderBottom + marginBottom (PermissionPrompt.tsx row contract — keep in lockstep)
   if (ask) footer += askPromptRows(ask.req, ask.picker); // ask block height (AskPrompt.tsx row contract)
   else if (!panel && !homeScreen) footer += 4 + composerVisibleRows(edit.value, pageW); // composer (marginTop + pad + CAPPED input rows + pad + footer hint · Composer.tsx row contract)
   footer += homeScreen ? 0 : PALETTE_ROWS; // on home the palette renders under the centered composer

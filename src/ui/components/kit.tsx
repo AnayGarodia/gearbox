@@ -31,3 +31,17 @@ export function Pill({
 // Width a Pill occupies, so callers that budget/measure a row (status bar) can
 // account for it without rendering. Mirrors the render: tick/space + label + space.
 export const pillWidth = (label: string): number => label.length + 2;
+
+// A decision BUTTON (Quiet Workshop): a single-key chip + its label, e.g.
+// ` ⏺ `→` Allow`. The key sits on a solid tone chip (navy ink) so it reads as
+// the press; the label is plain text. Used in the rounded decision cards
+// (permission / ask / plan) — the one place the UI shows buttons. Both a click
+// target and a keyboard shortcut.
+export function Button({ hotkey, label, tone = color.accent }: { hotkey: string; label: string; tone?: string }) {
+  return (
+    <Text>
+      <Text backgroundColor={tone} color={color.navy} bold>{` ${hotkey} `}</Text>
+      <Text color={color.text}>{` ${label}`}</Text>
+    </Text>
+  );
+}

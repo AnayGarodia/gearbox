@@ -154,7 +154,7 @@ Commands are grouped in `/help` (models · conversation · accounts · save · m
 ## Conventions
 
 - Runtime: **Bun**. TypeScript + TSX. Run with `bun run src/cli.tsx`.
-- UI: **Ink** (React for terminals) + **@inkjs/ui**. Keep it calm and beautiful: restrained palette (one accent), generous spacing, consistent glyphs. The look lives in `src/ui/theme.ts` — change colors/glyphs there, not inline.
+- UI: **Ink** (React for terminals) + **@inkjs/ui**. The identity is **Quiet Workshop** (see `REDESIGN.md`, the binding contract): a calm, prose-first companion — the model talks in plain prose, tool calls recede to `⏺ Tool(arg) ⎿ result` footnotes, turns separate by whitespace (no telemetry margin, no numbered bands), and a DECISION (permission · ask · plan-approval) is the one loud, contained moment (rounded card + hotkey buttons). One accent (ghost-indigo), used for interactive/now only. The look lives in `src/ui/theme.ts` — change colors/glyphs there, not inline.
 - Open + free: MIT, no paid dependencies, no hosted backend, no telemetry. The only cost is the user's own model calls on their own keys.
 - Tools must be safe by default: confirm or sandbox anything destructive; never `rm -rf` or write outside the workspace without intent.
 

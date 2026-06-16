@@ -518,6 +518,19 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           echo(text);
           togglePlan();
           return;
+        case "proceed":
+        case "build": {
+          // Approve the plan and build it: the accept action of the plan-ready
+          // consent offer (and a manual command). Exits plan mode so the next
+          // turn can actually edit, then submits the implementation prompt —
+          // mirrors the characterization-test offer's accept (runTurnRef + a
+          // deferred tick so the mode flip lands first).
+          echo(text);
+          if (modeRef.current !== "plan") { notice("not in plan mode — nothing to build yet"); return; }
+          togglePlan(); // plan → normal
+          setTimeout(() => void runTurnRef.current?.("Go ahead and implement the plan you just laid out. Make the actual edits now.", 0), 0);
+          return;
+        }
         case "effort": {
           echo(text);
           if (arg.trim()) {

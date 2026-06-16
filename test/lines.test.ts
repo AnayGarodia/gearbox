@@ -142,7 +142,7 @@ test("a read tool shows a path relative to the cwd, not the noisy absolute path"
 test("a long-running tool shows a live ticking elapsed (the 'it's alive' signal)", () => {
   const items: Item[] = [{ kind: "tool", id: 1, callId: "a", name: "Agent", arg: "analyze the codebase", status: "running", summary: "", startedAt: Date.now() - 84_000 }];
   const text = itemsToLines(items, 110).map((l) => l.map((s) => s.text).join("")).join("\n");
-  expect(text).toContain("agent"); // friendlyTool(Agent)
+  expect(text).toContain("Agent"); // friendlyTool(Agent), Capitalized verb in the Quiet Workshop head
   expect(text).toMatch(/1m \d+s/); // ~84s shown as 1m 2Ns
 });
 

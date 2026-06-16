@@ -40,12 +40,15 @@ export function mastheadAccountZone(account: string | null | undefined, tabRows:
 // Memoized: props are stable while scrolling/streaming. `epoch` exists solely so
 // /theme invalidates the memo (setTheme mutates `color` in place).
 function MastheadImpl({ account, accountColor, frameHue, width, tabRows }: { account?: string | null; accountColor?: string; frameHue?: string | null; width: number; epoch?: number; tabRows?: TabRow[] | null }) {
-  // The TOP EDGE of the pane: the old blank marginTop row becomes a full-width
-  // rule in the active provider's hue — the frame wears the backend. Row count
-  // unchanged (MASTHEAD_ROW contract holds).
+  // The TOP EDGE of the pane (Quiet Workshop): a plain blank breath. The old
+  // full-width provider-hue `▔` bar was a loud band across the very top — exactly
+  // the kind of chrome the quiet idiom drops. The backend hue still shows on the
+  // status dot below and the account name; the frame itself stays calm. Row count
+  // unchanged (MASTHEAD_ROW contract holds). frameHue is intentionally unused now.
+  void frameHue;
   const topEdge = (
     <Box width={width}>
-      {frameHue ? <Text color={frameHue}>{"▔".repeat(Math.max(width, 8))}</Text> : <Text> </Text>}
+      <Text> </Text>
     </Box>
   );
   if (tabRows?.length) {
