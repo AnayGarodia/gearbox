@@ -62,7 +62,7 @@ import { invalidateGitBranch } from "./git.ts";
 import { gitConfirmOpen, gitConfirmEdit, gitConfirmSetSubmitting, gitConfirmError, gitConfirmReady, gitConfirmMessage, diffMove, diffScroll, diffSetText, mergeConfirmScroll, type GitConfirmPanel } from "./panel.ts";
 import { checkCaps, type BudgetCaps } from "../model/budget-guard.ts";
 import { recordChange, planUndo, type FileChange } from "../undo.ts";
-import { probeUsage } from "../accounts/usage-probe.ts";
+import { useUsageProbe } from "./use-usage-probe.ts";
 import { fetchBalance, balanceExposed } from "../accounts/balance.ts";
 import { buildContext, sanitizeToolPairs, type ContextSection } from "../context/builder.ts";
 import { repoMap } from "../context/repomap.ts";
@@ -688,7 +688,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // off, survives restarts, does not capture input.
   const [statusPinned, setStatusPinnedState] = useState(() => Boolean(loadPrefs().statusPinned));
   const [usageTick, bumpUsage] = useReducer((x: number) => x + 1, 0); // bump forces the strip to re-read usage.json; otherwise it's memoized off the hot path
-  const [probing, setProbing] = useState<Set<string>>(new Set()); // account ids with a usage probe in flight, shown as "checking…"
   const setStatusPinned = (v: boolean) => {
     setStatusPinnedState(v);
     updatePrefs({ statusPinned: v });
@@ -1795,53 +1794,8 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const [activeCli, setActiveCli] = useState<{ id: string; label: string } | null>(null);
   const [activeCliModel, setActiveCliModel] = useState<string | null>(null);
 
-  // Live subscription usage — the EXACT 5h/weekly % the -p/exec stream omits when
-  // comfortably within limits. The vendor CLI fetches its own usage (its own token,
-  // as designed) and we read the result: Codex from the rollout it already writes
-  // (FREE), Claude via a tiny statusLine probe (one cheap turn). Runs only while the
-  // /cost strip is open, and probes the ACTIVE account immediately on open AND on
-  // every switch (instant feedback). Best-effort; no vendor token is ever read.
-  useEffect(() => {
-    if (!statusPinned) return;
-    let alive = true;
-    const subs = () => listAccounts().filter((a) => a.enabled && a.exec === "cli" && a.auth.kind === "cli");
-    const probeOne = async (a: Account | undefined) => {
-      if (!a || !alive) return;
-      setProbing((p) => { const n = new Set(p); n.add(a.id); return n; });
-      try {
-        const snaps = await probeUsage(a);
-        // replace: the probe is a complete snapshot → drop windows it no longer
-        // reports (e.g. a stale 7-day on a Pro plan) instead of leaving them ghosted.
-        if (snaps?.length && alive) { recordRateLimits(a.id, snaps, { replace: true }); bumpUsage(); }
-      } catch { /* best-effort; fall back to stream data */ }
-      finally { if (alive) setProbing((p) => { const n = new Set(p); n.delete(a.id); return n; }); }
-    };
-    const list = subs();
-    const active = list.find((a) => a.id === activeCli?.id) ?? list[0];
-    void probeOne(active); // instant feedback for the visible account
-    const codexTimer = setInterval(() => { for (const a of subs()) if (a.auth.kind === "cli" && a.auth.binary.includes("codex")) void probeOne(a); }, 90_000);
-    const claudeTimer = setInterval(() => { for (const a of subs()) void probeOne(a); }, 10 * 60_000);
-    return () => { alive = false; clearInterval(codexTimer); clearInterval(claudeTimer); };
-  }, [statusPinned, activeCli?.id]);
-
-  // Reusable one-shot usage probe (xiii): the periodic probe above only runs while
-  // the /usage strip is PINNED, so the first /usage (and inline /usage) used to show
-  // the seeded "ok" forever. Callable from boot + the /usage command so real 5h/7d
-  // % appear without pinning. Best-effort (needs python3 + an authed config dir).
-  const probeAccountUsage = useCallback(async (a: Account | undefined) => {
-    if (!a || a.exec !== "cli" || a.auth.kind !== "cli") return;
-    setProbing((p) => { const n = new Set(p); n.add(a.id); return n; });
-    try {
-      const snaps = await probeUsage(a);
-      if (snaps?.length) { recordRateLimits(a.id, snaps, { replace: true }); bumpUsage(); }
-    } catch { /* best-effort; fall back to stream data */ }
-    finally { setProbing((p) => { const n = new Set(p); n.delete(a.id); return n; }); }
-  }, []);
-
-  // Probe each subscription once at launch so the FIRST /usage shows real numbers.
-  useEffect(() => {
-    for (const a of listAccounts().filter((x) => x.enabled && x.exec === "cli" && x.auth.kind === "cli")) void probeAccountUsage(a);
-  }, [probeAccountUsage]);
+  // Live subscription usage (5h/weekly %) for CLI accounts — see useUsageProbe.
+  const { probing, probeAccountUsage } = useUsageProbe({ statusPinned, activeCliId: activeCli?.id, bumpUsage });
   // Memoized: this reads accounts.json + ~/.aws creds AND spawns `which claude`/
   // `which codex` subprocesses — doing that on every render (every scroll frame /
   // drag event) was a major source of input lag. Recompute only when the account
