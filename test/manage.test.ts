@@ -1,11 +1,19 @@
 // ARM attempts are disabled here: these tests exercise the data-plane paths;
-// the ARM control plane has its own suite (test/azure-arm.test.ts).
+// the ARM control plane has its own suite (test/azure-arm.test.ts). This must be
+// set before importing manage.ts (it's read at module load). It's a PROCESS-global
+// env var, so restore it in afterAll — bun runs every test file in one process and
+// a file discovered after this one (e.g. azure-arm) would otherwise inherit it.
+const savedDisableAz = process.env.GEARBOX_DISABLE_AZ;
 process.env.GEARBOX_DISABLE_AZ = "1";
-import { test, expect, beforeEach } from "bun:test";
+import { test, expect, beforeEach, afterAll } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-manage-"));
+afterAll(() => {
+  if (savedDisableAz === undefined) delete process.env.GEARBOX_DISABLE_AZ;
+  else process.env.GEARBOX_DISABLE_AZ = savedDisableAz;
+});
 import {
   parseDeploymentDetails,
   parseAvailableBaseModels,

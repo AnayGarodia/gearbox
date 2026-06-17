@@ -6,13 +6,23 @@ import { join } from "node:path";
 import { parseArmId, accountMatchesHost, armCreateDeployment, armDeleteDeployment, clearArmCaches } from "../src/accounts/azure-arm.ts";
 
 const saved = process.env.GEARBOX_HOME;
+// These tests exercise the live token ladder, so they must run with ARM ENABLED.
+// Another file (test/manage.test.ts) sets GEARBOX_DISABLE_AZ=1 at module load to
+// disable it for its own data-plane tests; under a file-discovery order that runs
+// that file first (Linux CI differs from macOS), the var leaks here and every
+// token path short-circuits to the "disabled" error. Clear it defensively, the
+// same way GEARBOX_HOME is saved/restored, so order can't break us.
+const savedDisableAz = process.env.GEARBOX_DISABLE_AZ;
 beforeEach(() => {
   process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-arm-"));
+  delete process.env.GEARBOX_DISABLE_AZ;
   clearArmCaches();
 });
 afterEach(() => {
   if (saved === undefined) delete process.env.GEARBOX_HOME;
   else process.env.GEARBOX_HOME = saved;
+  if (savedDisableAz === undefined) delete process.env.GEARBOX_DISABLE_AZ;
+  else process.env.GEARBOX_DISABLE_AZ = savedDisableAz;
   clearArmCaches();
 });
 
