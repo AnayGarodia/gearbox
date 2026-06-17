@@ -128,6 +128,23 @@ test("substantial reasoning ALONGSIDE a text conclusion is just dropped (text ca
   expect(out[0].content).toEqual([{ type: "text", text: "the answer" }]); // no [prior reasoning] fold
 });
 
+test("substantial reasoning ALONGSIDE a tool-call is NOT folded (the action carries the conclusion)", () => {
+  // An extended-thinking-with-tools turn: the conclusion is the tool-CALL (an
+  // action), which translates across providers. Folding the raw thinking here would
+  // over-fire on every such turn and leak chain-of-thought into visible prose.
+  const chain = "I should compare the millisecond store against the second-based check; they disagree, so I'll patch the multiplier in auth.ts. This thinking is well past the fold threshold.";
+  const msgs: ModelMessage[] = [
+    user("fix the bug"),
+    { role: "assistant", content: [{ type: "reasoning", text: chain }, { type: "tool-call", toolCallId: "e1", toolName: "edit_file", input: { path: "src/auth.ts" } }] } as any,
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "e1", output: "ok" }] } as any,
+  ];
+  const out = sanitizeForProvider(msgs) as any[];
+  const asst = out.find((m) => m.role === "assistant");
+  expect(JSON.stringify(asst)).not.toContain("[prior reasoning]"); // no fold — the tool-call is the conclusion
+  expect(JSON.stringify(asst)).not.toContain('"reasoning"'); // raw thinking still stripped
+  expect(asst.content.some((p: any) => p.type === "tool-call")).toBe(true); // the action survives
+});
+
 test("healthy history passes through with object identity preserved", () => {
   const msgs: ModelMessage[] = [user("a"), assistant("b"), user("c")];
   const out = sanitizeForProvider(msgs);

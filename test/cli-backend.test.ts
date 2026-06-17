@@ -379,3 +379,23 @@ test("buildHandoff action trail carries WHAT was done (tool names+args), never r
   expect(noActions).not.toContain("[did:");
   expect(noActions).toContain("Fixing the unit comparison.");
 });
+
+test("action trail reports the query/pattern for search & glob, not their default path", () => {
+  // search/glob carry BOTH a path (often the default ".") and the real target — the
+  // trail must surface the useful fact, not "searched ." / "globbed .".
+  const messages = [
+    { role: "user", content: "find the token check" },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Looking." },
+        { type: "tool-call", toolCallId: "s1", toolName: "search", input: { query: "parseToken", path: "src" } },
+        { type: "tool-call", toolCallId: "g1", toolName: "glob", input: { pattern: "**/*.test.ts", path: "." } },
+      ],
+    },
+  ] as any;
+  const d = buildHandoff(messages);
+  expect(d).toContain("searched parseToken"); // the query, not "searched src"
+  expect(d).toContain("globbed **/*.test.ts"); // the pattern, not "globbed ."
+  expect(d).not.toContain("searched src");
+});

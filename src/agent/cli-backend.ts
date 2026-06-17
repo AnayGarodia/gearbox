@@ -337,7 +337,10 @@ function handoffActions(content: unknown): string {
     if (p?.type !== "tool-call") continue;
     if (acts.length >= 8) { acts.push("…"); break; }
     const input = p.input ?? p.args ?? {};
-    const arg = [input.path, input.file, input.command, input.query, input.pattern].find((x: any) => typeof x === "string" && x);
+    // The real target first: search/glob carry BOTH a path (often the default ".")
+    // and the query/pattern that's the useful fact, so pick the specific arg ahead
+    // of path/file — else the trail reads "searched ." instead of "searched fooBar".
+    const arg = [input.command, input.query, input.pattern, input.path, input.file].find((x: any) => typeof x === "string" && x);
     const verb = HANDOFF_VERB[String(p.toolName ?? "").toLowerCase()] ?? String(p.toolName ?? "ran");
     acts.push(arg ? `${verb} ${String(arg).slice(0, 60)}` : verb);
   }

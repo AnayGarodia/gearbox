@@ -1603,6 +1603,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // one). Clear any stale CLI session so a subscription turn starts the binary
     // fresh with this history rather than --resume-ing whatever was last open.
     cliSessionRef.current = undefined;
+    // Resuming a DIFFERENT conversation: drop per-conversation carry-over so it
+    // can't bleed into the loaded session. The resumed history is non-empty, so the
+    // turn's `!messages.length` reset (which covers /clear) would NOT catch this —
+    // a carried image would otherwise re-attach to a model in the new conversation.
+    inLoopSinceSeatRef.current = false;
+    lastWindowRef.current = null;
+    carriedImagesRef.current = { imgs: [], ttl: 0 };
     notice(`resumed · ${s.items.length} messages · ${new Date(s.updatedAt).toLocaleString()}`);
   };
 
@@ -2187,6 +2194,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       messages: ModelMessage[];
       onEvent: OnEvent;
       signal?: AbortSignal;
+      // Attachments for THIS turn (fresh or carried), handed to the binary as file
+      // paths. The caller resolves the carry at turn scope; the seat just renders them.
+      images?: ImageAttachment[];
+      // An ephemeral side-call (e.g. /ask runs the seat with messages:[] and throws
+      // the result away). It must NOT advance the seat's view of the conversation,
+      // or it would clear the catch-up flag and suppress the next real gap digest.
+      ephemeral?: boolean;
     }): Promise<{ messages: ModelMessage[]; usage: { inputTokens: number; outputTokens: number }; failure?: { message: string } }> => {
       const { binary, profile, modelId, accountId, efforts, routedEffort, label, pinned, prompt, messages, onEvent, signal } = args;
       usedAccountRef.current = accountId;
@@ -2260,9 +2274,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       }
       // Images (xiv): the vendor CLI can't take inline image content, but it CAN
       // read files, so hand it the absolute paths and ask it to open them — far
-      // better than refusing the turn outright.
-      if (activeImagesRef.current.length) {
-        cliPrompt += `\n\n<attached-images>\n${activeImagesRef.current.map((img) => img.path).join("\n")}\n</attached-images>\nThe user attached the image file(s) listed above — open them with your file/read tools to view them.`;
+      // better than refusing the turn outright. Uses the turn-scoped images the
+      // caller passed (fresh OR carried), not activeImagesRef, so a carried image
+      // reaches a resumed seat too.
+      const seatImages = args.images ?? [];
+      if (seatImages.length) {
+        cliPrompt += `\n\n<attached-images>\n${seatImages.map((img) => img.path).join("\n")}\n</attached-images>\nThe user attached the image file(s) listed above — open them with your file/read tools to view them.`;
       }
       // Headless seats can't show approval prompts, so out-of-repo work only
       // succeeds in pre-approved dirs — point the agent at the scratch dir
@@ -2271,7 +2288,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const r = await runCliTask({
         binary,
         prompt: cliPrompt,
-        recordPrompt: prompt, // record the BARE prompt in the ledger, not the decorated one
+        // Record the BARE prompt in the ledger, not the decorated one — but keep a
+        // lightweight image note (symmetric with the in-loop path) so a turn that
+        // had attachments still leaves a trace once the P6 carry expires.
+        recordPrompt: seatImages.length ? `${prompt}\n\n[Attached images: ${seatImages.map((img) => basename(img.path)).join(", ")}]` : prompt,
         messages,
         onEvent,
         signal,
@@ -2286,16 +2306,23 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         reloginCommand,
         deferTerminal: args.deferTerminal,
       });
-      // Mark how far this seat session has now seen (the history it was handed),
-      // so the NEXT resume only digests turns other models ran in between. A seat
-      // turn clears the "in-loop happened" flag (the seat is now current).
-      const sid = r.sessionId ?? seatSession?.id;
-      // High-water mark: never move seenUpTo backward (a messages:[] follow-up
-      // call must not reset it and falsely flag the whole history as a "gap" next
-      // turn). /clear resets it by clearing cliSessionRef entirely.
-      const seen = Math.max(seatStartLen, seatSession?.seenUpTo ?? 0);
-      cliSessionRef.current = sid ? { account: accountId, id: sid, seenUpTo: seen } : cliSessionRef.current;
-      inLoopSinceSeatRef.current = false;
+      // Seat bookkeeping — ONLY for a real conversational turn that SUCCEEDED:
+      //  · an ephemeral side-call (/ask, messages:[]) must not advance the seat's
+      //    view or clear the catch-up flag — that suppressed the next real gap digest.
+      //  · a FAILED attempt (e.g. a 429 after the binary minted a session id but
+      //    before it processed the prompt) never "saw" the history — recording it as
+      //    seen would make a later resume to this seat skip those turns forever.
+      if (!args.ephemeral && !r.failure) {
+        const sid = r.sessionId ?? seatSession?.id;
+        // High-water mark from the POST-turn length (r.messages = prior history +
+        // THIS turn): the seat's vendor session now holds this turn too, so the next
+        // resume's gap must start AFTER it, not re-digest the seat's own work as if
+        // another model ran it. Math.max guards against any shorter return (it never
+        // moves backward — a messages:[] follow-up can't reset it).
+        const seen = Math.max(r.messages.length, seatStartLen, seatSession?.seenUpTo ?? 0);
+        cliSessionRef.current = sid ? { account: accountId, id: sid, seenUpTo: seen } : cliSessionRef.current;
+        inLoopSinceSeatRef.current = false;
+      }
       cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
       // Surface the model the subscription CLI actually used (claude reports it in
       // its stream) when the user hasn't pinned one, so the status bar shows e.g.
@@ -2359,7 +2386,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           if (!activeCliRef.current) setLastPick({ model: choice.model, reason: choice.reason });
           usedAccountRef.current = (askCli as any).id;
           cliMetaRef.current = null;
-          const r = await runCliBackend({ binary: (askCli as any).binary, profile: (askCli as any).profile, modelId: (askCli as any).sdkId ?? activeCliModelRef.current, accountId: (askCli as any).id, efforts: [], label: (askCli as any).label, pinned: true, deferTerminal: false, showProvenance: true, prompt: askPrompt, messages: [], onEvent, signal });
+          const r = await runCliBackend({ binary: (askCli as any).binary, profile: (askCli as any).profile, modelId: (askCli as any).sdkId ?? activeCliModelRef.current, accountId: (askCli as any).id, efforts: [], label: (askCli as any).label, pinned: true, deferTerminal: false, showProvenance: true, prompt: askPrompt, messages: [], onEvent, signal, ephemeral: true });
           return { messages, usage: r.usage };
         }
         routedRef.current = { model: choice.model, reason: choice.reason };
@@ -2373,7 +2400,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const r = await runCompletion({ model: choice.model, system: buildAskSystem(docs, session), prompt, onEvent, signal, creds, maxRetries: onlineRef.current ? 2 : 0 });
         return { messages, usage: r.usage };
       }
-      const imagesPresent = activeImagesRef.current.length > 0;
+      // P6 — resolve THIS turn's images ONCE, at turn scope (shared by the seat and
+      // in-loop paths, aged a SINGLE time per turn — never per failover hop, which
+      // would burn the carry twice and drop it on the very retry that serves): a
+      // fresh attachment refreshes a short-lived carry; an image-less follow-up
+      // re-uses the carried images so a model/seat switch still SEES the pixels (the
+      // saved history keeps only filename text). A fresh attachment HARD-requires a
+      // vision model via `requires`; carried images are best-effort (they only nudge
+      // auto-routing — see routeRequires below — and are dropped on a text model).
+      const freshImages = activeImagesRef.current;
+      if (!messages.length) carriedImagesRef.current = { imgs: [], ttl: 0 }; // fresh/cleared conversation — drop any carry
+      let turnImages = freshImages;
+      if (freshImages.length) {
+        carriedImagesRef.current = { imgs: freshImages, ttl: 2 };
+      } else if (carriedImagesRef.current.ttl > 0 && carriedImagesRef.current.imgs.length) {
+        turnImages = carriedImagesRef.current.imgs;
+        carriedImagesRef.current = { imgs: carriedImagesRef.current.imgs, ttl: carriedImagesRef.current.ttl - 1 };
+      }
+      const imagesPresent = freshImages.length > 0;
 
       // An EXPLICIT subscription pin (`/account use`) bypasses routing entirely.
       // Images now flow to the CLI as file paths (see cliPrompt above), so we no
@@ -2398,7 +2442,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         return runCliBackend({
           binary: pin.binary, profile: pin.profile, modelId: activeCliModelRef.current, accountId: pin.id,
           efforts: cliChoice?.efforts ?? [], label: cliModelLabel(activeCliModelRef.current) || undefined,
-          pinned: true, showProvenance: routeChanged(`pin:${pin.id}:${activeCliModelRef.current ?? pin.binary}`), prompt, messages, onEvent, signal,
+          pinned: true, showProvenance: routeChanged(`pin:${pin.id}:${activeCliModelRef.current ?? pin.binary}`), prompt, messages, onEvent, signal, images: turnImages,
         });
       }
 
@@ -2431,7 +2475,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           const out = await runCliBackend({
             binary: choice.backend.binary, profile: choice.backend.profile, modelId: choice.model.sdkId, accountId: acct.id,
             efforts: choice.model.efforts ?? [], label: choice.model.label, routedEffort: choice.effort,
-            pinned: false, deferTerminal: true, showProvenance: showCli, prompt, messages, onEvent, signal,
+            pinned: false, deferTerminal: true, showProvenance: showCli, prompt, messages, onEvent, signal, images: turnImages,
           });
           // The CLI's failure carries no producedOutput flag; an assistant message
           // in the returned ledger means text already streamed to the user.
@@ -2448,20 +2492,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         const displayName = backendIdentity(choice.model, choice.backend?.kind === "in-loop" ? choice.backend.account : null);
         onEvent({ type: "phase", label: "building context", detail: displayName, state: "running" });
-        // P6 — carry attachments across a model switch: a new attachment refreshes
-        // the carry; an image-less follow-up RE-ATTACHES the carried images, but
-        // ONLY when the routed model can take images (same check routing uses), so
-        // this never 400s a text model and never forces vision routing/cost.
-        let turnImages = activeImagesRef.current;
-        if (!messages.length) carriedImagesRef.current = { imgs: [], ttl: 0 }; // fresh/cleared conversation — drop any carry
-        if (turnImages.length) {
-          carriedImagesRef.current = { imgs: turnImages, ttl: 2 };
-        } else if (carriedImagesRef.current.ttl > 0) {
-          const c = carriedImagesRef.current;
-          if (c.imgs.length && missingRequirements(choice.model, ["images"]).length === 0) turnImages = c.imgs;
-          carriedImagesRef.current = { imgs: c.imgs, ttl: c.ttl - 1 };
-        }
-        const userContent = imageContent(prompt, turnImages);
+        // P6 — images for THIS attempt: turnImages was resolved + aged ONCE at turn
+        // scope (above), so a failover hop never re-ages it. Only send to a model
+        // that can take them — a carried image landing on a text model (auto-route
+        // missed it, or a pinned text model) is silently dropped rather than 400'ing.
+        // A FRESH attachment can't reach here on a text model: it hard-requires
+        // "images" via `requires`, so the throw above already fired.
+        const sendImages = turnImages.length && missingRequirements(choice.model, ["images"]).length === 0 ? turnImages : [];
+        const userContent = imageContent(prompt, sendImages);
         // Semantic retrieval: one bounded query-embedding call (memoized across
         // hops of the same turn); null on timeout/no-index/no-provider → BM25.
         const semantic = await semanticScores(prompt, rootRef.current, { prefs: loadPrefs() }).catch(() => null);
@@ -2476,15 +2514,6 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           compactions: sessionRef.current.compactions,
           semantic,
         });
-        // Honesty notice on a window DOWNGRADE: routing to a smaller-context model
-        // drops older turns the previous (larger) model would have kept. Silent
-        // history loss reads as the model "forgetting" — say it out loud, and only
-        // when the switch is the cause (this window < the last turn's).
-        const win = choice.model.contextWindow;
-        if (droppedTurns > 0 && lastWindowRef.current != null && win < lastWindowRef.current) {
-          notice(`↳ context trimmed for ${choice.model.label} (smaller window): ${droppedTurns} earlier turn${droppedTurns === 1 ? "" : "s"} dropped to fit`);
-        }
-        lastWindowRef.current = win;
         // Remember this turn's non-history context overhead (system + memory +
         // repomap + retrieval + git) so the auto-compact trigger can budget on
         // the FULL context, not history alone.
@@ -2507,6 +2536,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             },
             cooldownKey: `env:${choice.model.provider}`, // never parked: overflow classifies "other"
           };
+        }
+        // Honesty notice on a window DOWNGRADE: routing to a smaller-context model
+        // drops older turns the previous SUCCESSFULLY-SERVED model would have kept.
+        // Compared against lastWindowRef, which is set ONLY after a turn actually
+        // serves (in EITHER backend) — so seat turns, failed hops, and the
+        // overflow-refused turns above never poison the baseline into a false notice.
+        // (Placed after the overflow return so a refused turn never announces a trim.)
+        const win = choice.model.contextWindow;
+        if (droppedTurns > 0 && lastWindowRef.current != null && win != null && win < lastWindowRef.current) {
+          notice(`↳ context trimmed for ${choice.model.label} (smaller window): ${droppedTurns} earlier turn${droppedTurns === 1 ? "" : "s"} dropped to fit`);
         }
         if (agentDef) system = `${system}\n\n# ACTIVE AGENT: ${agentDef.name}\n${agentDef.system}`;
         const account = (choice.backend?.kind === "in-loop" && choice.backend.account) || defaultAccount(choice.model.provider);
@@ -2560,11 +2599,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         servedModelRef.current = r.servedModelId ?? null;
         const produced = r.messages.slice(ctx.length);
         retrievalUseRef.current = retrievalUseMeta(retrievedFiles, produced, rootRef.current) ?? null;
-        const imageNote = activeImagesRef.current.length ? `\n\n[Attached images: ${activeImagesRef.current.map((img) => basename(img.path)).join(", ")}]` : "";
+        // Note what was actually SENT (sendImages — fresh, or a carry the model
+        // could take), not activeImagesRef, so a turn that transmitted carried pixels
+        // leaves a matching trace and one that dropped them on a text model doesn't lie.
+        const imageNote = sendImages.length ? `\n\n[Attached images: ${sendImages.map((img) => basename(img.path)).join(", ")}]` : "";
         const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt + imageNote }, ...produced]);
-        // This turn ran in-loop, not on the seat — so a later resume of the seat
-        // must catch it up (the seat's vendor session never saw this turn).
-        inLoopSinceSeatRef.current = true;
+        // This turn ran in-loop, not on the seat — so a later resume of the seat must
+        // catch it up (the seat's vendor session never saw this turn). Only a
+        // SUCCESSFUL turn counts: a failed attempt (no output) that fails over to a
+        // seat must not trigger a spurious "ran on a different model" gap digest.
+        if (!r.failure) inLoopSinceSeatRef.current = true;
         return { messages: ledger, usage: r.usage, failure: r.failure, cooldownKey: account?.id ?? `env:${choice.model.provider}` };
       };
 
@@ -2603,14 +2647,23 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // router's 16k nominal and the context-window fit filter never engaged
       // with real numbers. First turn has no prior → undefined → nominal.
       const estTokens = sessionRef.current.turns.at(-1)?.inputTokens || undefined;
+      // Carried images (best-effort) nudge AUTO-routing toward a vision model so a
+      // follow-up about a prior attachment isn't answered blind. It never overrides
+      // an explicit pin/directive (the user's deliberate model choice), and a FRESH
+      // attachment is already a HARD requirement via `requires` — so this adds only
+      // the soft case: a re-used carry, auto-routing, no new attachment this turn.
+      // The runAttempt throw still gates on the hard `requires`, so a pinned text
+      // model with a carry never fails; the carry is just dropped there instead.
+      const autoRouting = sel instanceof RoutingSelector && !directiveId;
+      const routeRequires: ModelRequirement[] = autoRouting && turnImages.length > 0 && !imagesPresent ? [...requires, "images"] : requires;
       let choice: ModelChoice;
       try {
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires: routeRequires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
       } catch {
-        choice = sel.select({ prompt, kind: routedKind, requires, estTokens }); // directive model unavailable → fall back to routing
+        choice = sel.select({ prompt, kind: routedKind, requires: routeRequires, estTokens }); // directive model unavailable → fall back to routing
       }
       if (sel instanceof RoutingSelector && !directiveId) noteBackendSwitch(choice);
       // Capture the ACTUAL scorecard now (same task the pick used), so /why later
@@ -2618,7 +2671,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // state. Cleared when not auto-routing (a pin/directive ran).
       if (sel instanceof RoutingSelector && !directiveId && sel.explain) {
         try {
-          const card = sel.explain({ prompt, kind: routedKind, requires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
+          const card = sel.explain({ prompt, kind: routedKind, requires: routeRequires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
           lastScorecardRef.current = routedKind ? { ...card, kindSource: routedSource } : card;
         } catch { lastScorecardRef.current = null; }
       } else {
@@ -2640,7 +2693,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           cachedInputTokens: (prior.cachedInputTokens ?? 0) + (a.usage.cachedInputTokens ?? 0),
           cacheCreationInputTokens: (prior.cacheCreationInputTokens ?? 0) + (a.usage.cacheCreationInputTokens ?? 0),
         };
-        if (!a.failure) { emitTerminal(false, undefined, total); return { messages: a.messages, usage: total }; }
+        // Baseline for the next turn's window-downgrade notice: the window of the
+        // model that ACTUALLY served (either backend), set only on success — so a
+        // failed hop or an overflow refusal can't poison it into a false notice.
+        if (!a.failure) { lastWindowRef.current = choice.model.contextWindow ?? lastWindowRef.current; emitTerminal(false, undefined, total); return { messages: a.messages, usage: total }; }
         prior.inputTokens = total.inputTokens; prior.outputTokens = total.outputTokens; // this attempt burned tokens too
         prior.cachedInputTokens = total.cachedInputTokens; prior.cacheCreationInputTokens = total.cacheCreationInputTokens;
         // Failover-able failure classes: exhausted (rate/quota/credit — recovers on
@@ -2682,7 +2738,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: routedKind, requires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires: routeRequires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         // Bail only when the router hands back the exact pick we just parked
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
@@ -2715,6 +2771,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Apply a successful compaction (either path) and report real numbers.
       const apply = (res: CompactResult, how: string): string => {
         msgRef.current = res.messages;
+        // Compaction rewrites the neutral ledger (shorter + re-summarized), so the
+        // seat's absolute high-water index and any open vendor session no longer line
+        // up with it. Force the next seat turn to re-handoff the compacted history
+        // fresh, rather than slicing a stale index into the rewritten array.
+        cliSessionRef.current = undefined;
+        inLoopSinceSeatRef.current = false;
         const archive = res.archive;
         if (archive) sessionRef.current.compactions.push({ ...archive, at: Date.now() });
         // The status bar's ctx% reads lastInput from the LAST call — after

@@ -56,13 +56,17 @@ function stripResidue(m: ModelMessage): ModelMessage {
   let changed = false;
   let content = msg.content;
   if (Array.isArray(content)) {
-    const hasText = (content as AnyPart[]).some((p) => p?.type === "text" && typeof p.text === "string" && p.text.trim());
+    // Fold only when the message is reasoning-ONLY: a turn whose conclusion is a
+    // tool-CALL (an action) or any other non-reasoning part already carries across
+    // providers, so re-injecting its raw thinking as visible prose would over-fire
+    // on every ordinary extended-thinking-with-tools turn and leak chain-of-thought.
+    const onlyReasoning = (content as AnyPart[]).every((p) => p?.type === "reasoning");
     const parts: AnyPart[] = [];
     let reasoningDigest = "";
     for (const p of content as AnyPart[]) {
       if (msg.role === "assistant" && p?.type === "reasoning") {
         changed = true;
-        if (!hasText && !reasoningDigest) {
+        if (onlyReasoning && !reasoningDigest) {
           const raw = typeof (p as any).text === "string" ? (p as any).text : typeof (p as any).reasoning === "string" ? (p as any).reasoning : "";
           if (raw.trim().length >= FOLD_REASONING_MIN) reasoningDigest = firstSentences(raw, 2);
         }
