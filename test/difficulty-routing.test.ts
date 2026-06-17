@@ -69,3 +69,12 @@ test("a hard-WORDED code task climbs to a strong model EVEN WITH a test net — 
   expect(tier(easy)).toBe(1); // easy + a net → cheapest capable (haiku)
   expect(tier(hard)).toBeGreaterThanOrEqual(2); // hard climbs to sonnet+ despite the test net
 });
+
+test("an LLM judge's difficultyBand drives the pick even when the prompt has no lexical cue", () => {
+  only("ANTHROPIC_API_KEY");
+  // "update the handler" has no hard/easy words → lexical null. The cheap-LLM
+  // judge's verdict (task.difficultyBand) is what the router then acts on.
+  const base = { prompt: "update the handler", kind: "code" as const, verifierTier: "tests" as const, estTokens: 16_000, touchedFiles: ["a.ts"] };
+  expect(tier(pick(base))).toBe(1);                                  // no signal → cheap
+  expect(tier(pick({ ...base, difficultyBand: "hard" }))).toBeGreaterThanOrEqual(2); // judge says hard → climb
+});

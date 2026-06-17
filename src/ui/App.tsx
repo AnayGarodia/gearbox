@@ -2617,6 +2617,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // model: auto routes per task instead of being read as a model named "auto".
       const directiveId = (agentDef ? agentPinId(agentDef) : undefined) ?? (sel instanceof RoutingSelector ? modelDirectiveIn(prompt) : null);
       let routedSource = "plan mode"; // only plan pre-sets routedKind; otherwise the classifier below decides
+      let routedBand: "easy" | "medium" | "hard" | undefined; // the classifier's difficulty verdict (code/plan); feeds the router's P(wrong)
       if (!routedKind && sel instanceof RoutingSelector && !directiveId) {
         onEvent({ type: "phase", label: "routing", detail: "choosing a model", state: "running" });
         // routedKindRef still holds the PREVIOUS turn's verdict here (it is
@@ -2625,6 +2626,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const cls = await classifyTask(prompt, signal, { prevKind: routedKindRef.current?.kind });
         routedKind = cls.kind;
         routedSource = cls.source;
+        routedBand = cls.band;
       }
       routedKindRef.current = routedKind ? { kind: routedKind, source: routedSource } : null;
       // Honest working-set estimate: the previous turn's REAL input token count.
@@ -2647,7 +2649,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires: routeRequires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires: routeRequires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, difficultyBand: routedBand, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
       } catch {
         choice = sel.select({ prompt, kind: routedKind, requires: routeRequires, estTokens }); // directive model unavailable → fall back to routing
       }
@@ -2657,7 +2659,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // state. Cleared when not auto-routing (a pin/directive ran).
       if (sel instanceof RoutingSelector && !directiveId && sel.explain) {
         try {
-          const card = sel.explain({ prompt, kind: routedKind, requires: routeRequires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
+          const card = sel.explain({ prompt, kind: routedKind, requires: routeRequires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, difficultyBand: routedBand, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
           lastScorecardRef.current = routedKind ? { ...card, kindSource: routedSource } : card;
         } catch { lastScorecardRef.current = null; }
       } else {
