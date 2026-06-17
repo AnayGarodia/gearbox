@@ -311,6 +311,131 @@ export interface RetrievedFile {
   content: string; // "" for a pointer hit (the model read_files it on demand)
   tokens: number;
   pointer?: boolean; // medium-confidence hit: pushed as a path pointer, not content
+  sliced?: boolean; // content is the relevant symbol regions, not the whole file
+}
+
+// Files whose declarations we slice by indentation (no braces); everything else
+// in CODE is brace-delimited. Ruby (def…end) is conventionally indented, so the
+// indentation heuristic holds well enough; a miscount only over/under-includes
+// lines, never sends the wrong file (and the win-check below sends the whole
+// file when slicing wouldn't clearly help).
+const INDENT_LANG = /\.(py|rb)$/;
+
+// A declaration line + its symbol name, for brace and indentation languages.
+const DEF_LINE = /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function|class|interface|type|const|enum)\s+([A-Za-z_][A-Za-z0-9_]*)/;
+const PY_DEF_LINE = /^(\s*)(?:async\s+)?(?:def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/;
+
+const leadingWS = (l: string): number => l.length - l.trimStart().length;
+
+// Is this a top-of-file header line (import / comment / package decl) worth
+// keeping for context above the sliced regions? Best-effort across languages.
+function isHeaderLine(t: string): boolean {
+  return (
+    /^(import|from|export\s+\*|export\s+\{|require|use\s|using\s|package\s|#include|#import|@)/.test(t) ||
+    /^(\/\/|\/\*|\*|#|--)/.test(t) ||
+    /\brequire\(/.test(t)
+  );
+}
+
+// End line (inclusive) of the block opened at `start`, by braces or indentation.
+// Brace miscounts (braces in strings/comments) fail SAFE: depth never closing
+// runs the block to EOF, which the caller's win-check then rejects (slice ≈ whole
+// → send whole). Single-line decls (const/type with no brace soon) return `start`.
+function blockEnd(lines: string[], start: number, indent: boolean): number {
+  if (indent) {
+    const base = leadingWS(lines[start]!);
+    let end = start;
+    for (let i = start + 1; i < lines.length; i++) {
+      if (lines[i]!.trim() === "") continue; // blanks don't end a block
+      if (leadingWS(lines[i]!) > base) end = i;
+      else break;
+    }
+    return end;
+  }
+  let depth = 0;
+  let seen = false;
+  for (let i = start; i < lines.length; i++) {
+    for (const ch of lines[i]!) {
+      if (ch === "{") { depth++; seen = true; }
+      else if (ch === "}") depth--;
+    }
+    if (seen && depth <= 0) return i;
+    if (!seen && i - start > 3) return start; // no opening brace soon → single-line declaration
+  }
+  return lines.length - 1; // unbalanced → run to EOF (win-check will reject)
+}
+
+/**
+ * Extract just the relevant symbol regions of a large file: the whole enclosing
+ * block of each top-level declaration whose name matches a query term, plus the
+ * file's import/comment header, with the gaps marked as elided. Returns null
+ * (→ caller sends the whole file) when slicing wouldn't clearly pay: no matching
+ * declaration, too many regions (a broad query that wants the whole file), or the
+ * slice isn't materially smaller than the original.
+ *
+ * Pure. Never sends the WRONG file — at worst it sends more of the right one.
+ * Whole blocks only (never a mid-function cut), so the model rarely needs to
+ * re-read; when it does, the `=== file ===` header gives it the path.
+ */
+export function relevantSlice(
+  file: string,
+  content: string,
+  queryTerms: string[],
+  modelId?: string,
+): { text: string; tokens: number } | null {
+  if (!queryTerms.length) return null;
+  const lines = content.split("\n");
+  const indent = INDENT_LANG.test(file);
+  const re = indent ? PY_DEF_LINE : DEF_LINE;
+
+  // Anchor = a declaration whose name contains a query term (mirrors rankFiles'
+  // symbol boost: defs.some(d => d.includes(t))).
+  const regions: [number, number][] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = re.exec(lines[i]!);
+    if (!m) continue;
+    const name = (indent ? m[2] : m[1])!.toLowerCase();
+    if (!queryTerms.some((t) => name.includes(t))) continue;
+    regions.push([i, blockEnd(lines, i, indent)]);
+    if (regions.length > 8) return null; // broad match — the whole file is the answer
+  }
+  if (!regions.length) return null;
+
+  // Header block: leading imports/comments, capped.
+  let headerLast = -1;
+  for (let i = 0; i < Math.min(lines.length, 60); i++) {
+    const t = lines[i]!.trim();
+    if (t === "") continue;
+    if (isHeaderLine(t)) headerLast = i;
+    else break;
+  }
+  const ranges: [number, number][] = [...regions];
+  if (headerLast >= 0) ranges.push([0, Math.min(headerLast, 40)]);
+
+  // Sort + merge overlapping/adjacent ranges (gap ≤ 2 lines absorbed).
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: [number, number][] = [];
+  for (const [s, e] of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && s <= last[1] + 3) last[1] = Math.max(last[1], e);
+    else merged.push([s, e]);
+  }
+
+  const parts: string[] = [];
+  let prevEnd = -1;
+  for (const [s, e] of merged) {
+    if (prevEnd >= 0 && s > prevEnd + 1) parts.push(`  … (${s - prevEnd - 1} lines omitted) …`);
+    parts.push(lines.slice(s, e + 1).join("\n"));
+    prevEnd = e;
+  }
+  if (prevEnd < lines.length - 1) parts.push(`  … (${lines.length - 1 - prevEnd} lines omitted — use read_file for the full file) …`);
+  const text = parts.join("\n");
+
+  const tokens = countTokens(text, modelId);
+  // Only worth it if the slice is materially smaller; otherwise send the whole
+  // file (a marginal trim isn't worth any re-read risk).
+  if (tokens >= countTokens(content, modelId) * 0.6) return null;
+  return { text, tokens };
 }
 
 // Tiered push thresholds, in units of `coverage` (score / query idf mass).
@@ -327,6 +452,11 @@ const POINTER_COVERAGE = 2.6;
 // And a relative floor: a hit scoring under 30% of the top hit is tail noise
 // regardless of absolute coverage.
 const REL_FLOOR = 0.3;
+
+// Only attempt symbol-region slicing on full-tier files bigger than this — small
+// files are cheap to inject whole, and slicing them just adds re-read risk for a
+// few saved tokens. ~1500 tokens ≈ a 200-line module.
+const SLICE_MIN_TOKENS = 1500;
 
 /**
  * Return the top-k most relevant files for `query`, packed within `budget` tokens.
@@ -348,6 +478,7 @@ export function retrieveFiles(
   semantic?: Map<string, number> | null,
 ): RetrievedFile[] {
   const idx = index(cwd);
+  const qt = terms(query);
   const rankedAll = rankFiles(query, cwd, semantic);
   const topScore = rankedAll[0]?.score ?? 0;
   // Tier the candidates: floors first (relative + absolute), then slice to
@@ -364,18 +495,30 @@ export function retrieveFiles(
       out.push({ file: r.file, content: "", tokens: countTokens(r.file, modelId), pointer: true });
       continue;
     }
-    const content = idx.raw.get(r.file);
-    if (content == null) continue;
-    const tokens = countTokens(content, modelId);
+    const raw = idx.raw.get(r.file);
+    if (raw == null) continue;
+    // Large full-tier files: inject just the relevant symbol regions instead of
+    // the whole body — most of a big file is unrelated to the query and rides in
+    // the (uncached) per-turn tail at full price every turn. Conservative: only
+    // for files past SLICE_MIN_TOKENS, whole enclosing blocks only, and only when
+    // the slice is materially smaller (relevantSlice returns null otherwise → we
+    // send the whole file, so we never trade context for a re-read on a small win).
+    let content = raw;
+    let tokens = countTokens(raw, modelId);
+    let sliced = false;
+    if (tokens > SLICE_MIN_TOKENS) {
+      const slice = relevantSlice(r.file, raw, qt, modelId);
+      if (slice) { content = slice.text; tokens = slice.tokens; sliced = true; }
+    }
     // Skip files that would overflow the remaining budget, but keep trying
     // smaller files that might still fit. An unfit full-tier hit still rides
     // as a pointer — the model knows it matters even when it can't be inlined.
     if (used + tokens > budget) {
-      if (!out.some((o) => !o.pointer) && !topOversize) topOversize = { file: r.file, content };
+      if (!out.some((o) => !o.pointer) && !topOversize) topOversize = { file: r.file, content: raw };
       else out.push({ file: r.file, content: "", tokens: countTokens(r.file, modelId), pointer: true });
       continue;
     }
-    out.push({ file: r.file, content, tokens });
+    out.push({ file: r.file, content, tokens, sliced });
     used += tokens;
   }
   if (!out.some((o) => !o.pointer) && topOversize && budget > 200) {
