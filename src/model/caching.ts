@@ -40,6 +40,18 @@ function marker(kind: Exclude<CacheKind, null>): Record<string, Record<string, u
     : { bedrock: { cachePoint: { type: "default" } } };
 }
 
+// Merge a cache marker into one message's providerOptions without mutating it.
+// Deep-merges per provider so any pre-existing options are kept (the marker has
+// exactly one provider key, so a real conflict is impossible in practice).
+function applyMarker(m: ModelMessage, mark: Record<string, Record<string, unknown>>): ModelMessage {
+  const prev = ((m as { providerOptions?: Record<string, Record<string, unknown>> }).providerOptions ?? {});
+  const merged: Record<string, Record<string, unknown>> = { ...prev };
+  for (const [provider, opts] of Object.entries(mark)) {
+    merged[provider] = { ...(prev[provider] ?? {}), ...opts };
+  }
+  return { ...(m as object), providerOptions: merged } as ModelMessage;
+}
+
 /**
  * Return `{system, messages}` with cache breakpoints applied for the model's
  * provider. For explicit-breakpoint providers we move the system prompt into a
@@ -81,15 +93,33 @@ export function withPromptCaching(
     // Deep-merge into any existing providerOptions so pre-existing keys are kept
     // (the marker has exactly one provider key, so conflicts are impossible in practice).
     if (i === breakAt) {
-      const prev = ((m as { providerOptions?: Record<string, Record<string, unknown>> }).providerOptions ?? {});
-      const merged: Record<string, Record<string, unknown>> = { ...prev };
-      for (const [provider, opts] of Object.entries(mark)) {
-        merged[provider] = { ...(prev[provider] ?? {}), ...opts };
-      }
-      out.push({ ...(m as object), providerOptions: merged } as ModelMessage);
+      out.push(applyMarker(m, mark));
     } else {
       out.push(m);
     }
   }
   return { system: undefined, messages: out };
+}
+
+/**
+ * Slide the cache breakpoint onto the LAST message — for use per-step inside the
+ * multi-step tool loop (the AI SDK `prepareStep` hook). `withPromptCaching` marks
+ * the stable prefix once, before the turn starts. But within a turn the model's
+ * tool results (file reads, test output, search hits) accumulate AFTER that
+ * breakpoint, so each subsequent step re-sends the whole growing tail at full
+ * input price. Marking the last completed message each step writes that tail to
+ * cache once (≈25% premium) so every later step reads it (≈10%) — a net win on
+ * any turn of 3+ steps, which is most real coding turns.
+ *
+ * Keeps the static prefix breakpoints in place, so a request carries at most
+ * system + settled-history + last = 3 breakpoints, under Anthropic's max of 4.
+ * No-op (returns the same array) for auto-caching providers or empty input; pure.
+ */
+export function withStepCaching(spec: ModelSpec, messages: ModelMessage[]): ModelMessage[] {
+  const kind = cacheKind(spec);
+  if (!kind || messages.length === 0) return messages;
+  const out = messages.slice();
+  const last = out.length - 1;
+  out[last] = applyMarker(out[last]!, marker(kind));
+  return out;
 }
