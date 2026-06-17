@@ -111,7 +111,6 @@ import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 import { handleCommand as dispatchCommand, KEYS_HELP, clipForPrompt, splitSubject, type CommandCtx } from "./command-handler.ts";
 import { matchIntent } from "./intent.ts";
-import { easeScrollStep, scrollSettled } from "./scroll.ts";
 
 export type Runner = (opts: {
   prompt: string;
@@ -1155,56 +1154,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return () => setSpendListener(null);
   }, []);
 
-  // Smooth scrolling: a wheel notch (or a fast swipe's burst of events) sets a
-  // TARGET, and an easing loop glides scrollTop toward it a fraction of the
-  // remaining distance each frame · so big jumps decelerate instead of snapping,
-  // while a single line still moves immediately. The terminal grid is still
-  // line-quantized; this just makes the motion between rows continuous.
-  const scrollTargetRef = useRef<number | null>(null);
-  const scrollAnimRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const noMotion = process.env.GEARBOX_NO_MOTION === "1";
-  const stopScrollAnim = useCallback(() => {
-    if (scrollAnimRef.current) { clearInterval(scrollAnimRef.current); scrollAnimRef.current = null; }
-  }, []);
-  // SMOOTH scroll: a wheel notch / key sets a TARGET line; an easing loop glides
-  // scrollTop toward it, moving a fraction of the remaining distance each frame
-  // (line-quantized — see scroll.ts), so motion decelerates instead of snapping.
-  // This is cheap now: `lines` is memoized (scrollTop is NOT a dep) and LineRow
-  // is React.memo, so each glide frame only re-slices the viewport and re-renders
-  // the rows that actually changed — not the whole transcript (the reason the old
-  // glide was reverted). GEARBOX_NO_MOTION jumps directly with no animation.
-  const FRAME_MS = 16; // ~60fps
-  const tickGlide = useCallback(() => {
-    const target = scrollTargetRef.current;
-    if (target == null) { stopScrollAnim(); return; }
-    const cur = scrollTopRef.current;
-    const next = easeScrollStep(cur, target);
-    atBottomRef.current = next >= maxScrollRef.current;
-    if (next !== cur) setScrollTop(next);
-    if (scrollSettled(next, target)) { scrollTargetRef.current = null; stopScrollAnim(); }
-  }, [stopScrollAnim]);
+  // Scrolling: apply each wheel/key delta INSTANTLY in one render — no easing
+  // glide. A terminal grid can't render sub-line, so the only thing an easing
+  // loop adds is a multi-frame crawl per notch that reads as lag/mush; the crisp
+  // TUIs (opencode, crush — both Bubble Tea's slice-and-repaint viewport) just
+  // move the offset and re-render once per notch. The onData handler already SUMS
+  // a read's wheel events, so a single notch moves WHEEL_LINES line(s) (fine
+  // control) while a fast swipe's burst still jumps many lines at once.
   const scrollBy = useCallback((delta: number) => {
     if (anchorTopRef.current) setAnchorTop(false); // user took the wheel — drop the top anchor
     const max = maxScrollRef.current;
-    // Build on the pending target (so a burst of wheel notches accumulates into
-    // one glide) — or the current position when starting fresh.
-    const base = scrollTargetRef.current ?? (atBottomRef.current ? max : scrollTopRef.current);
+    const base = atBottomRef.current ? max : scrollTopRef.current;
     const target = Math.max(0, Math.min(max, base + delta));
-    if (noMotion) {
-      stopScrollAnim();
-      scrollTargetRef.current = null;
-      atBottomRef.current = target >= max;
-      setScrollTop(target);
-      return;
-    }
-    scrollTargetRef.current = target;
     atBottomRef.current = target >= max; // detach from the live tail on upward intent
-    if (!scrollAnimRef.current) scrollAnimRef.current = setInterval(tickGlide, FRAME_MS);
-  }, [noMotion, stopScrollAnim, tickGlide]);
-  // Wheel events update the target directly (cheap); the glide loop is the render
-  // throttle, so no separate event-rate throttle is needed.
+    setScrollTop(target);
+  }, []);
   const queueScroll = useCallback((delta: number) => scrollBy(delta), [scrollBy]);
-  useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear any glide timer on unmount
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
   useEffect(() => () => { if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current); }, []); // clear the paste coalescer timer on unmount
 
@@ -1354,11 +1319,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const x = Number(m[2]);
         const y = Number(m[3]);
         const up = m[4] === "m";
-        // 3 lines per wheel notch (was 1 — felt sluggish). Single notches settle
-        // instantly (the glide only kicks in for accumulated fast swipes), so
-        // scrolling reads crisp rather than crawling.
-        if (b === 64) delta -= 3;
-        else if (b === 65) delta += 3;
+        // 1 line per wheel notch, applied instantly (no glide). A read's events
+        // are summed below, so a single notch nudges one line (the finest control
+        // a cell grid allows) while a fast swipe's burst still jumps many at once.
+        if (b === 64) delta -= 1;
+        else if (b === 65) delta += 1;
         else {
           const isDrag = (b & 32) === 32;
           const isPrimary = (b & 3) === 0;
