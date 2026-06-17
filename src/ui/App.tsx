@@ -448,6 +448,10 @@ export interface AppProps {
   setupNote?: string;
 }
 
+// A single shared blank transcript line, reused for the chat-anchor bottom spacer
+// so repeated rows keep one reference (LineRow's memo skips re-rendering them).
+const EMPTY_LINE: Line = [];
+
 export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows, initialPrompt, ghostLook, setupNote }: AppProps) {
   const { exit } = useApp();
   // The instance's workspace, FIXED at mount: per-turn root capture, the
@@ -659,6 +663,16 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [perm, setPermState] = useState<PermRequest | null>(null);
   const [ask, setAskState] = useState<{ req: AskRequest; resolve: (a: AskAnswer[] | null) => void; picker: AskPickerState } | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  // Chat-style anchoring: when a turn starts, the new prompt snaps to the TOP of
+  // the viewport and the reply streams BELOW it (a min-height spacer fills the
+  // rest), instead of the prompt scrolling off the top as output grows. It stays
+  // anchored until the turn outgrows the screen (then we follow the tail) or the
+  // user scrolls. Fullscreen only — inline uses native terminal scroll.
+  const [anchorTop, setAnchorTopState] = useState(false);
+  const anchorTopRef = useRef(false);
+  const setAnchorTop = (v: boolean) => { anchorTopRef.current = v; setAnchorTopState(v); };
+  const [anchorId, setAnchorId] = useState<number | null>(null); // item id of the current turn's prompt
+  const [anchorOffset, setAnchorOffset] = useState<number | null>(null); // its first transcript line
   const [expandAll, setExpandAll] = useState(false); // ⌃O: show full diffs/tool output
   const [search, setSearchState] = useState<{ q: string; idx: number } | null>(null); // ⌃R reverse-i-search
   const [paletteIndex, setPaletteIndexState] = useState(0);
@@ -1169,6 +1183,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (scrollSettled(next, target)) { scrollTargetRef.current = null; stopScrollAnim(); }
   }, [stopScrollAnim]);
   const scrollBy = useCallback((delta: number) => {
+    if (anchorTopRef.current) setAnchorTop(false); // user took the wheel — drop the top anchor
     const max = maxScrollRef.current;
     // Build on the pending target (so a burst of wheel notches accumulates into
     // one glide) — or the current position when starting fresh.
@@ -2009,7 +2024,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     setItems((prev) => prev.map((it) => (it.id === id && it.kind === "phase" ? { ...it, state, label, detail } : it)));
   };
   const turnNoRef = useRef(0); // numbered sections: real prompts only (command echoes stay small)
-  const echo = (text: string, numbered = false) => push({ kind: "user", id: idRef.current++, text, turnNo: numbered ? ++turnNoRef.current : undefined, at: Date.now() });
+  const echo = (text: string, numbered = false) => {
+    const id = idRef.current++;
+    push({ kind: "user", id, text, turnNo: numbered ? ++turnNoRef.current : undefined, at: Date.now() });
+    return id;
+  };
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
 
   // Conductor → active session channel: a one-shot setup result (`.gearbox/setup`
@@ -2851,7 +2870,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Everything pushed from here on belongs to this turn; at settle we collapse
       // that slice (drop spinners, fold repeated checks) into a durable record.
       const turnStartId = idRef.current;
-      echo(displayPrompt, true);
+      const promptItemId = echo(displayPrompt, true);
       lastPromptRef.current = displayPrompt;
       // Pre-flight hard spend cap (/cap): refuse the turn before any model call if
       // a configured ceiling is reached. Guards auto-fix re-entry and runaway spend
@@ -2901,7 +2920,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (lingerRef.current) clearTimeout(lingerRef.current);
       setLinger(false);
       setMascotState("thinking");
-      atBottomRef.current = true; // follow the live output
+      // Anchor the new prompt to the top of the viewport (chat-style) in fullscreen;
+      // inline keeps following the live tail (native scroll, no anchoring there).
+      if (fullscreen) {
+        setAnchorId(promptItemId);
+        setAnchorTop(true);
+        atBottomRef.current = false;
+      } else {
+        atBottomRef.current = true; // follow the live output
+      }
       if (!sessionRef.current.title) sessionRef.current.title = prompt.slice(0, 80);
       curAsstRef.current = null;
       const ac = new AbortController();
@@ -4682,6 +4709,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     });
   }, [displayItems, lineWidth, marginCols, expandAll, recede]);
 
+  // When a turn anchors, measure the prompt's first transcript line = the line
+  // count of everything BEFORE it. That prefix is settled (only items AFTER the
+  // prompt stream), so this recomputes on anchor change / resize, not per flush.
+  useEffect(() => {
+    if (!anchorTop || anchorId == null) { setAnchorOffset(null); return; }
+    const idx = displayItems.findIndex((i) => i.id === anchorId);
+    if (idx < 0) { setAnchorOffset(null); return; }
+    setAnchorOffset(itemsToLines(displayItems.slice(0, idx), lineWidth, expandAll, true).length);
+  }, [anchorTop, anchorId, lineWidth, expandAll]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Footer height · over-estimated so the fullscreen frame never exceeds the
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
   // clips the status bar). HEADER is the title bar (marginTop + title + rule).
@@ -4778,9 +4815,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // pre-launch screen (and rendering is less flickery). cli.tsx also strips any
   // stray 3J as a belt-and-suspenders.
   const transcriptHeight = Math.max(1, rows - HEADER - footer - 1);
-  const maxScroll = Math.max(0, lines.length - transcriptHeight);
-  const effScroll = atBottomRef.current ? maxScroll : Math.min(scrollTop, maxScroll);
-  linesRef.current = lines;
+  // Chat anchoring: while the prompt is anchored and its turn still fits, pad the
+  // bottom with a spacer so the prompt can scroll to the very top (the reply fills
+  // downward into the spacer). Once the turn outgrows the viewport, drop the anchor
+  // and follow the tail (handled by the effect below).
+  const contentBelowAnchor = anchorTop && anchorOffset != null ? lines.length - anchorOffset : 0;
+  const anchorActive = anchorTop && anchorOffset != null && anchorOffset <= lines.length && contentBelowAnchor <= transcriptHeight;
+  const spacerLen = anchorActive ? Math.max(0, transcriptHeight - contentBelowAnchor) : 0;
+  const displayLines = spacerLen > 0 ? lines.concat(Array(spacerLen).fill(EMPTY_LINE)) : lines;
+  const maxScroll = Math.max(0, displayLines.length - transcriptHeight);
+  const effScroll = anchorActive
+    ? Math.min(anchorOffset!, maxScroll)
+    : atBottomRef.current ? maxScroll : Math.min(scrollTop, maxScroll);
+  linesRef.current = displayLines;
   scrollTopLiveRef.current = effScroll;
   transcriptHeightLiveRef.current = transcriptHeight;
   viewportHeightRef.current = transcriptHeight;
@@ -4840,9 +4887,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   }
 
   // Keep scrollTop pinned to the bottom as new lines stream in (unless scrolled up).
+  // When an anchored turn outgrows the viewport, release the top anchor and follow
+  // the streaming tail instead.
   useEffect(() => {
-    if (atBottomRef.current) setScrollTop(maxScroll);
-  }, [lines.length, maxScroll]);
+    if (anchorTopRef.current && anchorOffset != null && lines.length - anchorOffset > transcriptHeight) {
+      setAnchorTop(false);
+      atBottomRef.current = true;
+      setScrollTop(maxScroll);
+    } else if (atBottomRef.current) {
+      setScrollTop(maxScroll);
+    }
+  }, [lines.length, maxScroll, anchorOffset, transcriptHeight]);
 
   // Cold-open providers block: when there's no conversation yet and accounts are
   // configured, show their real status + honest balances (a pure, synchronous read;
@@ -5117,7 +5172,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           </Box>
         ) : (
           <Box paddingX={1} flexGrow={1}>
-            <Viewport lines={lines} scrollTop={effScroll} height={transcriptHeight} width={width - 2} selection={transcriptSelection} />
+            <Viewport lines={displayLines} scrollTop={effScroll} height={transcriptHeight} width={width - 2} selection={transcriptSelection} />
           </Box>
         )}
         {footerJsx}
