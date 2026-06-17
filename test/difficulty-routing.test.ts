@@ -7,6 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RoutingSelector } from "../src/model/router.ts";
+import { recordTurnOutcome, clearPriorsCache } from "../src/model/priors.ts";
 
 process.env.GEARBOX_HOME = mkdtempSync(join(tmpdir(), "gearbox-diff-"));
 const KEYS = ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "DEEPSEEK_API_KEY"];
@@ -30,6 +31,22 @@ test("a hard code task with no net routes to a strong model, never weaker than t
   const hard = pick({ prompt: "fix it", kind: "code", verifierTier: "none", estTokens: 16_000, touchedFiles: Array.from({ length: 20 }, (_, i) => `module-${i}.ts`) });
   expect(tier(hard)).toBeGreaterThanOrEqual(tier(easy));
   expect(tier(hard)).toBeGreaterThanOrEqual(2); // a hard, unnetted code task earns a strong model
+});
+
+test("a measured high repo fail-rate routes a COLD code task stronger (repoFailRate→difficulty)", () => {
+  only("ANTHROPIC_API_KEY");
+  // Identical small, unnetted task each time — only the flywheel signal changes.
+  const task = { prompt: "fix it", kind: "code" as const, verifierTier: "none" as const, estTokens: 16_000, touchedFiles: ["a.ts"] };
+  const baseline = pick(task);
+  // Seed ≥MIN_N failed outcomes ACROSS models (default repo slug) so the repo
+  // reads as hard for EVERYONE — none of these model ids is a routing candidate,
+  // so the per-model failRate path stays silent and only the repo-aggregate moves.
+  for (let i = 0; i < 8; i++) recordTurnOutcome({ kind: "code", modelId: `seed-${i % 2}`, outcome: "failed" });
+  clearPriorsCache();
+  const hard = pick(task);
+  expect(tier(hard)).toBeGreaterThanOrEqual(tier(baseline)); // never weaker
+  expect(tier(hard)).toBeGreaterThanOrEqual(2); // a repo that fails everyone earns a strong model
+  clearPriorsCache(); // don't leak the seeded priors into sibling tests
 });
 
 test("difficulty never touches a cheap kind — chat picks the cheapest regardless of heavy signals", () => {

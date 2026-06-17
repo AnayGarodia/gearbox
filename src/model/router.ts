@@ -29,7 +29,7 @@ import { missingRequirements, supportsRequirements } from "./capabilities.ts";
 import { buildRoutingContext, type AccountState, type RoutingContext } from "./routing-context.ts";
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
-import { priorFor, priorLine, failRateFor, effortPassRate } from "./priors.ts";
+import { priorFor, priorLine, failRateFor, repoFailRate, effortPassRate } from "./priors.ts";
 import { estimateDifficulty, type Difficulty, type DifficultySignals } from "./difficulty.ts";
 import { qualityForKind, qualityNote, benchmarkRow } from "./benchmarks.ts";
 import { modelInFamily } from "./family.ts";
@@ -770,7 +770,7 @@ function detectedVerifierTier(): "tests" | "types" | "none" | undefined {
 // and guarded so a missing/huge file list never throws or stalls routing.
 // (The test-net signal lives in prepare()'s verifier-tier caution, not here, so
 // the no-net penalty has exactly one owner.)
-function gatherDifficultySignals(task: Task, _kind: Kind): DifficultySignals {
+function gatherDifficultySignals(task: Task, kind: Kind): DifficultySignals {
   // The files in play, supplied by the caller (App threads the @mentioned files +
   // the session's recently-changed files — see App.tsx). The router stays PURE
   // and deterministic: no repo I/O on the routing hot path, so a pick never
@@ -784,14 +784,21 @@ function gatherDifficultySignals(task: Task, _kind: Kind): DifficultySignals {
     }
     if (counted) touchedBytes = sum;
   }
-  // NOTE: repoFailRate is deliberately NOT a difficulty signal — the per-(kind,
-  // model) measured fail rate already enters the objective via failRate→P(wrong),
-  // and folding the repo-aggregate in here too double-counted the same evidence
-  // (review #4). Difficulty = how hard the TASK is; failRate = how the MODEL does.
+  // Repo-aggregate measured fail rate as a difficulty signal. This COMPLEMENTS the
+  // per-(kind,model) failRate→P(wrong) path rather than double-counting it: that
+  // path is silent for any model with no measured history here (failRateFor returns
+  // null below MIN_N), so a cold model on a repo that's hard for everyone would
+  // otherwise route blind. repoFailRate (model-AGNOSTIC: "this repo is hard") fills
+  // exactly that gap — and difficulty amplifies cost-of-wrong by (1−quality), so it
+  // nudges toward stronger models precisely where misses are likeliest. For a model
+  // that already has its own failRate the overlap is bounded (W_REPO caps the
+  // contribution) and conservative (errs toward fewer wasted failed turns). Reads
+  // the same in-memory priors cache priorFor/failRateFor already use on this path.
   return {
     estTokens: task.estTokens,
     touchedFileCount: files.length || undefined,
     touchedBytes,
+    repoFailRate: repoFailRate(kind)?.rate,
   };
 }
 

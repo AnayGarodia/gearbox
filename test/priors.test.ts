@@ -3,7 +3,7 @@ import { test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recordTurnOutcome, priorFor, priorLine, failRateFor, clearPriorsCache } from "../src/model/priors.ts";
+import { recordTurnOutcome, priorFor, priorLine, failRateFor, repoFailRate, clearPriorsCache } from "../src/model/priors.ts";
 import { RoutingSelector } from "../src/model/router.ts";
 import { clearCooldowns } from "../src/model/cooldown.ts";
 
@@ -29,6 +29,22 @@ test("a prior stays silent below 8 verified outcomes (opinion is not evidence)",
   expect(priorFor("code", "m", "r")).toBeNull();
   recordTurnOutcome({ kind: "code", modelId: "m", outcome: "failed", repo: "r" });
   expect(priorFor("code", "m", "r")).not.toBeNull();
+});
+
+test("repoFailRate aggregates ACROSS models (model-agnostic repo hardness), gated at MIN_N", () => {
+  // Omit `repo` so outcomes land under the default repoSlug() — the same slug
+  // repoFailRate(kind) reads (it keys on repoSlug(cwd), not a passed-in slug).
+  for (let i = 0; i < 4; i++) recordTurnOutcome({ kind: "code", modelId: "m1", outcome: "failed" });
+  for (let i = 0; i < 3; i++) recordTurnOutcome({ kind: "code", modelId: "m2", outcome: "failed" });
+  // Per-MODEL fail rate is silent for each (each below MIN_N=8)...
+  expect(failRateFor("code", "m1")).toBeNull();
+  // ...and only 7 outcomes total, so the repo aggregate is still silent too.
+  expect(repoFailRate("code")).toBeNull();
+  recordTurnOutcome({ kind: "code", modelId: "m2", outcome: "failed" }); // 8th across models
+  const agg = repoFailRate("code")!;
+  expect(agg).not.toBeNull();
+  expect(agg.n).toBe(8);
+  expect(agg.rate).toBe(1); // all failed → maximally hard
 });
 
 test("per-agent dimension: an agent's own ≥MIN_N evidence overrides the kind-level prior", () => {
