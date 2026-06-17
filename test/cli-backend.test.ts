@@ -314,7 +314,7 @@ test("codex args include the worktree's git dir as a writable sandbox root", () 
 });
 
 // ── seat switch: the conversation must survive a fresh vendor session ────────
-import { handoffDigest } from "../src/agent/cli-backend.ts";
+import { handoffDigest, buildHandoff } from "../src/agent/cli-backend.ts";
 
 test("handoffDigest carries the conversation text, newest-first under the budget", () => {
   const messages = [
@@ -337,4 +337,45 @@ test("handoffDigest carries the conversation text, newest-first under the budget
   expect(small).toMatch(/\d+ earlier messages elided/);
   // empty ledger → no digest block at all
   expect(handoffDigest([] as any)).toBe("");
+});
+
+test("buildHandoff slices from fromIndex — the 'turns since you last ran' gap digest", () => {
+  const messages = [
+    { role: "user", content: "turn 1 — design the parser" },
+    { role: "assistant", content: "did turn 1" },
+    { role: "user", content: "turn 2 — add caching" },
+    { role: "assistant", content: "did turn 2" },
+    { role: "user", content: "turn 3 — fix the leak" },
+    { role: "assistant", content: "did turn 3" },
+  ] as any;
+  // A seat that last ran before turn 2 resumes: only turns 2+ are the gap.
+  const gap = buildHandoff(messages, { fromIndex: 2, label: "turns-since-you-last-ran" });
+  expect(gap).toContain("<turns-since-you-last-ran>");
+  expect(gap).toContain("turn 2 — add caching");
+  expect(gap).toContain("turn 3 — fix the leak");
+  expect(gap).not.toContain("turn 1 — design the parser"); // before the seat's high-water → excluded
+  expect(gap).toContain("ran on a DIFFERENT model"); // the catch-up framing, not "conversation above"
+});
+
+test("buildHandoff action trail carries WHAT was done (tool names+args), never result bodies", () => {
+  const messages = [
+    { role: "user", content: "fix the auth bug" },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Fixing the unit comparison." },
+        { type: "tool-call", toolCallId: "e1", toolName: "edit_file", input: { path: "src/auth.ts" } },
+        { type: "tool-call", toolCallId: "s1", toolName: "run_shell", input: { command: "bun test" } },
+      ],
+    },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "s1", output: "SECRET RESULT BODY" }] },
+  ] as any;
+  const d = buildHandoff(messages);
+  expect(d).toContain("Fixing the unit comparison."); // prose kept
+  expect(d).toContain("[did: edited src/auth.ts · ran bun test]"); // action trail (verbs + args)
+  expect(d).not.toContain("SECRET RESULT BODY"); // result bodies never leak into the handoff
+  // includeActions:false drops the trail (text only)
+  const noActions = buildHandoff(messages, { includeActions: false });
+  expect(noActions).not.toContain("[did:");
+  expect(noActions).toContain("Fixing the unit comparison.");
 });

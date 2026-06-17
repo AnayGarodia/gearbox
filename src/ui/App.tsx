@@ -54,7 +54,7 @@ import { discoverModels } from "../accounts/discover.ts";
 import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDeployment, type AzureDeploymentInfo } from "../accounts/manage.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
-import { runCliTask, handoffDigest, subscriptionEnv, cliScratchDir } from "../agent/cli-backend.ts";
+import { runCliTask, buildHandoff, subscriptionEnv, cliScratchDir } from "../agent/cli-backend.ts";
 import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
 import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend, readAuxSpendToday } from "../accounts/ledger.ts";
 import * as gitOps from "../git/ops.ts";
@@ -869,7 +869,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const activeCliModelRef = useRef<string | undefined>(undefined);
   // Scoped to the ACCOUNT that minted it: handing claude a stale codex thread
   // id (or vice versa) after a seat switch broke resume entirely.
-  const cliSessionRef = useRef<{ account: string; id: string } | undefined>(undefined);
+  // `seenUpTo` = the neutral-history length the vendor session was last handed, so
+  // a later resume can digest just the turns that ran on OTHER models in between.
+  const cliSessionRef = useRef<{ account: string; id: string; seenUpTo: number } | undefined>(undefined);
+  // True once an in-loop (non-seat) turn ran since this seat last did — gates the
+  // "turns since you last ran" gap digest so consecutive seat turns don't recap.
+  const inLoopSinceSeatRef = useRef(false);
   const activeImagesRef = useRef<ImageAttachment[]>([]);
   const imageChipPathsRef = useRef<Map<string, string>>(new Map());
   const accountStatusCacheRef = useRef<Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>>({});
@@ -2212,7 +2217,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // waste tool calls discovering structure. The CLI backend bypasses gearbox's
       // context engine entirely, so this is the only upfront structural context.
       let cliPrompt = prompt;
-      const resumeId = cliSessionRef.current?.account === accountId ? cliSessionRef.current.id : undefined;
+      const seatSession = cliSessionRef.current?.account === accountId ? cliSessionRef.current : undefined;
+      const resumeId = seatSession?.id;
+      const seatStartLen = messages.length; // history the seat is handed THIS turn
       if (!resumeId) {
         try {
           const cwd = rootRef.current; // THIS tab's tree, not whichever tab owns process.cwd()
@@ -2225,14 +2232,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
             (map ? `<signatures>\n${map}\n</signatures>\n` : "") +
             `</project-context>\n\n` +
             prompt;
-          // A seat switch mid-conversation: the new vendor session has no
-          // memory — carry the conversation across as plain text (the ledger's
-          // tool exchanges don't translate between binaries; the text does).
-          const digest = messages.length ? handoffDigest(messages) : "";
+          // A FRESH seat (first use, or a switch from another model/account): the
+          // new vendor session has no memory — carry the whole conversation across
+          // as plain text (tool exchanges don't translate between binaries; the
+          // text + an action trail do).
+          const digest = messages.length ? buildHandoff(messages, { label: "conversation-so-far" }) : "";
           if (digest) cliPrompt = `${digest}\n\n${cliPrompt}`;
         } catch {
           // non-critical · proceed with plain prompt
         }
+      } else if (inLoopSinceSeatRef.current && seatSession && seatStartLen > seatSession.seenUpTo) {
+        // RESUMING this seat, but OTHER models ran turns since it last worked: the
+        // vendor session never saw them. Inject just the gap so the resumed seat
+        // catches up instead of answering blind to what changed (the core
+        // multi-model context-loss this product exists to handle).
+        try {
+          const gap = buildHandoff(messages, { fromIndex: seatSession.seenUpTo, label: "turns-since-you-last-ran" });
+          if (gap) cliPrompt = `${gap}\n\n${prompt}`;
+        } catch { /* non-critical · proceed with plain prompt */ }
       }
       // Images (xiv): the vendor CLI can't take inline image content, but it CAN
       // read files, so hand it the absolute paths and ask it to open them — far
@@ -2247,6 +2264,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const r = await runCliTask({
         binary,
         prompt: cliPrompt,
+        recordPrompt: prompt, // record the BARE prompt in the ledger, not the decorated one
         messages,
         onEvent,
         signal,
@@ -2261,7 +2279,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         reloginCommand,
         deferTerminal: args.deferTerminal,
       });
-      cliSessionRef.current = r.sessionId ? { account: accountId, id: r.sessionId } : cliSessionRef.current;
+      // Mark how far this seat session has now seen (the history it was handed),
+      // so the NEXT resume only digests turns other models ran in between. A seat
+      // turn clears the "in-loop happened" flag (the seat is now current).
+      const sid = r.sessionId ?? seatSession?.id;
+      // High-water mark: never move seenUpTo backward (a messages:[] follow-up
+      // call must not reset it and falsely flag the whole history as a "gap" next
+      // turn). /clear resets it by clearing cliSessionRef entirely.
+      const seen = Math.max(seatStartLen, seatSession?.seenUpTo ?? 0);
+      cliSessionRef.current = sid ? { account: accountId, id: sid, seenUpTo: seen } : cliSessionRef.current;
+      inLoopSinceSeatRef.current = false;
       cliMetaRef.current = { costUSD: r.costUSD, rates: r.rates };
       // Surface the model the subscription CLI actually used (claude reports it in
       // its stream) when the user hasn't pinned one, so the status bar shows e.g.
@@ -2506,6 +2533,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         retrievalUseRef.current = retrievalUseMeta(retrievedFiles, produced, rootRef.current) ?? null;
         const imageNote = activeImagesRef.current.length ? `\n\n[Attached images: ${activeImagesRef.current.map((img) => basename(img.path)).join(", ")}]` : "";
         const ledger = sanitizeToolPairs([...messages, { role: "user", content: prompt + imageNote }, ...produced]);
+        // This turn ran in-loop, not on the seat — so a later resume of the seat
+        // must catch it up (the seat's vendor session never saw this turn).
+        inLoopSinceSeatRef.current = true;
         return { messages: ledger, usage: r.usage, failure: r.failure, cooldownKey: account?.id ?? `env:${choice.model.provider}` };
       };
 

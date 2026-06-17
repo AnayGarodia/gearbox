@@ -319,22 +319,57 @@ export function worktreeGitRoots(cwd: string): string[] {
   }
 }
 
-/** Render the conversation ledger as a compact plain-text transcript for a
- *  FRESH vendor-CLI session (a seat switch: codex hit its limit → claude takes
- *  over). The vendor binary keeps its own history per session, so without this
- *  the new seat starts with ZERO context — the ledger gearbox carried across
- *  the whole conversation never reached it. Tool exchanges don't translate
- *  across binaries; text does. Newest turns win the budget (taken from the
- *  end), each message clipped so one giant paste can't evict the rest. */
-export function handoffDigest(messages: ModelMessage[], maxChars = 12_000): string {
+// Verb-ify a tool name for the action trail ("what was done"), so a handed-off
+// seat learns the ACTIONS the other model took, not just its prose.
+const HANDOFF_VERB: Record<string, string> = {
+  read_file: "read", write_file: "wrote", edit_file: "edited", file_change: "edited",
+  run_shell: "ran", command_execution: "ran", bash: "ran",
+  search: "searched", glob: "globbed", list_dir: "listed", fetch_url: "fetched", web_search: "web-searched",
+};
+
+/** Compact "[did: edited src/x.ts · ran bun test]" trail from an assistant
+ *  message's tool-CALL parts. Names + args only — never tool RESULT bodies (those
+ *  don't translate across binaries, and dumping them would defeat the budget). */
+function handoffActions(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  const acts: string[] = [];
+  for (const p of content as any[]) {
+    if (p?.type !== "tool-call") continue;
+    if (acts.length >= 8) { acts.push("…"); break; }
+    const input = p.input ?? p.args ?? {};
+    const arg = [input.path, input.file, input.command, input.query, input.pattern].find((x: any) => typeof x === "string" && x);
+    const verb = HANDOFF_VERB[String(p.toolName ?? "").toLowerCase()] ?? String(p.toolName ?? "ran");
+    acts.push(arg ? `${verb} ${String(arg).slice(0, 60)}` : verb);
+  }
+  return acts.length ? ` [did: ${acts.join(" · ")}]` : "";
+}
+
+/** Materialize a bounded, provider-neutral plain-text summary of ledger entries
+ *  `[fromIndex..]` for a backend that CAN'T replay the raw history — the one
+ *  "context handoff" seam, reused by every routing boundary:
+ *   - a FRESH vendor-CLI seat (fromIndex 0): the whole conversation;
+ *   - a RESUMED seat that other models ran turns for while it was away
+ *     (fromIndex = where the seat last left off): just the gap, so it isn't blind
+ *     to what changed.
+ *  Tool exchanges don't translate across binaries — text does — but the ACTION
+ *  TRAIL (includeActions) carries WHAT was done (files edited, commands run) as
+ *  plain text. Newest turns win the budget; each message is clipped so one giant
+ *  paste can't evict the rest. */
+export function buildHandoff(
+  messages: ModelMessage[],
+  opts: { fromIndex?: number; maxChars?: number; includeActions?: boolean; label?: string } = {},
+): string {
+  const { fromIndex = 0, maxChars = 12_000, includeActions = true, label = "conversation-so-far" } = opts;
+  const slice = fromIndex > 0 ? messages.slice(fromIndex) : messages;
   const parts: string[] = [];
-  for (const m of messages) {
+  for (const m of slice) {
     if (m.role !== "user" && m.role !== "assistant") continue;
     const c = (m as any).content;
     const text = typeof c === "string"
       ? c
       : Array.isArray(c) ? c.map((p: any) => (typeof p === "string" ? p : p?.type === "text" ? p.text ?? "" : "")).join(" ") : "";
-    const t = text.trim();
+    const actions = m.role === "assistant" && includeActions ? handoffActions(c) : "";
+    const t = (text.trim() + actions).trim();
     if (!t) continue;
     const clipped = t.length > 1_200 ? t.slice(0, 1_200) + " …[clipped]" : t;
     parts.push(`${m.role === "user" ? "User" : "Assistant"}: ${clipped}`);
@@ -349,13 +384,22 @@ export function handoffDigest(messages: ModelMessage[], maxChars = 12_000): stri
     used += cost;
   }
   const dropped = parts.length - kept.length;
+  const intro = label === "conversation-so-far"
+    ? `The conversation above happened in THIS session on a different model/account — continue it; do not start over or re-ask answered questions.`
+    : `The turns above ran on a DIFFERENT model since you last worked in this session — catch up on them; do not redo that work or re-ask answered questions.`;
   return (
-    `<conversation-so-far>\n` +
+    `<${label}>\n` +
     (dropped ? `[${dropped} earlier message${dropped === 1 ? "" : "s"} elided]\n` : "") +
     kept.join("\n") +
-    `\n</conversation-so-far>\n` +
-    `The conversation above happened in THIS session on a different model/account — continue it; do not start over or re-ask answered questions.`
+    `\n</${label}>\n` +
+    intro
   );
+}
+
+/** Back-compat thin wrapper (the fresh-seat full handoff). New callers use
+ *  buildHandoff directly so they can pass a fromIndex / label. */
+export function handoffDigest(messages: ModelMessage[], maxChars = 12_000): string {
+  return buildHandoff(messages, { maxChars, label: "conversation-so-far", includeActions: true });
 }
 
 export function buildCliArgs(binary: string, prompt: string, opts: { sessionId?: string; autoApprove?: boolean; readOnly?: boolean; modelId?: string; effort?: string; writableRoots?: string[]; addDirs?: string[]; repoRoot?: string; bridge?: boolean } = {}): string[] {
@@ -513,6 +557,11 @@ export async function runCliTask(opts: {
   accountLabel?: string;
   reloginCommand?: string;
   deferTerminal?: boolean; // suppress terminal error/done + return `failure` instead (caller drives failover)
+  // The BARE user prompt to record in the neutral ledger, when `prompt` is a
+  // DECORATED one (project-context + handoff digest + scratch blob). Recording the
+  // decorated prompt pollutes the history and double-embeds the conversation on the
+  // next turn; recording this keeps CLI history symmetric with the in-loop path.
+  recordPrompt?: string;
 }): Promise<CliResult> {
   const { binary, prompt, messages, onEvent, signal } = opts;
   // Codex's workspace-write sandbox blocks writes to a worktree's real git dir;
@@ -669,8 +718,10 @@ export async function runCliTask(opts: {
     }
   }
 
-  // Plain-text ledger entry (tool history isn't portable across binaries).
-  const next: ModelMessage[] = [...messages, { role: "user", content: prompt }];
+  // Plain-text ledger entry (tool history isn't portable across binaries). Record
+  // the BARE prompt, not the decorated one we sent the binary — else the next turn
+  // sees the project-context + handoff digest re-embedded inside the user message.
+  const next: ModelMessage[] = [...messages, { role: "user", content: opts.recordPrompt ?? prompt }];
   if (state.text) next.push({ role: "assistant", content: state.text });
   if (!opts.deferTerminal) onEvent({ type: "done", usage: state.usage });
   return { messages: next, usage: state.usage, sessionId: state.sessionId, costUSD: state.costUSD, model: state.model, rates: [...state.rates.values()], failure: failureMessage ? { message: failureMessage } : undefined };

@@ -147,7 +147,7 @@ export interface CommandCtx {
   busyRef: MutableRefObject<boolean>;
   capsRef: MutableRefObject<BudgetCaps>;
   charTestOfferedRef: MutableRefObject<boolean>;
-  cliSessionRef: MutableRefObject<{ account: string; id: string } | undefined>;
+  cliSessionRef: MutableRefObject<{ account: string; id: string; seenUpTo: number } | undefined>;
   curAsstRef: MutableRefObject<number | null>;
   effortRef: MutableRefObject<Effort>;
   ghostSkinRef: MutableRefObject<GhostLook>;
