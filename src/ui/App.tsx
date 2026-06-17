@@ -875,7 +875,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // True once an in-loop (non-seat) turn ran since this seat last did — gates the
   // "turns since you last ran" gap digest so consecutive seat turns don't recap.
   const inLoopSinceSeatRef = useRef(false);
+  // The previous turn's model context window, so a routing DOWNGRADE to a smaller
+  // window can announce the history it had to drop (vs a merely-long conversation).
+  const lastWindowRef = useRef<number | null>(null);
   const activeImagesRef = useRef<ImageAttachment[]>([]);
+  // P6: the most recent attachments, carried for a couple of follow-up turns so a
+  // turn that switches to a vision-capable model still SEES the pixels (the saved
+  // history keeps only the filename text). ttl bounds it; a new attachment resets it.
+  const carriedImagesRef = useRef<{ imgs: ImageAttachment[]; ttl: number }>({ imgs: [], ttl: 0 });
   const imageChipPathsRef = useRef<Map<string, string>>(new Map());
   const accountStatusCacheRef = useRef<Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>>({});
   // Which account ran the last turn + its provider-reported cost/limit (for the
@@ -2441,11 +2448,24 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         const displayName = backendIdentity(choice.model, choice.backend?.kind === "in-loop" ? choice.backend.account : null);
         onEvent({ type: "phase", label: "building context", detail: displayName, state: "running" });
-        const userContent = imageContent(prompt, activeImagesRef.current);
+        // P6 — carry attachments across a model switch: a new attachment refreshes
+        // the carry; an image-less follow-up RE-ATTACHES the carried images, but
+        // ONLY when the routed model can take images (same check routing uses), so
+        // this never 400s a text model and never forces vision routing/cost.
+        let turnImages = activeImagesRef.current;
+        if (!messages.length) carriedImagesRef.current = { imgs: [], ttl: 0 }; // fresh/cleared conversation — drop any carry
+        if (turnImages.length) {
+          carriedImagesRef.current = { imgs: turnImages, ttl: 2 };
+        } else if (carriedImagesRef.current.ttl > 0) {
+          const c = carriedImagesRef.current;
+          if (c.imgs.length && missingRequirements(choice.model, ["images"]).length === 0) turnImages = c.imgs;
+          carriedImagesRef.current = { imgs: c.imgs, ttl: c.ttl - 1 };
+        }
+        const userContent = imageContent(prompt, turnImages);
         // Semantic retrieval: one bounded query-embedding call (memoized across
         // hops of the same turn); null on timeout/no-index/no-provider → BM25.
         const semantic = await semanticScores(prompt, rootRef.current, { prefs: loadPrefs() }).catch(() => null);
-        let { system, messages: ctx, cacheBreak, sections, retrievedFiles, overflow } = buildContext({
+        let { system, messages: ctx, cacheBreak, sections, retrievedFiles, overflow, droppedTurns } = buildContext({
           history: messages,
           userText: prompt,
           userContent,
@@ -2456,6 +2476,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           compactions: sessionRef.current.compactions,
           semantic,
         });
+        // Honesty notice on a window DOWNGRADE: routing to a smaller-context model
+        // drops older turns the previous (larger) model would have kept. Silent
+        // history loss reads as the model "forgetting" — say it out loud, and only
+        // when the switch is the cause (this window < the last turn's).
+        const win = choice.model.contextWindow;
+        if (droppedTurns > 0 && lastWindowRef.current != null && win < lastWindowRef.current) {
+          notice(`↳ context trimmed for ${choice.model.label} (smaller window): ${droppedTurns} earlier turn${droppedTurns === 1 ? "" : "s"} dropped to fit`);
+        }
+        lastWindowRef.current = win;
         // Remember this turn's non-history context overhead (system + memory +
         // repomap + retrieval + git) so the auto-compact trigger can budget on
         // the FULL context, not history alone.

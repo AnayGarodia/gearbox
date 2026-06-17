@@ -188,6 +188,9 @@ export interface BuiltContext {
   // can't fit (a giant paste). The caller should refuse the turn with a clear
   // message instead of sending a request the provider will reject.
   overflow?: { tokens: number; budget: number };
+  // Count of whole prior turns dropped to fit the model's window (after caps +
+  // elision). The caller uses it to flag a routing window-DOWNGRADE.
+  droppedTurns: number;
 }
 
 // ── token helpers ──────────────────────────────────────────────────────────────
@@ -780,6 +783,11 @@ export function buildContext(opts: {
     retrievedArchives: archiveHits.map((h) => ({ archiveId: h.archiveId, title: h.title })),
     cacheBreak,
     overflow: sendTokens > inputBudget ? { tokens: sendTokens, budget: inputBudget } : undefined,
+    // Whole prior turns dropped to fit THIS model's window (elision/caps tried
+    // first). The caller compares the model's window to the previous turn's to
+    // tell a routing DOWNGRADE ("smaller window dropped N turns") apart from a
+    // conversation that's simply long.
+    droppedTurns: turns.length - projected.length,
   };
 }
 

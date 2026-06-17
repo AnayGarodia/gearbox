@@ -99,10 +99,33 @@ test("reasoning parts and providerOptions/providerMetadata residue are stripped"
   expect(m.content).toEqual([{ type: "text", text: "the answer" }]);
 });
 
-test("an assistant reduced to ONLY reasoning is dropped entirely", () => {
+test("an assistant reduced to ONLY trivial reasoning is dropped entirely", () => {
   const msgs: ModelMessage[] = [user("q"), { role: "assistant", content: [{ type: "reasoning", text: "hmm" }] } as any, user("q2")];
   const out = sanitizeForProvider(msgs);
   expect(out).toEqual([{ role: "user", content: "q\n\nq2" }]);
+});
+
+test("SUBSTANTIAL reasoning-only is folded to a plain-text digest (cross-provider rescue)", () => {
+  // A turn whose plan lived ONLY in thinking would otherwise be dropped, losing
+  // the chain on a model switch. A substantial chain folds to plain text every
+  // provider accepts — but the raw thinking (which 400s elsewhere) is gone.
+  const chain = "First I'll compare token expiry in seconds vs milliseconds. The store uses ms but the check uses seconds, so the comparison is always false. The fix is to multiply the ttl by 1000 before adding.";
+  const msgs: ModelMessage[] = [user("fix the bug"), { role: "assistant", content: [{ type: "reasoning", text: chain }] } as any];
+  const out = sanitizeForProvider(msgs) as any[];
+  expect(out).toHaveLength(2);
+  const folded = out[1];
+  expect(folded.role).toBe("assistant");
+  expect(folded.content[0].type).toBe("text");
+  expect(folded.content[0].text).toContain("[prior reasoning]");
+  expect(folded.content[0].text).toContain("compare token expiry"); // the chain's gist survives
+  expect(JSON.stringify(folded)).not.toContain('"reasoning"'); // raw thinking is gone
+});
+
+test("substantial reasoning ALONGSIDE a text conclusion is just dropped (text carries it)", () => {
+  const chain = "A long chain of thought that goes on for well over the fold threshold so we know length is not the reason it is dropped here at all, plenty of words.";
+  const msgs: ModelMessage[] = [{ role: "assistant", content: [{ type: "reasoning", text: chain }, { type: "text", text: "the answer" }] } as any];
+  const out = sanitizeForProvider(msgs) as any[];
+  expect(out[0].content).toEqual([{ type: "text", text: "the answer" }]); // no [prior reasoning] fold
 });
 
 test("healthy history passes through with object identity preserved", () => {

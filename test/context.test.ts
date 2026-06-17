@@ -239,10 +239,16 @@ test("buildContext trims oldest whole turns when over budget", () => {
     history.push({ role: "user", content: `${big} turn ${i}` });
     history.push({ role: "assistant", content: `reply ${i}` });
   }
-  const { messages } = buildContext({ history, userText: "final", model: tiny, recentTurns: 99 });
+  const { messages, droppedTurns } = buildContext({ history, userText: "final", model: tiny, recentTurns: 99 });
   // Not everything fit → some turns dropped, but the current user message survives.
   expect(messages.length).toBeLessThan(history.length + 1);
   expect(userMsgText(messages[messages.length - 1]!)).toContain("final");
+  // droppedTurns reports the count (P4) so a window-downgrade can be announced.
+  expect(droppedTurns).toBeGreaterThan(0);
+  // The SAME history on a large-window model drops nothing — so the notice only
+  // ever fires on a genuine downgrade, not a merely-long conversation.
+  const roomy: ModelSpec = { ...sonnet, contextWindow: 400_000 };
+  expect(buildContext({ history, userText: "final", model: roomy, recentTurns: 99 }).droppedTurns).toBe(0);
 });
 
 // ── project memory: append/load round-trip (isolated GEARBOX_HOME) ──

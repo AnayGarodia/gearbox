@@ -35,17 +35,39 @@ type AnyMessage = { role?: string; content?: unknown; providerOptions?: unknown;
 const isEmptyContent = (content: unknown): boolean =>
   content == null || content === "" || (Array.isArray(content) && content.length === 0);
 
+// A SUBSTANTIAL reasoning part (a real chain of thought, not a "hmm") gets a
+// short plain-text digest folded in when it would otherwise be the message's only
+// content — below this, it's just dropped (keeps trivial thinking out of history).
+const FOLD_REASONING_MIN = 80;
+const firstSentences = (s: string, n: number): string =>
+  s.trim().replace(/\s+/g, " ").split(/(?<=[.!?])\s+/).slice(0, n).join(" ").slice(0, 300);
+
 // Strip residue from one message: reasoning parts (assistant only) and
 // providerOptions/providerMetadata at the message and part level. Returns the
 // SAME object when nothing changed so identity (and index mapping) is stable.
+//
+// Cross-provider reasoning rescue: raw thinking can't carry across providers (it
+// 400s elsewhere), so it's stripped — BUT when a turn's conclusion lived ONLY in
+// thinking (no sibling text part) and that thinking is substantial, fold a short
+// plain-text digest ("[prior reasoning] …") so a model-switch doesn't lose the
+// chain. Plain text is accepted by every provider.
 function stripResidue(m: ModelMessage): ModelMessage {
   const msg = m as AnyMessage;
   let changed = false;
   let content = msg.content;
   if (Array.isArray(content)) {
+    const hasText = (content as AnyPart[]).some((p) => p?.type === "text" && typeof p.text === "string" && p.text.trim());
     const parts: AnyPart[] = [];
+    let reasoningDigest = "";
     for (const p of content as AnyPart[]) {
-      if (msg.role === "assistant" && p?.type === "reasoning") { changed = true; continue; }
+      if (msg.role === "assistant" && p?.type === "reasoning") {
+        changed = true;
+        if (!hasText && !reasoningDigest) {
+          const raw = typeof (p as any).text === "string" ? (p as any).text : typeof (p as any).reasoning === "string" ? (p as any).reasoning : "";
+          if (raw.trim().length >= FOLD_REASONING_MIN) reasoningDigest = firstSentences(raw, 2);
+        }
+        continue;
+      }
       if (p && typeof p === "object" && ("providerOptions" in p || "providerMetadata" in p)) {
         const { providerOptions: _po, providerMetadata: _pm, ...rest } = p;
         parts.push(rest as AnyPart);
@@ -54,6 +76,7 @@ function stripResidue(m: ModelMessage): ModelMessage {
         parts.push(p);
       }
     }
+    if (reasoningDigest) parts.push({ type: "text", text: `[prior reasoning] ${reasoningDigest}` } as AnyPart);
     if (changed) content = parts;
   }
   const hasMsgResidue = "providerOptions" in msg || "providerMetadata" in msg;
