@@ -781,25 +781,26 @@ export function staticItemLines(it: Item, width: number, receded = false): Line[
   const lines: Line[] = [];
   if (it.kind === "user") {
     if (it.turnNo != null) {
-      // The prompt heading (Quiet Workshop): no band, no index, no spine. A turn
-      // is just your words on a `›` line, set in the brand's light-indigo `user`
-      // ink and bold — calm enough to read as a conversation, distinct enough to
-      // anchor the page. Turns separate by a single blank line, nothing more. An
-      // optional wall-clock folds faint at the right when timestamps are on.
+      // The prompt heading: your words on a `›` line in the brand's light-indigo
+      // `user` ink, now sitting on a soft full-width tint band (color.userBg) so
+      // the question reads as a distinct unit and anchors the page. Turns separate
+      // by a single blank line. An optional wall-clock folds faint at the right
+      // when timestamps are on.
       if (it.turnNo > 1) lines.push(BLANK);
       const stamp = transcriptOpts.timestamps && it.at ? clockOf(it.at) : "";
       const prefix = "  " + glyph.turn + " ";
       const prefixW = displayWidth(prefix);
       const stampW = stamp ? stamp.length + 2 : 0; // reserve so a gap always remains
       const wrapped = wrapSpans(proseSpans(it.text, { color: color.user, bold: true }), Math.max(width - prefixW - stampW, 1));
+      const tint = (l: Span[]): Span[] => l.map((s) => ({ ...s, bg: color.userBg }));
       wrapped.forEach((l, i) => {
-        const lead: Span = { text: i === 0 ? prefix : " ".repeat(prefixW), color: color.user, bold: true };
+        const lead: Span = { text: i === 0 ? prefix : " ".repeat(prefixW), color: color.user, bold: true, bg: color.userBg };
         if (i === 0 && stamp) {
           const leftW = prefixW + l.reduce((n, s) => n + displayWidth(s.text), 0);
           const gap = Math.max(1, width - leftW - (stamp.length + 1));
-          lines.push([lead, ...l, { text: " ".repeat(gap) }, { text: stamp + " ", color: color.faint }]);
+          lines.push(padBg([lead, ...tint(l), { text: " ".repeat(gap), bg: color.userBg }, { text: stamp + " ", color: color.faint, bg: color.userBg }], width, color.userBg));
         } else {
-          lines.push([lead, ...l]);
+          lines.push(padBg([lead, ...tint(l)], width, color.userBg));
         }
       });
     } else {

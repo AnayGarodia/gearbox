@@ -663,11 +663,12 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [perm, setPermState] = useState<PermRequest | null>(null);
   const [ask, setAskState] = useState<{ req: AskRequest; resolve: (a: AskAnswer[] | null) => void; picker: AskPickerState } | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
-  // Chat-style anchoring: when a turn starts, the new prompt snaps to the TOP of
+  // Chat-style anchoring: the FIRST prompt of a conversation snaps to the TOP of
   // the viewport and the reply streams BELOW it (a min-height spacer fills the
-  // rest), instead of the prompt scrolling off the top as output grows. It stays
-  // anchored until the turn outgrows the screen (then we follow the tail) or the
-  // user scrolls. Fullscreen only — inline uses native terminal scroll.
+  // rest), instead of scrolling off the top as output grows. It stays anchored
+  // until that turn outgrows the screen (then we follow the tail) or the user
+  // scrolls; later turns append and follow normally. Fullscreen only — inline
+  // uses native terminal scroll.
   const [anchorTop, setAnchorTopState] = useState(false);
   const anchorTopRef = useRef(false);
   const setAnchorTop = (v: boolean) => { anchorTopRef.current = v; setAnchorTopState(v); };
@@ -2870,6 +2871,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Everything pushed from here on belongs to this turn; at settle we collapse
       // that slice (drop spinners, fold repeated checks) into a durable record.
       const turnStartId = idRef.current;
+      // Only the FIRST prompt of a conversation anchors to the top; every later
+      // turn appends and follows the stream normally.
+      const isFirstPrompt = !itemsRef.current.some((it) => it.kind === "user" && (it as any).turnNo != null);
       const promptItemId = echo(displayPrompt, true);
       lastPromptRef.current = displayPrompt;
       // Pre-flight hard spend cap (/cap): refuse the turn before any model call if
@@ -2922,7 +2926,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       setMascotState("thinking");
       // Anchor the new prompt to the top of the viewport (chat-style) in fullscreen;
       // inline keeps following the live tail (native scroll, no anchoring there).
-      if (fullscreen) {
+      if (fullscreen && isFirstPrompt) {
         setAnchorId(promptItemId);
         setAnchorTop(true);
         atBottomRef.current = false;

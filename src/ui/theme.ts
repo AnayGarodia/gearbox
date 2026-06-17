@@ -73,7 +73,7 @@ export const dark: Theme = {
   // `user` is the light-indigo ink on turn headings/indexes — your turns anchor
   // the page in the brand hue, one step softer than the live accent.
   user: "#B9BDF9", ok: "#5FD39A", warn: "#E5B567", err: "#E06C75", run: "#8B93F8", shell: "#E8A2C8", navy: "#0B0B10",
-  userBg: "#15141A", codeBg: "#15141A", panelBg: "#15141A", elementBg: "#1E1D26", headerBg: "#262432", chipBg: "#2A2839", accentBg: "#232238", selBg: "#3D4578", selInk: "#F2F2F7",
+  userBg: "#232238", codeBg: "#15141A", panelBg: "#15141A", elementBg: "#1E1D26", headerBg: "#262432", chipBg: "#2A2839", accentBg: "#232238", selBg: "#3D4578", selInk: "#F2F2F7",
   path: "#8FB6E8",
   // Distinct hues so a code block isn't a wall of one blue: keyword violet,
   // function blue, type teal, string green, number amber, comment gray. Amber (not
@@ -137,7 +137,7 @@ export const catppuccin: Theme = {
 export const solarized: Theme = {
   accent: "#2AA198", accentDim: "#1E7D76", text: "#93A1A1", dim: "#657B83", faint: "#586E75",
   user: "#268BD2", ok: "#859900", warn: "#B58900", err: "#DC322F", run: "#6C71C4", shell: "#D33682", navy: "#002B36",
-  userBg: "#073642", codeBg: "#073642", panelBg: "#073642", elementBg: "#0A4150", headerBg: "#09404E", chipBg: "#0B4A5A", accentBg: "#0A3C41", selBg: "#657B83", selInk: "#FDF6E3",
+  userBg: "#0A4150", codeBg: "#073642", panelBg: "#073642", elementBg: "#0A4150", headerBg: "#09404E", chipBg: "#0B4A5A", accentBg: "#0A3C41", selBg: "#657B83", selInk: "#FDF6E3",
   path: "#268BD2",
   codeKeyword: "#6C71C4", codeString: "#859900", codeNumber: "#B58900",
   codeComment: "#586E75", codePunct: "#657B83",
