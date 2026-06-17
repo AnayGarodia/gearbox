@@ -12,6 +12,7 @@ import { MascotSplash, SKINS, GHOST_LOOKS, isGhostLook, type GhostSkin, type Gho
 import { PermissionPrompt, permPromptRows } from "./components/PermissionPrompt.tsx";
 import { Working, workingRows } from "./components/Working.tsx";
 import { Viewport, hullSelection, type ViewSelection } from "./components/Viewport.tsx";
+import { anchorLayout } from "./anchor.ts";
 import { itemsToLines, relPath, friendlyTool, fmtElapsed, linkAt, setTranscriptOptions, type Line } from "./lines.ts";
 import { collapseTurn, collapseDelegateGroups } from "./collapse.ts";
 import { buildRoutingLine } from "./routing-line.ts";
@@ -4905,18 +4906,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // pre-launch screen (and rendering is less flickery). cli.tsx also strips any
   // stray 3J as a belt-and-suspenders.
   const transcriptHeight = Math.max(1, rows - HEADER - footer - 1);
-  // Chat anchoring: while the prompt is anchored and its turn still fits, pad the
-  // bottom with a spacer so the prompt can scroll to the very top (the reply fills
-  // downward into the spacer). Once the turn outgrows the viewport, drop the anchor
-  // and follow the tail (handled by the effect below).
-  const contentBelowAnchor = anchorTop && anchorOffset != null ? lines.length - anchorOffset : 0;
-  const anchorActive = anchorTop && anchorOffset != null && anchorOffset <= lines.length && contentBelowAnchor <= transcriptHeight;
-  const spacerLen = anchorActive ? Math.max(0, transcriptHeight - contentBelowAnchor) : 0;
+  // Chat anchoring: while the first prompt is anchored and its turn still fits, pad
+  // the bottom with a spacer so the prompt can scroll to the very top (the reply
+  // fills downward into the spacer). While it overflows, follow the live tail —
+  // but the anchor stays ARMED so it re-pins to the top once the turn collapses
+  // back to fitting (see anchor.ts; the effect below follows the tail on overflow
+  // without disarming). Pure math lives in anchor.ts so it can't drift untested.
+  const { spacerLen, maxScroll, effScroll } = anchorLayout({
+    anchorTop, anchorOffset, linesLength: lines.length, transcriptHeight,
+    atBottom: atBottomRef.current, scrollTop,
+  });
   const displayLines = spacerLen > 0 ? lines.concat(Array(spacerLen).fill(EMPTY_LINE)) : lines;
-  const maxScroll = Math.max(0, displayLines.length - transcriptHeight);
-  const effScroll = anchorActive
-    ? Math.min(anchorOffset!, maxScroll)
-    : atBottomRef.current ? maxScroll : Math.min(scrollTop, maxScroll);
   linesRef.current = displayLines;
   scrollTopLiveRef.current = effScroll;
   transcriptHeightLiveRef.current = transcriptHeight;
@@ -4977,11 +4977,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   }
 
   // Keep scrollTop pinned to the bottom as new lines stream in (unless scrolled up).
-  // When an anchored turn outgrows the viewport, release the top anchor and follow
-  // the streaming tail instead.
+  // When an anchored turn outgrows the viewport, FOLLOW the streaming tail — but do
+  // NOT disarm the anchor: a turn can overflow transiently (the Working footer
+  // shrinks the viewport while busy; a tall tool trace collapses at settle) and
+  // then fit again, and the first prompt must re-pin to the top instead of being
+  // left bottom-aligned (the "first input shifts down after the turn" bug). Only a
+  // deliberate user scroll disarms the anchor (see the wheel/key scroll handlers).
   useEffect(() => {
     if (anchorTopRef.current && anchorOffset != null && lines.length - anchorOffset > transcriptHeight) {
-      setAnchorTop(false);
       atBottomRef.current = true;
       setScrollTop(maxScroll);
     } else if (atBottomRef.current) {
