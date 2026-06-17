@@ -1784,7 +1784,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
               // cheapest model on another provider. Routing still picks the best
               // model WITHIN the account. /account off (or another switch) lifts it.
               updatePolicy({ pinAccount: accountSlug(a) });
-              notice(`switched to ${accountLabel(a)} · routing now uses this account (/account off to auto-route across all)`);
+              notice(`switched to ${accountLabel(a)} · routing now uses this account (/account all to auto-route across every account)`);
             }
           };
 
@@ -1792,13 +1792,13 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             showList();
             return;
           }
-          if (subL === "off") {
+          if (subL === "off" || subL === "all") {
             if (!activeCliRef.current) {
               // No subscription, but an API account may be pinned (from /account
               // <name>): clear the pin and return to routing across all accounts.
               if (policy().pinAccount) {
                 updatePolicy({ pinAccount: null });
-                notice("unpinned · auto-routing across all your accounts again (/account <name> to scope to one).");
+                notice("all accounts · auto-routing across every account again (/account <name> to scope to one).");
               } else {
                 notice("not on a subscription · already auto-routing across your API keys (/model auto). /account <name> to use a subscription.");
               }

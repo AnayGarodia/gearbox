@@ -1952,9 +1952,14 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const email = idy.match(/[^\s·]+@[^\s·]+/)?.[0];
       return [name, tier, email].filter(Boolean).join(" · ") + " · subscription";
     }
-    // Full auto across every account → there's no single "whose dime"; show
-    // nothing (the status bar's "auto" already says routing is on).
-    if (fullAuto) return null;
+    // Full auto across every account → name it explicitly ("all accounts") when
+    // there are 2+ to span, so cross-account routing is never mistaken for a
+    // single account being stuck (the screenshot confusion: "it shows X but used
+    // Y"). With 0-1 usable accounts there's nothing to span, so stay quiet.
+    if (fullAuto) {
+      const usable = listAccounts().filter((a) => a.enabled && a.exec !== "cli");
+      return usable.length >= 2 ? "all accounts · auto" : null;
+    }
     // Account-scoped routing → name the account; routing happens within it.
     if (scopedAccount) return `${accountName(scopedAccount)} · auto`;
     // Model pinned → the account whose key serves the pinned model.
