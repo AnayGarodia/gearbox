@@ -1,7 +1,16 @@
 # Routing: difficulty-aware picks + active-account scoping
 
 **Date:** 2026-06-18
-**Status:** design, pending implementation
+**Status:** Fix A implemented (difficulty-aware routing + cheap-LLM difficulty
+judge), 1835 tests pass / typecheck clean. Fix B: the `pinAccount` scoping
+mechanism was found to already work correctly and robustly (the screenshot's
+Anthropic spend was historical, pre-scope; the nano pick WAS correctly scoped to
+Azure, just too weak — now fixed by Fix A climbing off nano). The remaining Fix B
+work is the UX default "selecting an account auto-scopes routing without an
+explicit `/account use`" + an "All accounts" toggle — a UI-coupled enhancement,
+not a routing bug. Deferred: the separate blocking-budget judge for
+confident-keyword code turns (the lexical fast-path covers obvious cues), and
+pillar C (the flywheel).
 
 ## Problem
 
