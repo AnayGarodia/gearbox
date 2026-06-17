@@ -57,3 +57,42 @@ test("signals compound and clamp to [0,1] with readable reasons", () => {
 test("DIFFICULTY_BAR_RANGE keeps a code task (0.7) within the strong tier (≤0.9)", () => {
   expect(0.7 + 1 * DIFFICULTY_BAR_RANGE).toBeCloseTo(0.9, 5);
 });
+
+// ── Lexical difficulty: a semantic read of the PROMPT (pure, instant, no LLM). ──
+// "fix the race condition in the connection pool" is hard; "fix the typo" is easy;
+// "fix it" is genuinely ambiguous (null → fall back to size signals). This is the
+// signal the size-based estimator is blind to: a bare prompt with no @files and a
+// small context still has a difficulty the WORDS reveal.
+import { lexicalDifficulty, BAND_SCORE } from "../src/model/difficulty.ts";
+
+test("lexicalDifficulty flags obvious-hard prompts", () => {
+  expect(lexicalDifficulty("fix the race condition in the connection pool")).toBe("hard");
+  expect(lexicalDifficulty("refactor authentication across all services")).toBe("hard");
+  expect(lexicalDifficulty("debug the deadlock in the scheduler")).toBe("hard");
+  expect(lexicalDifficulty("rewrite the migration to be idempotent")).toBe("hard");
+});
+
+test("lexicalDifficulty flags obvious-trivial prompts", () => {
+  expect(lexicalDifficulty("fix the typo in the readme")).toBe("easy");
+  expect(lexicalDifficulty("rename getUser to fetchUser")).toBe("easy");
+  expect(lexicalDifficulty("bump the version to 0.23.0")).toBe("easy");
+});
+
+test("lexicalDifficulty returns null when the prompt reveals nothing", () => {
+  expect(lexicalDifficulty("fix it")).toBe(null);
+  expect(lexicalDifficulty("update the handler")).toBe(null);
+});
+
+test("a hard prompt-band lifts difficulty even with NO size signals", () => {
+  const bare = estimateDifficulty({});
+  const hardWords = estimateDifficulty({ semanticBand: "hard" });
+  expect(bare.d).toBe(0);
+  expect(hardWords.d).toBe(BAND_SCORE.hard);
+  expect(hardWords.d).toBeGreaterThan(0.6);
+});
+
+test("an easy band never drags a genuinely large task back down (max-combine)", () => {
+  const big = estimateDifficulty({ estTokens: 120_000, touchedFileCount: 8 });
+  const bigButEasyWords = estimateDifficulty({ estTokens: 120_000, touchedFileCount: 8, semanticBand: "easy" });
+  expect(bigButEasyWords.d).toBe(big.d); // max(sizeBased, easy=0) = sizeBased
+});

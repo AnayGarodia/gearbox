@@ -57,6 +57,12 @@ export interface Task {
   // verifier present, cheap-first is safe because the gate catches a miss.
   // Omitted = unknown (treated as "tests present" — neutral, no extra caution).
   verifierTier?: "tests" | "types" | "none";
+  // Semantic difficulty of the PROMPT (easy/medium/hard), from a cheap LLM judge
+  // when one ran. The router falls back to lexicalDifficulty(prompt) when this is
+  // absent. Combined by MAX with the size-based difficulty signals — words can
+  // only raise difficulty, never lower it. This is the signal that lets a hard
+  // task ("fix the race condition") climb from turn 1 despite a small context.
+  difficultyBand?: "easy" | "medium" | "hard";
   // The caller cannot dispatch vendor-CLI subscription seats (e.g. the ACP
   // server, which has no seat machinery): restrict candidates to in-loop
   // (model, account) pairs so a ~free seat never wins a turn the caller

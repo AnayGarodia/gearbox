@@ -30,7 +30,7 @@ import { buildRoutingContext, type AccountState, type RoutingContext } from "./r
 import { pickBest, scoreCandidate, type ScoreCandidate, type ScoredCandidate } from "./scoring.ts";
 import { coolingDown, modelScopedKey, cooldownReason, classifyFailure } from "./cooldown.ts";
 import { priorFor, priorLine, failRateFor, repoFailRate, effortPassRate } from "./priors.ts";
-import { estimateDifficulty, type Difficulty, type DifficultySignals } from "./difficulty.ts";
+import { estimateDifficulty, lexicalDifficulty, type Difficulty, type DifficultySignals } from "./difficulty.ts";
 import { qualityForKind, qualityNote, benchmarkRow } from "./benchmarks.ts";
 import { modelInFamily } from "./family.ts";
 import { effortLevels } from "./reasoning.ts";
@@ -794,11 +794,22 @@ function gatherDifficultySignals(task: Task, kind: Kind): DifficultySignals {
   // that already has its own failRate the overlap is bounded (W_REPO caps the
   // contribution) and conservative (errs toward fewer wasted failed turns). Reads
   // the same in-memory priors cache priorFor/failRateFor already use on this path.
+  // Semantic difficulty: the LLM judge's verdict when one ran (task.difficultyBand),
+  // else an instant lexical read of the prompt. MAX-combined with the size signals
+  // in estimateDifficulty, so a hard-WORDED task climbs even with a tiny context —
+  // the gap that let "fix the race condition" route to a nano/haiku-tier model.
+  const semanticBand = task.difficultyBand ?? lexicalDifficulty(task.prompt) ?? undefined;
   return {
+    semanticBand,
     estTokens: task.estTokens,
     touchedFileCount: files.length || undefined,
     touchedBytes,
     repoFailRate: repoFailRate(kind)?.rate,
+    // A repo with NO verifier net gets a small caution bump: a silent miss can't
+    // be caught, so start a notch more careful — proportional, not a jump to the
+    // top tier (that would over-route the many simple no-net tasks). Unknown tier
+    // is neutral. (verify-tier is the one owner of the no-net signal.)
+    hasTestNet: task.verifierTier ? task.verifierTier !== "none" : undefined,
   };
 }
 

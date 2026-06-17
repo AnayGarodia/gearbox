@@ -158,22 +158,24 @@ test("output realism: a reasoning model's outputFactor raises its cost", () => {
   expect(thinky.terms.stickerCost).toBeCloseTo((100_000 / 1e6) * 1 + (100_000 / 1e6) * 4, 6);
 });
 
-test("the verifier net flips the quality/cost tradeoff: a net makes cost dominate, no net makes quality dominate", () => {
-  // Comparable quality, strong 20% pricier — a genuine near-tie.
+test("the verifier net shifts the quality/cost tradeoff: no net → quality wins, a net pulls toward cost", () => {
+  // Comparable quality, strong moderately pricier — a near-tie that the net flips.
   const weak = { ...base, id: "weak", quality: 0.80, inUSDPerMtok: 1, outUSDPerMtok: 4 };
-  const strong = { ...base, id: "strong", quality: 0.82, inUSDPerMtok: 1.2, outUSDPerMtok: 4.8 };
-  // WITH a net, a miss is cheap to catch → cost dominates → the cheaper model wins.
-  const netted = { ...flags, verifierTier: "tests" as const };
-  expect(pickBest({ ...netted, candidates: [weak, strong] }).candidate.id).toBe("weak");
-  // NO net, a miss ships silently → quality dominates → the stronger model wins.
-  const exposed = { ...flags, verifierTier: "none" as const };
-  expect(pickBest({ ...exposed, candidates: [weak, strong] }).candidate.id).toBe("strong");
-  // Under a net, even a CLEARLY cheaper (4×) model wins — cheap-first is safe.
-  const cheap = { ...weak, id: "cheap", inUSDPerMtok: 0.25, outUSDPerMtok: 1 };
-  expect(pickBest({ ...netted, candidates: [cheap, strong] }).candidate.id).toBe("cheap");
-  // higher quality → strictly lower P(wrong) and wrong-cost.
-  const wq = scoreCandidate(weak, exposed).terms;
-  const sq = scoreCandidate(strong, exposed).terms;
+  const strong = { ...base, id: "strong", quality: 0.82, inUSDPerMtok: 1.6, outUSDPerMtok: 6.4 };
+  // On a task with REAL difficulty: NO net → a miss ships silently → quality
+  // dominates → the stronger model wins.
+  const hardExposed = { ...flags, difficulty: 0.5, verifierTier: "none" as const };
+  expect(pickBest({ ...hardExposed, candidates: [weak, strong] }).candidate.id).toBe("strong");
+  // WITH a net → a miss is caught & re-run → cost matters more → the cheaper wins.
+  const hardNetted = { ...flags, difficulty: 0.5, verifierTier: "tests" as const };
+  expect(pickBest({ ...hardNetted, candidates: [weak, strong] }).candidate.id).toBe("weak");
+  // A difficulty-0 (simple) task carries NO quality pressure under ANY net — the
+  // cheaper model wins even with no net (marginal quality isn't worth a premium).
+  const simpleExposed = { ...flags, difficulty: 0, verifierTier: "none" as const };
+  expect(pickBest({ ...simpleExposed, candidates: [weak, strong] }).candidate.id).toBe("weak");
+  // higher quality → strictly lower P(wrong) and wrong-cost (when difficulty bites).
+  const wq = scoreCandidate(weak, hardExposed).terms;
+  const sq = scoreCandidate(strong, hardExposed).terms;
   expect(sq.pWrong).toBeLessThan(wq.pWrong);
   expect(sq.wrongCost).toBeLessThan(wq.wrongCost);
 });

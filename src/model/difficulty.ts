@@ -19,6 +19,12 @@
 // pure scorer (scoring.ts).
 
 export interface DifficultySignals {
+  /** A semantic read of the PROMPT itself: easy/medium/hard. The size signals
+   *  below are blind to this — "fix the race condition" and "fix the typo" can
+   *  have identical context size. Supplied by lexicalDifficulty (instant, free)
+   *  or a cheap LLM judge. Combined by MAX with the size score, so the words can
+   *  only RAISE difficulty, never drag a genuinely large task down. */
+  semanticBand?: "easy" | "medium" | "hard";
   /** Working-set tokens pulled into context this turn. Bigger → more to reason over. */
   estTokens?: number;
   /** Number of files the task acts on. More files → multi-file, harder. */
@@ -66,6 +72,34 @@ const FILES_CEIL = 6; // touching ~6+ files is firmly multi-file work
 
 const ramp = (v: number, floor: number, ceil: number) => clamp01((v - floor) / (ceil - floor));
 
+// Band → difficulty score. `hard` = 0.85 lands a code task (base 0.7) firmly in
+// the strong tier; `medium` = 0.4 is a gentle nudge; `easy` = 0 leaves the
+// cheapest capable model winning. Calibratable, not magic.
+export const BAND_SCORE: Record<NonNullable<DifficultySignals["semanticBand"]>, number> = {
+  easy: 0,
+  medium: 0.4,
+  hard: 0.85,
+};
+
+// Lexical difficulty from the PROMPT — a cheap, instant, non-LLM first read of
+// how hard the words say the task is. Catches the obvious cases the size signals
+// miss (a bare prompt, no @files); returns null for genuinely ambiguous prompts
+// ("fix it"), where the size signals (and, later, the LLM judge) decide. HARD is
+// checked first: if a prompt mixes cues ("rename across the codebase"), the
+// harder reading wins — conservative, the same philosophy as the rest of routing.
+const HARD_CUES = /\b(race[ -]?condition|deadlock|concurren\w*|distributed|consensus|atomic\w*|mutex|semaphore|migrat\w*|memory leak|leak|security|vulnerab\w*|exploit|performance regression|re-?write|re-?architect\w*|thread[- ]?saf\w*|threading|backwards?[- ]compat\w*)\b/i;
+// Multi-area work ("refactor X across all services") reads as hard even without a
+// named hazard above.
+const HARD_SPREAD = /\b(across (the |all |every )|throughout the)\b/i;
+const EASY_CUES = /\b(typo|rename|bump|reword|re-?phrase|spelling|whitespace|formatting|lint|a comment|the comment|comments?\b)\b/i;
+
+export function lexicalDifficulty(prompt: string): "easy" | "hard" | null {
+  const p = prompt.toLowerCase();
+  if (HARD_CUES.test(p) || HARD_SPREAD.test(p)) return "hard";
+  if (EASY_CUES.test(p)) return "easy";
+  return null;
+}
+
 export function estimateDifficulty(s: DifficultySignals): Difficulty {
   const reasons: string[] = [];
   let d = 0;
@@ -92,6 +126,16 @@ export function estimateDifficulty(s: DifficultySignals): Difficulty {
   }
   if (s.hasTestNet === false) {
     d += W_NO_NET; reasons.push(`no test net`);
+  }
+
+  // The semantic band combines by MAX: a hard-reading prompt raises difficulty
+  // even with zero size signals (the whole point — a bare "fix the race
+  // condition" has a small context but a hard task), while an easy reading never
+  // drags a genuinely large task back down.
+  const bandScore = s.semanticBand ? BAND_SCORE[s.semanticBand] : 0;
+  if (bandScore > clamp01(d)) {
+    reasons.push(`prompt reads ${s.semanticBand}`);
+    return { d: bandScore, reasons };
   }
 
   return { d: clamp01(d), reasons };

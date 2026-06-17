@@ -173,8 +173,23 @@ export function wrongCostOf(c: ObjectiveCandidate, x: ObjectiveContext): { wrong
   // wrong chat/summary/search ships nothing → no ship cost. Both terms per-Mtok
   // ⇒ the pick is scale-invariant: difficulty + net decide it, not token count.
   const ships = x.shipsArtifact ?? true;
-  const netFactor = x.verifierTier === "none" ? 1 : x.verifierTier === "types" ? 0.4 : 0;
-  const shipWrong = ships ? perMtok * w.shipWrongPerMtok * netFactor * (0.5 + x.difficulty) : 0;
+  // A verifier net REDUCES ship-damage but does not eliminate it: tests confirm
+  // STRUCTURE, not semantic correctness — a wrong-but-passing implementation still
+  // ships. So a full test net is ~0.35 (not 0): on a HARD task that residual,
+  // scaled by P(wrong) and difficulty, is what lets a predicted-hard turn climb
+  // off a cheap-but-capable model (haiku, nano) that a zeroed factor left winning.
+  // types = a partial net (compiler-caught but not behavior); none = no net.
+  const netFactor = x.verifierTier === "none" ? 1 : x.verifierTier === "types" ? 0.6 : 0.35;
+  // Ship-damage scales with difficulty FROM ZERO (no baseline floor) but
+  // CONCAVELY (sqrt): a difficulty-0 task carries no quality pressure at all (the
+  // cheapest capable model wins — a simple task never over-routes to a premium
+  // model, marginal quality isn't worth it), while a moderate real signal (a
+  // multi-file change, a repo that fails everyone — difficulty ~0.15-0.3) already
+  // carries meaningful quality pressure. Quality-first exactly where it matters,
+  // cheap-first where it doesn't, with the steepest gain just off zero where the
+  // simple/non-simple boundary lives.
+  const diffWeight = Math.sqrt(clamp01(x.difficulty));
+  const shipWrong = ships ? perMtok * w.shipWrongPerMtok * netFactor * diffWeight : 0;
   const costOfWrong = recovery + shipWrong;
   return { wrongCost: p * costOfWrong, pWrong: p };
 }

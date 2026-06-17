@@ -133,26 +133,49 @@ difficulty band for code/plan turns, mirroring how *kind* is already classified
   hard, while an `easy` verdict on a small task stays 0 → cheap model still wins
   (cost-regression guard).
 
-**A2. The wiring (the actual fix).** Add the difficulty term to the floor in
-`prepare()` (`router.ts:457`), using the already-defined `DIFFICULTY_BAR_RANGE`:
+**A2. The wiring (the actual fix).** Calibration against the real benchmark/price
+corpus changed which lever does the work. Haiku's *code* quality is
+`sweVerified = 0.733` (`benchmarks.ts:74`) — above the floor ceiling
+(`CAPABILITY_FLOOR.code = 0.4` + `DIFFICULTY_BAR_RANGE = 0.2` → max **0.6**). So a
+floor lift **cannot** exclude Haiku, and the floor is the wrong primary lever for
+capable-but-cheap models. The primary lever is the **soft objective**, with two
+changes:
+
+1. **Un-zero the test-net `shipWrong` factor.** `netFactor` for
+   `verifierTier === "tests"` is `0` today (`objective.ts:176`), which models a
+   test net as catching *all* ship-damage. It doesn't — tests confirm structure,
+   not semantic correctness (a wrong-but-passing implementation still ships). Set
+   it to a modest **~0.2**. This is what lets a predicted-hard task's higher
+   `P(wrong)` actually move the pick under a test net: it climbs haiku→sonnet, and
+   pushes hard tasks off nano (low quality → high `P(wrong)` → large `wrongCost`
+   that dwarfs nano's price advantage). Easy tasks (`d≈0`) keep `shipWrong` small
+   and stay cheapest. Exact value is **calibrated by the bake-off test** (hard
+   climbs AND easy stays cheap), not hand-fixed.
+2. **Stop defaulting unknown tier to `"tests"`.** The scorer defaults
+   `verifierTier` to `"tests"` (`scoring.ts:261`) — the most optimistic tier. When
+   the tier is genuinely unknown, default to **`"types"`** (a partial net), so an
+   un-probed repo is treated cautiously, not as fully netted. The live router
+   passes a real detected tier, so this only affects the fallback.
+
+**Secondary hardening — the floor (belt-and-suspenders).** Also add the difficulty
+term to the floor in `prepare()` (`router.ts:457`), capped at `FLOOR_MAX`:
 
 ```
-floor = min(FLOOR_MAX,
-            CAPABILITY_FLOOR[kind]
+floor = min(FLOOR_MAX, CAPABILITY_FLOOR[kind]
           + escalate · escalationFloorStep(failureKind)   // reactive (unchanged)
           + effDifficulty · DIFFICULTY_BAR_RANGE)          // NEW: proactive
 ```
 
-A predicted-hard code turn lifts the floor by up to 0.2 at turn 1 — doing
-proactively what a failed-check escalation does reactively, and composing with it
-(both move the same floor, capped at `FLOOR_MAX`). Because the floor is
-independent of the verifier net, this sidesteps the `shipWrong`-zeroed-under-tests
-problem. Continue feeding `effDifficulty` into the soft objective
-(`flags.difficulty`, `router.ts:583/617`) — it still helps in no-test-net repos.
+This gives a hard guarantee that a genuinely hard task never lands on a sub-0.6
+model (nano, nova, llama-scout) even if the soft objective is mis-calibrated. It
+does not (and cannot) exclude Haiku — that is the soft objective's job. Keep
+feeding `effDifficulty` into the objective on every kind (`router.ts:583/617`).
 
-**Why floor, not just the objective:** the floor is the hard, net-independent
-lever escalation already uses; the soft objective is what tests neuter. Predicting
-difficulty without a hard lever would do almost nothing in repos with tests.
+**Why both:** the soft `netFactor` change is the workhorse (it separates capable
+models by predicted difficulty); the floor is a cheap robustness floor against the
+truly-weak tier. The earlier "floor is net-independent so it sidesteps the
+zeroed-shipWrong problem" reasoning was wrong — it's defeated by Haiku's real
+quality number, which is exactly the kind of thing watching a test fail catches.
 
 ### Fix B — active account scopes routing
 

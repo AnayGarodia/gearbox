@@ -58,3 +58,14 @@ test("difficulty never touches a cheap kind — chat picks the cheapest regardle
   });
   expect(withSignals).toBe(base);
 });
+
+test("a hard-WORDED code task climbs to a strong model EVEN WITH a test net — the user's nano/haiku bug", () => {
+  only("ANTHROPIC_API_KEY");
+  // Same files, same tokens, same net — ONLY the prompt words differ. The size
+  // signals are identical (1 small file), so any climb is purely the semantic
+  // read of the prompt biting through the soft objective under a "tests" net.
+  const easy = pick({ prompt: "fix the typo in the readme", kind: "code", verifierTier: "tests", estTokens: 16_000, touchedFiles: ["a.ts"] });
+  const hard = pick({ prompt: "fix the race condition in the connection pool", kind: "code", verifierTier: "tests", estTokens: 16_000, touchedFiles: ["a.ts"] });
+  expect(tier(easy)).toBe(1); // easy + a net → cheapest capable (haiku)
+  expect(tier(hard)).toBeGreaterThanOrEqual(2); // hard climbs to sonnet+ despite the test net
+});

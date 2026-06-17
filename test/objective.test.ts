@@ -24,18 +24,19 @@ test("WITH a test net, a cheaper slightly-lower-quality model beats an expensive
   expect(cheap).toBeLessThan(dear);
 });
 
-test("with NO net, a clearly-higher-quality model wins when the gap justifies the price (a miss ships silently)", () => {
-  // Same pair WITH a test net → cheap wins (a miss is caught); WITHOUT one → the
-  // higher-quality model wins, because the proportional ship-wrong cost makes its
-  // lower miss-rate worth the extra price. A wide quality gap at a moderate price
-  // premium is exactly where caution should flip the pick.
-  const cheap = E({ inUSDPerMtok: 1, outUSDPerMtok: 5, quality: 0.6 }, { verifierTier: "none", difficulty: 0.5 });
-  const dear = E({ inUSDPerMtok: 4, outUSDPerMtok: 20, quality: 0.92 }, { verifierTier: "none", difficulty: 0.5 });
-  expect(dear).toBeLessThan(cheap);
-  // …and with a net the same cheap model wins (caution only emerges without one).
+test("with NO net, a clearly-higher-quality model wins; a net pulls back toward cost", () => {
+  // On a task with real difficulty and a WIDE quality gap (0.6 vs 0.92): with no
+  // net a miss ships silently → the strong model wins. A test net REDUCES quality's
+  // weight (a miss is caught), so the strong model's lead SHRINKS — but on a gap
+  // this wide it still wins. The net pulls toward cost; it does NOT make a
+  // 0.6-quality model safe on a non-trivial task.
+  const cheapNone = E({ inUSDPerMtok: 1, outUSDPerMtok: 5, quality: 0.6 }, { verifierTier: "none", difficulty: 0.5 });
+  const dearNone = E({ inUSDPerMtok: 4, outUSDPerMtok: 20, quality: 0.92 }, { verifierTier: "none", difficulty: 0.5 });
+  expect(dearNone).toBeLessThan(cheapNone); // no net → quality dominates
   const cheapNet = E({ inUSDPerMtok: 1, outUSDPerMtok: 5, quality: 0.6 }, { verifierTier: "tests", difficulty: 0.5 });
   const dearNet = E({ inUSDPerMtok: 4, outUSDPerMtok: 20, quality: 0.92 }, { verifierTier: "tests", difficulty: 0.5 });
-  expect(cheapNet).toBeLessThan(dearNet);
+  expect(dearNet).toBeLessThan(cheapNet); // wide gap → quality still wins under a net…
+  expect(cheapNet - dearNet).toBeLessThan(cheapNone - dearNone); // …but the net shrinks its lead
 });
 
 test("difficulty raises the cost of a low-quality model more than a high-quality one", () => {
@@ -53,18 +54,19 @@ test("the pick is SCALE-INVARIANT: difficulty + verifier net decide it, not toke
   // token range — only difficulty and the net move it.
   const cheap = { inUSDPerMtok: 1, outUSDPerMtok: 5, quality: 0.6 };
   const dear = { inUSDPerMtok: 4, outUSDPerMtok: 20, quality: 0.92 };
-  const winnerAt = (tokens: number, tier: "tests" | "none") =>
-    E(cheap, { estInputTokens: tokens, difficulty: 0.5, verifierTier: tier }) <
-    E(dear, { estInputTokens: tokens, difficulty: 0.5, verifierTier: tier })
+  const winnerAt = (tokens: number, difficulty: number, tier: "tests" | "none") =>
+    E(cheap, { estInputTokens: tokens, difficulty, verifierTier: tier }) <
+    E(dear, { estInputTokens: tokens, difficulty, verifierTier: tier })
       ? "cheap"
       : "dear";
-  // No net + a real quality gap → the strong model wins at EVERY size.
-  expect(winnerAt(4_000, "none")).toBe("dear");
-  expect(winnerAt(40_000, "none")).toBe("dear");
-  expect(winnerAt(400_000, "none")).toBe("dear");
-  // With a net → the cheap model wins at EVERY size (a miss is caught).
-  expect(winnerAt(4_000, "tests")).toBe("cheap");
-  expect(winnerAt(400_000, "tests")).toBe("cheap");
+  // The winner is the SAME across a 100× token range — only difficulty + the net
+  // move it, never raw size. A real quality gap at moderate difficulty → the
+  // strong model wins at every size (with or without a net here).
+  for (const tier of ["none", "tests"] as const)
+    for (const t of [4_000, 40_000, 400_000]) expect(winnerAt(t, 0.5, tier)).toBe("dear");
+  // …and a difficulty-0 (simple) task → the cheap model wins at every size: with
+  // no quality pressure, token count must not sneak the pick toward the premium.
+  for (const t of [4_000, 400_000]) expect(winnerAt(t, 0, "none")).toBe("cheap");
 });
 
 test("latency only matters when interactive: a faster model wins when waiting, is neutral in background", () => {

@@ -39,12 +39,17 @@ test("repeated misses climb to the strongest tier", () => {
   expect(pick(code({ escalate: 3 }))).toBe("claude-opus-4-8");
 });
 
-test("NO verifier net makes quality dominate — code routes to the strongest, not the cheapest", () => {
+test("difficulty drives the code pick: simple stays cheap, a hard task climbs (strongest with no net)", () => {
   only("ANTHROPIC_API_KEY");
-  // With a net, the cheapest capable model (haiku) wins; with no net, a silent
-  // miss is expensive, so the objective climbs to the strongest available.
-  expect(pick(code({ verifierTier: "tests" }))).toBe("claude-haiku-4-5");
-  expect(pick(code({ verifierTier: "none" }))).toBe("claude-opus-4-8");
+  // An ambiguous/simple code task stays cheap (haiku) even with NO net — nothing
+  // about it reads as hard, so paying for a premium model is marginal-return waste
+  // (the user's "don't use opus for simple tasks" rule). The net doesn't change it.
+  expect(pick(code({ verifierTier: "none" }))).toBe("claude-haiku-4-5");
+  // A HARD-worded task climbs: to sonnet under a net (a miss is caught & re-run),
+  // and all the way to the strongest with NO net (a silent miss ships).
+  const hard = { prompt: "fix the race condition in the connection pool" };
+  expect(pick(code({ ...hard, verifierTier: "tests" }))).toBe("claude-sonnet-4-6");
+  expect(pick(code({ ...hard, verifierTier: "none" }))).toBe("claude-opus-4-8");
 });
 
 test("difficulty never lifts a cheap kind off the cheapest model", () => {
