@@ -14,7 +14,7 @@ Gearbox is a multi-provider coding harness for the terminal: a beautiful, simple
 - `src/model/routing-context.ts` — `buildRoutingContext()`: the per-turn account-state snapshot (balance where exposed, subscription rate headroom = min over the 5h/weekly windows) read from disk-cached `usage.json`. No network on the hot path; balances refreshed in the background (App effect).
 - `src/model/profiles.ts` — the data corpus: quality, cost, latency, tokenizer calibration, **and the per-model effort vocabulary** (`efforts`) per the provider research. Routing reads this; effort is clamped/omitted against the chosen model's set, never sent unsupported.
 - `src/providers.ts` — maps a provider+model id to an AI SDK model instance. Already multi-provider. Adding a model is data, not code.
-- Every model call captures token usage (`src/agent/run.ts`) so the cost engine has data. Do not drop usage. This includes **prompt-cache tokens** (`Usage.cachedInputTokens` read / `cacheCreationInputTokens` write): `src/model/caching.ts` adds the cache breakpoints before the call (anthropic `cacheControl` / bedrock `cachePoint` on system + last message; auto-cache providers untouched), and the per-turn "took Ns · N% of input from cache" line in `App.tsx` surfaces the hit.
+- Every model call captures token usage (`src/agent/run.ts`) so the cost engine has data. Do not drop usage. This includes **prompt-cache tokens** (`Usage.cachedInputTokens` read / `cacheCreationInputTokens` write): `src/model/caching.ts` adds the cache breakpoints before the call (`withPromptCaching`: anthropic `cacheControl` / bedrock `cachePoint` on system + last settled-history message; auto-cache providers untouched) AND slides a per-step breakpoint inside the tool loop (`withStepCaching`, wired as `streamText`'s `prepareStep` from step 1 on) so this turn's accumulating tool results are written to cache once instead of re-sent at full price each step — at most system+settled+last = 3 breakpoints, under Anthropic's max of 4. The per-turn "took Ns · N% of input from cache" line in `App.tsx` surfaces the hit.
 - The UI consumes a normalized `AgentEvent` stream (`src/agent/events.ts`), never the AI SDK's raw types. This decouples the UI from the provider layer and from routing.
 
 If you find yourself writing `anthropic('claude-...')` anywhere outside `providers.ts`, stop — route it through the selector.
@@ -60,7 +60,7 @@ src/
     tokens.ts        calibrated token counting (js-tiktoken × per-model calibration factor)
     preferences.ts   persist /prefer kind model choices to ~/.gearbox/routing-preferences.json
     reasoning.ts     reasoning/thinking config helpers
-    caching.ts       PURE prompt-cache breakpoints: mark system + last message for anthropic/bedrock; no-op for auto-cache providers; fixture-tested
+    caching.ts       PURE prompt-cache breakpoints: withPromptCaching marks system + last settled message; withStepCaching slides a per-step breakpoint onto the growing tool-result tail (prepareStep) so it caches instead of re-sending each step; anthropic/bedrock only, no-op for auto-cache providers; fixture-tested
   context/
     builder.ts       context engine: system + memory + repo map + retrieved files + curated history
     retrieve.ts      BM25 lexical retrieval — top-K relevant files for a prompt (no model call)

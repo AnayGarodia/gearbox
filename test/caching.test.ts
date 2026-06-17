@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import type { ModelMessage } from "ai";
-import { cacheKind, withPromptCaching } from "../src/model/caching.ts";
+import { cacheKind, withPromptCaching, withStepCaching } from "../src/model/caching.ts";
 import type { ModelSpec } from "../src/providers.ts";
 
 const spec = (provider: string, sdkId: string): ModelSpec => ({
@@ -110,4 +110,62 @@ test("an existing providerOptions on the last message is preserved (merged, not 
   const last = messages[messages.length - 1] as any;
   expect(last.providerOptions.anthropic.cacheControl.type).toBe("ephemeral");
   expect(last.providerOptions.anthropic.foo).toBe("bar"); // pre-existing option kept
+});
+
+// withStepCaching: the per-step sliding breakpoint used inside the tool loop.
+// Within one multi-step turn the accumulating tool results sit AFTER the static
+// prefix breakpoint, so each later step re-sends them at full price. Marking the
+// last completed message each step writes the growing tail once and the next
+// step reads it.
+test("withStepCaching: marks the last message for explicit-cache providers", () => {
+  const stepMsgs: ModelMessage[] = [
+    { role: "system", content: "SYS", providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } } as any,
+    { role: "user", content: "do the thing" },
+    { role: "assistant", content: "calling a tool" },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "1", toolName: "read_file", output: { type: "text", value: "big file body" } }] } as any,
+  ];
+  const out = withStepCaching(spec("anthropic", "claude-sonnet-4-6"), stepMsgs);
+  // The tool-result tail is now a cache breakpoint → it gets written once, read after.
+  expect(anthropicMark(out[out.length - 1])).toBe("ephemeral");
+  // The static system breakpoint is untouched (still ≤ Anthropic's 4-breakpoint cap).
+  expect(anthropicMark(out[0])).toBe("ephemeral");
+  // Middle messages stay clean.
+  expect(anthropicMark(out[1])).toBeUndefined();
+});
+
+test("withStepCaching: bedrock claude gets a cachePoint on the tail", () => {
+  const stepMsgs: ModelMessage[] = [
+    { role: "user", content: "q" },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "1", toolName: "search", output: { type: "text", value: "results" } }] } as any,
+  ];
+  const out = withStepCaching(spec("bedrock", "anthropic.claude-sonnet-4-20250514-v1:0"), stepMsgs);
+  expect(bedrockMark(out[out.length - 1])).toBe("default");
+});
+
+test("withStepCaching: auto-cache providers and empty input pass through by identity", () => {
+  const stepMsgs: ModelMessage[] = [{ role: "user", content: "q" }];
+  for (const m of [spec("openai", "gpt-5.5"), spec("deepseek", "deepseek-v4-pro"), spec("google", "gemini-3.5-flash")]) {
+    expect(withStepCaching(m, stepMsgs)).toBe(stepMsgs); // identity — no rebuild
+  }
+  // No messages → nothing to mark, same array back.
+  expect(withStepCaching(spec("anthropic", "claude-sonnet-4-6"), [])).toEqual([]);
+});
+
+test("withStepCaching: does not mutate the input array", () => {
+  const stepMsgs: ModelMessage[] = [
+    { role: "user", content: "q" },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "1", toolName: "x", output: { type: "text", value: "r" } }] } as any,
+  ];
+  const out = withStepCaching(spec("anthropic", "claude-sonnet-4-6"), stepMsgs);
+  expect(out).not.toBe(stepMsgs);
+  expect(anthropicMark(stepMsgs[stepMsgs.length - 1])).toBeUndefined(); // original untouched
+});
+
+test("withStepCaching: preserves a pre-existing providerOptions on the tail (merge)", () => {
+  const stepMsgs: ModelMessage[] = [
+    { role: "tool", content: [], providerOptions: { anthropic: { foo: "bar" } } } as any,
+  ];
+  const out = withStepCaching(spec("anthropic", "claude-sonnet-4-6"), stepMsgs) as any;
+  expect(out[0].providerOptions.anthropic.cacheControl.type).toBe("ephemeral");
+  expect(out[0].providerOptions.anthropic.foo).toBe("bar");
 });

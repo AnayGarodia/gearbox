@@ -26,7 +26,7 @@ import { streamText, stepCountIs, type ModelMessage } from "ai";
 import { resolveModel, type ModelSpec } from "../providers.ts";
 import type { ResolvedCreds } from "../accounts/types.ts";
 import { reasoningOptions, type Effort } from "../model/reasoning.ts";
-import { withPromptCaching } from "../model/caching.ts";
+import { withPromptCaching, withStepCaching, cacheKind } from "../model/caching.ts";
 import { sanitizeWithMap } from "../context/sanitize.ts";
 import { classifyProviderError, retryDelayMs, MAX_INLINE_RETRY_DELAY_MS } from "./errors.ts";
 import { makeDelegateTools, type SubAgentRunner } from "./delegate.ts";
@@ -461,6 +461,19 @@ export async function runTask(opts: {
           // system block.
           allowSystemInMessages: true,
           tools: activeTools,
+          // Per-step cache breakpoint (Anthropic/Bedrock only). withPromptCaching
+          // marks the static prefix once; from step 1 on, this turn's accumulated
+          // tool results sit after it and would be re-sent at full price every
+          // step. Sliding a breakpoint onto the last completed message writes that
+          // tail to cache once so later steps read it. Step 0 is left alone so the
+          // volatile per-turn tail (retrieved files) never pollutes the cross-turn
+          // prefix. No-op for auto-caching providers.
+          ...(cacheKind(model)
+            ? {
+                prepareStep: ({ stepNumber, messages: stepMsgs }: { stepNumber: number; messages: ModelMessage[] }) =>
+                  stepNumber < 1 ? undefined : { messages: withStepCaching(model, stepMsgs) },
+              }
+            : {}),
           stopWhen: [stepCountIs(config.maxSteps), () => loopStop],
           abortSignal: streamAbort.signal,
           maxRetries: opts.maxRetries,

@@ -111,7 +111,6 @@ import { spawnSync as nodeSpawnSync } from "node:child_process";
 import { spawnSyncProc, which } from "../proc.ts";
 import { handleCommand as dispatchCommand, KEYS_HELP, clipForPrompt, splitSubject, type CommandCtx } from "./command-handler.ts";
 import { matchIntent } from "./intent.ts";
-import { easeScrollStep, scrollSettled } from "./scroll.ts";
 
 export type Runner = (opts: {
   prompt: string;
@@ -448,6 +447,10 @@ export interface AppProps {
   setupNote?: string;
 }
 
+// A single shared blank transcript line, reused for the chat-anchor bottom spacer
+// so repeated rows keep one reference (LineRow's memo skips re-rendering them).
+const EMPTY_LINE: Line = [];
+
 export function App({ selector: initialSelector, runner, fullscreen = false, resumeId, root: rootProp, active = true, onStatus, tabs, tabRows, initialPrompt, ghostLook, setupNote }: AppProps) {
   const { exit } = useApp();
   // The instance's workspace, FIXED at mount: per-turn root capture, the
@@ -659,6 +662,17 @@ export function App({ selector: initialSelector, runner, fullscreen = false, res
   const [perm, setPermState] = useState<PermRequest | null>(null);
   const [ask, setAskState] = useState<{ req: AskRequest; resolve: (a: AskAnswer[] | null) => void; picker: AskPickerState } | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  // Chat-style anchoring: the FIRST prompt of a conversation snaps to the TOP of
+  // the viewport and the reply streams BELOW it (a min-height spacer fills the
+  // rest), instead of scrolling off the top as output grows. It stays anchored
+  // until that turn outgrows the screen (then we follow the tail) or the user
+  // scrolls; later turns append and follow normally. Fullscreen only — inline
+  // uses native terminal scroll.
+  const [anchorTop, setAnchorTopState] = useState(false);
+  const anchorTopRef = useRef(false);
+  const setAnchorTop = (v: boolean) => { anchorTopRef.current = v; setAnchorTopState(v); };
+  const [anchorId, setAnchorId] = useState<number | null>(null); // item id of the current turn's prompt
+  const [anchorOffset, setAnchorOffset] = useState<number | null>(null); // its first transcript line
   const [expandAll, setExpandAll] = useState(false); // ⌃O: show full diffs/tool output
   const [search, setSearchState] = useState<{ q: string; idx: number } | null>(null); // ⌃R reverse-i-search
   const [paletteIndex, setPaletteIndexState] = useState(0);
@@ -1152,55 +1166,22 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     return () => setSpendListener(null);
   }, []);
 
-  // Smooth scrolling: a wheel notch (or a fast swipe's burst of events) sets a
-  // TARGET, and an easing loop glides scrollTop toward it a fraction of the
-  // remaining distance each frame · so big jumps decelerate instead of snapping,
-  // while a single line still moves immediately. The terminal grid is still
-  // line-quantized; this just makes the motion between rows continuous.
-  const scrollTargetRef = useRef<number | null>(null);
-  const scrollAnimRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const noMotion = process.env.GEARBOX_NO_MOTION === "1";
-  const stopScrollAnim = useCallback(() => {
-    if (scrollAnimRef.current) { clearInterval(scrollAnimRef.current); scrollAnimRef.current = null; }
-  }, []);
-  // SMOOTH scroll: a wheel notch / key sets a TARGET line; an easing loop glides
-  // scrollTop toward it, moving a fraction of the remaining distance each frame
-  // (line-quantized — see scroll.ts), so motion decelerates instead of snapping.
-  // This is cheap now: `lines` is memoized (scrollTop is NOT a dep) and LineRow
-  // is React.memo, so each glide frame only re-slices the viewport and re-renders
-  // the rows that actually changed — not the whole transcript (the reason the old
-  // glide was reverted). GEARBOX_NO_MOTION jumps directly with no animation.
-  const FRAME_MS = 16; // ~60fps
-  const tickGlide = useCallback(() => {
-    const target = scrollTargetRef.current;
-    if (target == null) { stopScrollAnim(); return; }
-    const cur = scrollTopRef.current;
-    const next = easeScrollStep(cur, target);
-    atBottomRef.current = next >= maxScrollRef.current;
-    if (next !== cur) setScrollTop(next);
-    if (scrollSettled(next, target)) { scrollTargetRef.current = null; stopScrollAnim(); }
-  }, [stopScrollAnim]);
+  // Scrolling: apply each wheel/key delta INSTANTLY in one render — no easing
+  // glide. A terminal grid can't render sub-line, so the only thing an easing
+  // loop adds is a multi-frame crawl per notch that reads as lag/mush; the crisp
+  // TUIs (opencode, crush — both Bubble Tea's slice-and-repaint viewport) just
+  // move the offset and re-render once per notch. The onData handler already SUMS
+  // a read's wheel events, so a single notch moves WHEEL_LINES line(s) (fine
+  // control) while a fast swipe's burst still jumps many lines at once.
   const scrollBy = useCallback((delta: number) => {
+    if (anchorTopRef.current) setAnchorTop(false); // user took the wheel — drop the top anchor
     const max = maxScrollRef.current;
-    // Build on the pending target (so a burst of wheel notches accumulates into
-    // one glide) — or the current position when starting fresh.
-    const base = scrollTargetRef.current ?? (atBottomRef.current ? max : scrollTopRef.current);
+    const base = atBottomRef.current ? max : scrollTopRef.current;
     const target = Math.max(0, Math.min(max, base + delta));
-    if (noMotion) {
-      stopScrollAnim();
-      scrollTargetRef.current = null;
-      atBottomRef.current = target >= max;
-      setScrollTop(target);
-      return;
-    }
-    scrollTargetRef.current = target;
     atBottomRef.current = target >= max; // detach from the live tail on upward intent
-    if (!scrollAnimRef.current) scrollAnimRef.current = setInterval(tickGlide, FRAME_MS);
-  }, [noMotion, stopScrollAnim, tickGlide]);
-  // Wheel events update the target directly (cheap); the glide loop is the render
-  // throttle, so no separate event-rate throttle is needed.
+    setScrollTop(target);
+  }, []);
   const queueScroll = useCallback((delta: number) => scrollBy(delta), [scrollBy]);
-  useEffect(() => stopScrollAnim, [stopScrollAnim]); // clear any glide timer on unmount
   useEffect(() => () => { const r = selRenderRef.current; if (r.t) clearTimeout(r.t); }, []); // clear the drag-flush timer on unmount
   useEffect(() => () => { if (pasteCoalesceTimerRef.current) clearTimeout(pasteCoalesceTimerRef.current); }, []); // clear the paste coalescer timer on unmount
 
@@ -1350,11 +1331,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         const x = Number(m[2]);
         const y = Number(m[3]);
         const up = m[4] === "m";
-        // 3 lines per wheel notch (was 1 — felt sluggish). Single notches settle
-        // instantly (the glide only kicks in for accumulated fast swipes), so
-        // scrolling reads crisp rather than crawling.
-        if (b === 64) delta -= 3;
-        else if (b === 65) delta += 3;
+        // 1 line per wheel notch, applied instantly (no glide). A read's events
+        // are summed below, so a single notch nudges one line (the finest control
+        // a cell grid allows) while a fast swipe's burst still jumps many at once.
+        if (b === 64) delta -= 1;
+        else if (b === 65) delta += 1;
         else {
           const isDrag = (b & 32) === 32;
           const isPrimary = (b & 3) === 0;
@@ -2028,7 +2009,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     setItems((prev) => prev.map((it) => (it.id === id && it.kind === "phase" ? { ...it, state, label, detail } : it)));
   };
   const turnNoRef = useRef(0); // numbered sections: real prompts only (command echoes stay small)
-  const echo = (text: string, numbered = false) => push({ kind: "user", id: idRef.current++, text, turnNo: numbered ? ++turnNoRef.current : undefined, at: Date.now() });
+  const echo = (text: string, numbered = false) => {
+    const id = idRef.current++;
+    push({ kind: "user", id, text, turnNo: numbered ? ++turnNoRef.current : undefined, at: Date.now() });
+    return id;
+  };
   const notice = (text: string) => push({ kind: "notice", id: idRef.current++, text });
 
   // Conductor → active session channel: a one-shot setup result (`.gearbox/setup`
@@ -2972,7 +2957,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Everything pushed from here on belongs to this turn; at settle we collapse
       // that slice (drop spinners, fold repeated checks) into a durable record.
       const turnStartId = idRef.current;
-      echo(displayPrompt, true);
+      // Only the FIRST prompt of a conversation anchors to the top; every later
+      // turn appends and follows the stream normally.
+      const isFirstPrompt = !itemsRef.current.some((it) => it.kind === "user" && (it as any).turnNo != null);
+      const promptItemId = echo(displayPrompt, true);
       lastPromptRef.current = displayPrompt;
       // Pre-flight hard spend cap (/cap): refuse the turn before any model call if
       // a configured ceiling is reached. Guards auto-fix re-entry and runaway spend
@@ -3022,7 +3010,15 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       if (lingerRef.current) clearTimeout(lingerRef.current);
       setLinger(false);
       setMascotState("thinking");
-      atBottomRef.current = true; // follow the live output
+      // Anchor the new prompt to the top of the viewport (chat-style) in fullscreen;
+      // inline keeps following the live tail (native scroll, no anchoring there).
+      if (fullscreen && isFirstPrompt) {
+        setAnchorId(promptItemId);
+        setAnchorTop(true);
+        atBottomRef.current = false;
+      } else {
+        atBottomRef.current = true; // follow the live output
+      }
       if (!sessionRef.current.title) sessionRef.current.title = prompt.slice(0, 80);
       curAsstRef.current = null;
       const ac = new AbortController();
@@ -4803,6 +4799,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     });
   }, [displayItems, lineWidth, marginCols, expandAll, recede]);
 
+  // When a turn anchors, measure the prompt's first transcript line = the line
+  // count of everything BEFORE it. That prefix is settled (only items AFTER the
+  // prompt stream), so this recomputes on anchor change / resize, not per flush.
+  useEffect(() => {
+    if (!anchorTop || anchorId == null) { setAnchorOffset(null); return; }
+    const idx = displayItems.findIndex((i) => i.id === anchorId);
+    if (idx < 0) { setAnchorOffset(null); return; }
+    setAnchorOffset(itemsToLines(displayItems.slice(0, idx), lineWidth, expandAll, true).length);
+  }, [anchorTop, anchorId, lineWidth, expandAll]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Footer height · over-estimated so the fullscreen frame never exceeds the
   // screen (alt-screen clips overflow, so under-filling is safe, over-filling
   // clips the status bar). HEADER is the title bar (marginTop + title + rule).
@@ -4899,9 +4905,19 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // pre-launch screen (and rendering is less flickery). cli.tsx also strips any
   // stray 3J as a belt-and-suspenders.
   const transcriptHeight = Math.max(1, rows - HEADER - footer - 1);
-  const maxScroll = Math.max(0, lines.length - transcriptHeight);
-  const effScroll = atBottomRef.current ? maxScroll : Math.min(scrollTop, maxScroll);
-  linesRef.current = lines;
+  // Chat anchoring: while the prompt is anchored and its turn still fits, pad the
+  // bottom with a spacer so the prompt can scroll to the very top (the reply fills
+  // downward into the spacer). Once the turn outgrows the viewport, drop the anchor
+  // and follow the tail (handled by the effect below).
+  const contentBelowAnchor = anchorTop && anchorOffset != null ? lines.length - anchorOffset : 0;
+  const anchorActive = anchorTop && anchorOffset != null && anchorOffset <= lines.length && contentBelowAnchor <= transcriptHeight;
+  const spacerLen = anchorActive ? Math.max(0, transcriptHeight - contentBelowAnchor) : 0;
+  const displayLines = spacerLen > 0 ? lines.concat(Array(spacerLen).fill(EMPTY_LINE)) : lines;
+  const maxScroll = Math.max(0, displayLines.length - transcriptHeight);
+  const effScroll = anchorActive
+    ? Math.min(anchorOffset!, maxScroll)
+    : atBottomRef.current ? maxScroll : Math.min(scrollTop, maxScroll);
+  linesRef.current = displayLines;
   scrollTopLiveRef.current = effScroll;
   transcriptHeightLiveRef.current = transcriptHeight;
   viewportHeightRef.current = transcriptHeight;
@@ -4961,9 +4977,17 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   }
 
   // Keep scrollTop pinned to the bottom as new lines stream in (unless scrolled up).
+  // When an anchored turn outgrows the viewport, release the top anchor and follow
+  // the streaming tail instead.
   useEffect(() => {
-    if (atBottomRef.current) setScrollTop(maxScroll);
-  }, [lines.length, maxScroll]);
+    if (anchorTopRef.current && anchorOffset != null && lines.length - anchorOffset > transcriptHeight) {
+      setAnchorTop(false);
+      atBottomRef.current = true;
+      setScrollTop(maxScroll);
+    } else if (atBottomRef.current) {
+      setScrollTop(maxScroll);
+    }
+  }, [lines.length, maxScroll, anchorOffset, transcriptHeight]);
 
   // Cold-open providers block: when there's no conversation yet and accounts are
   // configured, show their real status + honest balances (a pure, synchronous read;
@@ -5238,7 +5262,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
           </Box>
         ) : (
           <Box paddingX={1} flexGrow={1}>
-            <Viewport lines={lines} scrollTop={effScroll} height={transcriptHeight} width={width - 2} selection={transcriptSelection} />
+            <Viewport lines={displayLines} scrollTop={effScroll} height={transcriptHeight} width={width - 2} selection={transcriptSelection} />
           </Box>
         )}
         {footerJsx}
