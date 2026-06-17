@@ -60,8 +60,50 @@ Two observed routing failures, both reducing to "cheapest tiny model wins":
 - Difficulty granularity: **three bands** (easy/medium/hard), not a 0–1 score.
 - Difficulty judge latency: **bounded ~600ms blocking** on code/plan cache-miss,
   size-based fallback on timeout; cached per-prompt per-repo.
+- **LLM = perception, engine = decision.** The small LLM only judges the task
+  (kind + difficulty); the model+account pick stays pure deterministic arithmetic.
+  The judge's output is a constrained judgment, never a free-form model id.
+- **Cheapest-possible judge.** The perception call routes as a `classify`-kind turn
+  (floor 0 → cheapest-capable-wins), so the cheapest available model falls out of
+  the existing engine and stays account-scope-aware. No second model-selection path.
 
 ## Design
+
+### Principle: LLM = perception, engine = decision
+
+A small LLM is used for exactly one thing — *judging the task* (kind + difficulty,
+the soft semantic read the math cannot compute from numbers). It never picks the
+final model+account. The decision itself — filter by capability/usage/scope, then
+`argmin(expected $)` — stays pure, deterministic arithmetic (`scoring.ts`,
+`objective.ts`), because:
+
+- routing *is* arithmetic (price × tokens, balance cover, rate-limit knees,
+  context fit, argmin over ~25 candidates), and LLMs are unreliable at
+  multi-number threshold logic;
+- routing runs every turn — a deterministic pick is fixture-testable,
+  reproducible, and explainable in `/why`; an LLM pick is none of those;
+- live state (balances, rate headroom, prices, per-repo priors) lives in typed
+  structures the engine reads directly, not serialized into a prompt that goes
+  stale.
+
+The LLM's output is constrained to a judgment (`difficulty: easy|medium|hard`) or
+at most a coarse tier — **never** a free-form model id (which it would
+hallucinate). The engine maps that judgment → concrete model under live
+constraints. This boundary is the design's load-bearing decision; do not let the
+judge creep toward picking models.
+
+### Cheapest-possible judge: route it as a `classify` turn
+
+The perception call must use the cheapest available model, and it should fall out
+of the existing engine rather than a second hardcoded model selection. The judge
+runs as a routed turn of kind `classify` (or `summarize`), which already has
+`CAPABILITY_FLOOR = 0` (`router.ts:73`) — so cheapest-capable-wins selects the
+globally cheapest model on its own, and it stays **account-scope-aware** (honors
+Fix B: a judge call inside the Azure scope picks the cheapest Azure model, not a
+stray Anthropic key). The only hard requirement on the candidate is that it can
+return the constrained structured output; a model that fails calibration on the
+bake-off set (below) is excluded so the floor drops to the next-cheapest. No new
+model-selection code path — reuse the seam.
 
 ### Fix A — difficulty-aware routing
 
@@ -76,12 +118,14 @@ difficulty band for code/plan turns, mirroring how *kind* is already classified
   `typo`, `bump version`, `fix import`, `comment`) → `easy`. Returns null when
   uncertain.
 - **Cheap LLM judge** for the uncertain remainder: returns
-  `{ band: "easy"|"medium"|"hard", reason: string }`. Folded into the *same* call
-  that classifies kind when that call runs (≈ zero marginal cost). For
-  confident-keyword code turns where the kind classifier is skipped today, the
-  judge runs with a ~600ms blocking budget and falls back to the current
-  size-based `estimateDifficulty` on timeout. Cached per-prompt per-repo
-  (`~/.gearbox/classify-cache.json` or a sibling), so repeats are free.
+  `{ band: "easy"|"medium"|"hard", reason: string }`, on the cheapest available
+  model (selected by routing the call as a `classify` turn — see "Cheapest-possible
+  judge" above). Folded into the *same* call that classifies kind when that call
+  runs (≈ zero marginal cost). For confident-keyword code turns where the kind
+  classifier is skipped today, the judge runs with a ~600ms blocking budget and
+  falls back to the current size-based `estimateDifficulty` on timeout. Cached
+  per-prompt per-repo (`~/.gearbox/classify-cache.json` or a sibling), so repeats
+  are free.
 - **Band → score:** `easy → 0`, `medium → 0.4`, `hard → 0.85`.
 - **Combine** with the existing size-based estimate:
   `semanticDifficulty` becomes a new `DifficultySignals` field; final
@@ -143,6 +187,16 @@ mode is on.
 - **Not** adding a per-turn difficulty override UI (the band + `/why` reason is
   enough; flywheel corrects misses).
 
+**Future — pillar C (strengthen the flywheel).** A and B make the *first pick*
+less wrong; the measure-and-correct loop (`priors.ts`) is what makes routing
+genuinely good over time, because no prompt-only prediction beats measured
+per-repo reality ("Haiku fails code 7/9 here"). Out of scope for this spec, its
+own later: widen the captured outcome signals (escalation-was-needed, manual model
+override, user re-run, explicit 👍/👎), let measured evidence influence below the
+current `MIN_N = 8` with low confidence instead of staying silent, and keep
+surfacing it in `/why`. Prediction sets the prior; measurement converges it. Spec
+A+B first (concrete, testable, ships the screenshot fixes); spec C next.
+
 ## Testing
 
 - `difficulty` judge: fixture tests mapping representative prompts → expected band
@@ -166,6 +220,14 @@ mode is on.
   combine keeps small easy tasks cheap; conservative band→score mapping; the
   existing reactive escalation + per-repo priors correct misses over turns;
   bake-off calibration of the band scores.
+- **Cheapest-model judge accuracy.** The very cheapest model may misjudge
+  difficulty — the exact axis we need it for. This is bounded, not blind: the
+  lexical fast-path handles the obvious cases without it; the bake-off set
+  validates that the chosen cheapest model clears a minimum accuracy on the
+  labeled pairs, and a model that fails is excluded so the floor drops to the
+  next-cheapest. If even mid-cheap models can't judge reliably, raise the
+  `classify`-kind floor slightly (one number, not an architecture change) — the
+  judge stays cheap, just not rock-bottom.
 - The ~600ms blocking judge adds latency on confident-keyword code turns
   (cache-miss only). Acceptable against a multi-second coding turn; revisit if it
   bites.
