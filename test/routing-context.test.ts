@@ -43,6 +43,31 @@ test("rate headroom is the MIN over windows (the binding window governs)", () =>
   expect(s.rateHeadroom).toBeCloseTo(0.1, 5);
   expect(s.bindingWindow?.type).toBe("seven_day");
   expect(s.bindingWindow?.resetsAt).toBe(7);
+  // weeklyHeadroom tracks the seven_day window ALONE (drives the 90%-weekly
+  // subscription-first cap), independent of the binding-min above.
+  expect(s.weeklyHeadroom).toBeCloseTo(0.1, 5);
+});
+
+test("weeklyHeadroom reflects the seven_day window only, not the tighter five_hour", () => {
+  // 5h nearly spent (0.95 used → 0.05 headroom) but weekly fresh (0.2 used → 0.8).
+  const ctx = buildRoutingContext(1000, {
+    accounts: [acct({ id: "max", provider: "claude-cli", exec: "cli" })],
+    usage: [usage({ accountId: "max", rates: [
+      { utilization: 0.95, type: "five_hour", resetsAt: 5, at: 1 },
+      { utilization: 0.2, type: "seven_day", resetsAt: 7, at: 1 },
+    ] })],
+  });
+  const s = ctx.byAccountId.get("max")!;
+  expect(s.rateHeadroom).toBeCloseTo(0.05, 5); // binding-min is the 5h window
+  expect(s.weeklyHeadroom).toBeCloseTo(0.8, 5); // weekly is still fresh
+});
+
+test("weeklyHeadroom is undefined when no weekly window has been observed", () => {
+  const ctx = buildRoutingContext(1000, {
+    accounts: [acct({ id: "max", provider: "claude-cli", exec: "cli" })],
+    usage: [usage({ accountId: "max", rates: [{ utilization: 0.5, type: "five_hour", resetsAt: 5, at: 1 }] })],
+  });
+  expect(ctx.byAccountId.get("max")!.weeklyHeadroom).toBeUndefined();
 });
 
 test("utilization is clamped to [0,1] before computing headroom", () => {

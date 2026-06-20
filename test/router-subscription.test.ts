@@ -120,3 +120,91 @@ test("inLoopOnly excludes seats: callers without seat dispatch never get a cli b
   const choice = new RoutingSelector().select({ prompt: "summarize this transcript", kind: "summarize", inLoopOnly: true });
   expect(choice.backend?.kind ?? "in-loop").toBe("in-loop");
 });
+
+// ── subscription-first: always prefer the seat until 90% weekly usage ─────────
+
+test("the seat is still preferred in the MID weekly zone (85% used, below the 90% cap)", () => {
+  putAccount(claudeSeat());
+  recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  // 85% weekly usage → headroom 0.15, above the 0.10 cap. Subscription-first
+  // keeps the seat winning rather than letting a cheap metered model undercut it.
+  recordRateLimits("claude-max", [{ utilization: 0.85, type: "seven_day", resetsAt: futureSec() }]);
+  expect(new RoutingSelector().select({ prompt: "refactor the parser" }).backend?.kind).toBe("cli");
+});
+
+test("API engages exactly at the 90% weekly cap (92% used → in-loop)", () => {
+  putAccount(claudeSeat());
+  recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  recordRateLimits("claude-max", [{ utilization: 0.92, type: "seven_day", resetsAt: futureSec() }]);
+  expect(new RoutingSelector().select({ prompt: "refactor the parser" }).backend?.kind).toBe("in-loop");
+});
+
+test("a spent 5-hour window releases to API even with a fresh weekly window (no forced 429)", () => {
+  putAccount(claudeSeat());
+  recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  // 5h window fully consumed; weekly fresh. The seat would 429 this turn, so
+  // subscription-first releases to the metered API ("the subscription ran out").
+  recordRateLimits("claude-max", [
+    { utilization: 1.0, type: "five_hour", resetsAt: futureSec() },
+    { utilization: 0.1, type: "seven_day", resetsAt: futureSec() },
+  ]);
+  expect(new RoutingSelector().select({ prompt: "refactor the parser" }).backend?.kind).toBe("in-loop");
+});
+
+test("with two seats, an over-cap seat is skipped for the under-cap one", () => {
+  putAccount({ id: "claude-hot", label: "Claude Hot", provider: "claude-cli", exec: "cli", auth: { kind: "cli", binary: "claude" }, enabled: true, addedAt: 0 });
+  putAccount({ id: "claude-cool", label: "Claude Cool", provider: "claude-cli", exec: "cli", auth: { kind: "cli", binary: "claude" }, enabled: true, addedAt: 0 });
+  recordUsage({ accountId: "claude-hot", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  recordUsage({ accountId: "claude-cool", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  recordRateLimits("claude-hot", [{ utilization: 0.95, type: "seven_day", resetsAt: futureSec() }]); // over cap
+  recordRateLimits("claude-cool", [{ utilization: 0.3, type: "seven_day", resetsAt: futureSec() }]); // viable
+  const choice = new RoutingSelector().select({ prompt: "refactor the parser" });
+  expect(choice.backend?.kind).toBe("cli");
+  expect((choice.backend as any).account.id).toBe("claude-cool"); // the under-cap seat
+});
+
+test("/prefer api overrides subscription-first even with a viable seat", () => {
+  putAccount(claudeSeat());
+  recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  recordRateLimits("claude-max", [{ utilization: 0.1, type: "seven_day", resetsAt: futureSec() }]); // fresh
+  const { setGlobalPreference } = require("../src/model/preferences.ts");
+  setGlobalPreference({ prefer: "api" });
+  expect(new RoutingSelector().select({ prompt: "refactor the parser" }).backend?.kind).toBe("in-loop");
+});
+
+test("/why names the subscription-first preference and the weekly usage driving it", () => {
+  putAccount(claudeSeat());
+  recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  recordRateLimits("claude-max", [{ utilization: 0.6, type: "seven_day", resetsAt: futureSec() }]);
+  const card = new RoutingSelector().explain({ prompt: "refactor the parser" });
+  expect(card.note).toContain("preferring subscription");
+  expect(card.note).toContain("60% used");
+  // The chosen row is the seat, and the metered API candidate is still shown.
+  const chosen = card.entries.find((e) => e.chosen)!;
+  expect(chosen.backend).toBe("seat");
+  expect(card.entries.some((e) => e.backend === "api")).toBe(true);
+});
+
+// ── /account off: session-level "subscription off" excludes seats entirely ────
+
+test("excludeSubscriptions drops a fresh, winning seat → routes to metered API", () => {
+  putAccount(claudeSeat());
+  recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  recordRateLimits("claude-max", [{ utilization: 0.1, type: "seven_day", resetsAt: futureSec() }]); // fresh, would win
+  const sel = new RoutingSelector();
+  // Without the flag the fresh seat wins (subscription-first); WITH it, no seat
+  // is even enumerated, so the turn stays on the Anthropic key.
+  expect(sel.select({ prompt: "refactor the parser" }).backend?.kind).toBe("cli");
+  expect(sel.select({ prompt: "refactor the parser", excludeSubscriptions: true }).backend?.kind).toBe("in-loop");
+});
+
+test("excludeSubscriptions composes with subscription-first: no seat to prefer, no /why sub note", () => {
+  putAccount(claudeSeat());
+  recordUsage({ accountId: "claude-max", inputTokens: 1, outputTokens: 1, costUSD: 0, estimated: false });
+  recordRateLimits("claude-max", [{ utilization: 0.1, type: "seven_day", resetsAt: futureSec() }]);
+  const card = new RoutingSelector().explain({ prompt: "refactor the parser", excludeSubscriptions: true });
+  // No seat row at all, and the subscription-first narrowing is a no-op.
+  expect(card.entries.some((e) => e.backend === "seat")).toBe(false);
+  expect(card.note ?? "").not.toContain("preferring subscription");
+  expect(card.entries.find((e) => e.chosen)!.backend).toBe("api");
+});

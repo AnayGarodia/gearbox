@@ -44,6 +44,12 @@ export interface AccountState {
   // SUBSCRIPTION windows (5-hour, weekly). 1 = completely fresh, 0 = exhausted.
   // undefined when no window has been observed yet (treated as fresh by the scorer).
   rateHeadroom?: number;
+  // Headroom of the WEEKLY (seven_day) window alone, kept separate from the
+  // binding-min above so the router can gate the "prefer subscription until 90%
+  // weekly usage" rule on the weekly window specifically (a near-full 5-hour
+  // window is short-term and handled by rateHeadroom/cooldown, not this cap).
+  // undefined when no weekly window has been observed (treated as fresh).
+  weeklyHeadroom?: number;
   bindingWindow?: { type?: string; utilization: number; resetsAt?: number }; // the tightest window
   rateAt?: number; // unix-ms timestamp of the rate snapshot
 
@@ -66,9 +72,10 @@ const clamp01 = (n: number) => Math.max(0, Math.min(1, n));
 // Distill the rate snapshots for one account into headroom figures. Separates
 // subscription windows (rateHeadroom, used for planBonus) from API throughput
 // windows (apiThrottle, used for apiThrottlePenalty).
-function headroomOf(u: AccountUsage | undefined, now: number): Pick<AccountState, "rateHeadroom" | "bindingWindow" | "rateAt" | "apiThrottle"> {
+function headroomOf(u: AccountUsage | undefined, now: number): Pick<AccountState, "rateHeadroom" | "weeklyHeadroom" | "bindingWindow" | "rateAt" | "apiThrottle"> {
   const snaps: RateSnapshot[] = u?.rates ?? (u?.rate ? [u.rate] : []);
   let rateHeadroom: number | undefined;
+  let weeklyHeadroom: number | undefined;
   let bindingWindow: AccountState["bindingWindow"];
   let apiThrottle: number | undefined;
   for (const r of snaps) {
@@ -91,13 +98,16 @@ function headroomOf(u: AccountUsage | undefined, now: number): Pick<AccountState
       if (apiThrottle === undefined || h < apiThrottle) apiThrottle = h;
       continue;
     }
+    // The weekly window drives the subscription-first cap (90% weekly usage),
+    // so track it on its own in addition to folding it into the binding min.
+    if (r.type === "seven_day" && (weeklyHeadroom === undefined || h < weeklyHeadroom)) weeklyHeadroom = h;
     // Subscription quota window: keep the tightest as the binding constraint.
     if (rateHeadroom === undefined || h < rateHeadroom) {
       rateHeadroom = h;
       bindingWindow = { type: r.type, utilization: util, resetsAt: r.resetsAt };
     }
   }
-  return { rateHeadroom, bindingWindow, rateAt: snaps[0]?.at, apiThrottle };
+  return { rateHeadroom, weeklyHeadroom, bindingWindow, rateAt: snaps[0]?.at, apiThrottle };
 }
 
 // Build the per-turn routing snapshot. Reads accounts and usage from disk by

@@ -887,6 +887,10 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   // `seenUpTo` = the neutral-history length the vendor session was last handed, so
   // a later resume can digest just the turns that ran on OTHER models in between.
   const cliSessionRef = useRef<{ account: string; id: string; seenUpTo: number } | undefined>(undefined);
+  // Session "subscription off" (/account off): exclude subscription seats from
+  // auto-routing for this run. In-memory only (session-scoped by design — a new
+  // run starts back on subscription-first). Threaded into every routed turn.
+  const excludeSubsRef = useRef<boolean>(false);
   // True once an in-loop (non-seat) turn ran since this seat last did — gates the
   // "turns since you last ran" gap digest so consecutive seat turns don't recap.
   const inLoopSinceSeatRef = useRef(false);
@@ -2353,9 +2357,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // when the pinned selector can't produce a choice.
         let choice: ModelChoice;
         try {
-          choice = sel.select({ prompt, kind: "search" });
+          choice = sel.select({ prompt, kind: "search", excludeSubscriptions: excludeSubsRef.current });
         } catch {
-          choice = new RoutingSelector().select({ prompt, kind: "search" });
+          choice = new RoutingSelector().select({ prompt, kind: "search", excludeSubscriptions: excludeSubsRef.current });
         }
         routedKindRef.current = { kind: "search", source: "ask" }; // /why after an /ask turn shows what actually ran
         if (!activeCliRef.current && sel instanceof RoutingSelector) noteBackendSwitch(choice);
@@ -2654,9 +2658,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires: routeRequires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, difficultyBand: routedBand, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires, estTokens }) : sel.select({ prompt, kind: routedKind, requires: routeRequires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, difficultyBand: routedBand, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name, excludeSubscriptions: excludeSubsRef.current });
       } catch {
-        choice = sel.select({ prompt, kind: routedKind, requires: routeRequires, estTokens }); // directive model unavailable → fall back to routing
+        choice = sel.select({ prompt, kind: routedKind, requires: routeRequires, estTokens, excludeSubscriptions: excludeSubsRef.current }); // directive model unavailable → fall back to routing
       }
       if (sel instanceof RoutingSelector && !directiveId) noteBackendSwitch(choice);
       // Capture the ACTUAL scorecard now (same task the pick used), so /why later
@@ -2664,7 +2668,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // state. Cleared when not auto-routing (a pin/directive ran).
       if (sel instanceof RoutingSelector && !directiveId && sel.explain) {
         try {
-          const card = sel.explain({ prompt, kind: routedKind, requires: routeRequires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, difficultyBand: routedBand, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name });
+          const card = sel.explain({ prompt, kind: routedKind, requires: routeRequires, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, difficultyBand: routedBand, excludeFamily: agentDef?.excludeFamily, agent: agentDef?.name, excludeSubscriptions: excludeSubsRef.current });
           lastScorecardRef.current = routedKind ? { ...card, kindSource: routedSource } : card;
         } catch { lastScorecardRef.current = null; }
       } else {
@@ -2731,7 +2735,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: routedKind, requires: routeRequires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires: routeRequires, escalate, failureKind: escalate > 0 ? lastFailureKindRef.current : undefined, touchedFiles: touchedFilesRef.current, interactive: true, estTokens, excludeSubscriptions: excludeSubsRef.current }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         // Bail only when the router hands back the exact pick we just parked
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
@@ -3656,7 +3660,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         root: rootRef.current, // this tab's tree — git verbs act here, never on whichever tab owns cwd
         // refs (stable objects)
         abortRef, accountStatusCacheRef, activeCliModelRef, activeCliRef, askModeRef, atBottomRef,
-        busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
+        busyRef, capsRef, charTestOfferedRef, cliSessionRef, excludeSubsRef, curAsstRef, effortRef, ghostSkinRef,
         gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
         lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
         routedKindRef, lastScorecardRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,

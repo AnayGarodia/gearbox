@@ -105,6 +105,27 @@ const ESCALATION_FLOOR_BY_KIND: Record<NonNullable<Task["failureKind"]>, number>
 const escalationFloorStep = (fk: Task["failureKind"]): number => (fk ? ESCALATION_FLOOR_BY_KIND[fk] : 0.2);
 const FLOOR_MAX = 0.9; // an escalated floor never excludes literally every model
 
+// Subscription-first cap. Auto-routing ALWAYS prefers a flat-rate subscription
+// seat and only releases to metered API when the seat is no longer a good bet:
+// weekly (seven_day) usage has reached this fraction, OR a binding window is
+// fully spent (a 429 is imminent), OR the seat is cooled/exhausted (removed in
+// enumerate). Until then a seat wins outright — never undercut by a cheap API
+// model. `/prefer api` opts out of the whole rule; `/prefer subscription` makes
+// it unconditional (no weekly release). Degrades to a no-op when no seat exists.
+const WEEKLY_USAGE_CAP = 0.9; // 90% weekly usage → start letting API take over
+const WEEKLY_HEADROOM_FLOOR = 1 - WEEKLY_USAGE_CAP; // 0.10 weekly headroom
+
+// A subscription seat is still the PREFERRED pick (worth forcing over API) when
+// its weekly window has headroom above the cap AND no binding window is fully
+// spent. Unknown windows are treated as fresh (the seat we already pay for gets
+// the benefit of the doubt). A spent window releases the constraint so we never
+// force a turn that is guaranteed to 429 — "the subscription ran out".
+function seatPreferredViable(s: AccountState): boolean {
+  if (s.weeklyHeadroom !== undefined && s.weeklyHeadroom <= WEEKLY_HEADROOM_FLOOR) return false;
+  if (s.rateHeadroom !== undefined && s.rateHeadroom <= 0) return false;
+  return true;
+}
+
 // The flywheel's HARD stop: a model with a MEASURED per-repo fail rate at/above
 // this (gated at ≥ MIN_N verified outcomes inside failRateFor) is EXCLUDED from
 // routing here — "it keeps failing in THIS repo" is decisive evidence no
@@ -395,7 +416,7 @@ export class RoutingSelector implements ModelSelector {
   // provider, or with a neutral env-default state when no account is stored.
   // Subscription seats are appended as separate candidates. The result is the
   // complete pool; subsequent steps filter it by capability, context, and bar.
-  private enumerate(ctx: RoutingContext): Candidate[] {
+  private enumerate(ctx: RoutingContext, excludeSubscriptions = false): Candidate[] {
     const out: Candidate[] = [];
     const neutral = (id: string, provider: string): AccountState =>
       ctx.byAccountId.get(id) ?? { accountId: id, provider, exec: "in-loop", isSubscription: false };
@@ -414,7 +435,10 @@ export class RoutingSelector implements ModelSelector {
         for (const a of accts) out.push({ spec: m, canonicalId: canon, backend: { kind: "in-loop", account: a }, state: neutral(a.id, m.provider) });
       }
     }
-    for (const seat of subscriptionSeats()) {
+    // Session "subscription off" (/account off): drop seats from auto-routing
+    // entirely so the conversation stays on metered API. Per-turn flag, not the
+    // on-disk policy — it lasts only for this run.
+    for (const seat of excludeSubscriptions ? [] : subscriptionSeats()) {
       const state = ctx.byAccountId.get(seat.account.id) ?? { accountId: seat.account.id, provider: seat.account.provider, exec: "cli" as const, isSubscription: true };
       out.push({ spec: seat.spec, canonicalId: seat.canonicalId, backend: { kind: "cli", account: seat.account, binary: seat.binary, profile: seat.profile }, state });
     }
@@ -448,6 +472,7 @@ export class RoutingSelector implements ModelSelector {
     pol?: Policy;
     difficulty?: Difficulty;
     fallback?: ModelSpec;
+    subFirst?: { weeklyPct?: number }; // set when subscription-first narrowed the pool (for /why)
   } {
     const kind = task.kind ?? classify(task.prompt);
     const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
@@ -478,7 +503,7 @@ export class RoutingSelector implements ModelSelector {
     const ctx = buildRoutingContext(ctx_now());
     const estInputTokens = task.estTokens || NOMINAL_INPUT_TOKENS;
 
-    const all = this.enumerate(ctx);
+    const all = this.enumerate(ctx, task.excludeSubscriptions);
     if (all.length === 0) {
       // No API keys or seats configured: fall back to the default model if available.
       const m = pickDefaultModel(this.fallbackId);
@@ -545,7 +570,22 @@ export class RoutingSelector implements ModelSelector {
       const top = Math.max(...pool.map(adjQuality));
       floored = pool.filter((c) => (c.backend?.kind === "cli" && !hasKnownQuality(c)) || adjQuality(c) >= top - 1e-9);
     }
-    return { kind, floor, escalate, required, ctx, pool, floored, eligible, estInputTokens, pol, difficulty, effDifficulty, verifierTier };
+    // Subscription-first (the default): hard-prefer a viable seat over metered
+    // API. Applied LAST so it narrows the final selection set — both select()
+    // and explain() read `floored`, so they stay in lockstep. When it fires,
+    // record the weekly usage that's driving the cap for the /why note.
+    const subbed = applySubscriptionFirst(floored, pol);
+    let subFirst: { weeklyPct?: number } | undefined;
+    if (subbed !== floored && subbed.length < floored.length) {
+      // Report the TIGHTEST weekly window among the preferred seats (min headroom
+      // = highest usage), so /why shows how close we are to releasing to API
+      // rather than an arbitrary first seat's number.
+      const wks = subbed.map((c) => c.state.weeklyHeadroom).filter((h): h is number => h !== undefined);
+      const wk = wks.length ? Math.min(...wks) : undefined;
+      subFirst = { weeklyPct: wk !== undefined ? Math.round((1 - wk) * 100) : undefined };
+      floored = subbed;
+    }
+    return { kind, floor, escalate, required, ctx, pool, floored, eligible, estInputTokens, pol, difficulty, effDifficulty, verifierTier, subFirst };
   }
 
   // Return the per-kind remembered preference if it is present in the given
@@ -671,7 +711,10 @@ export class RoutingSelector implements ModelSelector {
     const diffNote = p.difficulty && p.difficulty.d > 0
       ? `harder than baseline (${p.difficulty.reasons.join(", ")})`
       : undefined;
-    return { kind: p.kind, bar: p.floor, prompt: task.prompt, entries, note: [diffNote, cooledNote].filter(Boolean).join(" · ") || undefined };
+    const subNote = p.subFirst
+      ? `preferring subscription${p.subFirst.weeklyPct !== undefined ? ` (weekly ${p.subFirst.weeklyPct}% used)` : ""} — API engages at ${Math.round(WEEKLY_USAGE_CAP * 100)}% weekly or when a window is spent`
+      : undefined;
+    return { kind: p.kind, bar: p.floor, prompt: task.prompt, entries, note: [diffNote, subNote, cooledNote].filter(Boolean).join(" · ") || undefined };
   }
 }
 
@@ -699,6 +742,22 @@ function verdictFor(c: Candidate, s: ScoredCandidate): string {
   if (s.terms.scarcity > s.terms.costEst) return "scarce credit";
   if (s.terms.apiThrottlePenalty > 0) return "near limit";
   return "ok";
+}
+
+// Subscription-first: hard-prefer a viable subscription seat over metered API,
+// the default auto-routing behaviour. Narrows the candidate set to its VIABLE
+// seats (weekly usage below the cap, no spent window) whenever at least one
+// exists — so a seat we already pay for is never undercut by a cheap API model.
+// Releases (returns the set unchanged) when no seat is viable: every seat is at
+// ≥90% weekly usage or has a spent window, in which case scoring decides and the
+// metered API takes over. `/prefer api` opts out entirely; `/prefer subscription`
+// is handled earlier (applyGlobalPreference) and already filters to seats, so a
+// pool that is all-seats here just stays all-seats. Empty/relaxed → no-op, so
+// users without a subscription are unaffected.
+function applySubscriptionFirst(pool: Candidate[], pol: Policy | undefined): Candidate[] {
+  if (pol?.prefer === "api") return pool;
+  const viable = pool.filter((c) => c.state.isSubscription && seatPreferredViable(c.state));
+  return viable.length ? viable : pool;
 }
 
 // Apply the global preference as a hard filter, relaxed if it would empty the pool.

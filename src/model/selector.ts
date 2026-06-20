@@ -91,6 +91,13 @@ export interface Task {
   // ScoreInput.warm (src/model/scoring.ts). When omitted, RoutingSelector falls
   // back to its own last returned pick, so callers get stickiness for free.
   warm?: { accountId: string; modelId: string };
+  // Session "subscription off" (/account off): when true, RoutingSelector drops
+  // subscription seats from the candidate pool entirely, so auto-routing stays on
+  // metered API for this run. A per-turn flag the App holds as session state,
+  // distinct from the on-disk `/prefer api` policy — it lasts only for the current
+  // run. Composes with subscription-first: with no seats enumerated, the
+  // subscription-first narrowing finds nothing to prefer and is a no-op.
+  excludeSubscriptions?: boolean;
 }
 
 export interface ModelChoice {
