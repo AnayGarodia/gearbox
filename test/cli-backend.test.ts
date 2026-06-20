@@ -2,8 +2,78 @@ import { test, expect } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseCliLines, buildCliArgs, runCliTask } from "../src/agent/cli-backend.ts";
+import { parseCliLines, buildCliArgs, runCliTask, bridgeTranscript } from "../src/agent/cli-backend.ts";
 import type { AgentEvent } from "../src/agent/events.ts";
+import type { ModelMessage } from "ai";
+
+// Part C — the context bridge that keeps a subscription seat (a black-box
+// subprocess that only resumes its OWN session) from forgetting the
+// conversation when a turn crosses the CLI↔API boundary.
+const LEDGER: ModelMessage[] = [
+  { role: "user", content: "host the chess server" },
+  { role: "assistant", content: "Running at http://127.0.0.1:3141/sites/chess" },
+  { role: "user", content: "close the server" },
+  { role: "assistant", content: "Server stopped." },
+];
+
+test("bridgeTranscript injects only the turns the seat hasn't seen", () => {
+  // Seat saw the first 2 messages; the next 2 (an intervening API turn) are the gap.
+  const out = bridgeTranscript(LEDGER, 2);
+  expect(out).toContain("<conversation-so-far>");
+  expect(out).toContain("User: close the server");
+  expect(out).toContain("Assistant: Server stopped.");
+  expect(out).not.toContain("host the chess server"); // already seen → not re-injected
+});
+
+test("bridgeTranscript is empty on a continuous resume (no gap)", () => {
+  expect(bridgeTranscript(LEDGER, LEDGER.length)).toBe("");
+  expect(bridgeTranscript([], 0)).toBe("");
+});
+
+test("bridgeTranscript on a fresh seat session injects the whole conversation", () => {
+  const out = bridgeTranscript(LEDGER, 0);
+  expect(out).toContain("User: host the chess server");
+  expect(out).toContain("Assistant: Server stopped.");
+});
+
+test("bridgeTranscript skips tool/system noise, keeps spoken turns", () => {
+  const mixed: ModelMessage[] = [
+    { role: "user", content: "do it" },
+    { role: "tool", content: [{ type: "tool-result", toolCallId: "t1", toolName: "x", output: { type: "text", value: "ran" } }] as any },
+    { role: "assistant", content: "did it" },
+  ];
+  const out = bridgeTranscript(mixed, 0);
+  expect(out).toContain("User: do it");
+  expect(out).toContain("Assistant: did it");
+  expect(out).not.toContain("ran"); // the binary keeps its own tool history
+});
+
+test("bridgeTranscript injects only the TEXT of an assistant turn that also made tool calls", () => {
+  // The real API shape: assistant content is an array mixing text + tool-call
+  // parts. Only the spoken text must reach the seat — never the tool-call JSON.
+  const withTools: ModelMessage[] = [
+    { role: "user", content: "start the server" },
+    { role: "assistant", content: [
+      { type: "text", text: "Starting it now." },
+      { type: "tool-call", toolCallId: "t1", toolName: "run_shell", input: { command: "npm run dev" } },
+    ] as any },
+  ];
+  const out = bridgeTranscript(withTools, 0);
+  expect(out).toContain("Assistant: Starting it now.");
+  expect(out).not.toContain("npm run dev"); // tool-call input must not leak
+  expect(out).not.toContain("run_shell");
+  expect(out).not.toContain("{"); // no serialized JSON at all
+});
+
+test("bridgeTranscript drops a pure-tool-call assistant turn (no spoken text)", () => {
+  const toolOnly: ModelMessage[] = [
+    { role: "user", content: "what files are here" },
+    { role: "assistant", content: [{ type: "tool-call", toolCallId: "t1", toolName: "list_dir", input: { path: "." } }] as any },
+  ];
+  const out = bridgeTranscript(toolOnly, 0);
+  expect(out).toContain("User: what files are here");
+  expect(out).not.toContain("Assistant:"); // the tool-call-only turn yields no text
+});
 
 // Fixtures lifted from experiments/cli-backend-spike.md (the real schemas).
 const CLAUDE = [

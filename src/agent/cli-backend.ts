@@ -21,6 +21,41 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /**
+ * Build a <conversation-so-far> block of the ledger turns the seat's own CLI
+ * session hasn't incorporated yet (everything at or after `seenLen`). A
+ * subscription seat is a black-box subprocess that only continues via its OWN
+ * `--resume` session, so when a conversation crosses the CLI↔API boundary — or
+ * starts on a fresh seat session — the seat is otherwise blind to those turns.
+ * Injecting this transcript keeps context across the hop (the priority: no loss
+ * on any switch). Tool/system messages are skipped (the binary keeps its own
+ * tool history; only the spoken conversation translates). Returns "" when there
+ * is nothing to bridge (a continuous resume, or no prior turns).
+ */
+export function bridgeTranscript(messages: ModelMessage[], seenLen: number): string {
+  const missing = messages.slice(Math.max(0, seenLen));
+  const lines: string[] = [];
+  for (const m of missing) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    const text = spokenText((m as { content: unknown }).content).trim();
+    if (text) lines.push(`${m.role === "user" ? "User" : "Assistant"}: ${text}`);
+  }
+  return lines.length ? `<conversation-so-far>\n${lines.join("\n\n")}\n</conversation-so-far>` : "";
+}
+
+// The spoken text of a turn ONLY — never tool-call / tool-result / image parts.
+// (builder.ts's textOf serializes those to JSON, which would pollute the bridge
+// with `Assistant: {"command":"…"}` noise; the vendor binary keeps its own tool
+// history.) Returns "" for a turn that was pure tool calls with no text.
+function spokenText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((p: any) => (typeof p === "string" ? p : p?.type === "text" ? (p.text ?? "") : ""))
+    .filter(Boolean)
+    .join(" ");
+}
+
+/**
  * Map a Claude Code tool name + input to a gearbox permission request. Headless
  * `claude -p` can't show its own approval UI, so when the interactive bridge is
  * active (see runCliTask) each `can_use_tool` control request is translated to
