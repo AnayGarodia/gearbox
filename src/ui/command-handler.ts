@@ -148,6 +148,7 @@ export interface CommandCtx {
   capsRef: MutableRefObject<BudgetCaps>;
   charTestOfferedRef: MutableRefObject<boolean>;
   cliSessionRef: MutableRefObject<{ account: string; id: string; seenUpTo: number } | undefined>;
+  excludeSubsRef: MutableRefObject<boolean>;
   curAsstRef: MutableRefObject<number | null>;
   effortRef: MutableRefObject<Effort>;
   ghostSkinRef: MutableRefObject<GhostLook>;
@@ -258,7 +259,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
   // original — every former closure variable resolves through the ctx instead.
   const {
     abortRef, accountStatusCacheRef, activeCliModelRef, activeCliRef, askModeRef, atBottomRef,
-    busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
+    busyRef, capsRef, charTestOfferedRef, cliSessionRef, excludeSubsRef, curAsstRef, effortRef, ghostSkinRef,
     gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
     lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
     routedKindRef, lastScorecardRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
@@ -382,6 +383,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
               updatePhase(phaseId, "ok", `${accountLabel(res.account!)} added`, `routing will prefer this seat (~free) and fall back to your API keys at its limit. /account ${accountSlug(res.account!)} to pin it; /account off anytime.`);
             } else {
               activeCliRef.current = { id: acctId, binary: bin, profile };
+              excludeSubsRef.current = false; // signing in to a subscription clears any session "subscription off"
               setActiveCli({ id: acctId, label: shortLabel });
               updatePrefs({ activeAccount: acctId }); // restore this subscription next launch
               updatePhase(phaseId, "ok", `${accountLabel(res.account!)} active`, `using ${bin}${st.detail ? `; ${st.detail}` : ""}. Own tools/permissions; /account off returns to API routing`);
@@ -1595,7 +1597,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             // turn has routed yet (the card is null) or in plan mode.
             const card = (modeRef.current !== "plan" && lastScorecardRef.current)
               ? lastScorecardRef.current
-              : sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : last?.kind });
+              : sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : last?.kind, excludeSubscriptions: excludeSubsRef.current });
             // The session saved-vs-always-premium headline, same math as /cost.
             const turns = sessionRef.current.turns;
             const saved = estimateSavings(turns, premiumRate(modelRegistry()), (t) => estimateCost([t]));
@@ -1763,6 +1765,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
                     accountStatusCacheRef.current[a.id] = { signedIn: true, detail: st.detail };
                   }
                   activeCliRef.current = { id: a.id, binary: bin, profile };
+                  excludeSubsRef.current = false; // explicitly choosing a subscription clears any session "subscription off"
                   if (activeCliModelRef.current && !cliSupportsModel(bin, activeCliModelRef.current)) setActiveCliModelId(undefined);
                   cliSessionRef.current = undefined;
                   setActiveCli({ id: a.id, label: accountName(a) });
@@ -1793,14 +1796,29 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             return;
           }
           if (subL === "off" || subL === "all") {
+            // /account off → exclude subscription seats from auto-routing for this
+            // session (stay on metered API). /account all → the opposite: route
+            // across EVERY account, seats included (clears a prior /account off).
+            // The split matters because auto-routing is subscription-first: just
+            // un-pinning the seat is not enough — a viable seat still wins the
+            // per-turn score and pulls the conversation back, which is exactly what
+            // people reach for /account off to stop. Session-scoped, in-memory.
+            const turnOff = subL === "off";
             if (!activeCliRef.current) {
-              // No subscription, but an API account may be pinned (from /account
-              // <name>): clear the pin and return to routing across all accounts.
-              if (policy().pinAccount) {
-                updatePolicy({ pinAccount: null });
-                notice("all accounts · auto-routing across every account again (/account <name> to scope to one).");
+              const hadPin = !!policy().pinAccount;
+              if (hadPin) updatePolicy({ pinAccount: null });
+              if (turnOff) {
+                const already = excludeSubsRef.current && !hadPin;
+                excludeSubsRef.current = true;
+                notice(already
+                  ? "subscription is already off for this session · auto-routing stays on your API keys. /account <name> to use a subscription again."
+                  : "subscription off for this session — auto-routing stays on your API keys (no seats). /account <name> to use a subscription again.");
               } else {
-                notice("not on a subscription · already auto-routing across your API keys (/model auto). /account <name> to use a subscription.");
+                const wasOff = excludeSubsRef.current;
+                excludeSubsRef.current = false; // re-include seats
+                notice(hadPin || wasOff
+                  ? "all accounts · auto-routing across every account again (subscription seats included). /account <name> to scope to one."
+                  : "already auto-routing across every account. /account <name> to scope to one.");
               }
               return;
             }
@@ -1811,14 +1829,15 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             cliSessionRef.current = undefined;
             setActiveCli(null);
             updatePrefs({ activeAccount: null });
-            // Returning to in-loop routing: if no model is pinned, auto-routing is
-            // now live (it picks the cheapest model that fits each task).
+            excludeSubsRef.current = turnOff; // /account off keeps seats out for the session; /account all re-includes them
             const auto = selectorRef.current instanceof RoutingSelector;
             notice(
               `left the ${wasSub} subscription.\n` +
-              (auto
-                ? `auto-routing now: Gearbox picks the cheapest API model that fits each task. /model <name> to pin one · /account <name> to use a subscription again.`
-                : `now using ${model?.label ?? "your pinned model"} · /model auto to route per task.`),
+              (turnOff
+                ? `subscription is off for this session — auto-routing stays on your API keys (no seats). /account <name> to use a subscription again · /model <name> to pin one.`
+                : auto
+                  ? `auto-routing now across every account (seats included): Gearbox picks the cheapest model that fits each task. /model <name> to pin one.`
+                  : `now using ${model?.label ?? "your pinned model"} · /model auto to route per task.`),
             );
             return;
           }
