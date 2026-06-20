@@ -157,9 +157,12 @@ export class RoutingSelector implements ModelSelector {
   // one, so near-tied candidates stick with the loaded model instead of
   // ping-ponging every turn. A task-supplied warm (the caller knows better,
   // e.g. after a failover hop landed elsewhere) always wins over this memory.
-  private lastPick?: { accountId: string; modelId: string };
+  // `sub` records whether that pick was a subscription seat (CLI backend), so
+  // the sticky-backend rule (prepare) can keep a conversation on whichever side
+  // of the CLI↔API boundary it already landed on — crossing it loses context.
+  private lastPick?: { accountId: string; modelId: string; sub: boolean };
 
-  private warmFor(task: Task): { accountId: string; modelId: string } | undefined {
+  private warmFor(task: Task): { accountId: string; modelId: string; sub?: boolean } | undefined {
     return task.warm ?? this.lastPick;
   }
 
@@ -168,7 +171,7 @@ export class RoutingSelector implements ModelSelector {
   // provider, or with a neutral env-default state when no account is stored.
   // Subscription seats are appended as separate candidates. The result is the
   // complete pool; subsequent steps filter it by capability, context, and bar.
-  private enumerate(ctx: RoutingContext): Candidate[] {
+  private enumerate(ctx: RoutingContext, excludeSubscriptions = false): Candidate[] {
     const out: Candidate[] = [];
     const neutral = (id: string, provider: string): AccountState =>
       ctx.byAccountId.get(id) ?? { accountId: id, provider, exec: "in-loop", isSubscription: false };
@@ -184,7 +187,10 @@ export class RoutingSelector implements ModelSelector {
         for (const a of accts) out.push({ spec: m, canonicalId: m.id, backend: { kind: "in-loop", account: a }, state: neutral(a.id, m.provider) });
       }
     }
-    for (const seat of subscriptionSeats()) {
+    // Session "subscription off" (/account off): drop seats from auto-routing
+    // entirely so the conversation stays on metered API. Per-turn flag, not the
+    // on-disk globalPreference — it lasts only for this run.
+    for (const seat of excludeSubscriptions ? [] : subscriptionSeats()) {
       const state = ctx.byAccountId.get(seat.account.id) ?? { accountId: seat.account.id, provider: seat.account.provider, exec: "cli" as const, isSubscription: true };
       out.push({ spec: seat.spec, canonicalId: seat.canonicalId, backend: { kind: "cli", account: seat.account, binary: seat.binary, profile: seat.profile }, state });
     }
@@ -207,7 +213,7 @@ export class RoutingSelector implements ModelSelector {
   private prepare(task: Task): {
     kind: Kind; bar: number; escalate: number; required: string[]; ctx: RoutingContext;
     pool: Candidate[]; clears: Candidate[]; eligible: Candidate[]; estInputTokens: number;
-    fallback?: ModelSpec;
+    warm?: { accountId: string; modelId: string }; fallback?: ModelSpec;
   } {
     const kind = task.kind ?? classify(task.prompt);
     const escalate = Math.max(0, Math.floor(task.escalate ?? 0));
@@ -217,7 +223,7 @@ export class RoutingSelector implements ModelSelector {
     const ctx = buildRoutingContext(ctx_now());
     const estInputTokens = task.estTokens || NOMINAL_INPUT_TOKENS;
 
-    const all = this.enumerate(ctx);
+    const all = this.enumerate(ctx, task.excludeSubscriptions);
     if (all.length === 0) {
       // No API keys or seats configured: fall back to the default model if available.
       const m = pickDefaultModel(this.fallbackId);
@@ -240,7 +246,7 @@ export class RoutingSelector implements ModelSelector {
     // THIS set, so "/prefer code haiku" wins even when a global preference
     // (e.g. "subscription only") would have filtered haiku out of the pool.
     const eligible = fits.length ? fits : capable;
-    const pool = applyGlobalPreference(eligible);
+    let pool = applyGlobalPreference(eligible);
     // Seats with no quality profile clear the bar unconditionally (do not
     // penalise them on a 0.5 guess). Seats with a known-weak quality (e.g.
     // Haiku) are still held to the bar so they are not chosen for hard tasks
@@ -260,7 +266,42 @@ export class RoutingSelector implements ModelSelector {
       const top = Math.max(...pool.map(qualityOf));
       clears = pool.filter((c) => c.backend?.kind === "cli" || qualityOf(c) >= top - 1e-9);
     }
-    return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens };
+
+    // Sticky backend (R: no flip-flop / no context loss). Crossing the CLI↔API
+    // boundary mid-conversation loses context (a seat is a black-box subprocess
+    // that only resumes its OWN session; the API rebuilds from the ledger). So
+    // once a conversation has landed on a side, keep it there:
+    //   • warm pick is a LIVE seat → keep that seat, bypassing the quality bar
+    //     (the seat "wins by default until its rate limit"; the per-turn bar must
+    //     not kick it out and bounce the user to metered API and back).
+    //   • warm pick is API → drop seats from the scoring pool so the turn can't
+    //     jump onto a seat. API models still route freely among themselves
+    //     (stateless context rebuild ⇒ no loss).
+    // Skipped while escalating (a failed VERIFY must be free to climb past the
+    // warm pick) and never overrides an explicit /prefer (checked first in
+    // select()/explain(), which search the untouched `eligible` set).
+    // Search the warm pick in `pool` (POST global-preference), not `eligible`, so
+    // a standing global preference still wins over mere stickiness — only an
+    // explicit /prefer (checked against `eligible` in select/explain) outranks it.
+    // `warmIsSeat` is undefined when a caller-supplied warm omits `sub` AND the
+    // model is gone from the live pool: unknown side ⇒ apply no sticky filter.
+    const warm = this.warmFor(task);
+    if (warm && escalate === 0) {
+      const warmCand = pool.find((c) => c.state.accountId === warm.accountId && (c.spec.id === warm.modelId || c.canonicalId === warm.modelId));
+      const warmIsSeat = warmCand ? warmCand.backend?.kind === "cli" : warm.sub;
+      if (warmIsSeat && warmCand) {
+        clears = [warmCand];
+      } else if (warmIsSeat === false) {
+        // Sticky-API: drop seats so the turn can't jump onto one — but only if a
+        // live API candidate remains. If seats are the only backend left (the
+        // warm API model got cooled away), keep them rather than strand the turn
+        // on the degenerate "no candidates" fallback.
+        const noSeat = (c: Candidate) => c.backend?.kind !== "cli";
+        const poolNoSeat = pool.filter(noSeat);
+        if (poolNoSeat.length) { pool = poolNoSeat; clears = clears.filter(noSeat); }
+      }
+    }
+    return { kind, bar, escalate, required, ctx, pool, clears, eligible, estInputTokens, warm: warm && { accountId: warm.accountId, modelId: warm.modelId } };
   }
 
   // Return the per-kind remembered preference if it is present in the given
@@ -291,14 +332,14 @@ export class RoutingSelector implements ModelSelector {
     // per-kind preference is the more specific instruction, so it wins.
     const preferred = this.preferredIn(p.kind, p.eligible);
     if (preferred) {
-      this.lastPick = { accountId: preferred.state.accountId, modelId: preferred.spec.id };
+      this.lastPick = { accountId: preferred.state.accountId, modelId: preferred.spec.id, sub: preferred.backend?.kind === "cli" };
       return { model: preferred.spec, reason: `${p.kind} · remembered preference`, backend: preferred.backend };
     }
 
     // Score all bar-clearing candidates and pick the winner.
-    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) });
+    const best = pickBest({ candidates: candidates.map((c) => toScoreCandidate(c, p.kind)), now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: p.warm });
     const winner = candidates.find((c) => c.spec.id === best.candidate.id)!;
-    this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id };
+    this.lastPick = { accountId: winner.state.accountId, modelId: winner.spec.id, sub: winner.backend?.kind === "cli" };
     const escalated = p.escalate > 0 ? ` · escalated after ${p.escalate} failed check${p.escalate === 1 ? "" : "s"}` : "";
     return { model: winner.spec, reason: reasonFor(winner, p.kind, p.required) + escalated, backend: winner.backend };
   }
@@ -321,7 +362,7 @@ export class RoutingSelector implements ModelSelector {
     // candidates. The winner is still determined from the bar-clearing set only.
     // The SAME flags (warm, interactive) as select() feed every score here, so
     // the scorecard's numbers — and its winner — match the actual pick.
-    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: this.warmFor(task) };
+    const flags = { now: p.ctx.now, estInputTokens: p.estInputTokens, interactive: task.interactive, warm: p.warm };
     const scored = new Map<string, ScoredCandidate>();
     // scoreCandidate ignores input.candidates (it scores one candidate against
     // the flags only), so the empty array here is inert — it just satisfies the

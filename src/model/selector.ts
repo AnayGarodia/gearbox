@@ -54,7 +54,12 @@ export interface Task {
   // a near-tie sticks with the warm model instead of ping-ponging. Shape matches
   // ScoreInput.warm (src/model/scoring.ts). When omitted, RoutingSelector falls
   // back to its own last returned pick, so callers get stickiness for free.
-  warm?: { accountId: string; modelId: string };
+  warm?: { accountId: string; modelId: string; sub?: boolean };
+  // Session "subscription off" (/account off): when true, RoutingSelector drops
+  // subscription seats from the candidate pool entirely, so auto-routing stays on
+  // metered API. A per-turn flag (the App holds the session state), distinct from
+  // the on-disk globalPreference — it lasts only for the current run.
+  excludeSubscriptions?: boolean;
 }
 
 export interface ModelChoice {

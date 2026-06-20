@@ -50,7 +50,7 @@ import { discoverModels } from "../accounts/discover.ts";
 import { listDeploymentDetails, listAvailableModels, createDeployment, deleteDeployment, type AzureDeploymentInfo } from "../accounts/manage.ts";
 import { catalogProvider, detectProviderByKey } from "../accounts/catalog.ts";
 import { featuredApiKeyProviders, needsOnboarding, onboardingSummary, type OnboardingState } from "../accounts/onboarding.ts";
-import { runCliTask, subscriptionEnv, cliScratchDir } from "../agent/cli-backend.ts";
+import { runCliTask, subscriptionEnv, cliScratchDir, bridgeTranscript } from "../agent/cli-backend.ts";
 import { recordRateLimits, recordBalance, buildUsageView, accountUsage, loadUsage, totalSpent, totalSpentToday, totalSpentThisMonth, type UsageView } from "../accounts/usage.ts";
 import { recordSpend, resolveTurnCost, turnMetaOf, setSpendListener, readDailySpend, readAuxSpendToday } from "../accounts/ledger.ts";
 import * as gitOps from "../git/ops.ts";
@@ -735,6 +735,16 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
   const activeCliRef = useRef<{ id: string; binary: string; profile?: string } | null>(null);
   const activeCliModelRef = useRef<string | undefined>(undefined);
   const cliSessionRef = useRef<string | undefined>(undefined);
+  // How many ledger messages the seat's CLI session has already incorporated.
+  // A subscription seat is a black-box subprocess that only continues via its OWN
+  // session id, so any turns that ran elsewhere (API turns, or a fresh session)
+  // are invisible to it. We bridge that gap by injecting a transcript of the
+  // unseen turns (see runCliBackend) and advance this marker only after a CLI
+  // turn — so the seat never silently loses the conversation across a backend hop.
+  const cliSeenLenRef = useRef<number>(0);
+  // Session "subscription off" (/account off): exclude subscription seats from
+  // auto-routing for this run. In-memory only (session-scoped by design).
+  const excludeSubsRef = useRef<boolean>(false);
   const activeImagesRef = useRef<ImageAttachment[]>([]);
   const imageChipPathsRef = useRef<Map<string, string>>(new Map());
   const accountStatusCacheRef = useRef<Record<string, { signedIn?: boolean; detail?: string; duplicateOf?: string; identity?: string }>>({});
@@ -1357,6 +1367,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     // one). Clear any stale CLI session so a subscription turn starts the binary
     // fresh with this history rather than --resume-ing whatever was last open.
     cliSessionRef.current = undefined;
+    cliSeenLenRef.current = 0; // new conversation context: the seat has seen nothing
     notice(`resumed · ${s.items.length} messages · ${new Date(s.updatedAt).toLocaleString()}`);
   };
 
@@ -1884,26 +1895,33 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const reloginCommand = binary.includes("codex")
         ? `/account add codex${activeName ? ` ${activeName}` : ""}`
         : `/account add claude${activeName ? ` ${activeName}` : ""}`;
-      // On the first turn of a session, inject the repo map so the model doesn't
-      // waste tool calls discovering structure. The CLI backend bypasses gearbox's
-      // context engine entirely, so this is the only upfront structural context.
-      let cliPrompt = prompt;
+      // Build an upfront preamble for the seat (a black-box subprocess with no
+      // access to gearbox's context engine):
+      //  1. On the first turn of a session, the repo map so it doesn't waste tool
+      //     calls discovering structure.
+      //  2. A context bridge — any ledger turns this seat's session hasn't seen
+      //     (a fresh session, or turns that ran on the API in between). Without
+      //     this, crossing the CLI↔API boundary makes the seat forget the
+      //     conversation. `messages` excludes the current prompt (appended below).
+      let preamble = "";
       if (!cliSessionRef.current) {
         try {
           const cwd = process.cwd();
           const allFiles = listProjectFiles(cwd).slice(0, 300);
           const map = repoMap(cwd, 3000);
           const fileList = allFiles.join("\n");
-          cliPrompt =
+          preamble +=
             `<project-context cwd="${cwd}">\n` +
             `<files>\n${fileList}\n</files>\n` +
             (map ? `<signatures>\n${map}\n</signatures>\n` : "") +
-            `</project-context>\n\n` +
-            prompt;
+            `</project-context>\n\n`;
         } catch {
-          // non-critical · proceed with plain prompt
+          // non-critical · proceed without the repo map
         }
       }
+      const bridge = bridgeTranscript(messages, cliSeenLenRef.current);
+      if (bridge) preamble += `${bridge}\n\n`;
+      let cliPrompt = preamble + prompt;
       // Images (xiv): the vendor CLI can't take inline image content, but it CAN
       // read files, so hand it the absolute paths and ask it to open them — far
       // better than refusing the turn outright.
@@ -1940,6 +1958,12 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // path uses, so a subscription seat can never silently serve a different
       // model than the routing line claims.
       servedModelRef.current = r.model ?? null;
+      // The seat has now incorporated everything through this turn; the next CLI
+      // turn only needs to bridge what comes after. Advance only on a real reply —
+      // a failed seat turn (about to fail over to API) contributed nothing, so the
+      // marker must stay put or the next seat turn would skip the bridge.
+      const produced = r.messages.length > 0 && r.messages[r.messages.length - 1]!.role === "assistant";
+      if (produced) cliSeenLenRef.current = r.messages.length;
       return { messages: r.messages, usage: r.usage, failure: r.failure };
     },
     [],
@@ -1969,9 +1993,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // when the pinned selector can't produce a choice.
         let choice: ModelChoice;
         try {
-          choice = sel.select({ prompt, kind: "search" });
+          choice = sel.select({ prompt, kind: "search", excludeSubscriptions: excludeSubsRef.current });
         } catch {
-          choice = new RoutingSelector().select({ prompt, kind: "search" });
+          choice = new RoutingSelector().select({ prompt, kind: "search", excludeSubscriptions: excludeSubsRef.current });
         }
         routedKindRef.current = { kind: "search", source: "ask" }; // /why after an /ask turn shows what actually ran
         if (!activeCliRef.current && sel instanceof RoutingSelector) noteBackendSwitch(choice);
@@ -2147,9 +2171,9 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         // interactive: true — this is the foreground turn the user is waiting on, so
         // routing prefers a faster model among bar-clearing candidates (done > FAST >
         // cheap). Delegated sub-tasks and compaction omit it → they stay cheapest.
-        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true });
+        choice = directiveId ? new FixedSelector(directiveId).select({ prompt, kind: routedKind, requires }) : sel.select({ prompt, kind: routedKind, requires, escalate, interactive: true, excludeSubscriptions: excludeSubsRef.current });
       } catch {
-        choice = sel.select({ prompt, kind: routedKind, requires }); // directive model unavailable → fall back to routing
+        choice = sel.select({ prompt, kind: routedKind, requires, excludeSubscriptions: excludeSubsRef.current }); // directive model unavailable → fall back to routing
       }
       if (sel instanceof RoutingSelector && !directiveId) noteBackendSwitch(choice);
       // When the user explicitly chose the model (a directive or a /model pin),
@@ -2210,7 +2234,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
         }
         markExhausted(parkedKey, failKind === "auth" ? AUTH_COOLDOWN_MS : DEFAULT_COOLDOWN_MS, a.failure.message);
         let next: ModelChoice | null = null;
-        try { next = sel.select({ prompt, kind: routedKind, requires }); } catch { next = null; }
+        try { next = sel.select({ prompt, kind: routedKind, requires, excludeSubscriptions: excludeSubsRef.current }); } catch { next = null; }
         const nextAcct = next?.backend?.kind === "cli" ? next.backend.account.id : next?.backend?.kind === "in-loop" && next.backend.account ? next.backend.account.id : next ? `env:${next.model.provider}` : null;
         // Bail only when the router hands back the exact pick we just parked
         // (its zero-candidates fallback) — the same account on a DIFFERENT model
@@ -2243,6 +2267,13 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       // Apply a successful compaction (either path) and report real numbers.
       const apply = (res: { messages: ModelMessage[]; summarizedTurns: number; before: number; after: number; how: string }, how: string): string => {
         msgRef.current = res.messages;
+        // Compaction rewrites history to a SHORTER, summarized ledger. Treat it
+        // as a seat-session boundary: drop the vendor session and reset the bridge
+        // marker so the next subscription turn starts fresh and re-bridges the
+        // compacted history — otherwise the stale marker would index past the now-
+        // shorter ledger and the seat would silently see none of it.
+        cliSessionRef.current = undefined;
+        cliSeenLenRef.current = 0;
         // The status bar's ctx% reads lastInput from the LAST call — after
         // compaction that's stale (it kept showing the pre-compaction size).
         // Reset to history + the non-history overhead (system/memory/repomap/
@@ -2311,6 +2342,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     if (!activeCliRef.current) return "";
     activeCliRef.current = null;
     cliSessionRef.current = undefined;
+    cliSeenLenRef.current = 0; // seat session dropped: a future seat turn re-bridges the full conversation
     setActiveCliModelId(undefined);
     setActiveCli(null);
     updatePrefs({ activeAccount: null });
@@ -2962,7 +2994,7 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
       const ctx: CommandCtx = {
         // refs (stable objects)
         abortRef, accountStatusCacheRef, activeCliModelRef, activeCliRef, askModeRef, atBottomRef,
-        busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
+        busyRef, capsRef, charTestOfferedRef, cliSeenLenRef, cliSessionRef, excludeSubsRef, curAsstRef, effortRef, ghostSkinRef,
         gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
         lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
         routedKindRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
@@ -3092,6 +3124,11 @@ const searchRef = useRef<{ q: string; idx: number } | null>(null);
     for (let i = ms.length - 1; i >= 0; i--) if (ms[i]!.role === "user") { mi = i; break; }
     if (mi >= 0) msgRef.current = ms.slice(0, mi);
     curAsstRef.current = null;
+    // The ledger just got shorter (and the rewound turn must not survive in the
+    // seat's --resume session). Drop the vendor session + bridge marker so the
+    // next subscription turn re-bridges the corrected, shorter history.
+    cliSessionRef.current = undefined;
+    cliSeenLenRef.current = 0;
     setEdit({ value: userText, cursor: userText.length });
     notice("rewound the last turn · edit and resend");
   };

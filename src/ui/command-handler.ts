@@ -138,7 +138,9 @@ export interface CommandCtx {
   busyRef: MutableRefObject<boolean>;
   capsRef: MutableRefObject<BudgetCaps>;
   charTestOfferedRef: MutableRefObject<boolean>;
+  cliSeenLenRef: MutableRefObject<number>;
   cliSessionRef: MutableRefObject<string | undefined>;
+  excludeSubsRef: MutableRefObject<boolean>;
   curAsstRef: MutableRefObject<number | null>;
   effortRef: MutableRefObject<Effort>;
   ghostSkinRef: MutableRefObject<GhostLook>;
@@ -241,7 +243,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
   // original — every former closure variable resolves through the ctx instead.
   const {
     abortRef, accountStatusCacheRef, activeCliModelRef, activeCliRef, askModeRef, atBottomRef,
-    busyRef, capsRef, charTestOfferedRef, cliSessionRef, curAsstRef, effortRef, ghostSkinRef,
+    busyRef, capsRef, charTestOfferedRef, cliSeenLenRef, cliSessionRef, excludeSubsRef, curAsstRef, effortRef, ghostSkinRef,
     gitDraftRef, gitRegenRef, idRef, itemsRef, lastChangedFilesRef, lastOutcomeKeyRef,
     lastPromptRef, modeRef, msgRef, notifyRef, panelRef, panelSessionsRef, resumeListRef,
     routedKindRef, routedRef, runTurnRef, selectorRef, sessionBaseRef, sessionRef, undoStackRef, verifyRef, vimRef,
@@ -339,6 +341,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
               accountStatusCacheRef.current[acctId] = { signedIn: true, detail: st.detail };
             }
             cliSessionRef.current = undefined;
+            cliSeenLenRef.current = 0; // fresh seat session: the next seat turn bridges the whole conversation
             setLastPick(null);
             // With 2+ usable backends, let routing decide (subscription-first by
             // default): the seat is now a candidate the RoutingSelector prefers
@@ -419,6 +422,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
           // next turn would otherwise pass --resume <old-id> and the binary
           // would continue the conversation the user just cleared.
           cliSessionRef.current = undefined;
+          cliSeenLenRef.current = 0; // /clear starts a new conversation: the seat has seen nothing of it
           sessionRef.current = { id: newSessionId(), createdAt: Date.now(), title: "", turns: [] };
           charTestOfferedRef.current = false; // a fresh session may offer the test once again
           gitDraftRef.current = null; // a stale /commit go after /clear would surprise
@@ -885,6 +889,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             undoStackRef.current = [];
             sessionBaseRef.current = null; // the /diff baseline is per-tree
             cliSessionRef.current = undefined;
+            cliSeenLenRef.current = 0; // re-homed session (new tree): the seat re-bridges from scratch
             // Tree-rooted drafts must not survive the move: a /commit draft
             // written for the old tree's diff would commit the NEW tree's
             // staged files verbatim, and /verify test would target old paths.
@@ -1326,7 +1331,7 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             // questions differently than the LLM verdict that routed the turn, so
             // re-deriving here showed a scorecard that disagreed with reality.
             const last = modeRef.current === "plan" ? null : routedKindRef.current;
-            const card = sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : last?.kind });
+            const card = sel.explain({ prompt: lastPromptRef.current || "(your next message)", kind: modeRef.current === "plan" ? "plan" : last?.kind, excludeSubscriptions: excludeSubsRef.current });
             push({ kind: "scorecard", id: idRef.current++, card: last ? { ...card, kindSource: last.source } : card });
           } catch (e: any) {
             notice(e?.message ?? "couldn't build the scorecard");
@@ -1478,8 +1483,10 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
                     accountStatusCacheRef.current[a.id] = { signedIn: true, detail: st.detail };
                   }
                   activeCliRef.current = { id: a.id, binary: bin, profile };
+                  excludeSubsRef.current = false; // explicitly choosing a subscription clears any session "subscription off"
                   if (activeCliModelRef.current && !cliSupportsModel(bin, activeCliModelRef.current)) setActiveCliModelId(undefined);
                   cliSessionRef.current = undefined;
+                  cliSeenLenRef.current = 0; // fresh seat session: the first seat turn bridges the whole conversation
                   setActiveCli({ id: a.id, label: accountName(a) });
                   updatePrefs({ activeAccount: a.id });
                   updatePhase(phaseId, "ok", `switched to ${accountLabel(a)}`, st.detail);
@@ -1502,23 +1509,32 @@ export function handleCommand(ctx: CommandCtx, text: string): void {
             return;
           }
           if (subL === "off") {
-            if (!activeCliRef.current) {
-              notice("not on a subscription · already auto-routing across your API keys (/model auto). /account <name> to use a subscription.");
+            const wasSub = activeCliRef.current?.binary;
+            // Un-pin any actively pinned subscription.
+            if (activeCliRef.current) {
+              activeCliRef.current = null;
+              setActiveCliModelId(undefined);
+              setActiveCli(null);
+              updatePrefs({ activeAccount: null });
+            }
+            cliSessionRef.current = undefined;
+            cliSeenLenRef.current = 0;
+            // AND exclude subscription seats from auto-routing for the rest of this
+            // session. Un-pinning alone was not enough: a free seat still won the
+            // per-turn score and pulled the conversation back onto a subscription —
+            // exactly what people reach for /account off to stop. Session-scoped.
+            const already = excludeSubsRef.current && !wasSub;
+            excludeSubsRef.current = true;
+            if (already) {
+              notice("subscription is already off for this session · auto-routing stays on your API keys. /account <name> to use a subscription again.");
               return;
             }
-            const wasSub = activeCliRef.current.binary;
-            activeCliRef.current = null;
-            setActiveCliModelId(undefined);
-            cliSessionRef.current = undefined;
-            setActiveCli(null);
-            updatePrefs({ activeAccount: null });
-            // Returning to in-loop routing: if no model is pinned, auto-routing is
-            // now live (it picks the cheapest model that fits each task).
             const auto = selectorRef.current instanceof RoutingSelector;
             notice(
-              `left the ${wasSub} subscription.\n` +
+              (wasSub ? `left the ${wasSub} subscription. ` : "") +
+              `subscription is off for this session — auto-routing stays on your API keys (no seats).\n` +
               (auto
-                ? `auto-routing now: Gearbox picks the cheapest API model that fits each task. /model <name> to pin one · /account <name> to use a subscription again.`
+                ? `/account <name> to use a subscription again · /model <name> to pin a model.`
                 : `now using ${model?.label ?? "your pinned model"} · /model auto to route per task.`),
             );
             return;
